@@ -12,7 +12,7 @@ from ..core.responses import ok
 from ..schemas.claim import ClaimBody
 from ..services.audit import write_audit
 from ..services.claim_service import claim_assignment, own_assignment_detail, run_assignment_timeouts
-from ..services.deeplink import decode_assignment_link_token
+from ..services.deeplink import resolve_assignment_link
 from ..services.points_service import ledger_to_dict
 
 router = APIRouter(prefix="/claims", tags=["claims"])
@@ -36,13 +36,18 @@ def own_detail(assignment_id: str, request: Request, principal: CurrentPrincipal
 
 @router.get("/resolve-link")
 def resolve_link(token: str, request: Request, principal: CurrentPrincipal, db: Session = Depends(get_db)):
-    payload = decode_assignment_link_token(token)
-    if payload.get("company_id") != principal.company_id:
-        raise AppError("FORBIDDEN", "链接不属于当前加盟商", 403)
-    assignment = db.get(Assignment, payload["sub"])
-    if not assignment or assignment.company_id != principal.company_id:
-        raise AppError("ASSIGNMENT_NOT_FOUND", "客资已失效", 404)
-    return ok(request, {"assignment_id": assignment.id, "status": assignment.status, "route": f"/leads/{assignment.id}"})
+    assignment = resolve_assignment_link(db, token, principal)
+    write_audit(
+        db,
+        principal=principal,
+        action="ASSIGNMENT_LINK_RESOLVE",
+        resource_type="assignment",
+        resource_id=assignment.id,
+        company_id=assignment.company_id,
+        request_id=request.state.request_id,
+    )
+    db.commit()
+    return ok(request, {"assignment_id": assignment.id, "status": assignment.status, "route": f"/lead/{assignment.id}"})
 
 
 @router.post("/jobs/assignment-timeouts")

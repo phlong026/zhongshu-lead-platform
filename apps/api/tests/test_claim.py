@@ -47,3 +47,34 @@ def test_expired_assignment_is_released(db, monkeypatch):
     assert result["expired"]==1
     assert assignment.status=="EXPIRED"
     assert lead.current_assignment_id is None
+
+
+def test_deeplink_rejects_other_company_and_inactive_assignment(db):
+    from apps.api.src.services.deeplink import create_assignment_link_token, resolve_assignment_link
+
+    company, lead, assignment = setup_assignment(db)
+    token = create_assignment_link_token(assignment.id, company.id)
+    owner = principal("owner", company.id, "FRANCHISE_OWNER")
+    assert resolve_assignment_link(db, token, owner).id == assignment.id
+
+    with pytest.raises(AppError) as exc:
+        resolve_assignment_link(db, token, principal("other", "other-company", "FRANCHISE_OWNER"))
+    assert exc.value.code == "DEEPLINK_COMPANY_MISMATCH"
+
+    assignment.status = "RELEASED"
+    lead.current_assignment_id = None
+    db.commit()
+    with pytest.raises(AppError) as exc:
+        resolve_assignment_link(db, token, owner)
+    assert exc.value.code == "DEEPLINK_ASSIGNMENT_INACTIVE"
+
+
+def test_deeplink_rejects_tampering(db):
+    from apps.api.src.services.deeplink import create_assignment_link_token, resolve_assignment_link
+
+    company, _, assignment = setup_assignment(db)
+    token = create_assignment_link_token(assignment.id, company.id)
+    tampered = token[:-2] + ("aa" if token[-2:] != "aa" else "bb")
+    with pytest.raises(AppError) as exc:
+        resolve_assignment_link(db, tampered, principal("owner", company.id, "FRANCHISE_OWNER"))
+    assert exc.value.code == "DEEPLINK_INVALID"
