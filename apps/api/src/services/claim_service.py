@@ -1,0 +1,129 @@
+from __future__ import annotations
+
+from datetime import timedelta
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from ..core.auth import Principal
+from ..core.config import get_settings
+from ..core.enums import AssignmentStatus, LeadStatus, PointsLedgerType
+from ..core.errors import AppError
+from ..core.models import Assignment, AssignmentEvent, Company, Lead, PointsLedger
+from ..core.security import decrypt_text, mask_phone
+from ..core.time import as_utc, utcnow
+from .notification_service import create_station_message, enqueue_outbox
+from .points_service import change_points, points_available_for_dispatch
+
+settings = get_settings()
+
+
+def claim_assignment(db: Session, assignment_id: str, principal: Principal, idempotency_key: str) -> tuple[Assignment, PointsLedger]:
+    if not principal.company_id:
+        raise AppError("COMPANY_CONTEXT_REQUIRED", "当前账号未绑定加盟商公司", 403)
+    assignment = db.scalar(select(Assignment).where(Assignment.id == assignment_id).with_for_update())
+    if not assignment:
+        raise AppError("ASSIGNMENT_NOT_FOUND", "派发订单不存在", 404)
+    if assignment.company_id != principal.company_id:
+        raise AppError("FORBIDDEN", "无权领取该客资", 403)
+    existing_ledger = db.scalar(
+        select(PointsLedger).where(
+            PointsLedger.company_id == assignment.company_id,
+            PointsLedger.business_type == "ASSIGNMENT",
+            PointsLedger.business_id == assignment.id,
+            PointsLedger.ledger_type == PointsLedgerType.CLAIM,
+        )
+    )
+    if assignment.status in {AssignmentStatus.CLAIMED, AssignmentStatus.FOLLOWING} and existing_ledger:
+        return assignment, existing_ledger
+    if assignment.status != AssignmentStatus.PENDING_CLAIM:
+        raise AppError("ASSIGNMENT_NOT_CLAIMABLE", "该客资已失效或已处理", 409)
+    now = utcnow()
+    expires_at = as_utc(assignment.expires_at)
+    if expires_at and expires_at <= now:
+        raise AppError("ASSIGNMENT_EXPIRED", "该客资已过领取时限", 409)
+    company = db.get(Company, assignment.company_id)
+    if not company or company.status != "ACTIVE":
+        raise AppError("COMPANY_DISABLED", "加盟商公司已停用", 403)
+
+    ledger = change_points(
+        db,
+        company_id=assignment.company_id,
+        delta=-assignment.points_price,
+        ledger_type=PointsLedgerType.CLAIM,
+        business_type="ASSIGNMENT",
+        business_id=assignment.id,
+        idempotency_key=f"claim:{assignment.id}:{idempotency_key}",
+        created_by=principal.user_id,
+        metadata={"price_version": assignment.price_version},
+    )
+    assignment.status = AssignmentStatus.CLAIMED
+    assignment.claimed_at = now
+    assignment.first_followup_due_at = now + timedelta(hours=settings.first_followup_hours)
+    lead = db.scalar(select(Lead).where(Lead.id == assignment.lead_id).with_for_update())
+    if lead:
+        lead.status = LeadStatus.CLAIMED
+    db.add(AssignmentEvent(assignment_id=assignment.id, event_type="CLAIMED", actor_user_id=principal.user_id, payload={"points": assignment.points_price, "ledger_id": ledger.id}))
+    create_station_message(db, user_id=principal.user_id, company_id=assignment.company_id, scene="CLAIM_SUCCESS", title="客资领取成功", body=f"已扣除{assignment.points_price}积分，可查看完整联系方式。", deep_link=f"/h5/#/leads/{assignment.id}")
+    enqueue_outbox(db, event_key=f"assignment:{assignment.id}:claimed", event_type="ASSIGNMENT_CLAIMED", aggregate_type="assignment", aggregate_id=assignment.id, payload={"company_id": assignment.company_id, "user_id": principal.user_id})
+    return assignment, ledger
+
+
+def own_assignment_detail(db: Session, assignment: Assignment, principal: Principal) -> dict[str, Any]:
+    if assignment.company_id != principal.company_id:
+        raise AppError("FORBIDDEN", "无权查看该订单", 403)
+    lead = db.get(Lead, assignment.lead_id)
+    phone = decrypt_text(lead.phone_encrypted) if lead else None
+    unlocked = assignment.status in {
+        AssignmentStatus.CLAIMED,
+        AssignmentStatus.FOLLOWING,
+        AssignmentStatus.RETURN_PENDING,
+        AssignmentStatus.COMPLETED,
+    }
+    balance, reserved, available = points_available_for_dispatch(db, assignment.company_id)
+    return {
+        "id": assignment.id,
+        "status": assignment.status,
+        "points_price": assignment.points_price,
+        "assigned_at": assignment.assigned_at.isoformat(),
+        "claimed_at": assignment.claimed_at.isoformat() if assignment.claimed_at else None,
+        "expires_at": assignment.expires_at.isoformat() if assignment.expires_at else None,
+        "first_followup_due_at": assignment.first_followup_due_at.isoformat() if assignment.first_followup_due_at else None,
+        "lead": {
+            **assignment.lead_snapshot,
+            "phone": phone if unlocked else None,
+            "phone_masked": mask_phone(phone),
+            "contact_unlocked": unlocked,
+        },
+        "points": {"balance": balance, "pending_claim_points": reserved, "available": available},
+    }
+
+
+def run_assignment_timeouts(db: Session) -> dict[str, int]:
+    now = utcnow()
+    reminded = 0
+    expired = 0
+    pending = db.scalars(select(Assignment).where(Assignment.status == AssignmentStatus.PENDING_CLAIM)).all()
+    for assignment in pending:
+        assigned_at = as_utc(assignment.assigned_at) or now
+        expires_at = as_utc(assignment.expires_at)
+        hours = (now - assigned_at).total_seconds() / 3600
+        if hours >= settings.assignment_expire_hours or (expires_at and expires_at <= now):
+            assignment.status = AssignmentStatus.EXPIRED
+            assignment.released_at = now
+            assignment.release_reason = "UNCLAIMED_TIMEOUT"
+            lead = db.get(Lead, assignment.lead_id)
+            if lead and lead.current_assignment_id == assignment.id:
+                lead.current_assignment_id = None
+                lead.status = LeadStatus.QUALIFIED
+                lead.pending_reason = "UNCLAIMED_TIMEOUT"
+            db.add(AssignmentEvent(assignment_id=assignment.id, event_type="EXPIRED", payload={"hours": hours}))
+            enqueue_outbox(db, event_key=f"assignment:{assignment.id}:expired", event_type="ASSIGNMENT_EXPIRED", aggregate_type="assignment", aggregate_id=assignment.id, payload={"company_id": assignment.company_id})
+            expired += 1
+        elif hours >= settings.assignment_reminder_hours and assignment.reminder_sent_at is None:
+            assignment.reminder_sent_at = now
+            create_station_message(db, user_id=None, company_id=assignment.company_id, scene="CLAIM_REMINDER", title="客资即将过期", body="该客资尚未领取，请尽快处理。", deep_link=f"/h5/#/leads/{assignment.id}")
+            enqueue_outbox(db, event_key=f"assignment:{assignment.id}:reminder", event_type="ASSIGNMENT_REMINDER", aggregate_type="assignment", aggregate_id=assignment.id, payload={"company_id": assignment.company_id})
+            reminded += 1
+    return {"reminded": reminded, "expired": expired}

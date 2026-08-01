@@ -1,0 +1,18 @@
+[project]
+name = "zhongshu-lead-platform"
+version = "1.0.0"
+description = "众墅之家客资审核、派发与积分管理平台"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["apps/api/tests"]
+addopts = "-q --disable-warnings --maxfail=1"
+
+[tool.coverage.run]
+branch = true
+source = ["apps/api/src"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true

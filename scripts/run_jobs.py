@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import argparse
+import json
+
+from apps.api.src.core.database import SessionLocal, init_database
+from apps.api.src.services.claim_service import run_assignment_timeouts
+from apps.api.src.services.followup_service import run_followup_overdue
+from apps.api.src.services.outbox_worker import process_outbox
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Run one scheduled job safely")
+    parser.add_argument("job", choices=["assignment-timeouts", "followup-overdue", "outbox", "all"])
+    parser.add_argument("--limit", type=int, default=100)
+    args = parser.parse_args()
+    init_database()
+    output: dict[str, object] = {}
+    with SessionLocal() as db:
+        if args.job in {"assignment-timeouts", "all"}:
+            output["assignment_timeouts"] = run_assignment_timeouts(db)
+        if args.job in {"followup-overdue", "all"}:
+            output["followup_overdue"] = run_followup_overdue(db)
+        if args.job in {"outbox", "all"}:
+            output["outbox"] = process_outbox(db, limit=args.limit)
+        db.commit()
+    print(json.dumps(output, ensure_ascii=False, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

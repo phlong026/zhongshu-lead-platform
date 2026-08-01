@@ -1,0 +1,56 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-zhongshu}
+      POSTGRES_USER: ${POSTGRES_USER:-zhongshu}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-this-database-password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-zhongshu} -d ${POSTGRES_DB:-zhongshu}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-zhongshu}:${POSTGRES_PASSWORD:-change-this-database-password}@db:5432/${POSTGRES_DB:-zhongshu}
+      OBJECT_STORAGE_DIR: /app/storage
+    volumes:
+      - private_storage:/app/storage
+
+  scheduler:
+    build: .
+    restart: unless-stopped
+    entrypoint: ["/app/docker/scheduler-entrypoint.sh"]
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-zhongshu}:${POSTGRES_PASSWORD:-change-this-database-password}@db:5432/${POSTGRES_DB:-zhongshu}
+      OBJECT_STORAGE_DIR: /app/storage
+    volumes:
+      - private_storage:/app/storage
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+    volumes:
+      - ./infra/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+
+volumes:
+  postgres_data:
+  private_storage:

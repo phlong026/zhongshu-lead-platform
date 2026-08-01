@@ -1,0 +1,126 @@
+from __future__ import annotations
+
+from enum import StrEnum
+
+
+class UserStatus(StrEnum):
+    ACTIVE = "ACTIVE"
+    DISABLED = "DISABLED"
+    LOCKED = "LOCKED"
+    PENDING = "PENDING"
+
+
+class CompanyStatus(StrEnum):
+    ACTIVE = "ACTIVE"
+    DISABLED = "DISABLED"
+    PENDING = "PENDING"
+
+
+class LeadStatus(StrEnum):
+    IMPORTED = "IMPORTED"
+    IMPORT_ERROR = "IMPORT_ERROR"
+    DUPLICATE_REVIEW = "DUPLICATE_REVIEW"
+    VERIFYING = "VERIFYING"
+    QUALIFIED = "QUALIFIED"
+    INVALID = "INVALID"
+    ASSIGNED = "ASSIGNED"
+    CLAIMED = "CLAIMED"
+    FOLLOWING = "FOLLOWING"
+    RETURN_PENDING = "RETURN_PENDING"
+    RETURNED = "RETURNED"
+    CLOSED = "CLOSED"
+
+
+class VerificationTaskStatus(StrEnum):
+    PENDING = "PENDING"
+    ASSIGNED = "ASSIGNED"
+    IN_PROGRESS = "IN_PROGRESS"
+    SUBMITTED = "SUBMITTED"
+    RELEASED = "RELEASED"
+    CANCELLED = "CANCELLED"
+
+
+class VerificationResult(StrEnum):
+    QUALIFIED = "QUALIFIED"
+    INVALID = "INVALID"
+    NEED_MORE = "NEED_MORE"
+    DUPLICATE = "DUPLICATE"
+
+
+class AssignmentStatus(StrEnum):
+    PENDING_CLAIM = "PENDING_CLAIM"
+    CLAIMED = "CLAIMED"
+    FOLLOWING = "FOLLOWING"
+    RETURN_PENDING = "RETURN_PENDING"
+    RETURNED = "RETURNED"
+    RELEASED = "RELEASED"
+    EXPIRED = "EXPIRED"
+    COMPLETED = "COMPLETED"
+
+
+ACTIVE_ASSIGNMENT_STATUSES = {
+    AssignmentStatus.PENDING_CLAIM,
+    AssignmentStatus.CLAIMED,
+    AssignmentStatus.FOLLOWING,
+    AssignmentStatus.RETURN_PENDING,
+}
+
+
+class PointsLedgerType(StrEnum):
+    RECHARGE = "RECHARGE"
+    CLAIM = "CLAIM"
+    RETURN = "RETURN"
+    ADJUST = "ADJUST"
+    REVERSAL = "REVERSAL"
+
+
+class FollowStatus(StrEnum):
+    UNCONTACTED = "UNCONTACTED"
+    CONTACTED = "CONTACTED"
+    INTERESTED = "INTERESTED"
+    NOT_INTERESTED = "NOT_INTERESTED"
+    DEAL = "DEAL"
+    INVALID = "INVALID"
+
+
+class ReturnStatus(StrEnum):
+    DRAFT = "DRAFT"
+    PENDING = "PENDING"
+    NEED_MORE = "NEED_MORE"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    CANCELLED = "CANCELLED"
+
+
+class EvidenceType(StrEnum):
+    CHAT_SCREENSHOT = "CHAT_SCREENSHOT"
+    CALL_RECORDING = "CALL_RECORDING"
+    PAYMENT_RECEIPT = "PAYMENT_RECEIPT"
+
+
+class OutboxStatus(StrEnum):
+    PENDING = "PENDING"
+    PROCESSING = "PROCESSING"
+    SENT = "SENT"
+    FAILED = "FAILED"
+    DEAD = "DEAD"
+
+
+class NotificationStatus(StrEnum):
+    CREATED = "CREATED"
+    SENT = "SENT"
+    FAILED = "FAILED"
+
+
+class ConfigStatus(StrEnum):
+    DRAFT = "DRAFT"
+    PUBLISHED = "PUBLISHED"
+    RETIRED = "RETIRED"
+
+
+class ImportIssueType(StrEnum):
+    MISSING_FIELD = "MISSING_FIELD"
+    INVALID_PHONE = "INVALID_PHONE"
+    UNKNOWN_REGION = "UNKNOWN_REGION"
+    DUPLICATE_SUSPECTED = "DUPLICATE_SUSPECTED"
+    SOURCE_ERROR = "SOURCE_ERROR"
