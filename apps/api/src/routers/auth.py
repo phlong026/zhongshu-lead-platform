@@ -16,7 +16,7 @@ from ..core.security import create_signed_state, decode_signed_state, hash_token
 from ..core.time import as_utc, utcnow
 from ..schemas.auth import InviteCreateBody, LoginBody, WechatMockCallbackBody
 from ..services.audit import write_audit
-from ..services.auth_service import authenticate_internal, bind_wechat_by_invite, create_company_invite
+from ..services.auth_service import authenticate_internal, bind_wechat_by_invite, create_company_invite, login_or_bind_wechat
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
@@ -99,24 +99,27 @@ def wechat_mock_callback(body: WechatMockCallbackBody, request: Request, respons
 
 @router.get("/wechat/start")
 def wechat_start(
-    invite: str = Query(min_length=16),
+    invite: str | None = Query(default=None, min_length=16),
     return_url: str = Query(default="/h5/#/home"),
     db: Session = Depends(get_db),
 ):
     from fastapi.responses import RedirectResponse
     from ..integrations.wechat import WechatOAuthClient
 
-    invite_row = db.scalar(select(InviteToken).where(InviteToken.token_hash == hash_token(invite)))
-    now = utcnow()
-    invite_expires_at = as_utc(invite_row.expires_at) if invite_row else None
-    if not invite_row or invite_row.revoked_at or invite_row.used_at or not invite_expires_at or invite_expires_at <= now:
-        from ..core.errors import AppError
-        raise AppError("AUTH_INVITE_INVALID", "邀请已失效，请联系平台", 400)
+    if invite:
+        invite_row = db.scalar(select(InviteToken).where(InviteToken.token_hash == hash_token(invite)))
+        now = utcnow()
+        invite_expires_at = as_utc(invite_row.expires_at) if invite_row else None
+        if not invite_row or invite_row.revoked_at or invite_row.used_at or not invite_expires_at or invite_expires_at <= now:
+            from ..core.errors import AppError
+            raise AppError("AUTH_INVITE_INVALID", "邀请已失效，请联系平台", 400)
     if not return_url.startswith("/") or return_url.startswith("//"):
         return_url = "/h5/#/home"
-    state = create_signed_state({"invite": invite, "return_url": return_url}, purpose="wechat-oauth")
-    url = WechatOAuthClient().authorization_url(state=state)
-    return RedirectResponse(url=url, status_code=302)
+    state = create_signed_state(
+        {"invite": invite, "return_url": return_url},
+        purpose="wechat-oauth",
+    )
+    return RedirectResponse(url=WechatOAuthClient().authorization_url(state=state), status_code=302)
 
 
 @router.get("/wechat/callback")
@@ -136,8 +139,14 @@ def wechat_callback(
     except InvalidTokenError as exc:
         raise AppError("AUTH_OAUTH_STATE_INVALID", "微信授权状态已失效，请重新进入", 400) from exc
     identity = WechatOAuthClient().exchange_code(code)
-    user, token = bind_wechat_by_invite(db, str(state_data["invite"]), identity.openid, identity.nickname or "微信加盟商")
-    write_audit(db, principal=None, action="WECHAT_OAUTH_BIND", resource_type="user", resource_id=user.id, company_id=user.company_id, request_id=request.state.request_id)
+    user, token = login_or_bind_wechat(
+        db,
+        openid=identity.openid,
+        unionid=identity.unionid,
+        nickname=identity.nickname or "微信加盟商",
+        invite_token=state_data.get("invite"),
+    )
+    write_audit(db, principal=None, action="WECHAT_OAUTH_LOGIN", resource_type="user", resource_id=user.id, company_id=user.company_id, request_id=request.state.request_id)
     db.commit()
     target = str(state_data.get("return_url") or "/h5/#/home")
     response = RedirectResponse(url=target, status_code=302)

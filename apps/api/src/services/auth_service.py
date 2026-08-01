@@ -50,7 +50,7 @@ def create_company_invite(db: Session, company_id: str, created_by: str | None, 
     return invite, raw
 
 
-def bind_wechat_by_invite(db: Session, raw_token: str, openid: str, nickname: str) -> tuple[User, str]:
+def _validate_invite(db: Session, raw_token: str) -> InviteToken:
     invite = db.scalar(select(InviteToken).where(InviteToken.token_hash == hash_token(raw_token)))
     now = utcnow()
     invite_expires_at = as_utc(invite.expires_at) if invite else None
@@ -59,30 +59,60 @@ def bind_wechat_by_invite(db: Session, raw_token: str, openid: str, nickname: st
     company = db.get(Company, invite.company_id)
     if not company or company.status != "ACTIVE":
         raise AppError("AUTH_COMPANY_DISABLED", "加盟商公司不可用", 403)
+    return invite
 
+
+def login_or_bind_wechat(
+    db: Session,
+    *,
+    openid: str,
+    unionid: str | None = None,
+    nickname: str | None = None,
+    invite_token: str | None = None,
+) -> tuple[User, str]:
     identity = db.scalar(select(WechatIdentity).where(WechatIdentity.openid == openid))
     if identity:
-        existing_user = db.get(User, identity.user_id)
-        if existing_user and existing_user.company_id != company.id:
-            raise AppError("AUTH_WECHAT_BOUND_OTHER_COMPANY", "该微信已绑定其他加盟商公司", 409)
-        user = existing_user
-    else:
-        user = User(display_name=nickname or company.owner_name or "加盟商负责人", company_id=company.id, status="ACTIVE")
-        db.add(user)
-        db.flush()
-        assign_role(db, user, "FRANCHISE_OWNER")
-        identity = WechatIdentity(openid=openid, nickname=nickname, user_id=user.id, subscribed=False)
-        db.add(identity)
+        user = db.get(User, identity.user_id)
+        if not user or user.status != "ACTIVE":
+            raise AppError("AUTH_ACCOUNT_DISABLED", "账号已停用", 403)
+        company = db.get(Company, user.company_id) if user.company_id else None
+        if not company or company.status != "ACTIVE":
+            raise AppError("AUTH_COMPANY_DISABLED", "加盟商公司不可用", 403)
+        if invite_token:
+            invite = _validate_invite(db, invite_token)
+            if invite.company_id != company.id:
+                raise AppError("AUTH_WECHAT_BOUND_OTHER_COMPANY", "该微信已绑定其他加盟商公司", 409)
+            invite.used_at = utcnow()
+        identity.unionid = unionid or identity.unionid
+        identity.nickname = nickname or identity.nickname
+        user.last_login_at = utcnow()
+        token = create_access_token(user.id, user.session_version, role_codes_for_user(user), company.id)
+        return user, token
 
-    if not user:
-        raise AppError("AUTH_BIND_FAILED", "绑定失败", 500)
-    user.company_id = company.id
-    user.session_version += 1
+    if not invite_token:
+        raise AppError("AUTH_WECHAT_NOT_BOUND", "该微信尚未绑定加盟商，请使用邀请链接进入", 403)
+    invite = _validate_invite(db, invite_token)
+    company = db.get(Company, invite.company_id)
+    assert company is not None
+    user = User(
+        display_name=nickname or company.owner_name or "加盟商负责人",
+        company_id=company.id,
+        status="ACTIVE",
+        last_login_at=utcnow(),
+    )
+    db.add(user)
+    db.flush()
+    assign_role(db, user, "FRANCHISE_OWNER")
+    db.add(WechatIdentity(openid=openid, unionid=unionid, nickname=nickname, user_id=user.id, subscribed=False))
     company.primary_user_id = user.id
-    invite.used_at = now
+    invite.used_at = utcnow()
     db.flush()
     token = create_access_token(user.id, user.session_version, role_codes_for_user(user), company.id)
     return user, token
+
+
+def bind_wechat_by_invite(db: Session, raw_token: str, openid: str, nickname: str) -> tuple[User, str]:
+    return login_or_bind_wechat(db, openid=openid, nickname=nickname, invite_token=raw_token)
 
 
 def create_internal_user(

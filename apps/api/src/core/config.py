@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     wechat_app_id: str = ""
     wechat_app_secret: str = ""
     wechat_oauth_redirect_uri: str = "http://localhost:8000/api/v1/auth/wechat/callback"
+    wechat_oauth_scope: str = "snsapi_base"
     wechat_dev_mock: bool = True
     feishu_app_id: str = ""
     feishu_app_secret: str = ""
