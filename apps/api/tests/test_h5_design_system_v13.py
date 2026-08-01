@@ -93,3 +93,9 @@ def test_h5_v13_status_pages_contract():
     assert "window.zsRenderReturnSuccess" in js
     assert "ZS_STATUS_NATIVE_FETCH" in js
     assert "stopImmediatePropagation" in js
+
+
+def test_h5_v13_invalid_link_security_state_precedes_loading_landing():
+    js=(H5 / "status-pages-v13.js").read_text(encoding="utf-8")
+    assert "if(zsPatchInvalidLink())return;zsPatchLinkLanding();" in js
+    assert "document.body.classList.remove('zs-v13-link-loading');return true" in js
