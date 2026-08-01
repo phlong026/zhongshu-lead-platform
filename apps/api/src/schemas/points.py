@@ -2,10 +2,21 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
-class PointsPackageBody(BaseModel):
+class EffectiveWindowMixin(BaseModel):
+    effective_at: datetime | None = None
+    expires_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_window(self):
+        if self.effective_at and self.expires_at and self.effective_at >= self.expires_at:
+            raise ValueError("生效时间必须早于失效时间")
+        return self
+
+
+class PointsPackageBody(EffectiveWindowMixin):
     code: str = Field(min_length=2, max_length=64)
     name: str = Field(min_length=2, max_length=128)
     cash_amount_cents: int = Field(ge=0)
@@ -14,11 +25,9 @@ class PointsPackageBody(BaseModel):
     level_code: str = Field(default="V1", max_length=32)
     entitlements: dict = Field(default_factory=dict)
     publish: bool = True
-    effective_at: datetime | None = None
-    expires_at: datetime | None = None
 
 
-class PriceRuleBody(BaseModel):
+class PriceRuleBody(EffectiveWindowMixin):
     region_code: str | None = Field(default=None, max_length=32)
     category_code: str | None = Field(default=None, max_length=64)
     brand_code: str | None = Field(default=None, max_length=64)
@@ -26,8 +35,6 @@ class PriceRuleBody(BaseModel):
     points_cost: int = Field(gt=0)
     priority: int = Field(default=100, ge=0, le=10000)
     publish: bool = True
-    effective_at: datetime | None = None
-    expires_at: datetime | None = None
 
 
 class RechargeBody(BaseModel):
@@ -37,6 +44,7 @@ class RechargeBody(BaseModel):
     cash_amount_cents: int = Field(ge=0)
     note: str | None = Field(default=None, max_length=500)
     idempotency_key: str = Field(min_length=8, max_length=128)
+    confirmed: bool = False
 
 
 class ManualAdjustmentBody(BaseModel):
