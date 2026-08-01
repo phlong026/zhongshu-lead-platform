@@ -64,7 +64,7 @@ docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml 
 ## V1.0.1 发布打包
 
 ```bash
-python scripts/package_release.py --version V1.0.1 --output-dir /mnt/data
+python scripts/package_v101.py --version V1.0.1 --output-dir /mnt/data
 ```
 
 输出包括完整源码 ZIP、完整 Git Bundle、总交付包和 SHA-256 校验文件。真实密钥、`.env`、数据库、证据文件和备份不会进入源码包。
