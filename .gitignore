@@ -14,3 +14,7 @@ node_modules/
 .idea/
 .vscode/
 *.log
+backups/*
+!backups/README.md
+infra/certs/*
+!infra/certs/README.md
