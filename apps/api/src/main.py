@@ -16,7 +16,7 @@ from .core.errors import register_error_handlers
 from .core.logging import configure_logging
 from .core.production import validate_production_settings
 from .core.request_context import RequestContextMiddleware
-from .routers import admin, auth, claim, companies, dispatch, followups, invite_preview, leads, master_data, notifications, points, returns, users, verification
+from .routers import admin, admin_meta, auth, claim, companies, dispatch, followups, invite_preview, leads, master_data, notifications, points, returns, users, verification
 from .services.rbac import seed_rbac
 
 settings = get_settings()
@@ -55,6 +55,7 @@ register_error_handlers(app)
 
 api_prefix = "/api/v1"
 app.include_router(admin.router, prefix=api_prefix)
+app.include_router(admin_meta.router, prefix=api_prefix)
 app.include_router(auth.router, prefix=api_prefix)
 app.include_router(invite_preview.router, prefix=api_prefix)
 app.include_router(users.router, prefix=api_prefix)
