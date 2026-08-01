@@ -15,6 +15,7 @@ from apps.api.src.core.database import SessionLocal, init_database
 from apps.api.src.services.claim_service import run_assignment_timeouts
 from apps.api.src.services.followup_service import run_followup_overdue
 from apps.api.src.services.outbox_worker import process_outbox
+from apps.api.src.services.points_service import run_low_points_warnings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("scheduler")
@@ -33,7 +34,14 @@ def run_cycle(run_slow_jobs: bool) -> None:
             if run_slow_jobs:
                 timeouts = run_assignment_timeouts(db)
                 overdue = run_followup_overdue(db)
-                logger.info("cycle outbox=%s timeouts=%s followup_overdue=%s", outbox, timeouts, overdue)
+                low_points = run_low_points_warnings(db)
+                logger.info(
+                    "cycle outbox=%s timeouts=%s followup_overdue=%s low_points=%s",
+                    outbox,
+                    timeouts,
+                    overdue,
+                    low_points,
+                )
             elif outbox.get("sent") or outbox.get("failed"):
                 logger.info("outbox=%s", outbox)
             db.commit()
