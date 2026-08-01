@@ -62,11 +62,26 @@ jobs:
           import zipfile
           archives = list(Path('dist/release').glob('*完整源码.zip'))
           assert len(archives) == 1, archives
+          allowed_env = {'.env.example', '.env.docker.example'}
           with zipfile.ZipFile(archives[0]) as archive:
               names = archive.namelist()
               assert any(name.endswith('/RELEASE_MANIFEST.json') for name in names)
-              prohibited = ('/.env', '/storage/', '/backups/postgres/', '/infra/certs/fullchain.pem')
-              assert not any(any(marker in name for marker in prohibited) for name in names)
+              unsafe = []
+              for name in names:
+                  relative = name.split('/', 1)[1] if '/' in name else name
+                  if relative in allowed_env:
+                      continue
+                  if (
+                      relative == '.env'
+                      or relative.startswith('.env.')
+                      or '/storage/' in f'/{relative}'
+                      or relative.startswith('backups/postgres/')
+                      or relative.startswith('backups/private-storage/')
+                      or relative.startswith('infra/certs/') and relative != 'infra/certs/README.md'
+                      or relative.lower().endswith(('.pem', '.key', '.p12', '.pfx'))
+                  ):
+                      unsafe.append(relative)
+              assert not unsafe, unsafe
           print('source archive verified')
           PY
 
