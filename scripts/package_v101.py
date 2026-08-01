@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Build the reviewed V1.0.1 source, Git history and complete delivery archives.
-
-The source archive contains Git-tracked files only. Runtime databases, uploaded
-evidence, environment secrets, TLS private keys and backup payloads are rejected
-by policy even if they are accidentally tracked.
-"""
+"""Build reviewed V1.0.1 source, Git-history and delivery archives."""
 from __future__ import annotations
 
 import argparse
@@ -21,6 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_VERSION = "V1.0.1"
 ALLOWED_TRACKED_ENV_FILES = {".env.example", ".env.docker.example"}
+GENERATED_ARCHIVE_FILES = {"RELEASE_MANIFEST.json", "GIT_HISTORY.txt"}
 PROHIBITED_PATTERNS = (
     re.compile(r"(^|/)\.env(?:\..*)?$", re.IGNORECASE),
     re.compile(r"\.(?:db|sqlite|sqlite3)$", re.IGNORECASE),
@@ -36,13 +32,7 @@ PROHIBITED_PATTERNS = (
 
 
 def git(*args: str, text: bool = True) -> str | bytes:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=text,
-    )
+    result = subprocess.run(["git", *args], cwd=ROOT, check=True, capture_output=True, text=text)
     return result.stdout
 
 
@@ -54,6 +44,7 @@ def tracked_files() -> list[Path]:
     raw = git("ls-files", "-z", text=False)
     assert isinstance(raw, bytes)
     paths = [Path(item.decode("utf-8")) for item in raw.split(b"\0") if item]
+    paths = [path for path in paths if path.as_posix() not in GENERATED_ARCHIVE_FILES]
     unsafe = [
         path.as_posix()
         for path in paths
@@ -94,18 +85,12 @@ def git_timestamp() -> tuple[int, int, int, int, int, int]:
     return (max(moment.year, 1980), moment.month, moment.day, moment.hour, moment.minute, moment.second)
 
 
-def build_source_zip(output: Path, *, version: str) -> dict[str, object]:
-    files = tracked_files()
-    commit = str(git("rev-parse", "HEAD")).strip()
-    branch = str(git("rev-parse", "--abbrev-ref", "HEAD")).strip()
-    timestamp = git_timestamp()
-    root_name = f"zhongshu-lead-platform-{version}"
-    history = str(git("log", "--oneline", "--decorate", "--all"))
-    manifest: dict[str, object] = {
+def release_manifest(*, version: str, files: list[Path]) -> dict[str, object]:
+    return {
         "product": "众墅之家客资审核、派发与积分管理平台",
         "release": version,
-        "commit": commit,
-        "branch": branch,
+        "commit": str(git("rev-parse", "HEAD")).strip(),
+        "branch": str(git("rev-parse", "--abbrev-ref", "HEAD")).strip(),
         "generated_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "tracked_file_count": len(files),
         "source_archive_policy": "Git tracked files only; secrets and runtime data rejected",
@@ -131,17 +116,29 @@ def build_source_zip(output: Path, *, version: str) -> dict[str, object]:
             "Backup restore drill, mobile-device UAT and gray rollout",
         ],
     }
+
+
+def build_source_zip(output: Path, *, version: str) -> dict[str, object]:
+    files = tracked_files()
+    manifest = release_manifest(version=version, files=files)
+    timestamp = git_timestamp()
+    root_name = f"zhongshu-lead-platform-{version}"
     output.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for relative in files:
             source = ROOT / relative
-            info = zip_info(f"{root_name}/{relative.as_posix()}", timestamp, source.stat().st_mode & 0o777)
-            archive.writestr(info, source.read_bytes())
+            archive.writestr(
+                zip_info(f"{root_name}/{relative.as_posix()}", timestamp, source.stat().st_mode & 0o777),
+                source.read_bytes(),
+            )
         archive.writestr(
             zip_info(f"{root_name}/RELEASE_MANIFEST.json", timestamp),
             json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
         )
-        archive.writestr(zip_info(f"{root_name}/GIT_HISTORY.txt", timestamp), history.encode("utf-8"))
+        archive.writestr(
+            zip_info(f"{root_name}/GIT_HISTORY.txt", timestamp),
+            str(git("log", "--oneline", "--decorate", "--all")).encode("utf-8"),
+        )
     return manifest
 
 
@@ -165,19 +162,19 @@ def write_delivery_note(path: Path, *, version: str, commit: str, source: Path, 
                 "",
                 f"- Git 提交：`{commit}`",
                 "- 交付状态：V1.0.1 生产候选代码；真实第三方与目标基础设施仍需上线 Gate 验证。",
-                "- 派发策略：首期继续使用运营人工派发，不包含自动、轮询或权重派发。",
+                "- 派发策略：运营人工派发，不包含自动、轮询或权重派发。",
                 "- 结算策略：线下付款后人工充值积分，不包含任何线上支付。",
                 "",
                 "## 文件",
                 "",
-                f"- `{source.name}`：完整源码，只包含 Git 跟踪文件，不含密钥、数据库、上传证据、证书私钥和备份。",
+                f"- `{source.name}`：完整源码，不含密钥、数据库、上传证据、证书私钥和备份。",
                 f"- `{bundle.name}`：完整 Git 历史，可使用 `git clone <bundle> <目录>` 恢复。",
-                "- `SHA256SUMS.txt`：本交付包内文件完整性校验。",
-                "- `质量与发布资料/`：测试、评审索引、发布说明和部署检查资料。",
+                "- `SHA256SUMS.txt`：交付包内文件完整性校验。",
+                "- `质量与发布资料/`：测试、评审、发布说明和部署检查资料。",
                 "",
                 "## 生产前置",
                 "",
-                "执行 `python scripts/validate_production_env.py` 和 `python scripts/verify_production.py --require-certificates`，完成微信、飞书、PostgreSQL、私有对象存储、TLS、备份恢复、真机 UAT 和灰度验证后方可正式开放。",
+                "执行生产配置与部署校验，完成微信、飞书、PostgreSQL、私有对象存储、TLS、备份恢复、真机 UAT 和灰度验证后方可正式开放。",
                 "",
             ]
         ),
@@ -197,26 +194,25 @@ def package_release(output_dir: Path, *, version: str, quality_dir: Path | None 
 
     manifest = build_source_zip(source, version=normalized)
     build_git_bundle(bundle)
-
     with tempfile.TemporaryDirectory(prefix="zhongshu-v101-") as temp_name:
         temp = Path(temp_name)
         note = temp / "交付说明.md"
         write_delivery_note(note, version=normalized, commit=str(manifest["commit"]), source=source, bundle=bundle)
         quality = temp / "质量与发布资料"
-        copy_if_exists(ROOT / "docs/release/RELEASE_NOTES_V1.0.1.md", quality / "RELEASE_NOTES_V1.0.1.md")
-        copy_if_exists(ROOT / "docs/reviews/INDEX_V1.0.1.md", quality / "INDEX_V1.0.1.md")
-        copy_if_exists(ROOT / "docs/runbooks/PRODUCTION_CHECKLIST_V1.0.1.md", quality / "PRODUCTION_CHECKLIST_V1.0.1.md")
-        copy_if_exists(ROOT / "docs/runbooks/DEPLOYMENT.md", quality / "DEPLOYMENT.md")
-        copy_if_exists(ROOT / "docs/runbooks/BACKUP_RESTORE.md", quality / "BACKUP_RESTORE.md")
+        for relative in (
+            "docs/release/RELEASE_NOTES_V1.0.1.md",
+            "docs/reviews/INDEX_V1.0.1.md",
+            "docs/runbooks/PRODUCTION_CHECKLIST_V1.0.1.md",
+            "docs/runbooks/DEPLOYMENT.md",
+            "docs/runbooks/BACKUP_RESTORE.md",
+        ):
+            copy_if_exists(ROOT / relative, quality / Path(relative).name)
         if quality_dir and quality_dir.is_dir():
             for file in sorted(quality_dir.rglob("*")):
                 if file.is_file():
                     copy_if_exists(file, quality / "自动检查" / file.relative_to(quality_dir))
         checksums = temp / "SHA256SUMS.txt"
-        checksums.write_text(
-            f"{sha256(source)}  {source.name}\n{sha256(bundle)}  {bundle.name}\n",
-            encoding="utf-8",
-        )
+        checksums.write_text(f"{sha256(source)}  {source.name}\n{sha256(bundle)}  {bundle.name}\n", encoding="utf-8")
         with zipfile.ZipFile(delivery, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
             archive.write(source, source.name)
             archive.write(bundle, bundle.name)
