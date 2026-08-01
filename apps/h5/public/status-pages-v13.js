@@ -1,4 +1,16 @@
 const ZS_STATUS_API='/api/v1';
+const ZS_STATUS_NATIVE_FETCH=window.fetch.bind(window);
+let zsPendingReturnSuccess=false;
+let zsStatusLock=/^#\/(binding-status|return-success)(?:\?|$)/.test(location.hash||'')?location.hash:null;
+window.fetch=async function zsStatusFetch(input,init={}){
+  const response=await ZS_STATUS_NATIVE_FETCH(input,init);
+  const url=typeof input==='string'?input:input.url;
+  if(response.ok&&/\/api\/v1\/returns\/[^/]+\/submit(?:\?|$)/.test(url)){
+    zsPendingReturnSuccess=true;
+    sessionStorage.setItem('zs:return-success',JSON.stringify({id:url.split('/').slice(-2,-1)[0]||'已生成'}));
+  }
+  return response;
+};
 const zsStatusEsc=(value='')=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function zsStatusQuery(){return new URLSearchParams((location.hash.split('?')[1]||''));}
 function zsStatusRoute(name){location.hash=`#/${name}`;}
@@ -36,4 +48,16 @@ function zsStatusPatch(){zsPatchAuthPage();zsPatchLinkLanding();zsPatchInvalidLi
 window.zsRenderBindingStatus=zsRenderBindingStatus;window.zsRenderReturnSuccess=zsRenderReturnSuccess;
 const zsStatusObserver=new MutationObserver(zsStatusPatch);zsStatusObserver.observe(document.documentElement,{childList:true,subtree:true});
 document.addEventListener('click',e=>{const b=e.target.closest('[data-zs-status-route]');if(!b)return;e.preventDefault();zsStatusRoute(b.dataset.zsStatusRoute);});
-window.addEventListener('hashchange',()=>queueMicrotask(zsStatusPatch));zsStatusPatch();
+window.addEventListener('hashchange',event=>{
+  const hash=location.hash||'';
+  if(zsPendingReturnSuccess&&/^#\/leads(?:\?|$)/.test(hash)){
+    zsPendingReturnSuccess=false;zsStatusLock='#/return-success';event.stopImmediatePropagation();location.hash=zsStatusLock;return;
+  }
+  if(zsStatusLock&&hash==='#/home'){event.stopImmediatePropagation();location.hash=zsStatusLock;return;}
+  if(/^#\/binding-status(?:\?|$)/.test(hash)){zsStatusLock=hash;event.stopImmediatePropagation();zsRenderBindingStatus();return;}
+  if(/^#\/return-success(?:\?|$)/.test(hash)){zsStatusLock=hash;event.stopImmediatePropagation();zsRenderReturnSuccess();return;}
+  zsStatusLock=null;queueMicrotask(zsStatusPatch);
+},true);
+if(/^#\/binding-status(?:\?|$)/.test(location.hash||''))zsRenderBindingStatus();
+else if(/^#\/return-success(?:\?|$)/.test(location.hash||''))zsRenderReturnSuccess();
+else zsStatusPatch();
