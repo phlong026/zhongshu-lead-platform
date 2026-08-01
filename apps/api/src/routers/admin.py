@@ -13,7 +13,7 @@ from ..core.errors import AppError
 from ..core.models import AuditLog, SystemConfig
 from ..core.responses import ok, page
 from ..schemas.admin import SystemConfigCreateBody, SystemConfigPublishBody
-from ..services.admin_service import dashboard_summary, dashboard_trends, operational_alerts, source_distribution
+from ..services.admin_service import dashboard_performance, dashboard_summary, dashboard_trends, operational_alerts, source_distribution
 from ..services.audit import write_audit
 
 router = APIRouter(tags=["admin"])
@@ -48,6 +48,20 @@ def trends(
     if not any(principal.can(code) for code in ["dashboard.business.read", "dashboard.operation.read", "dashboard.finance.read", "*"]):
         raise AppError("FORBIDDEN", "无权查看趋势", 403)
     return ok(request, dashboard_trends(db, days=days))
+
+
+@router.get("/dashboard/performance")
+def performance(
+    request: Request,
+    principal: CurrentPrincipal,
+    db: Session = Depends(get_db),
+    days: int = Query(default=30, ge=1, le=365),
+):
+    if principal.has_any_role("FRANCHISE_OWNER"):
+        raise AppError("FORBIDDEN", "加盟商端不提供平台经营报表", 403)
+    if not any(principal.can(code) for code in ["dashboard.business.read", "dashboard.operation.read", "dashboard.finance.read", "*"]):
+        raise AppError("FORBIDDEN", "无权查看经营报表", 403)
+    return ok(request, dashboard_performance(db, principal, days=days))
 
 
 @router.get("/dashboard/sources")
