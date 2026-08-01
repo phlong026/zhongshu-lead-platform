@@ -3,12 +3,17 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from ..core.config import get_settings
 from ..core.enums import AssignmentStatus, PointsLedgerType
 from ..core.errors import AppError
-from ..core.models import Assignment, Company, Lead, LeadPriceRule, PointsAccount, PointsLedger, PointsPackage
+from ..core.models import Assignment, Company, Lead, LeadPriceRule, NotificationOutbox, PointsAccount, PointsLedger, PointsPackage
+from ..core.time import as_utc
+from .notification_service import create_station_message, enqueue_outbox
+
+settings = get_settings()
 
 
 def get_or_create_account(db: Session, company_id: str) -> PointsAccount:
@@ -32,6 +37,53 @@ def points_available_for_dispatch(db: Session, company_id: str) -> tuple[int, in
         )
     ) or 0
     return int(account.balance), int(reserved), int(account.balance - reserved)
+
+
+def _effective_package_stmt(now: datetime):
+    return select(PointsPackage).where(
+        PointsPackage.status == "PUBLISHED",
+        or_(PointsPackage.effective_at.is_(None), PointsPackage.effective_at <= now),
+        or_(PointsPackage.expires_at.is_(None), PointsPackage.expires_at > now),
+    )
+
+
+def resolve_level_entitlements(db: Session, level_code: str) -> tuple[dict[str, Any], PointsPackage | None]:
+    now = datetime.now(timezone.utc)
+    package = db.scalar(
+        _effective_package_stmt(now)
+        .where(PointsPackage.level_code == level_code)
+        .order_by(PointsPackage.version.desc(), PointsPackage.effective_at.desc())
+        .limit(1)
+    )
+    return (dict(package.entitlements_json), package) if package else ({}, None)
+
+
+def account_summary(db: Session, company_id: str) -> dict[str, Any]:
+    company = db.get(Company, company_id)
+    if not company:
+        raise AppError("COMPANY_NOT_FOUND", "加盟商公司不存在", 404)
+    balance, reserved, available = points_available_for_dispatch(db, company_id)
+    entitlements, package = resolve_level_entitlements(db, company.level_code)
+    threshold = int(settings.low_points_warning_threshold)
+    return {
+        "company_id": company_id,
+        "company_name": company.name,
+        "level_code": company.level_code,
+        "balance": balance,
+        "pending_claim_points": reserved,
+        "available_for_dispatch": available,
+        "low_points_threshold": threshold,
+        "low_points": balance < threshold,
+        "level_entitlements": entitlements,
+        "level_package": {
+            "id": package.id,
+            "code": package.code,
+            "name": package.name,
+            "version": package.version,
+        }
+        if package
+        else None,
+    }
 
 
 def resolve_price(db: Session, lead: Lead, company: Company) -> tuple[int, LeadPriceRule | None]:
@@ -75,6 +127,8 @@ def change_points(
     related_ledger_id: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> PointsLedger:
+    if delta == 0:
+        raise AppError("POINTS_DELTA_ZERO", "积分变动不能为0", 422)
     existing = db.scalar(
         select(PointsLedger).where(
             PointsLedger.company_id == company_id,
@@ -121,10 +175,26 @@ def recharge_points(
     created_by: str,
     note: str | None,
 ) -> PointsLedger:
+    existing = db.scalar(
+        select(PointsLedger).where(
+            PointsLedger.company_id == company_id,
+            PointsLedger.idempotency_key == idempotency_key,
+        )
+    )
+    if existing:
+        return existing
     duplicate_ref = db.scalar(select(PointsLedger).where(PointsLedger.external_reference == external_reference))
     if duplicate_ref:
         raise AppError("POINTS_EXTERNAL_REFERENCE_EXISTS", "该付款流水号已使用", 409)
-    if package.status != "PUBLISHED":
+    now = datetime.now(timezone.utc)
+    effective_at = as_utc(package.effective_at)
+    expires_at = as_utc(package.expires_at)
+    active = (
+        package.status == "PUBLISHED"
+        and (effective_at is None or effective_at <= now)
+        and (expires_at is None or expires_at > now)
+    )
+    if not active:
         raise AppError("POINTS_PACKAGE_INACTIVE", "充值档位不可用", 409)
     if cash_amount_cents != package.cash_amount_cents:
         raise AppError("POINTS_CASH_AMOUNT_MISMATCH", "实收金额与档位不一致", 422)
@@ -146,6 +216,8 @@ def recharge_points(
         metadata={
             "package_code": package.code,
             "package_version": package.version,
+            "level_code": package.level_code,
+            "entitlements": package.entitlements_json,
             "cash_amount_cents": cash_amount_cents,
             "base_points": package.base_points,
             "bonus_points": package.bonus_points,
@@ -170,6 +242,115 @@ def reverse_ledger(db: Session, original: PointsLedger, *, reason: str, idempote
         created_by=created_by,
         metadata={"reason": reason},
     )
+
+
+def run_low_points_warnings(
+    db: Session,
+    *,
+    threshold: int | None = None,
+    as_of: datetime | None = None,
+) -> dict[str, int]:
+    resolved_threshold = max(1, int(threshold if threshold is not None else settings.low_points_warning_threshold))
+    now = as_of or datetime.now(timezone.utc)
+    bucket = now.date().isoformat()
+    warned = 0
+    skipped = 0
+    rows = db.execute(
+        select(PointsAccount, Company)
+        .join(Company, Company.id == PointsAccount.company_id)
+        .where(Company.status == "ACTIVE")
+    ).all()
+    for account, company in rows:
+        if int(account.balance) >= resolved_threshold or not company.primary_user_id:
+            skipped += 1
+            continue
+        event_key = f"points:{company.id}:low:{bucket}"
+        if db.scalar(select(NotificationOutbox).where(NotificationOutbox.event_key == event_key)):
+            skipped += 1
+            continue
+        create_station_message(
+            db,
+            user_id=company.primary_user_id,
+            company_id=company.id,
+            scene="LOW_POINTS",
+            title="积分余额不足提醒",
+            body=f"当前积分为{int(account.balance)}，已低于预警值{resolved_threshold}，请联系平台完成线下充值。",
+            deep_link="/h5/#/points",
+        )
+        enqueue_outbox(
+            db,
+            event_key=event_key,
+            event_type="POINTS_LOW_BALANCE",
+            aggregate_type="points_account",
+            aggregate_id=account.id,
+            payload={
+                "company_id": company.id,
+                "user_id": company.primary_user_id,
+                "balance": int(account.balance),
+                "threshold": resolved_threshold,
+                "deep_link": "/h5/#/points",
+            },
+        )
+        warned += 1
+    return {"warned": warned, "skipped": skipped}
+
+
+def reconcile_points_account(
+    db: Session,
+    company_id: str,
+    *,
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
+) -> dict[str, Any]:
+    account = get_or_create_account(db, company_id)
+    ledgers = db.scalars(
+        select(PointsLedger)
+        .where(PointsLedger.company_id == company_id)
+        .order_by(PointsLedger.created_at.asc(), PointsLedger.id.asc())
+    ).all()
+    normalized_start = as_utc(start_at)
+    normalized_end = as_utc(end_at)
+    running = 0
+    sequence_errors: list[dict[str, Any]] = []
+    opening_balance = 0
+    period_delta = 0
+    closing_balance = 0
+    period_count = 0
+    for ledger in ledgers:
+        created_at = as_utc(ledger.created_at) or ledger.created_at
+        before_period = bool(normalized_start and created_at < normalized_start)
+        after_period = bool(normalized_end and created_at >= normalized_end)
+        running += int(ledger.delta)
+        if int(ledger.balance_after) != running:
+            sequence_errors.append(
+                {"ledger_id": ledger.id, "expected": running, "actual": int(ledger.balance_after)}
+            )
+        if before_period:
+            opening_balance = running
+        elif not after_period:
+            period_delta += int(ledger.delta)
+            closing_balance = running
+            period_count += 1
+    if period_count == 0:
+        closing_balance = opening_balance
+    expected_closing = opening_balance + period_delta
+    current_scope = end_at is None
+    snapshot_balance = int(account.balance) if current_scope else closing_balance
+    difference = snapshot_balance - expected_closing
+    return {
+        "company_id": company_id,
+        "start_at": start_at.isoformat() if start_at else None,
+        "end_at": end_at.isoformat() if end_at else None,
+        "opening_balance": opening_balance,
+        "period_delta": period_delta,
+        "expected_closing_balance": expected_closing,
+        "snapshot_balance": snapshot_balance,
+        "difference": difference,
+        "ledger_count": period_count,
+        "sequence_error_count": len(sequence_errors),
+        "sequence_errors": sequence_errors[:50],
+        "balanced": difference == 0 and not sequence_errors,
+    }
 
 
 def ledger_to_dict(ledger: PointsLedger) -> dict[str, Any]:
