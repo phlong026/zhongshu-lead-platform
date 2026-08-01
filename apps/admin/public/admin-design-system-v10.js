@@ -25,7 +25,7 @@ const ADM_META={
   'ADM-19':['操作审计日志','高风险操作、查询和导出','secure']
 };
 function admRoute(){return (location.hash.replace(/^#\/?/,'').split('?')[0]||'dashboard');}
-function admDashboardId(){const pageText=document.querySelector('main.page')?.textContent||'';return /(积分总余额|积分收入|财务)/.test(pageText)?'ADM-02':'ADM-03';}
+function admDashboardId(){const labels=[...document.querySelectorAll('main.page .stat .label')].map(node=>node.textContent.trim());return labels.some(label=>/(积分总余额|累计充值|积分收入)/.test(label))?'ADM-02':'ADM-03';}
 function admCurrentIds(){const route=admRoute();if(route==='dashboard')return[admDashboardId()];return ADM_PAGE_IDS[route]||[];}
 function admAddPageContext(){
   const page=document.querySelector('main.page');const head=page?.querySelector('.page-head');if(!page||!head)return;
