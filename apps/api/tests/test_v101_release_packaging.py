@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import zipfile
-from pathlib import Path
 
 from scripts.package_v101 import DEFAULT_VERSION, PROHIBITED_PATTERNS, package_release
 
@@ -29,8 +28,11 @@ def test_v101_release_package_contains_source_bundle_manifest_and_quality_docs(t
     assert all(path.is_file() and path.stat().st_size > 0 for path in artifacts.values())
     with zipfile.ZipFile(artifacts["source"]) as archive:
         names = archive.namelist()
-        manifest_name = next(name for name in names if name.endswith("/RELEASE_MANIFEST.json"))
-        manifest = json.loads(archive.read(manifest_name).decode("utf-8"))
+        manifest_names = [name for name in names if name.endswith("/RELEASE_MANIFEST.json")]
+        history_names = [name for name in names if name.endswith("/GIT_HISTORY.txt")]
+        assert len(manifest_names) == 1
+        assert len(history_names) == 1
+        manifest = json.loads(archive.read(manifest_names[0]).decode("utf-8"))
         assert manifest["release"] == "V1.0.1"
         assert "Automatic, rotation or weighted dispatch" in manifest["excluded_scope"]
         assert not any("/backups/postgres/" in name or name.endswith("privkey.pem") for name in names)
