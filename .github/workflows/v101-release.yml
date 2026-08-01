@@ -19,9 +19,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Checkout full history
+      - name: Checkout exact main release history
         uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
 
       - name: Set up Python
@@ -50,7 +51,7 @@ jobs:
           git diff --check
           git status --short --ignored > dist/quality/worktree-status.txt
 
-      - name: Build V1.0.1 delivery artifacts
+      - name: Build exact-main V1.0.1 delivery artifacts
         run: python scripts/package_v101.py --version V1.0.1 --output-dir dist/release --quality-dir dist/quality
 
       - name: Verify source archive
@@ -59,13 +60,19 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
+          import json
+          import subprocess
           import zipfile
           archives = list(Path('dist/release').glob('*完整源码.zip'))
           assert len(archives) == 1, archives
           allowed_env = {'.env.example', '.env.docker.example'}
+          expected_commit = subprocess.check_output(['git', 'rev-parse', 'origin/main'], text=True).strip()
           with zipfile.ZipFile(archives[0]) as archive:
               names = archive.namelist()
-              assert any(name.endswith('/RELEASE_MANIFEST.json') for name in names)
+              manifests = [name for name in names if name.endswith('/RELEASE_MANIFEST.json')]
+              assert len(manifests) == 1, manifests
+              manifest = json.loads(archive.read(manifests[0]).decode('utf-8'))
+              assert manifest['commit'] == expected_commit, (manifest['commit'], expected_commit)
               unsafe = []
               for name in names:
                   relative = name.split('/', 1)[1] if '/' in name else name
@@ -82,13 +89,13 @@ jobs:
                   ):
                       unsafe.append(relative)
               assert not unsafe, unsafe
-          print('source archive verified')
+          print('exact main source archive verified:', expected_commit)
           PY
 
-      - name: Upload V1.0.1 delivery package
+      - name: Upload exact-main V1.0.1 delivery package
         uses: actions/upload-artifact@v4
         with:
-          name: zhongshu-v1.0.1-${{ github.sha }}
+          name: zhongshu-v1.0.1-final-main-${{ github.sha }}
           path: dist/release/*
           if-no-files-found: error
           retention-days: 30
