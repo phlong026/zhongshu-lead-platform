@@ -1,0 +1,77 @@
+services:
+  db:
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    expose:
+      - "5432"
+    logging: &json-logging
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    security_opt:
+      - no-new-privileges:true
+
+  api:
+    image: ${APP_IMAGE:-zhongshu-lead-platform:1.0.1}
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    stop_grace_period: 30s
+    environment:
+      AUTO_CREATE_SCHEMA: "false"
+    logging: *json-logging
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  scheduler:
+    image: ${APP_IMAGE:-zhongshu-lead-platform:1.0.1}
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    stop_grace_period: 30s
+    environment:
+      AUTO_CREATE_SCHEMA: "false"
+    logging: *json-logging
+
+  nginx:
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?APP_DOMAIN is required}
+    volumes:
+      - ./infra/nginx/production.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./infra/nginx/security-headers.conf:/etc/nginx/snippets/security-headers.conf:ro
+      - ./infra/certs:/etc/nginx/certs:ro
+    security_opt:
+      - no-new-privileges:true
+    logging: *json-logging
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/health/live >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+networks:
+  default:
+    name: zhongshu-production
