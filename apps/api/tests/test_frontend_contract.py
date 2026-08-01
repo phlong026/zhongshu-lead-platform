@@ -38,3 +38,15 @@ def test_h5_has_no_online_payment_or_native_recording_claims():
     prohibited = ["微信支付", "支付宝支付", "自动录音", "原路退款"]
     for text in prohibited:
         assert text not in h5
+
+
+
+def test_h5_enhancement_layer_supports_oauth_return_offline_and_evidence_validation():
+    h5 = Path("apps/h5/public/enhancements.js").read_text(encoding="utf-8")
+    css = Path("apps/h5/public/enhancements.css").read_text(encoding="utf-8")
+    index = Path("apps/h5/public/index.html").read_text(encoding="utf-8")
+    assert "/auth/wechat/start?" in h5 and "return_url" in h5
+    assert "validateEvidencePage" in h5
+    assert "localStorage.setItem" in h5
+    assert "h5-network-banner" in h5 and ".h5-network-banner" in css
+    assert "enhancements.js" in index and "enhancements.css" in index
