@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, selectinload
 from ..core.auth import CurrentPrincipal, require_permissions
 from ..core.database import get_db
 from ..core.errors import AppError
-from ..core.models import Company, Role
+from ..core.models import Company, Role, User
 from ..core.responses import ok
 from ..services.company_service import company_to_dict
 
@@ -38,6 +38,23 @@ def rbac_matrix(
                 ],
             }
             for role in roles
+        ],
+    )
+
+
+@router.get("/telesales-users")
+def telesales_users(
+    request: Request,
+    principal=Depends(require_permissions("verification.read")),
+    db: Session = Depends(get_db),
+):
+    users = db.scalars(select(User).options(selectinload(User.roles)).order_by(User.display_name)).all()
+    return ok(
+        request,
+        [
+            {"id": user.id, "display_name": user.display_name, "username": user.username, "status": user.status}
+            for user in users
+            if user.status == "ACTIVE" and any(role.code == "TELESALES" for role in user.roles)
         ],
     )
 
