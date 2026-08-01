@@ -92,6 +92,17 @@ def assign_task(db: Session, task: VerificationTask, assignee_user_id: str, assi
     return task
 
 
+def reclaim_task(db: Session, task: VerificationTask) -> VerificationTask:
+    if task.status not in {VerificationTaskStatus.PENDING, VerificationTaskStatus.ASSIGNED}:
+        raise AppError("VERIFICATION_TASK_NOT_RECLAIMABLE", "任务当前不可回收", 409)
+    task.assignee_user_id = None
+    task.assigned_by = None
+    task.assigned_at = None
+    task.status = VerificationTaskStatus.PENDING
+    task.lock_version += 1
+    return task
+
+
 def claim_task(db: Session, task: VerificationTask, principal: Principal) -> VerificationTask:
     if task.status not in {VerificationTaskStatus.PENDING, VerificationTaskStatus.ASSIGNED}:
         if task.assignee_user_id == principal.user_id and task.status == VerificationTaskStatus.IN_PROGRESS:
