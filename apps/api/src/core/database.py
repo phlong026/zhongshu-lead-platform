@@ -33,4 +33,6 @@ def get_db() -> Generator[Session, None, None]:
 def init_database() -> None:
     from . import models  # noqa: F401
 
+    if settings.app_env.lower() == "production" and not settings.auto_create_schema:
+        return
     Base.metadata.create_all(bind=engine)
