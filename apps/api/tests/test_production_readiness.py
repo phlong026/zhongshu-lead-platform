@@ -1,0 +1,95 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from apps.api.src.core.config import Settings
+from apps.api.src.core.production import validate_production_settings
+
+
+def _secret(prefix: str, length: int = 40) -> str:
+    return prefix + ("x" * max(0, length - len(prefix)))
+
+
+def production_settings(**overrides) -> Settings:
+    values = {
+        "app_env": "production",
+        "app_base_url": "https://app.zhongshu.example.cn",
+        "database_url": "postgresql+psycopg://zhongshu:secret@db:5432/zhongshu",
+        "jwt_secret": "J" * 48,
+        "field_encryption_key": "E" * 48,
+        "phone_hash_secret": "P" * 32,
+        "wechat_app_id": "wx-production",
+        "wechat_app_secret": _secret("wechat"),
+        "wechat_oauth_redirect_uri": "https://app.zhongshu.example.cn/api/v1/auth/wechat/callback",
+        "wechat_dev_mock": False,
+        "feishu_app_id": "cli-production",
+        "feishu_app_secret": _secret("feishu"),
+        "feishu_app_token": "bitable-token",
+        "feishu_table_id": "table-id",
+        "feishu_dev_mock": False,
+        "object_storage_backend": "local",
+        "cors_origins": "https://app.zhongshu.example.cn",
+        "trusted_hosts": "app.zhongshu.example.cn",
+        "auto_create_schema": False,
+    }
+    values.update(overrides)
+    return Settings(_env_file=None, **values)
+
+
+def test_production_validation_accepts_strong_configuration_with_local_storage_warning():
+    result = validate_production_settings(
+        production_settings(),
+        {"POSTGRES_PASSWORD": "A-strong-production-password-2026", "SEED_DEMO": "false"},
+    )
+    assert result.valid is True
+    assert not result.errors
+    assert any("本地对象存储" in warning for warning in result.warnings)
+
+
+def test_production_validation_rejects_placeholders_mocks_and_insecure_urls():
+    result = validate_production_settings(
+        production_settings(
+            app_base_url="http://localhost:8000",
+            database_url="sqlite:///./prod.db",
+            jwt_secret="dev-" + "change-me",
+            field_encryption_key="replace-key",
+            phone_hash_secret="dev-secret",
+            wechat_dev_mock=True,
+            feishu_dev_mock=True,
+            cors_origins="*",
+            trusted_hosts="*",
+        ),
+        {"POSTGRES_PASSWORD": "change-this-database-password", "SEED_DEMO": "true"},
+    )
+    assert result.valid is False
+    assert len(result.errors) >= 8
+
+
+def test_production_deployment_files_enforce_tls_least_privilege_and_restore_confirmation():
+    compose = Path("docker-compose.prod.yml").read_text(encoding="utf-8")
+    nginx = Path("infra/nginx/production.conf.template").read_text(encoding="utf-8")
+    headers = Path("infra/nginx/security-headers.conf").read_text(encoding="utf-8")
+    entrypoint = Path("docker/entrypoint.sh").read_text(encoding="utf-8")
+    restore = Path("scripts/restore_postgres.sh").read_text(encoding="utf-8")
+    assert "read_only: true" in compose
+    assert "no-new-privileges:true" in compose
+    assert "cap_drop:" in compose and "AUTO_CREATE_SCHEMA" in compose
+    assert "listen 443 ssl" in nginx and "return 301 https://" in nginx
+    assert "client_max_body_size 25m" in nginx and "limit_req_zone" in nginx
+    assert "Strict-Transport-Security" in headers and "Content-Security-Policy" in headers
+    assert "validate_production_env.py" in entrypoint
+    assert "CONFIRM_RESTORE" in restore and "sha256sum -c" in restore
+
+
+def test_health_and_api_responses_include_version_security_and_no_store(api_client):
+    client, _ = api_client
+    health = client.get("/health")
+    assert health.status_code == 200
+    assert health.json()["version"] == "1.0.1"
+    ready = client.get("/health/ready")
+    assert ready.status_code == 200
+    assert ready.json()["database"] == "ok"
+    unauthorized = client.get("/api/v1/auth/me")
+    assert unauthorized.headers["cache-control"] == "no-store"
+    assert "default-src 'self'" in unauthorized.headers["content-security-policy"]
+    assert unauthorized.headers["x-content-type-options"] == "nosniff"

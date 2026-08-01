@@ -16,11 +16,12 @@ from apps.api.src.services.claim_service import run_assignment_timeouts
 from apps.api.src.services.followup_service import run_followup_overdue
 from apps.api.src.services.feishu_sync_service import fetch_and_import_feishu, writeback_feishu_results
 from apps.api.src.services.outbox_worker import process_outbox
+from apps.api.src.services.points_service import run_low_points_warnings
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run one scheduled job safely")
-    parser.add_argument("job", choices=["assignment-timeouts", "followup-overdue", "outbox", "feishu-sync", "all"])
+    parser.add_argument("job", choices=["assignment-timeouts", "followup-overdue", "low-points", "outbox", "feishu-sync", "all"])
     parser.add_argument("--limit", type=int, default=100)
     args = parser.parse_args()
     init_database()
@@ -30,6 +31,8 @@ def main() -> int:
             output["assignment_timeouts"] = run_assignment_timeouts(db)
         if args.job in {"followup-overdue", "all"}:
             output["followup_overdue"] = run_followup_overdue(db)
+        if args.job in {"low-points", "all"}:
+            output["low_points"] = run_low_points_warnings(db)
         if args.job in {"outbox", "all"}:
             output["outbox"] = process_outbox(db, limit=args.limit)
         if args.job == "feishu-sync":

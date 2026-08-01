@@ -12,6 +12,9 @@ class Settings(BaseSettings):
 
     app_env: str = "development"
     app_name: str = "众墅之家客资平台"
+    app_version: str = "1.0.1"
+    log_level: str = "INFO"
+    log_json: bool = True
     app_base_url: str = "http://localhost:8000"
     database_url: str = "sqlite:///./zhongshu.db"
     jwt_secret: str = "dev-change-me-at-least-32-characters-long"
@@ -45,6 +48,8 @@ class Settings(BaseSettings):
     assignment_expire_hours: int = 48
     return_window_hours: int = 48
     first_followup_hours: int = 48
+    trusted_hosts: str = "localhost,127.0.0.1,testserver"
+    auto_create_schema: bool = True
 
     @field_validator("object_storage_dir")
     @classmethod
@@ -54,6 +59,10 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [item.strip() for item in self.cors_origins.split(",") if item.strip()]
+
+    @property
+    def trusted_host_list(self) -> list[str]:
+        return [item.strip() for item in self.trusted_hosts.split(",") if item.strip()]
 
 
 @lru_cache(maxsize=1)

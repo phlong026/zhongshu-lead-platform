@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.validate_production_env import load_dotenv
+from apps.api.src.core.config import Settings
+from apps.api.src.core.production import validate_production_settings
+
+
+REQUIRED_FILES = (
+    "Dockerfile",
+    "docker-compose.yml",
+    "docker-compose.prod.yml",
+    "infra/nginx/production.conf.template",
+    "infra/nginx/security-headers.conf",
+    "docker/entrypoint.sh",
+    "docker/scheduler-entrypoint.sh",
+    "scripts/backup_postgres.sh",
+    "scripts/restore_postgres.sh",
+)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Verify V1.0.1 production deployment prerequisites")
+    parser.add_argument("--env-file", type=Path, default=ROOT / ".env")
+    parser.add_argument("--require-certificates", action="store_true")
+    args = parser.parse_args()
+    errors: list[str] = []
+    warnings: list[str] = []
+    for relative in REQUIRED_FILES:
+        if not (ROOT / relative).is_file():
+            errors.append(f"缺少文件：{relative}")
+    values = {**load_dotenv(args.env_file), **dict(os.environ)}
+    settings = Settings(_env_file=args.env_file if args.env_file.exists() else None)
+    validation = validate_production_settings(settings, values)
+    errors.extend(validation.errors)
+    warnings.extend(validation.warnings)
+    if args.require_certificates:
+        for relative in ("infra/certs/fullchain.pem", "infra/certs/privkey.pem"):
+            if not (ROOT / relative).is_file():
+                errors.append(f"缺少 TLS 文件：{relative}")
+    compose = ROOT / "docker-compose.prod.yml"
+    if compose.exists():
+        content = compose.read_text(encoding="utf-8")
+        for marker in ("read_only: true", "no-new-privileges:true", "cap_drop:", "healthcheck:"):
+            if marker not in content:
+                errors.append(f"生产 Compose 缺少安全/健康配置：{marker}")
+    nginx = ROOT / "infra/nginx/production.conf.template"
+    if nginx.exists():
+        content = nginx.read_text(encoding="utf-8")
+        for marker in ("listen 443 ssl", "client_max_body_size 25m", "limit_req_zone", "X-Forwarded-Proto https"):
+            if marker not in content:
+                errors.append(f"生产 Nginx 缺少配置：{marker}")
+    docker = shutil.which("docker")
+    if docker and args.env_file.exists():
+        command = [docker, "compose", "--env-file", str(args.env_file), "-f", str(ROOT / "docker-compose.yml"), "-f", str(compose), "config", "--quiet"]
+        result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+        if result.returncode:
+            errors.append("docker compose config 校验失败：" + (result.stderr.strip() or result.stdout.strip()))
+    else:
+        warnings.append("当前环境未执行 docker compose config；目标服务器需再次验证")
+    payload = {"valid": not errors, "errors": errors, "warnings": warnings}
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if not errors else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

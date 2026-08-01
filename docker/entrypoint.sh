@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+if [ "${APP_ENV:-development}" = "production" ]; then
+  python scripts/validate_production_env.py --quiet
+fi
 attempt=0
 until alembic upgrade head; do
   attempt=$((attempt+1))
@@ -11,6 +14,10 @@ until alembic upgrade head; do
   sleep 3
 done
 if [ "${SEED_DEMO:-false}" = "true" ]; then
+  if [ "${APP_ENV:-development}" = "production" ]; then
+    echo "SEED_DEMO is forbidden in production" >&2
+    exit 1
+  fi
   python scripts/seed_demo.py
 fi
 exec "$@"
