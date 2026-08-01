@@ -65,3 +65,16 @@ def test_h5_v13_points_patch_contract():
     assert "zs-v13-points-route" in js
     assert "充值档位参考" in js
     assert "积分流水" in js
+
+
+def test_h5_v13_notifications_patch_contract():
+    index=(H5 / "index.html").read_text(encoding="utf-8")
+    css=(H5 / "notifications-v13.css").read_text(encoding="utf-8")
+    js=(H5 / "notifications-v13.js").read_text(encoding="utf-8")
+    assert "./notifications-v13.css" in index
+    assert "./notifications-v13.js" in index
+    for selector in (".zs-v13-notifications-page", ".zs-v13-notification-tabs", ".zs-v13-notification-card"):
+        assert selector in css
+    assert "function zsPatchNotifications" in js
+    assert "function zsNotificationType" in js
+    assert "/api/v1/notifications/" in js
