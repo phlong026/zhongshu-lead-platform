@@ -30,33 +30,39 @@ class WechatOAuthIdentity:
 
 
 class WechatOAuthClient:
-    def authorization_url(self, *, state: str, scope: str = "snsapi_base") -> str:
+    def authorization_url(self, *, state: str, scope: str | None = None) -> str:
         if not settings.wechat_app_id:
             raise AppError("WECHAT_NOT_CONFIGURED", "微信公众号尚未配置", 503)
         from urllib.parse import quote
 
         redirect_uri = quote(settings.wechat_oauth_redirect_uri, safe="")
+        resolved_scope = scope or settings.wechat_oauth_scope
+        if resolved_scope not in {"snsapi_base", "snsapi_userinfo"}:
+            raise AppError("WECHAT_SCOPE_INVALID", "微信公众号授权范围配置错误", 500)
         return (
             "https://open.weixin.qq.com/connect/oauth2/authorize"
             f"?appid={settings.wechat_app_id}&redirect_uri={redirect_uri}"
-            f"&response_type=code&scope={scope}&state={state}#wechat_redirect"
+            f"&response_type=code&scope={resolved_scope}&state={state}#wechat_redirect"
         )
 
     def exchange_code(self, code: str) -> WechatOAuthIdentity:
         if not settings.wechat_app_id or not settings.wechat_app_secret:
             raise AppError("WECHAT_NOT_CONFIGURED", "微信公众号尚未配置", 503)
-        response = httpx.get(
-            "https://api.weixin.qq.com/sns/oauth2/access_token",
-            params={
-                "appid": settings.wechat_app_id,
-                "secret": settings.wechat_app_secret,
-                "code": code,
-                "grant_type": "authorization_code",
-            },
-            timeout=15,
-        )
-        response.raise_for_status()
-        data = response.json()
+        try:
+            response = httpx.get(
+                "https://api.weixin.qq.com/sns/oauth2/access_token",
+                params={
+                    "appid": settings.wechat_app_id,
+                    "secret": settings.wechat_app_secret,
+                    "code": code,
+                    "grant_type": "authorization_code",
+                },
+                timeout=15,
+            )
+            response.raise_for_status()
+            data = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise AppError("WECHAT_OAUTH_UNAVAILABLE", "微信授权服务暂时不可用", 502) from exc
         if not data.get("openid"):
             raise AppError("WECHAT_OAUTH_FAILED", "微信授权失败", 502, {"errcode": data.get("errcode"), "errmsg": data.get("errmsg")})
         return WechatOAuthIdentity(openid=str(data["openid"]), unionid=data.get("unionid"))
