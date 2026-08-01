@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     feishu_app_token: str = ""
     feishu_table_id: str = ""
     feishu_dev_mock: bool = True
+    feishu_field_mapping_json: str = ""
+    feishu_sync_page_size: int = 200
+    feishu_sync_max_pages: int = 100
+    feishu_writeback_enabled: bool = True
     object_storage_backend: str = "local"
     object_storage_dir: str = "./storage"
     s3_endpoint_url: str = ""

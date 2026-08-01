@@ -14,12 +14,13 @@ import json
 from apps.api.src.core.database import SessionLocal, init_database
 from apps.api.src.services.claim_service import run_assignment_timeouts
 from apps.api.src.services.followup_service import run_followup_overdue
+from apps.api.src.services.feishu_sync_service import fetch_and_import_feishu, writeback_feishu_results
 from apps.api.src.services.outbox_worker import process_outbox
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run one scheduled job safely")
-    parser.add_argument("job", choices=["assignment-timeouts", "followup-overdue", "outbox", "all"])
+    parser.add_argument("job", choices=["assignment-timeouts", "followup-overdue", "outbox", "feishu-sync", "all"])
     parser.add_argument("--limit", type=int, default=100)
     args = parser.parse_args()
     init_database()
@@ -31,6 +32,10 @@ def main() -> int:
             output["followup_overdue"] = run_followup_overdue(db)
         if args.job in {"outbox", "all"}:
             output["outbox"] = process_outbox(db, limit=args.limit)
+        if args.job == "feishu-sync":
+            batch, records = fetch_and_import_feishu(db)
+            db.commit()
+            output["feishu_sync"] = {"batch_id": batch.id, "total": batch.total_count, "success": batch.success_count, "errors": batch.error_count, "writeback": writeback_feishu_results(db, records)}
         db.commit()
     print(json.dumps(output, ensure_ascii=False, indent=2))
     return 0

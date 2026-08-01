@@ -16,6 +16,7 @@ from ..core.responses import ok, page
 from ..integrations.feishu import FeishuClient, FeishuRecord
 from ..schemas.leads import DuplicateDecisionBody, FeishuMockSyncBody, LeadStagingUpdateBody
 from ..services.audit import write_audit
+from ..services.feishu_sync_service import configured_mapping, fetch_and_import_feishu, writeback_feishu_results
 from ..services.lead_service import import_records, lead_to_dict, update_staging_lead
 
 router = APIRouter(prefix="/leads", tags=["leads"])
@@ -50,31 +51,27 @@ def real_sync(
     db: Session = Depends(get_db),
 ):
     client = FeishuClient()
-    all_records: list[FeishuRecord] = []
-    token = None
-    while True:
-        records, token, has_more = client.list_records(token)
-        all_records.extend(records)
-        if not has_more:
-            break
-    mapping = {
-        "customer_name": "客户姓名",
-        "phone": "手机号",
-        "province": "省",
-        "city": "市",
-        "district": "区县",
-        "region_code": "地区编码",
-        "category_code": "业务类目",
-        "brand_code": "品牌",
-        "source_channel": "来源渠道",
-        "need_summary": "客户需求",
-        "budget_min": "预算下限",
-        "budget_max": "预算上限",
-        "acquisition_cost": "获客成本",
-    }
-    batch = import_records(db, all_records, mapping, app_token=settings.feishu_app_token, table_id=settings.feishu_table_id, requested_by=principal.user_id)
+    batch, records = fetch_and_import_feishu(db, requested_by=principal.user_id, client=client)
+    write_audit(
+        db,
+        principal=principal,
+        action="FEISHU_SYNC",
+        resource_type="sync_batch",
+        resource_id=batch.id,
+        after={"total": batch.total_count, "success": batch.success_count, "error": batch.error_count},
+        request_id=request.state.request_id,
+    )
     db.commit()
-    return ok(request, {"batch_id": batch.id, "total": batch.total_count, "success": batch.success_count, "errors": batch.error_count})
+    writeback = writeback_feishu_results(db, records, client=client)
+    if writeback["failed"]:
+        batch.error_message = f"飞书回写失败 {writeback['failed']} 条"
+    db.commit()
+    return ok(request, {"batch_id": batch.id, "total": batch.total_count, "success": batch.success_count, "errors": batch.error_count, "writeback": writeback})
+
+
+@router.get("/feishu/diagnostics")
+def feishu_diagnostics(request: Request, principal=Depends(require_permissions("lead.read"))):
+    return ok(request, {**FeishuClient().diagnostics(), "field_mapping": configured_mapping()})
 
 
 @router.get("/staging")
