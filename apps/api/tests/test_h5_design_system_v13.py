@@ -37,3 +37,17 @@ def test_h5_v13_lead_list_patch_contract():
     assert "/api/v1/dispatch/assignments" in js
     assert "data-zs-region" in js
     assert "data-zs-source" in js
+
+
+def test_h5_v13_lead_detail_patch_contract():
+    index = (H5 / "index.html").read_text(encoding="utf-8")
+    css = (H5 / "lead-detail-v13.css").read_text(encoding="utf-8")
+    js = (H5 / "lead-detail-v13.js").read_text(encoding="utf-8")
+    assert "./lead-detail-v13.css" in index
+    assert "./lead-detail-v13.js" in index
+    for selector in (".zs-v13-detail-page", ".zs-v13-detail-card", ".zs-v13-claim-card", ".zs-v13-timeline-card"):
+        assert selector in css
+    assert "function zsPatchLeadDetail" in js
+    assert "zs-v13-detail-route" in js
+    assert "#claim-btn" in js
+    assert "需求描述" in js
