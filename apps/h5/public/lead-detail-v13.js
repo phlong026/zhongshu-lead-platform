@@ -31,12 +31,10 @@ function zsPatchLeadDetail() {
   back.textContent = '‹ 返回';
   const headingTitle = document.createElement('h1');
   headingTitle.textContent = title.textContent || '客资详情';
-  const more = document.createElement('button');
-  more.type = 'button';
-  more.className = 'zs-v13-detail-more';
-  more.setAttribute('aria-label', '更多');
-  more.textContent = '•••';
-  heading.append(back, headingTitle, more);
+  const spacer = document.createElement('span');
+  spacer.className = 'zs-v13-detail-spacer';
+  spacer.setAttribute('aria-hidden', 'true');
+  heading.append(back, headingTitle, spacer);
 
   customer.classList.add('zs-v13-detail-card');
   timeline.classList.add('zs-v13-timeline-card');
