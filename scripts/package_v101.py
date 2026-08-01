@@ -20,6 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_VERSION = "V1.0.1"
+ALLOWED_TRACKED_ENV_FILES = {".env.example", ".env.docker.example"}
 PROHIBITED_PATTERNS = (
     re.compile(r"(^|/)\.env(?:\..*)?$", re.IGNORECASE),
     re.compile(r"\.(?:db|sqlite|sqlite3)$", re.IGNORECASE),
@@ -56,7 +57,8 @@ def tracked_files() -> list[Path]:
     unsafe = [
         path.as_posix()
         for path in paths
-        if any(pattern.search(path.as_posix()) for pattern in PROHIBITED_PATTERNS)
+        if path.as_posix() not in ALLOWED_TRACKED_ENV_FILES
+        and any(pattern.search(path.as_posix()) for pattern in PROHIBITED_PATTERNS)
     ]
     if unsafe:
         raise RuntimeError(f"tracked private/runtime files detected: {unsafe}")
