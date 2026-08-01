@@ -29,6 +29,10 @@ def _count(db: Session, model, *criteria) -> int:
     return int(db.scalar(stmt) or 0)
 
 
+def _rate(numerator: int, denominator: int) -> float:
+    return round((numerator / denominator * 100), 2) if denominator else 0.0
+
+
 def dashboard_summary(db: Session, principal: Principal) -> dict[str, Any]:
     """Return a role-aware summary without leaking financial data to operations."""
     business = {
@@ -40,7 +44,14 @@ def dashboard_summary(db: Session, principal: Principal) -> dict[str, Any]:
         "return_pending": _count(db, ReturnRequest, ReturnRequest.status.in_([ReturnStatus.PENDING, ReturnStatus.NEED_MORE])),
         "completed": _count(db, Assignment, Assignment.status == AssignmentStatus.COMPLETED),
         "active_companies": _count(db, Company, Company.status == "ACTIVE"),
+        "total_leads": _count(db, Lead),
+        "assignments_total": _count(db, Assignment),
+        "claimed_total": _count(db, Assignment, Assignment.claimed_at.is_not(None)),
+        "followed_total": int(db.scalar(select(func.count(func.distinct(FollowUp.assignment_id)))) or 0),
     }
+    business["claim_rate"] = _rate(business["claimed_total"], business["assignments_total"])
+    business["followup_rate"] = _rate(business["followed_total"], business["claimed_total"])
+    business["conversion_rate"] = _rate(business["completed"], business["claimed_total"])
     response: dict[str, Any] = {"business": business}
 
     if principal.can("dashboard.finance.read") or principal.can("points.read") or principal.can("*"):
@@ -91,6 +102,88 @@ def dashboard_summary(db: Session, principal: Principal) -> dict[str, Any]:
         }
         account = db.scalar(select(PointsAccount).where(PointsAccount.company_id == company_id))
         response["points"] = {"balance": int(account.balance) if account else 0}
+    return response
+
+
+def dashboard_performance(db: Session, principal: Principal, *, days: int = 30) -> dict[str, Any]:
+    """Return period funnel, regional performance and finance without leaking money fields."""
+    start = datetime.now(timezone.utc) - timedelta(days=days)
+    leads_created = _count(db, Lead, Lead.created_at >= start)
+    qualified = _count(db, Lead, Lead.created_at >= start, Lead.status == LeadStatus.QUALIFIED)
+    assignments = _count(db, Assignment, Assignment.created_at >= start)
+    claimed = _count(db, Assignment, Assignment.created_at >= start, Assignment.claimed_at.is_not(None))
+    followed = int(
+        db.scalar(
+            select(func.count(func.distinct(FollowUp.assignment_id)))
+            .join(Assignment, Assignment.id == FollowUp.assignment_id)
+            .where(Assignment.created_at >= start)
+        )
+        or 0
+    )
+    completed = _count(db, Assignment, Assignment.created_at >= start, Assignment.status == AssignmentStatus.COMPLETED)
+    returns = _count(db, ReturnRequest, ReturnRequest.created_at >= start)
+
+    lead_regions = db.execute(
+        select(Lead.city, func.count(Lead.id))
+        .where(Lead.created_at >= start)
+        .group_by(Lead.city)
+    ).all()
+    assignment_regions = db.execute(
+        select(Lead.city, func.count(Assignment.id))
+        .join(Lead, Lead.id == Assignment.lead_id)
+        .where(Assignment.created_at >= start)
+        .group_by(Lead.city)
+    ).all()
+    completed_regions = db.execute(
+        select(Lead.city, func.count(Assignment.id))
+        .join(Lead, Lead.id == Assignment.lead_id)
+        .where(Assignment.created_at >= start, Assignment.status == AssignmentStatus.COMPLETED)
+        .group_by(Lead.city)
+    ).all()
+    region_data: dict[str, dict[str, Any]] = {}
+    for city, count in lead_regions:
+        region_data[city or "未标注"] = {"region": city or "未标注", "leads": int(count), "assignments": 0, "completed": 0}
+    for city, count in assignment_regions:
+        item = region_data.setdefault(city or "未标注", {"region": city or "未标注", "leads": 0, "assignments": 0, "completed": 0})
+        item["assignments"] = int(count)
+    for city, count in completed_regions:
+        item = region_data.setdefault(city or "未标注", {"region": city or "未标注", "leads": 0, "assignments": 0, "completed": 0})
+        item["completed"] = int(count)
+    regions = sorted(region_data.values(), key=lambda item: (item["leads"], item["assignments"]), reverse=True)
+    for item in regions:
+        item["dispatch_rate"] = _rate(item["assignments"], item["leads"])
+        item["conversion_rate"] = _rate(item["completed"], item["assignments"])
+
+    response: dict[str, Any] = {
+        "days": days,
+        "period_start": start.isoformat(),
+        "funnel": {
+            "leads_created": leads_created,
+            "qualified": qualified,
+            "assignments": assignments,
+            "claimed": claimed,
+            "followed": followed,
+            "completed": completed,
+            "returns": returns,
+            "qualification_rate": _rate(qualified, leads_created),
+            "claim_rate": _rate(claimed, assignments),
+            "followup_rate": _rate(followed, claimed),
+            "conversion_rate": _rate(completed, claimed),
+            "return_rate": _rate(returns, claimed),
+        },
+        "regions": regions[:50],
+    }
+
+    if principal.can("dashboard.finance.read") or principal.can("points.read") or principal.can("*"):
+        recharged = int(db.scalar(select(func.coalesce(func.sum(PointsLedger.delta), 0)).where(PointsLedger.created_at >= start, PointsLedger.ledger_type == "RECHARGE", PointsLedger.delta > 0)) or 0)
+        consumed = abs(int(db.scalar(select(func.coalesce(func.sum(PointsLedger.delta), 0)).where(PointsLedger.created_at >= start, PointsLedger.ledger_type == "CLAIM", PointsLedger.delta < 0)) or 0))
+        refunded = int(db.scalar(select(func.coalesce(func.sum(PointsLedger.delta), 0)).where(PointsLedger.created_at >= start, PointsLedger.ledger_type == "RETURN", PointsLedger.delta > 0)) or 0)
+        response["finance"] = {
+            "points_recharged": recharged,
+            "points_consumed": consumed,
+            "points_refunded": refunded,
+            "net_points_change": recharged - consumed + refunded,
+        }
     return response
 
 
