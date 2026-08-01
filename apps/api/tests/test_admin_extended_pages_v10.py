@@ -25,6 +25,11 @@ def test_admin_meta_rbac_and_company_detail(api_client):
     denied = client.get('/api/v1/admin-meta/rbac-matrix', headers=operation)
     assert denied.status_code == 403
 
+    telesales_users = data(client.get('/api/v1/admin-meta/telesales-users', headers=operation))
+    assert telesales_users
+    assert all(item['status'] == 'ACTIVE' for item in telesales_users)
+    assert all(set(item) == {'id', 'display_name', 'username', 'status'} for item in telesales_users)
+
     companies = data(client.get('/api/v1/companies?page=1&page_size=20', headers=admin))['items']
     detail = data(client.get(f"/api/v1/admin-meta/companies/{companies[0]['id']}", headers=admin))
     assert detail['id'] == companies[0]['id']
@@ -36,8 +41,8 @@ def test_admin_meta_rbac_and_company_detail(api_client):
 def test_verification_task_can_be_assigned_and_reclaimed(api_client):
     client, _ = api_client
     admin = login(client, 'admin', 'Admin123!')
-    users = data(client.get('/api/v1/users', headers=admin))
-    telesales = next(user for user in users if 'TELESALES' in user['roles'])
+    users = data(client.get('/api/v1/admin-meta/telesales-users', headers=admin))
+    telesales = users[0]
     tasks = data(client.get('/api/v1/verification/tasks?page=1&page_size=100', headers=admin))['items']
     task = next(item for item in tasks if item['status'] in {'PENDING', 'ASSIGNED'})
 
