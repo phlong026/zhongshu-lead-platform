@@ -1,0 +1,16 @@
+#follow-modal.modal-backdrop{background:rgba(48,38,29,.42);align-items:flex-end}
+#follow-modal .modal{max-width:520px;border-radius:26px 26px 0 0;padding:18px 20px calc(18px + env(safe-area-inset-bottom));background:var(--zs-paper);box-shadow:0 -18px 50px rgba(48,38,29,.18)}
+#follow-modal .modal:before{content:'';display:block;width:44px;height:5px;margin:0 auto 14px;border-radius:999px;background:#d9d0c5}
+#follow-modal h2{margin:0;font-size:20px;color:var(--zs-ink)}
+.zs-v13-follow-subtitle{margin:3px 0 16px;font-size:10px;color:var(--zs-caption)}
+#follow-modal .form-group{margin:14px 0}
+#follow-modal .form-group label{font-size:13px;color:var(--zs-ink)}
+#follow-modal #follow-status{position:absolute;opacity:0;pointer-events:none}
+.zs-v13-follow-chips{display:flex;flex-wrap:wrap;gap:8px}
+.zs-v13-follow-chip{border:1px solid var(--zs-line);border-radius:999px;background:#fbf6ee;padding:9px 15px;color:var(--zs-text-secondary);font-size:11px;cursor:pointer}
+.zs-v13-follow-chip.active{border-color:var(--zs-brand);background:var(--zs-brand);color:#fff;font-weight:700}
+#follow-modal .textarea{min-height:116px;border-color:var(--zs-line);border-radius:14px;background:#fff;font-size:12px;line-height:1.6}
+.zs-v13-follow-count{text-align:right;margin-top:5px;font-size:9px;color:var(--zs-caption)}
+.zs-v13-follow-tip{display:flex;align-items:center;gap:8px;margin:12px 0;padding:12px;border-radius:12px;background:#fbf6ee;color:var(--zs-text-secondary);font-size:10px;line-height:1.55}
+.zs-v13-follow-actions{display:grid;grid-template-columns:108px 1fr;gap:10px;margin-top:14px}
+.zs-v13-follow-actions .btn{margin:0!important;min-height:48px;border-radius:999px}
