@@ -1,7 +1,7 @@
 const ADM_PAGE_IDS={
   dashboard:['ADM-02','ADM-03'],staging:['ADM-04'],verification:['ADM-05'],qualified:['ADM-06'],
   assignments:['ADM-08'],companies:['ADM-09'],points:['ADM-11'],recharge:['ADM-12'],ledgers:['ADM-13'],
-  returns:['ADM-14'],outbox:['ADM-18'],users:['ADM-17'],configs:['ADM-16','ADM-18'],audit:['ADM-19']
+  returns:['ADM-14'],outbox:['ADM-18'],users:['ADM-17'],configs:['ADM-16','ADM-18'],audit:['ADM-19'],'master-data':['ADM-16']
 };
 const ADM_META={
   'ADM-01':['管理后台登录','内部账号、会话与角色权限入口','secure'],
