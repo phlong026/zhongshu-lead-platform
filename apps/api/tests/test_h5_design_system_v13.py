@@ -51,3 +51,17 @@ def test_h5_v13_lead_detail_patch_contract():
     assert "zs-v13-detail-route" in js
     assert "#claim-btn" in js
     assert "需求描述" in js
+
+
+def test_h5_v13_points_patch_contract():
+    index = (H5 / "index.html").read_text(encoding="utf-8")
+    css = (H5 / "points-v13.css").read_text(encoding="utf-8")
+    js = (H5 / "points-v13.js").read_text(encoding="utf-8")
+    assert "./points-v13.css" in index
+    assert "./points-v13.js" in index
+    for selector in (".zs-v13-points-page", ".zs-v13-package-grid", ".zs-v13-ledger-list"):
+        assert selector in css
+    assert "function zsPatchPoints" in js
+    assert "zs-v13-points-route" in js
+    assert "充值档位参考" in js
+    assert "积分流水" in js
