@@ -108,6 +108,8 @@ def _scene_from_event(event_type: str) -> str:
         "RETURN_APPROVED": "RETURN_APPROVED",
         "RETURN_REJECTED": "RETURN_REJECTED",
         "RETURN_NEED_MORE": "RETURN_NEED_MORE",
+        "POINTS_LOW_BALANCE": "LOW_POINTS",
+        "POINTS_RECHARGED": "POINTS_RECHARGED",
     }.get(event_type, event_type)
 
 
@@ -119,6 +121,8 @@ def _default_title(event_type: str) -> str:
         "FOLLOWUP_OVERDUE": "跟进提醒",
         "RETURN_APPROVED": "退回审核通过",
         "RETURN_REJECTED": "退回审核未通过",
+        "POINTS_LOW_BALANCE": "积分余额不足提醒",
+        "POINTS_RECHARGED": "积分充值到账",
     }.get(event_type, "业务通知")
 
 

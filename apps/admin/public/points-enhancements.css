@@ -1,0 +1,1 @@
+.p1-package-fields{margin-top:12px;padding:14px;border:1px solid #ead7b5;border-radius:14px;background:#fffaf2}.p1-package-fields small{display:block;margin-top:5px;color:var(--muted);font-size:12px}.p1-date-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.p1-date-grid .field{margin:0}@media(max-width:760px){.p1-date-grid{grid-template-columns:1fr}}
