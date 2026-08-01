@@ -30,3 +30,14 @@ def test_admin_v10_preserves_role_and_finance_boundaries():
     assert "现金在线下完成" in js
     assert "页面、接口、数据范围和字段权限必须同时生效" in js
     assert "MutationObserver" in js
+
+
+def test_admin_v10_extended_operational_pages():
+    index = (ADMIN / "index.html").read_text(encoding="utf-8")
+    js = (ADMIN / "admin-extended-pages-v10.js").read_text(encoding="utf-8")
+    assert "./admin-extended-pages-v10.js" in index
+    assert "/master-data/regions" in js
+    assert "/admin-meta/rbac-matrix" in js
+    assert "/verification/tasks/${taskId}/reclaim" in js
+    assert "/admin-meta/companies/${id}" in js
+    assert "基础资料" in js
