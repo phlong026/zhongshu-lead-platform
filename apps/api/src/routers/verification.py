@@ -21,6 +21,7 @@ from ..services.verification_service import (
     claim_task,
     create_tasks,
     publish_template,
+    reclaim_task,
     submit_verification,
     task_to_dict,
 )
@@ -93,6 +94,18 @@ def assign(task_id: str, body: VerificationAssignBody, request: Request, princip
         raise AppError("VERIFICATION_TASK_NOT_FOUND", "核验任务不存在", 404)
     assign_task(db, task, body.assignee_user_id, principal.user_id)
     write_audit(db, principal=principal, action="VERIFICATION_TASK_ASSIGN", resource_type="verification_task", resource_id=task.id, metadata={"assignee": body.assignee_user_id}, request_id=request.state.request_id)
+    db.commit()
+    return ok(request)
+
+
+@router.post("/tasks/{task_id}/reclaim")
+def reclaim(task_id: str, request: Request, principal=Depends(require_permissions("verification.read")), db: Session = Depends(get_db)):
+    task = db.get(VerificationTask, task_id)
+    if not task:
+        raise AppError("VERIFICATION_TASK_NOT_FOUND", "核验任务不存在", 404)
+    prior_assignee = task.assignee_user_id
+    reclaim_task(db, task)
+    write_audit(db, principal=principal, action="VERIFICATION_TASK_RECLAIM", resource_type="verification_task", resource_id=task.id, metadata={"prior_assignee": prior_assignee}, request_id=request.state.request_id)
     db.commit()
     return ok(request)
 
