@@ -26,6 +26,8 @@ def test_admin_v10_design_tokens_and_page_ids():
 def test_admin_v10_preserves_role_and_finance_boundaries():
     js = (ADMIN / "admin-design-system-v10.js").read_text(encoding="utf-8")
     assert "admDashboardId" in js
+    assert "main.page .stat .label" in js
+    assert "const pageText=" not in js
     assert "仅展示资格状态，不展示具体积分余额" in js
     assert "现金在线下完成" in js
     assert "页面、接口、数据范围和字段权限必须同时生效" in js
