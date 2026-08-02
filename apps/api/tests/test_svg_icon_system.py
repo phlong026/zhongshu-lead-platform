@@ -34,6 +34,16 @@ def test_svg_icon_system_is_inline_accessible_and_has_no_remote_dependency():
     assert ".zs-svg-icon" in css
 
 
+def test_h5_composite_buttons_render_svg_directly():
+    home = (H5 / "design-system-v13.js").read_text(encoding="utf-8")
+    assert "window.ZSIconSystem?.svg" in home
+    assert "zsIcon('bell')" in home
+    assert "zsIcon('list')" in home
+    assert "zsIcon('gem')" in home
+    assert "zsIcon('clipboard-check')" in home
+    assert "◉ 消息" not in home
+
+
 def test_every_unicode_icon_used_by_web_frontends_is_covered():
     icon_system = (H5 / "svg-icon-system.js").read_text(encoding="utf-8")
     source = "\n".join(
