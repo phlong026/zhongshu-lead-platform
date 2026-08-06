@@ -114,9 +114,10 @@ def test_sprint6_runbooks_and_release_documents_exist() -> None:
         assert len(content) > 500
 
 
-def test_ci_contains_postgres_browser_dependency_and_evidence_gates() -> None:
-    for relative in (".github/workflows/v12-pr-ci.yml", ".github/workflows/v12-release-ci.yml"):
-        workflow = Path(relative).read_text(encoding="utf-8")
+def test_ci_contains_postgres_browser_dependency_evidence_and_packaging_gates() -> None:
+    pr_workflow = Path(".github/workflows/v12-pr-ci.yml").read_text(encoding="utf-8")
+    release_workflow = Path(".github/workflows/v12-release-ci.yml").read_text(encoding="utf-8")
+    for workflow in (pr_workflow, release_workflow):
         assert "postgres:16-alpine" in workflow
         assert "baseline_v101.py" in workflow
         assert "migrate_v12_data.py" in workflow
@@ -124,3 +125,8 @@ def test_ci_contains_postgres_browser_dependency_and_evidence_gates() -> None:
         assert "pip-audit" in workflow
         assert "requirements-browser.txt" in workflow
         assert "v12-postgres-verification.json" in workflow
+        assert "fetch-depth: 0" in workflow
+        assert "scripts/package_release.py" in workflow
+        assert "release-package-${{ github.run_id }}" in workflow
+    assert "--version V1.2.0-rc" in pr_workflow
+    assert "--version V1.2.0" in release_workflow
