@@ -16,6 +16,7 @@ from ..schemas.v12_dispatch import ManualDispatchBody
 from ..services.audit import write_audit
 from ..services.company_profile_v12 import require_active_company
 from ..services.dispatch_v12 import (
+    CLAIMED_CONTACT_STATUSES,
     candidate_to_dict,
     claim_assignment,
     dispatch_manually,
@@ -85,15 +86,23 @@ def dispatch_candidates(
     db: Session = Depends(get_db),
 ):
     lead = get_dispatch_lead(db, lead_id)
-    if lead.status != LeadV12Status.READY_DISPATCH.value:
-        raise AppError("LEAD_NOT_READY_DISPATCH", "客资当前不在待派发池", 409, {"status": lead.status})
+    if lead.status != LeadV12Status.READY_DISPATCH.value or lead.current_assignment_id:
+        raise AppError(
+            "LEAD_NOT_READY_DISPATCH",
+            "客资当前不在待派发池",
+            409,
+            {"status": lead.status, "current_assignment_id": lead.current_assignment_id},
+        )
     items = list_candidates(db, lead=lead)
+    include_financials = principal.can("points.read") or principal.can("*")
     return ok(
         request,
         {
             "lead": lead_pool_item(lead),
             "eligible_count": sum(1 for item in items if item.eligible),
-            "candidates": [candidate_to_dict(item) for item in items],
+            "candidates": [
+                candidate_to_dict(item, include_financials=include_financials) for item in items
+            ],
         },
     )
 
@@ -162,13 +171,7 @@ def own_assignments(
         _assignment_dict(
             assignment,
             lead,
-            reveal_phone=assignment.status
-            in {
-                AssignmentStatus.CLAIMED.value,
-                AssignmentStatus.FOLLOWING.value,
-                AssignmentStatus.RETURN_PENDING.value,
-                AssignmentStatus.COMPLETED.value,
-            },
+            reveal_phone=assignment.status in CLAIMED_CONTACT_STATUSES,
         )
         for assignment, lead in rows
     ]
@@ -191,8 +194,14 @@ def own_assignment_detail(
     if row is None:
         raise AppError("ASSIGNMENT_NOT_FOUND", "派发单不存在", 404)
     assignment, lead = row
-    reveal_phone = assignment.status != AssignmentStatus.PENDING_CLAIM.value
-    return ok(request, _assignment_dict(assignment, lead, reveal_phone=reveal_phone))
+    return ok(
+        request,
+        _assignment_dict(
+            assignment,
+            lead,
+            reveal_phone=assignment.status in CLAIMED_CONTACT_STATUSES,
+        ),
+    )
 
 
 @router.post("/assignments/{assignment_id}/claim")
@@ -244,7 +253,9 @@ def claim_own_assignment(
                 "id": result.reward.id,
                 "status": result.reward.status,
                 "reward_points": result.reward.reward_points,
-                "reward_due_at": result.reward.reward_due_at.isoformat() if result.reward.reward_due_at else None,
+                "reward_due_at": result.reward.reward_due_at.isoformat()
+                if result.reward.reward_due_at
+                else None,
             }
             if result.reward
             else None,
