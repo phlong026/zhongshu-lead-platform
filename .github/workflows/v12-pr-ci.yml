@@ -38,10 +38,16 @@ jobs:
           node-version: "22"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt -r requirements-postgres.txt
+        run: pip install -r requirements.txt -r requirements-postgres.txt -r requirements-audit.txt
 
       - name: Verify installed dependencies
         run: pip check
+
+      - name: Audit Python dependencies
+        shell: bash
+        run: |
+          cat requirements.txt requirements-postgres.txt requirements-browser.txt > /tmp/v12-requirements.txt
+          pip-audit -r /tmp/v12-requirements.txt --progress-spinner off
 
       - name: Run backend tests
         shell: bash
