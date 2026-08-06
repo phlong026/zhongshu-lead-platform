@@ -201,3 +201,38 @@ def test_company_service_areas_require_review_before_activation(db) -> None:
     db.commit()
     assert district.review_status == "APPROVED"
     assert district.active is True
+
+
+def test_service_area_removal_stays_active_until_platform_approval(db) -> None:
+    db.add_all(
+        [
+            Region(code="420100", name="武汉市", level="CITY", aliases=[], active=True),
+            Region(code="420106", name="武昌区", level="DISTRICT", parent_code="420100", aliases=[], active=True),
+        ]
+    )
+    company, user = _seed_identity(db, company_code="AREA002")
+    initial = replace_service_areas(
+        db,
+        company_id=company.id,
+        region_codes=["420100", "420106"],
+        primary_city_code="420100",
+    )
+    for item in initial:
+        review_service_area(db, area_id=item.id, approve=True, reviewed_by=user.id)
+    db.commit()
+
+    changed = replace_service_areas(
+        db,
+        company_id=company.id,
+        region_codes=["420100"],
+        primary_city_code="420100",
+    )
+    district = next(item for item in changed if item.region_code == "420106")
+    assert district.review_status == "PENDING"
+    assert district.active is True
+    assert district.review_note.startswith("[REMOVE_REQUEST]")
+
+    review_service_area(db, area_id=district.id, approve=True, reviewed_by=user.id, note="确认停止服务")
+    db.commit()
+    assert district.review_status == "APPROVED"
+    assert district.active is False
