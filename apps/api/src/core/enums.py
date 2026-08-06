@@ -70,6 +70,7 @@ class PointsLedgerType(StrEnum):
     RECHARGE = "RECHARGE"
     CLAIM = "CLAIM"
     RETURN = "RETURN"
+    REWARD = "REWARD"
     ADJUST = "ADJUST"
     REVERSAL = "REVERSAL"
 
