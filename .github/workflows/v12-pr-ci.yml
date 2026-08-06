@@ -1,23 +1,25 @@
-name: V1.2 CI
+name: V1.2 Pull Request CI
 
 on:
   pull_request:
-    branches: [release/v1.2.0]
-  push:
     branches:
       - release/v1.2.0
-      - feature/v1.2-*
-  workflow_dispatch:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
 
 permissions:
   contents: read
 
 concurrency:
-  group: v12-${{ github.workflow }}-${{ github.ref }}
+  group: v12-pr-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  quality:
+  full-quality:
+    if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
