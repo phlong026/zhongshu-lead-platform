@@ -5,11 +5,16 @@ from math import floor
 from typing import Any
 
 from sqlalchemy import Column, JSON, event, or_, select
+from sqlalchemy.orm import Session, object_session
 
 from .enums import ConfigStatus
 from .models import SystemConfig
 from .models_v12 import SupplierLeadReward
+from .time import as_utc
 from .v12_enums import RewardStatus
+
+QUEUE_KEY = "v12_rewards_due_after_rejection"
+SETTLING_KEY = "v12_rewards_settling_after_rejection"
 
 
 # V1.2.0 introduced SupplierLeadReward in models_v12. Extend it in a separate
@@ -91,3 +96,49 @@ def apply_published_reward_rule_snapshot(_, connection, reward: SupplierLeadRewa
             reward.status = RewardStatus.NOT_ELIGIBLE.value
             reward.observed_at = None
             reward.exception_reason = "ZERO_REWARD_POINTS"
+
+
+@event.listens_for(SupplierLeadReward.status, "set", active_history=True)
+def queue_overdue_reward_after_rejection(
+    reward: SupplierLeadReward,
+    value: str,
+    old_value: str,
+    _,
+) -> None:
+    """Queue a frozen reward for immediate settlement when an appeal is rejected."""
+
+    if old_value != RewardStatus.FROZEN.value or value != RewardStatus.OBSERVING.value:
+        return
+    due_at = as_utc(reward.reward_due_at)
+    if due_at is None or due_at > datetime.now(timezone.utc) or not reward.id:
+        return
+    session = object_session(reward)
+    if session is not None:
+        session.info.setdefault(QUEUE_KEY, set()).add(reward.id)
+
+
+@event.listens_for(Session, "before_commit")
+def settle_queued_overdue_rewards(session: Session) -> None:
+    reward_ids = set(session.info.pop(QUEUE_KEY, set()))
+    if not reward_ids or session.info.get(SETTLING_KEY):
+        return
+    session.info[SETTLING_KEY] = True
+    try:
+        from ..services.supplier_reward_v12 import settle_supplier_reward
+
+        now = datetime.now(timezone.utc)
+        for reward_id in sorted(reward_ids):
+            settle_supplier_reward(
+                session,
+                reward_id=reward_id,
+                as_of=now,
+                settled_by=None,
+            )
+    finally:
+        session.info.pop(SETTLING_KEY, None)
+
+
+@event.listens_for(Session, "after_rollback")
+def clear_queued_overdue_rewards(session: Session) -> None:
+    session.info.pop(QUEUE_KEY, None)
+    session.info.pop(SETTLING_KEY, None)
