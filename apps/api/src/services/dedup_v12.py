@@ -199,6 +199,7 @@ def override_duplicate(
     lead.pending_reason = None
     if lead.source_kind == LeadSourceKind.SUPPLIER_H5.value and lead.review_status != "APPROVED":
         lead.status = LeadV12Status.PENDING_REVIEW.value
+        lead.review_status = "PENDING"
     else:
         lead.status = LeadV12Status.READY_DISPATCH.value
     db.flush()

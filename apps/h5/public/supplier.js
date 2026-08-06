@@ -2,7 +2,19 @@ const API='/api/v1';
 const app=document.querySelector('#app');
 const toastEl=document.querySelector('#toast');
 const overlay=document.querySelector('#overlay');
-const state={me:null,tab:'list',capabilities:[],items:[],cities:[],districts:[],editing:null};
+const state={
+  me:null,
+  tab:'list',
+  capabilities:[],
+  items:[],
+  cities:[],
+  districts:[],
+  editing:null,
+  listPage:1,
+  listPageSize:20,
+  listStatus:'',
+  listTotal:0
+};
 const esc=(value='')=>String(value??'').replace(/[&<>'"]/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
 const fmt=value=>value?new Date(value).toLocaleString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}):'--';
 const labels={DRAFT:'草稿',PENDING_REVIEW:'待平台初审',READY_DISPATCH:'待人工派发',DUPLICATE:'重复/疑似重复',INVALID:'资料已驳回',CLOSED:'已关闭',PENDING:'待审核',APPROVED:'已通过',REJECTED:'已驳回',CLEAR:'无重复',HARD_DUPLICATE:'90天硬重复',REWARD_DUPLICATE:'奖励重复',HISTORICAL_SUSPECT:'历史疑似',OVERRIDDEN:'已人工放行'};
@@ -58,11 +70,17 @@ async function requestSupplierCapability(){
 }
 
 async function renderList(){
-  const status=value('#supplier-status');
-  const data=await api('/v1.2/supplier/leads'+queryString({page:1,page_size:100,status}));state.items=data.items||[];
+  const data=await api('/v1.2/supplier/leads'+queryString({page:state.listPage,page_size:state.listPageSize,status:state.listStatus}));
+  state.items=data.items||[];
+  state.listTotal=data.total||0;
+  const totalPages=Math.max(1,Math.ceil(state.listTotal/state.listPageSize));
+  if(state.listPage>totalPages){state.listPage=totalPages;return renderList();}
   const rows=state.items.map(item=>`<article class="supplier-lead"><div class="supplier-lead-top"><div><h3>${esc(item.customer_name)}</h3><p>${esc(item.phone_masked||'--')} · ${esc(item.city||'--')} ${esc(item.district||'')}</p></div>${badge(item.status)}</div><p>资料初审：${labels[item.review_status]||item.review_status||'--'}　去重：${labels[item.duplicate_status]||item.duplicate_status||'--'}<br>提交时间：${fmt(item.submitted_at||item.created_at)}</p>${item.review_note?`<div class="supplier-notice">平台说明：${esc(item.review_note)}</div>`:''}<div class="supplier-lead-actions"><button class="supplier-btn small" data-detail="${item.id}">查看详情</button>${item.status==='DRAFT'?`<button class="supplier-btn small primary" data-edit="${item.id}">继续编辑</button><button class="supplier-btn small gold" data-submit="${item.id}">提交初审</button>`:''}</div></article>`);
-  shell(`<section class="supplier-card"><div class="supplier-card-head"><div><h2>我的客资</h2><div class="supplier-muted">仅显示当前公司上传的客资</div></div><select class="supplier-select" id="supplier-status" style="width:auto"><option value="">全部</option>${['DRAFT','PENDING_REVIEW','READY_DISPATCH','DUPLICATE','INVALID'].map(option=>`<option value="${option}" ${status===option?'selected':''}>${esc(labels[option])}</option>`).join('')}</select></div><div class="supplier-list">${rows.length?rows.join(''):empty('还没有上传客资')}</div></section>`);
-  document.querySelector('#supplier-status').onchange=renderList;
+  const pager=state.listTotal?`<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:14px"><button class="supplier-btn small" id="previous-page" ${state.listPage<=1?'disabled':''}>上一页</button><span class="supplier-muted">第 ${state.listPage} / ${totalPages} 页，共 ${state.listTotal} 条</span><button class="supplier-btn small" id="next-page" ${state.listPage>=totalPages?'disabled':''}>下一页</button></div>`:'';
+  shell(`<section class="supplier-card"><div class="supplier-card-head"><div><h2>我的客资</h2><div class="supplier-muted">仅显示当前公司上传的客资，共 ${state.listTotal} 条</div></div><select class="supplier-select" id="supplier-status" style="width:auto"><option value="" ${state.listStatus===''?'selected':''}>全部</option>${['DRAFT','PENDING_REVIEW','READY_DISPATCH','DUPLICATE','INVALID'].map(option=>`<option value="${option}" ${state.listStatus===option?'selected':''}>${esc(labels[option])}</option>`).join('')}</select></div><div class="supplier-list">${rows.length?rows.join(''):empty('还没有上传客资')}</div>${pager}</section>`);
+  document.querySelector('#supplier-status').onchange=event=>{state.listStatus=event.target.value;state.listPage=1;renderList();};
+  const previous=document.querySelector('#previous-page');if(previous)previous.onclick=()=>{if(state.listPage>1){state.listPage-=1;renderList();}};
+  const next=document.querySelector('#next-page');if(next)next.onclick=()=>{if(state.listPage<totalPages){state.listPage+=1;renderList();}};
   document.querySelectorAll('[data-detail]').forEach(button=>button.onclick=()=>showDetail(button.dataset.detail));
   document.querySelectorAll('[data-edit]').forEach(button=>button.onclick=()=>editLead(button.dataset.edit));
   document.querySelectorAll('[data-submit]').forEach(button=>button.onclick=()=>submitLead(button.dataset.submit));
@@ -88,12 +106,12 @@ async function saveForm(item,submitAfter){
     let saved;if(item)saved=await api(`/v1.2/supplier/leads/${item.id}`,{method:'PATCH',body:JSON.stringify(formPayload())});else saved=await api('/v1.2/supplier/leads',{method:'POST',body:JSON.stringify(formPayload())});
     if(submitAfter){const result=await api(`/v1.2/supplier/leads/${saved.id}/submit`,{method:'POST'});toast(result.dedup?.decision==='CLEAR'?'已提交平台初审':'已提交，请等待重复结论复核');}
     else toast('草稿已保存');
-    state.editing=null;state.tab='list';await renderList();
+    state.editing=null;state.tab='list';state.listPage=1;await renderList();
   }catch(error){toast(error.message,'error');}
 }
 async function submitLead(id){
   openSheet('提交平台初审',`<p class="supplier-muted">提交后将校验字段、客户授权和手机号重复情况。通过资料初审后进入待人工派发池。</p><div class="supplier-notice">正常客资不会进行前置电话核验。</div><button class="supplier-btn primary block" id="confirm-submit" style="margin-top:14px">确认提交</button>`);
-  document.querySelector('#confirm-submit').onclick=async()=>{try{await api(`/v1.2/supplier/leads/${id}/submit`,{method:'POST'});closeSheet();toast('客资已提交平台初审');await renderList();}catch(error){toast(error.message,'error');}};
+  document.querySelector('#confirm-submit').onclick=async()=>{try{await api(`/v1.2/supplier/leads/${id}/submit`,{method:'POST'});closeSheet();toast('客资已提交平台初审');state.listPage=1;await renderList();}catch(error){toast(error.message,'error');}};
 }
 async function showDetail(id){
   try{const item=await api(`/v1.2/supplier/leads/${id}`);const fields={客户姓名:item.customer_name,联系电话:item.phone||item.phone_masked,服务地区:`${item.city||''} ${item.district||''}`,来源渠道:item.source_channel,业务类目:item.category_code,客户需求:item.need_summary,授权确认:item.consent_confirmed?'已确认':'未确认',客资状态:labels[item.status]||item.status,资料初审:labels[item.review_status]||item.review_status,去重结论:labels[item.duplicate_status]||item.duplicate_status,平台说明:item.review_note,提交时间:fmt(item.submitted_at),更新时间:fmt(item.updated_at)};openSheet('客资详情',`<dl class="supplier-detail">${Object.entries(fields).map(([name,val])=>`<dt>${esc(name)}</dt><dd>${esc(val??'--')}</dd>`).join('')}</dl>${item.status==='DRAFT'?`<button class="supplier-btn primary block" id="detail-edit" style="margin-top:14px">继续编辑</button>`:''}`);const edit=document.querySelector('#detail-edit');if(edit)edit.onclick=()=>{closeSheet();editLead(item.id);};}catch(error){toast(error.message,'error');}

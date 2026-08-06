@@ -2,7 +2,16 @@ import {request,query} from './api.js';
 import {closeOverlay,esc,fmt,openDrawer,openModal,toast} from './ui.js';
 
 const app=document.querySelector('#app');
-const state={me:null,tab:'platform',platformItems:[],supplierItems:[],cities:[],districts:[]};
+const state={
+  me:null,
+  tab:'platform',
+  platformItems:[],
+  supplierItems:[],
+  cities:[],
+  districts:[],
+  platformStatus:'',
+  supplierReviewStatus:'PENDING'
+};
 const can=code=>state.me?.permissions?.includes('*')||state.me?.permissions?.includes(code);
 const labels={DRAFT:'草稿',PENDING_REVIEW:'待资料初审',READY_DISPATCH:'待人工派发',DUPLICATE:'重复/疑似重复',INVALID:'无效',CLOSED:'已关闭',APPROVED:'已通过',REJECTED:'已驳回',PENDING:'待审核',CLEAR:'无重复',HARD_DUPLICATE:'90天硬重复',REWARD_DUPLICATE:'奖励重复',HISTORICAL_SUSPECT:'历史疑似',OVERRIDDEN:'已人工放行'};
 const statusClass=value=>({READY_DISPATCH:'ok',APPROVED:'ok',CLEAR:'ok',OVERRIDDEN:'blue',DRAFT:'',PENDING_REVIEW:'warn',PENDING:'warn',DUPLICATE:'warn',HARD_DUPLICATE:'bad',HISTORICAL_SUSPECT:'warn',INVALID:'bad',REJECTED:'bad'}[value]||'');
@@ -34,13 +43,16 @@ async function boot(){
 async function renderCurrent(){shell();showLoading();try{if(state.tab==='supplier')await renderSupplierQueue();else await renderPlatformLeads();}catch(error){fail(error);}}
 
 async function renderPlatformLeads(){
-  const status=value('#platform-status');
-  const data=await request('/v1.2/platform/leads'+query({page:1,page_size:200,status}));
+  const data=await request('/v1.2/platform/leads'+query({page:1,page_size:200,status:state.platformStatus}));
   state.platformItems=data.items||[];
   const stats={all:data.total||0,draft:state.platformItems.filter(item=>item.status==='DRAFT').length,ready:state.platformItems.filter(item=>item.status==='READY_DISPATCH').length,duplicate:state.platformItems.filter(item=>item.status==='DUPLICATE').length};
-  const rows=state.platformItems.map(item=>`<tr><td class="v12-customer"><strong>${esc(item.customer_name)}</strong><span>${esc(item.phone_masked||'--')}</span></td><td>${esc(item.city||'--')} ${esc(item.district||'')}</td><td>${esc(item.source_channel||'--')}</td><td>${badge(item.status)}<div style="margin-top:6px">${badge(item.duplicate_status)}</div></td><td>${fmt(item.submitted_at||item.created_at)}</td><td><div class="v12-actions"><button class="v12-btn small" data-detail="${item.id}">详情</button>${item.status==='DRAFT'?`<button class="v12-btn small" data-edit="${item.id}">编辑</button><button class="v12-btn small primary" data-submit="${item.id}">提交</button>`:''}</div></td></tr>`);
-  document.querySelector('#workspace').innerHTML=`<section class="v12-summary"><div class="v12-stat"><span>当前结果</span><strong>${stats.all}</strong></div><div class="v12-stat"><span>草稿</span><strong>${stats.draft}</strong></div><div class="v12-stat"><span>待人工派发</span><strong>${stats.ready}</strong></div><div class="v12-stat"><span>重复/疑似</span><strong>${stats.duplicate}</strong></div></section><section class="v12-panel"><div class="v12-toolbar"><div class="v12-toolbar-left"><h2>平台录入客资</h2><select class="v12-select" id="platform-status"><option value="">全部状态</option>${['DRAFT','READY_DISPATCH','DUPLICATE','INVALID','CLOSED'].map(option=>`<option value="${option}" ${status===option?'selected':''}>${esc(labels[option])}</option>`).join('')}</select><button class="v12-btn" id="platform-filter">查询</button></div><div class="v12-toolbar-right"><button class="v12-btn primary" id="new-platform-lead">新建客资</button></div></div>${table(['客户','服务地区','来源渠道','状态/去重','提交时间','操作'],rows,'暂无平台手工录入客资')}</section>`;
-  document.querySelector('#platform-filter').onclick=renderPlatformLeads;
+  const rows=state.platformItems.map(item=>{
+    const ownsDraft=can('*')||item.submitter_user_id===state.me.id;
+    const mutationActions=item.status==='DRAFT'&&ownsDraft?`<button class="v12-btn small" data-edit="${item.id}">编辑</button><button class="v12-btn small primary" data-submit="${item.id}">提交</button>`:'';
+    return `<tr><td class="v12-customer"><strong>${esc(item.customer_name)}</strong><span>${esc(item.phone_masked||'--')}</span></td><td>${esc(item.city||'--')} ${esc(item.district||'')}</td><td>${esc(item.source_channel||'--')}</td><td>${badge(item.status)}<div style="margin-top:6px">${badge(item.duplicate_status)}</div></td><td>${fmt(item.submitted_at||item.created_at)}</td><td><div class="v12-actions"><button class="v12-btn small" data-detail="${item.id}">详情</button>${mutationActions}</div></td></tr>`;
+  });
+  document.querySelector('#workspace').innerHTML=`<section class="v12-summary"><div class="v12-stat"><span>当前结果</span><strong>${stats.all}</strong></div><div class="v12-stat"><span>草稿</span><strong>${stats.draft}</strong></div><div class="v12-stat"><span>待人工派发</span><strong>${stats.ready}</strong></div><div class="v12-stat"><span>重复/疑似</span><strong>${stats.duplicate}</strong></div></section><section class="v12-panel"><div class="v12-toolbar"><div class="v12-toolbar-left"><h2>平台录入客资</h2><select class="v12-select" id="platform-status"><option value="">全部状态</option>${['DRAFT','READY_DISPATCH','DUPLICATE','INVALID','CLOSED'].map(option=>`<option value="${option}" ${state.platformStatus===option?'selected':''}>${esc(labels[option])}</option>`).join('')}</select><button class="v12-btn" id="platform-filter">查询</button></div><div class="v12-toolbar-right"><button class="v12-btn primary" id="new-platform-lead">新建客资</button></div></div>${table(['客户','服务地区','来源渠道','状态/去重','提交时间','操作'],rows,'暂无平台手工录入客资')}</section>`;
+  document.querySelector('#platform-filter').onclick=()=>{state.platformStatus=document.querySelector('#platform-status').value;renderPlatformLeads();};
   document.querySelector('#new-platform-lead').onclick=()=>openLeadForm(null);
   document.querySelectorAll('[data-detail]').forEach(button=>button.onclick=()=>showPlatformDetail(button.dataset.detail));
   document.querySelectorAll('[data-edit]').forEach(button=>button.onclick=()=>openLeadForm(state.platformItems.find(item=>item.id===button.dataset.edit)));
@@ -85,18 +97,38 @@ async function submitPlatformLead(id){
   document.querySelector('#confirm-submit').onclick=async()=>{try{const result=await request(`/v1.2/platform/leads/${id}/submit`,{method:'POST'});closeOverlay();toast(result.dedup?.decision==='CLEAR'?'提交成功，已进入待人工派发池':'提交完成，请处理去重结论');await renderPlatformLeads();}catch(error){toast(error.message,'error');}};
 }
 
+function supplierActions(item){
+  const actions=[`<button class="v12-btn small" data-supplier-detail="${item.id}">详情</button>`];
+  if(item.status==='DUPLICATE'){
+    if(can('lead.dedup.override'))actions.push(`<button class="v12-btn small primary" data-dedup-override="${item.id}">去重放行</button>`);
+    actions.push(`<button class="v12-btn small danger" data-review-reject="${item.id}">驳回</button>`);
+  }else if(item.review_status==='PENDING'&&item.status==='PENDING_REVIEW'){
+    actions.push(`<button class="v12-btn small primary" data-review-approve="${item.id}">通过</button>`);
+    actions.push(`<button class="v12-btn small danger" data-review-reject="${item.id}">驳回</button>`);
+  }
+  return actions.join('');
+}
+
 async function renderSupplierQueue(){
-  const reviewStatus=value('#supplier-review-status')||'PENDING';
-  const data=await request('/v1.2/admin/supplier-leads'+query({page:1,page_size:200,review_status:reviewStatus}));
+  const data=await request('/v1.2/admin/supplier-leads'+query({page:1,page_size:200,review_status:state.supplierReviewStatus}));
   state.supplierItems=data.items||[];
-  const rows=state.supplierItems.map(item=>`<tr><td class="v12-customer"><strong>${esc(item.customer_name)}</strong><span>${esc(item.phone_masked||'--')}</span></td><td>${esc(item.city||'--')} ${esc(item.district||'')}</td><td>${esc(item.supplier_company_id||'--')}</td><td>${badge(item.review_status)}<div style="margin-top:6px">${badge(item.duplicate_status)}</div></td><td>${fmt(item.submitted_at||item.created_at)}</td><td><div class="v12-actions"><button class="v12-btn small" data-supplier-detail="${item.id}">详情</button>${item.review_status==='PENDING'&&item.status!=='DUPLICATE'?`<button class="v12-btn small primary" data-review-approve="${item.id}">通过</button><button class="v12-btn small danger" data-review-reject="${item.id}">驳回</button>`:''}</div></td></tr>`);
-  document.querySelector('#workspace').innerHTML=`<section class="v12-panel"><div class="v12-toolbar"><div class="v12-toolbar-left"><h2>供应商资料初审</h2><select class="v12-select" id="supplier-review-status"><option value="PENDING" ${reviewStatus==='PENDING'?'selected':''}>待审核</option><option value="APPROVED" ${reviewStatus==='APPROVED'?'selected':''}>已通过</option><option value="REJECTED" ${reviewStatus==='REJECTED'?'selected':''}>已驳回</option><option value="" ${reviewStatus===''?'selected':''}>全部</option></select><button class="v12-btn" id="supplier-filter">查询</button></div><div class="v12-toolbar-right"><span class="v12-help">资料初审仅核对字段、来源、授权和重复结论</span></div></div>${table(['客户','服务地区','供应商公司','初审/去重','提交时间','操作'],rows,'暂无供应商客资')}</section>`;
-  document.querySelector('#supplier-filter').onclick=renderSupplierQueue;
+  const rows=state.supplierItems.map(item=>`<tr><td class="v12-customer"><strong>${esc(item.customer_name)}</strong><span>${esc(item.phone_masked||'--')}</span></td><td>${esc(item.city||'--')} ${esc(item.district||'')}</td><td>${esc(item.supplier_company_id||'--')}</td><td>${badge(item.review_status)}<div style="margin-top:6px">${badge(item.duplicate_status)}</div></td><td>${fmt(item.submitted_at||item.created_at)}</td><td><div class="v12-actions">${supplierActions(item)}</div></td></tr>`);
+  document.querySelector('#workspace').innerHTML=`<section class="v12-panel"><div class="v12-toolbar"><div class="v12-toolbar-left"><h2>供应商资料初审</h2><select class="v12-select" id="supplier-review-status"><option value="PENDING" ${state.supplierReviewStatus==='PENDING'?'selected':''}>待审核</option><option value="APPROVED" ${state.supplierReviewStatus==='APPROVED'?'selected':''}>已通过</option><option value="REJECTED" ${state.supplierReviewStatus==='REJECTED'?'selected':''}>已驳回</option><option value="" ${state.supplierReviewStatus===''?'selected':''}>全部</option></select><button class="v12-btn" id="supplier-filter">查询</button></div><div class="v12-toolbar-right"><span class="v12-help">资料初审仅核对字段、来源、授权和重复结论</span></div></div>${table(['客户','服务地区','供应商公司','初审/去重','提交时间','操作'],rows,'暂无供应商客资')}</section>`;
+  document.querySelector('#supplier-filter').onclick=()=>{state.supplierReviewStatus=document.querySelector('#supplier-review-status').value;renderSupplierQueue();};
   document.querySelectorAll('[data-supplier-detail]').forEach(button=>button.onclick=()=>showSupplierDetail(button.dataset.supplierDetail));
   document.querySelectorAll('[data-review-approve]').forEach(button=>button.onclick=()=>openSupplierReview(button.dataset.reviewApprove,true));
   document.querySelectorAll('[data-review-reject]').forEach(button=>button.onclick=()=>openSupplierReview(button.dataset.reviewReject,false));
+  document.querySelectorAll('[data-dedup-override]').forEach(button=>button.onclick=()=>openDedupOverride(button.dataset.dedupOverride));
 }
+
 async function showSupplierDetail(id){try{const item=await request(`/v1.2/admin/supplier-leads/${id}`);openDrawer('供应商客资详情',detailMarkup(item));}catch(error){toast(error.message,'error');}}
+
+function openDedupOverride(id){
+  const item=state.supplierItems.find(row=>row.id===id);if(!item)return;
+  openModal('去重人工放行',`${detailMarkup(item)}<div class="v12-note" style="margin-top:16px">放行后客资将返回“待资料初审”，仍需再次执行资料初审。请仅在确认属于独立有效需求时使用。</div><div class="v12-field" style="margin-top:16px"><label>放行原因 *</label><textarea class="v12-textarea" id="dedup-reason" placeholder="至少 5 个字符，说明为何不是同一重复需求"></textarea></div>`,`<button data-close class="v12-btn">取消</button><button id="confirm-dedup-override" class="v12-btn primary">确认放行</button>`);
+  document.querySelector('#confirm-dedup-override').onclick=async()=>{const reason=value('#dedup-reason');if(reason.length<5){toast('放行原因至少 5 个字符','error');return;}try{await request(`/v1.2/admin/leads/${id}/dedup-override`,{method:'POST',body:JSON.stringify({event_id:null,reason})});closeOverlay();toast('已放行，客资返回待资料初审');state.supplierReviewStatus='PENDING';await renderSupplierQueue();}catch(error){toast(error.message,'error');}};
+}
+
 function openSupplierReview(id,approve){
   const item=state.supplierItems.find(row=>row.id===id);if(!item)return;
   openModal(approve?'通过供应商客资':'驳回供应商客资',`${detailMarkup(item)}<div class="v12-field" style="margin-top:16px"><label>${approve?'审核说明':'驳回原因 *'}</label><textarea class="v12-textarea" id="review-note" placeholder="${approve?'可填写资料核验说明':'请明确告知供应商需要修正的内容'}"></textarea></div>`,`<button data-close class="v12-btn">取消</button><button id="confirm-review" class="v12-btn ${approve?'primary':'danger'}">确认${approve?'通过':'驳回'}</button>`);
