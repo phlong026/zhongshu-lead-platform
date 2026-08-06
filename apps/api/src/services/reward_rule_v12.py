@@ -48,7 +48,7 @@ class SupplierRewardRule:
         }
 
 
-def _validate_values(values: dict[str, Any]) -> dict[str, int | None]:
+def normalize_reward_rule_values(values: dict[str, Any]) -> dict[str, int | None]:
     try:
         ratio_bps = int(values.get("ratio_bps", 3000))
         min_points = int(values.get("min_points", 0))
@@ -83,18 +83,31 @@ def _validate_values(values: dict[str, Any]) -> dict[str, int | None]:
     }
 
 
+def rule_from_values(
+    values: dict[str, Any],
+    *,
+    version: int,
+    config_id: str | None = None,
+    effective_at: datetime | None = None,
+) -> SupplierRewardRule:
+    return SupplierRewardRule(
+        version=int(version),
+        config_id=config_id,
+        effective_at=as_utc(effective_at),
+        **normalize_reward_rule_values(values),
+    )
+
+
 def default_supplier_reward_rule() -> SupplierRewardRule:
-    values = _validate_values({})
-    return SupplierRewardRule(version=1, **values)
+    return rule_from_values({}, version=1)
 
 
 def rule_from_config(item: SystemConfig) -> SupplierRewardRule:
-    values = _validate_values(dict(item.value_json or {}))
-    return SupplierRewardRule(
+    return rule_from_values(
+        dict(item.value_json or {}),
         version=int(item.version),
         config_id=item.id,
-        effective_at=as_utc(item.effective_at),
-        **values,
+        effective_at=item.effective_at,
     )
 
 
@@ -135,7 +148,7 @@ def create_supplier_reward_rule(
     created_by: str,
     publish_immediately: bool = False,
 ) -> SystemConfig:
-    normalized = _validate_values(values)
+    normalized = normalize_reward_rule_values(values)
     latest = db.scalar(
         select(SystemConfig.version)
         .where(
@@ -188,7 +201,7 @@ def publish_supplier_reward_rule(
         or item.key != REWARD_RULE_KEY
     ):
         raise AppError("REWARD_RULE_NOT_FOUND", "供应商奖励规则不存在", 404)
-    _validate_values(dict(item.value_json or {}))
+    normalize_reward_rule_values(dict(item.value_json or {}))
     if item.status == ConfigStatus.PUBLISHED.value:
         return item
     retire_published_reward_rules(db, exclude_id=item.id)
