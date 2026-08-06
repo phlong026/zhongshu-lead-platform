@@ -1,0 +1,60 @@
+name: V1.2 CI
+
+on:
+  pull_request:
+    branches: [release/v1.2.0]
+  push:
+    branches:
+      - release/v1.2.0
+      - feature/v1.2-*
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v12-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-postgres.txt
+
+      - name: Run backend and repository checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          pytest -q
+          python scripts/check_js.py
+          python scripts/secret_scan.py
+          python -m compileall -q apps scripts migrations
+          git diff --check
+
+      - name: Verify V1.0.1 to V1.2 migration on SQLite
+        shell: bash
+        env:
+          DATABASE_URL: sqlite:///./dist/v12-migration-smoke.db
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          python -m alembic -c alembic.ini upgrade head
+          python -m alembic -c alembic.ini downgrade 0001_initial
+          python -m alembic -c alembic.ini upgrade head
