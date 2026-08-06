@@ -21,15 +21,26 @@ ROLE_PERMISSION_MATRIX: dict[str, tuple[str, list[str]]] = {
             "audit.read",
         ],
     ),
+    "LEAD_ENTRY": (
+        "平台客资录入员",
+        [
+            "lead.read",
+            "lead.manual.manage",
+        ],
+    ),
     "OPERATION": (
         "运营人员",
         [
             "lead.read",
             "lead.edit",
+            "lead.manual.manage",
+            "lead.supplier.review",
+            "lead.dedup.override",
             "lead.dispatch",
             "assignment.read",
             "assignment.release",
             "company.read_eligibility",
+            "company.profile.review",
             "verification.read",
             "return.read",
             "notification.retry",
@@ -69,6 +80,8 @@ ROLE_PERMISSION_MATRIX: dict[str, tuple[str, list[str]]] = {
             "assignment.own.read",
             "assignment.own.claim",
             "lead.own.phone.read",
+            "supplier.lead.manage",
+            "company.profile.manage",
             "followup.own.manage",
             "return.own.manage",
             "points.own.read",
@@ -85,7 +98,7 @@ def seed_rbac(db: Session) -> None:
         permission = db.scalar(select(Permission).where(Permission.code == code))
         if not permission:
             module = code.split(".", 1)[0] if code != "*" else "system"
-            permission = Permission(code=code, name=code, module=module, sensitive=code in {"*", "lead.phone.read", "points.recharge", "points.reverse"})
+            permission = Permission(code=code, name=code, module=module, sensitive=code in {"*", "lead.phone.read", "points.recharge", "points.reverse", "lead.dedup.override"})
             db.add(permission)
             db.flush()
         permission_cache[code] = permission
