@@ -17,6 +17,7 @@ ROLE_PERMISSION_MATRIX: dict[str, tuple[str, list[str]]] = {
             "company.read",
             "assignment.read",
             "points.read",
+            "reward.read",
             "return.read",
             "audit.read",
         ],
@@ -43,6 +44,7 @@ ROLE_PERMISSION_MATRIX: dict[str, tuple[str, list[str]]] = {
             "company.profile.review",
             "verification.read",
             "return.read",
+            "reward.read",
             "notification.retry",
             "dashboard.operation.read",
         ],
@@ -65,6 +67,9 @@ ROLE_PERMISSION_MATRIX: dict[str, tuple[str, list[str]]] = {
             "points.package.manage",
             "points.recharge",
             "points.reverse",
+            "reward.read",
+            "reward.manage",
+            "reward.reverse",
             "dashboard.finance.read",
             "company.read",
         ],
@@ -81,6 +86,7 @@ ROLE_PERMISSION_MATRIX: dict[str, tuple[str, list[str]]] = {
             "assignment.own.claim",
             "lead.own.phone.read",
             "supplier.lead.manage",
+            "supplier.reward.own.read",
             "company.profile.manage",
             "followup.own.manage",
             "return.own.manage",
@@ -94,11 +100,25 @@ ROLE_PERMISSION_MATRIX: dict[str, tuple[str, list[str]]] = {
 def seed_rbac(db: Session) -> None:
     permission_cache: dict[str, Permission] = {}
     all_codes = {code for _, codes in ROLE_PERMISSION_MATRIX.values() for code in codes}
+    sensitive_codes = {
+        "*",
+        "lead.phone.read",
+        "points.recharge",
+        "points.reverse",
+        "lead.dedup.override",
+        "reward.manage",
+        "reward.reverse",
+    }
     for code in sorted(all_codes):
         permission = db.scalar(select(Permission).where(Permission.code == code))
         if not permission:
             module = code.split(".", 1)[0] if code != "*" else "system"
-            permission = Permission(code=code, name=code, module=module, sensitive=code in {"*", "lead.phone.read", "points.recharge", "points.reverse", "lead.dedup.override"})
+            permission = Permission(
+                code=code,
+                name=code,
+                module=module,
+                sensitive=code in sensitive_codes,
+            )
             db.add(permission)
             db.flush()
         permission_cache[code] = permission
