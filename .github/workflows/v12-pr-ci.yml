@@ -21,10 +21,12 @@ jobs:
   full-quality:
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
-      - name: Checkout
+      - name: Checkout full history
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -95,12 +97,23 @@ jobs:
             exit "$status"
           fi
 
+      - name: Build reviewed V1.2 release candidate package
+        run: python scripts/package_release.py --version V1.2.0-rc --output-dir dist/release
+
       - name: Upload generated OpenAPI contract
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: v12-openapi-${{ github.run_id }}
           path: docs/api/openapi.json
+          if-no-files-found: error
+
+      - name: Upload V1.2 release candidate package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v12-release-package-${{ github.run_id }}
+          path: dist/release
           if-no-files-found: error
 
   postgres-migration:
