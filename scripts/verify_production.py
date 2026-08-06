@@ -28,11 +28,17 @@ REQUIRED_FILES = (
     "docker/scheduler-entrypoint.sh",
     "scripts/backup_postgres.sh",
     "scripts/restore_postgres.sh",
+    "scripts/migrate_v12_data.py",
+    "scripts/reconcile_v12.py",
+    "docs/runbooks/PRODUCTION_CHECKLIST_V1.2.md",
+    "docs/runbooks/V1.2_MIGRATION_RUNBOOK.md",
+    "docs/runbooks/V1.2_GO_NO_GO.md",
+    "docs/runbooks/V1.2_ROLLBACK.md",
 )
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Verify V1.0.1 production deployment prerequisites")
+    parser = argparse.ArgumentParser(description="Verify V1.2 production deployment prerequisites")
     parser.add_argument("--env-file", type=Path, default=ROOT / ".env")
     parser.add_argument("--require-certificates", action="store_true")
     args = parser.parse_args()
@@ -46,6 +52,11 @@ def main() -> int:
     validation = validate_production_settings(settings, values)
     errors.extend(validation.errors)
     warnings.extend(validation.warnings)
+    app_image = values.get("APP_IMAGE", "").strip()
+    if not app_image or "example" in app_image.lower() or "1.2." not in app_image:
+        errors.append("APP_IMAGE 必须指向已评审的 V1.2 镜像")
+    elif "@sha256:" not in app_image:
+        warnings.append("APP_IMAGE 尚未使用 sha256 digest 固定；正式发布窗口建议改为不可变 digest")
     if args.require_certificates:
         for relative in ("infra/certs/fullchain.pem", "infra/certs/privkey.pem"):
             if not (ROOT / relative).is_file():
@@ -53,7 +64,13 @@ def main() -> int:
     compose = ROOT / "docker-compose.prod.yml"
     if compose.exists():
         content = compose.read_text(encoding="utf-8")
-        for marker in ("read_only: true", "no-new-privileges:true", "cap_drop:", "healthcheck:"):
+        for marker in (
+            "read_only: true",
+            "no-new-privileges:true",
+            "cap_drop:",
+            "healthcheck:",
+            "APP_IMAGE must reference the reviewed V1.2 image",
+        ):
             if marker not in content:
                 errors.append(f"生产 Compose 缺少安全/健康配置：{marker}")
     nginx = ROOT / "infra/nginx/production.conf.template"
@@ -64,7 +81,18 @@ def main() -> int:
                 errors.append(f"生产 Nginx 缺少配置：{marker}")
     docker = shutil.which("docker")
     if docker and args.env_file.exists():
-        command = [docker, "compose", "--env-file", str(args.env_file), "-f", str(ROOT / "docker-compose.yml"), "-f", str(compose), "config", "--quiet"]
+        command = [
+            docker,
+            "compose",
+            "--env-file",
+            str(args.env_file),
+            "-f",
+            str(ROOT / "docker-compose.yml"),
+            "-f",
+            str(compose),
+            "config",
+            "--quiet",
+        ]
         result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
         if result.returncode:
             errors.append("docker compose config 校验失败：" + (result.stderr.strip() or result.stdout.strip()))
