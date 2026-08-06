@@ -85,7 +85,7 @@ def test_health_and_api_responses_include_version_security_and_no_store(api_clie
     client, _ = api_client
     health = client.get("/health")
     assert health.status_code == 200
-    assert health.json()["version"] == "1.0.1"
+    assert health.json()["version"] == client.app.version
     ready = client.get("/health/ready")
     assert ready.status_code == 200
     assert ready.json()["database"] == "ok"

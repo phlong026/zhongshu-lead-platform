@@ -12,7 +12,7 @@ class Settings(BaseSettings):
 
     app_env: str = "development"
     app_name: str = "众墅之家客资平台"
-    app_version: str = "1.0.1"
+    app_version: str = "1.2.0"
     log_level: str = "INFO"
     log_json: bool = True
     app_base_url: str = "http://localhost:8000"
@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     jwt_expire_minutes: int = 1440
     field_encryption_key: str = "dev-only-key-change-in-production"
     phone_hash_secret: str = "dev-phone-hash-secret"
+    phone_fingerprint_secret: str = ""
+    lead_hard_duplicate_days: int = 90
+    lead_reward_duplicate_days: int = 180
+    lead_historical_suspect_days: int = 365
     wechat_app_id: str = ""
     wechat_app_secret: str = ""
     wechat_oauth_redirect_uri: str = "http://localhost:8000/api/v1/auth/wechat/callback"
@@ -55,6 +59,21 @@ class Settings(BaseSettings):
     @classmethod
     def normalize_storage_dir(cls, value: str) -> str:
         return str(Path(value))
+
+    @field_validator(
+        "lead_hard_duplicate_days",
+        "lead_reward_duplicate_days",
+        "lead_historical_suspect_days",
+    )
+    @classmethod
+    def validate_positive_window(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("去重窗口必须大于 0")
+        return value
+
+    @property
+    def effective_phone_fingerprint_secret(self) -> str:
+        return self.phone_fingerprint_secret or self.phone_hash_secret
 
     @property
     def cors_origin_list(self) -> list[str]:
