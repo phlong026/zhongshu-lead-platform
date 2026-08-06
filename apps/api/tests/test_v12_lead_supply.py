@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-
 import pytest
 
 from apps.api.src.core.auth import Principal
@@ -86,6 +84,28 @@ def test_platform_manual_submission_enters_ready_pool_without_pre_verification(d
     assert lead.status == LeadV12Status.READY_DISPATCH.value
     assert lead.review_status == "APPROVED"
     assert lead.phone_fingerprint
+
+
+def test_clear_dedup_result_cannot_be_artificially_overridden(db) -> None:
+    db.add(Region(code="420100", name="武汉市", level="CITY", aliases=[], active=True))
+    _, user = _seed_identity(db, company_code="CLEAR001")
+    principal = _principal(user.id, None, "lead.manual.manage")
+    lead = create_draft(
+        db,
+        principal=principal,
+        source_kind=LeadSourceKind.PLATFORM_MANUAL,
+        values=_valid_values("13900139000"),
+    )
+    result = submit_draft(db, lead=lead, principal=principal)
+    assert result.decision is DuplicateDecision.CLEAR
+    with pytest.raises(ValueError, match="仅重复或历史疑似结论"):
+        override_duplicate(
+            db,
+            lead=lead,
+            event_id=result.event_id,
+            reason="错误尝试覆盖正常客资",
+            approved_by=user.id,
+        )
 
 
 def test_recent_duplicate_is_blocked_and_can_be_audited_override(db) -> None:
