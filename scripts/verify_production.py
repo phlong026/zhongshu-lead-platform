@@ -13,8 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.validate_production_env import load_dotenv
-from apps.api.src.core.config import Settings
+from scripts.validate_production_env import derive_compose_database_url, load_dotenv, settings_for_validation
 from apps.api.src.core.production import validate_production_settings
 
 
@@ -49,7 +48,11 @@ def main() -> int:
         if not (ROOT / relative).is_file():
             errors.append(f"缺少文件：{relative}")
     values = {**load_dotenv(args.env_file), **dict(os.environ)}
-    settings = Settings(_env_file=args.env_file if args.env_file.exists() else None)
+    if not values.get("DATABASE_URL"):
+        derived = derive_compose_database_url(values)
+        if derived:
+            values["DATABASE_URL"] = derived
+    settings = settings_for_validation(args.env_file, values)
     validation = validate_production_settings(settings, values)
     errors.extend(validation.errors)
     warnings.extend(validation.warnings)
