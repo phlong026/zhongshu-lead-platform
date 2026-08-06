@@ -113,6 +113,17 @@ def _run(
     }
 
 
+def _unavailable_check(name: str, command: list[str], message: str) -> dict[str, Any]:
+    return {
+        "name": name,
+        "command": command,
+        "returncode": 127,
+        "stdout": "",
+        "stderr": message,
+        "valid": False,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="V1.2 production Go/No-Go preflight")
     parser.add_argument("--env-file", type=Path, default=ROOT / ".env")
@@ -131,7 +142,8 @@ def main() -> int:
     # Runtime-injected variables have the same precedence used by Settings and
     # validate_production_env.py, so the report reflects the process that will run.
     env = {**values, **os.environ}
-    if args.compose_database and not env.get("DATABASE_URL"):
+    explicit_database_url = bool(env.get("DATABASE_URL", "").strip())
+    if args.compose_database and not explicit_database_url:
         derived = _database_url_from_postgres(env)
         if derived:
             env["DATABASE_URL"] = derived
@@ -159,44 +171,66 @@ def main() -> int:
         "scripts/reconcile_v12.py",
         *(["--allow-incomplete-backfill"] if args.allow_incomplete_backfill else []),
     ]
+
+    checks = [_run(name, command, env=env, sensitive_values=sensitive_values) for name, command in commands]
     if args.compose_database:
         if not shutil.which("docker"):
-            commands.extend(
+            checks.extend(
                 [
-                    ("database-revision", ["docker", "compose", "<unavailable>"]),
-                    ("v12-reconciliation", ["docker", "compose", "<unavailable>"]),
+                    _unavailable_check(
+                        "database-revision",
+                        ["docker", "compose", "<unavailable>"],
+                        "docker CLI 不可用，无法在 Compose 网络内验证生产数据库",
+                    ),
+                    _unavailable_check(
+                        "v12-reconciliation",
+                        ["docker", "compose", "<unavailable>"],
+                        "docker CLI 不可用，无法在 Compose 网络内验证生产数据库",
+                    ),
                 ]
             )
         else:
-            commands.extend(
+            checks.extend(
                 [
-                    ("database-revision", _compose_python_command(env_file, database_revision)),
-                    ("v12-reconciliation", _compose_python_command(env_file, reconciliation)),
+                    _run(
+                        "database-revision",
+                        _compose_python_command(env_file, database_revision),
+                        env=env,
+                        sensitive_values=sensitive_values,
+                    ),
+                    _run(
+                        "v12-reconciliation",
+                        _compose_python_command(env_file, reconciliation),
+                        env=env,
+                        sensitive_values=sensitive_values,
+                    ),
                 ]
             )
-    else:
-        commands.extend(
+    elif explicit_database_url:
+        checks.extend(
             [
-                ("database-revision", [python, *database_revision]),
-                ("v12-reconciliation", [python, *reconciliation]),
+                _run(
+                    "database-revision",
+                    [python, *database_revision],
+                    env=env,
+                    sensitive_values=sensitive_values,
+                ),
+                _run(
+                    "v12-reconciliation",
+                    [python, *reconciliation],
+                    env=env,
+                    sensitive_values=sensitive_values,
+                ),
             ]
         )
-
-    checks: list[dict[str, Any]] = []
-    for name, command in commands:
-        if command[-1:] == ["<unavailable>"]:
-            checks.append(
-                {
-                    "name": name,
-                    "command": command,
-                    "returncode": 127,
-                    "stdout": "",
-                    "stderr": "docker CLI 不可用，无法在 Compose 网络内验证生产数据库",
-                    "valid": False,
-                }
-            )
-            continue
-        checks.append(_run(name, command, env=env, sensitive_values=sensitive_values))
+    else:
+        message = "未显式配置 DATABASE_URL；Docker 生产部署必须使用 --compose-database，禁止回退到本地 SQLite"
+        checks.extend(
+            [
+                _unavailable_check("database-revision", [python, *database_revision], message),
+                _unavailable_check("v12-reconciliation", [python, *reconciliation], message),
+            ]
+        )
 
     payload = {
         "valid": all(item["valid"] for item in checks),
