@@ -36,6 +36,7 @@ def test_reconciliation_accepts_legacy_approved_return_refund_linkage(db) -> Non
     db.add(assignment)
     db.flush()
     claim = PointsLedger(
+        id="a-legacy-claim-ledger",
         account_id=account.id,
         company_id=company.id,
         ledger_type="CLAIM",
@@ -47,6 +48,7 @@ def test_reconciliation_accepts_legacy_approved_return_refund_linkage(db) -> Non
         metadata_json={},
     )
     refund = PointsLedger(
+        id="z-legacy-refund-ledger",
         account_id=account.id,
         company_id=company.id,
         ledger_type="RETURN",
