@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from math import floor
 from typing import Any
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import Index, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..core.config import get_settings
@@ -14,19 +14,34 @@ from ..core.errors import AppError
 from ..core.models import Assignment, AssignmentEvent, Company, Lead, PointsAccount, PointsLedger
 from ..core.models_v12 import CompanyServiceAreaV12, SupplierLeadReward
 from ..core.security import decrypt_text, mask_phone
+from ..core.time import as_utc
 from ..core.v12_enums import DuplicateDecision, LeadV12Status, RewardStatus
 from .company_profile_v12 import has_lead_capability, require_lead_capability
-from .points_service import change_points, points_available_for_dispatch, resolve_price
+from .points_service import change_points, resolve_price
 from .workday_calendar import WorkdayCalendarService
 
 settings = get_settings()
 
-RECEIVER_HISTORY_STATUSES = {
+ACTIVE_ASSIGNMENT_STATUS_VALUES = tuple(item.value for item in ACTIVE_ASSIGNMENT_STATUSES)
+CLAIMED_CONTACT_STATUSES = {
     AssignmentStatus.CLAIMED.value,
     AssignmentStatus.FOLLOWING.value,
     AssignmentStatus.RETURN_PENDING.value,
     AssignmentStatus.COMPLETED.value,
 }
+RECEIVER_HISTORY_STATUSES = CLAIMED_CONTACT_STATUSES
+
+# Base.metadata.create_all is still used in development and tests. Register the
+# same partial unique index that migration 0003 creates for PostgreSQL/SQLite.
+_active_assignment_predicate = Assignment.__table__.c.status.in_(ACTIVE_ASSIGNMENT_STATUS_VALUES)
+if not any(index.name == "uq_assignments_active_lead_v12" for index in Assignment.__table__.indexes):
+    Index(
+        "uq_assignments_active_lead_v12",
+        Assignment.__table__.c.lead_id,
+        unique=True,
+        sqlite_where=_active_assignment_predicate,
+        postgresql_where=_active_assignment_predicate,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,23 +92,46 @@ def _region_matches(db: Session, company_id: str, lead: Lead) -> bool:
     ) is not None
 
 
+def _points_snapshot(db: Session, company_id: str, *, lock_account: bool = False) -> tuple[int, int, int]:
+    """Read balance/reservations without creating an account during a GET.
+
+    Dispatch calls this while the company row and points account are locked, so
+    two concurrent manual dispatches cannot reserve the same points twice.
+    """
+
+    stmt = select(PointsAccount).where(PointsAccount.company_id == company_id)
+    if lock_account:
+        stmt = stmt.with_for_update()
+    account = db.scalar(stmt)
+    balance = int(account.balance) if account is not None else 0
+    reserved = db.scalar(
+        select(func.coalesce(func.sum(Assignment.points_price), 0)).where(
+            Assignment.company_id == company_id,
+            Assignment.status == AssignmentStatus.PENDING_CLAIM.value,
+        )
+    ) or 0
+    return balance, int(reserved), balance - int(reserved)
+
+
 def _receiver_duplicate_assignment(
     db: Session,
     *,
     lead: Lead,
     company_id: str,
     exclude_assignment_id: str | None = None,
+    now: datetime | None = None,
 ) -> Assignment | None:
-    cutoff = datetime.now(timezone.utc) - timedelta(days=settings.lead_historical_suspect_days)
-    fingerprint_match = Lead.phone_fingerprint == lead.phone_fingerprint if lead.phone_fingerprint else False
-    legacy_match = Lead.phone_hash == lead.phone_hash
+    cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=settings.lead_historical_suspect_days)
+    match_clauses = [Lead.phone_hash == lead.phone_hash]
+    if lead.phone_fingerprint:
+        match_clauses.insert(0, Lead.phone_fingerprint == lead.phone_fingerprint)
     filters = [
         Assignment.company_id == company_id,
         Assignment.status.in_(RECEIVER_HISTORY_STATUSES),
         Assignment.claimed_at.is_not(None),
         Assignment.claimed_at >= cutoff,
         Assignment.lead_id != lead.id,
-        or_(fingerprint_match, legacy_match),
+        or_(*match_clauses),
     ]
     if exclude_assignment_id:
         filters.append(Assignment.id != exclude_assignment_id)
@@ -106,7 +144,13 @@ def _receiver_duplicate_assignment(
     )
 
 
-def evaluate_candidate(db: Session, *, lead: Lead, company: Company) -> CandidateResult:
+def evaluate_candidate(
+    db: Session,
+    *,
+    lead: Lead,
+    company: Company,
+    lock_account: bool = False,
+) -> CandidateResult:
     reasons: list[str] = []
     if company.status != "ACTIVE":
         reasons.append("COMPANY_INACTIVE")
@@ -121,7 +165,7 @@ def evaluate_candidate(db: Session, *, lead: Lead, company: Company) -> Candidat
     if duplicate_assignment is not None:
         reasons.append("DUPLICATE_TO_RECEIVER")
     points_price, rule = resolve_price(db, lead, company)
-    balance, reserved, available = points_available_for_dispatch(db, company.id)
+    balance, reserved, available = _points_snapshot(db, company.id, lock_account=lock_account)
     if available < points_price:
         reasons.append("POINTS_INSUFFICIENT")
     return CandidateResult(
@@ -153,12 +197,15 @@ def list_dispatch_pool(
     page_no: int = 1,
     page_size: int = 20,
 ) -> tuple[list[Lead], int]:
-    filters = [Lead.status == LeadV12Status.READY_DISPATCH.value]
+    filters = [
+        Lead.status == LeadV12Status.READY_DISPATCH.value,
+        Lead.current_assignment_id.is_(None),
+    ]
     if region_code:
         filters.append(Lead.region_code == region_code)
     if source_kind:
         filters.append(Lead.source_kind == source_kind)
-    total = db.scalar(select(__import__("sqlalchemy").func.count(Lead.id)).where(*filters)) or 0
+    total = db.scalar(select(func.count(Lead.id)).where(*filters)) or 0
     items = db.scalars(
         select(Lead)
         .where(*filters)
@@ -183,21 +230,40 @@ def dispatch_manually(
         if existing.lead_id != lead_id or existing.company_id != company_id:
             raise AppError("IDEMPOTENCY_CONFLICT", "幂等键已被其他派发请求使用", 409)
         return existing
+
     lead = get_dispatch_lead(db, lead_id, lock=True)
-    if lead.status != LeadV12Status.READY_DISPATCH.value:
-        raise AppError("LEAD_NOT_READY_DISPATCH", "客资当前不在待派发池", 409, {"status": lead.status})
+
+    # A same-key request may have completed while this transaction waited for
+    # the lead lock. Recheck before validating the now-transitioned lead state.
+    existing = db.scalar(select(Assignment).where(Assignment.idempotency_key == idempotency_key))
+    if existing:
+        if existing.lead_id != lead_id or existing.company_id != company_id:
+            raise AppError("IDEMPOTENCY_CONFLICT", "幂等键已被其他派发请求使用", 409)
+        return existing
+
+    if lead.status != LeadV12Status.READY_DISPATCH.value or lead.current_assignment_id:
+        raise AppError(
+            "LEAD_NOT_READY_DISPATCH",
+            "客资当前不在待派发池",
+            409,
+            {"status": lead.status, "current_assignment_id": lead.current_assignment_id},
+        )
     active = db.scalar(
         select(Assignment).where(
             Assignment.lead_id == lead.id,
-            Assignment.status.in_([str(item) for item in ACTIVE_ASSIGNMENT_STATUSES]),
+            Assignment.status.in_(ACTIVE_ASSIGNMENT_STATUS_VALUES),
         )
     )
     if active:
         raise AppError("LEAD_ALREADY_ASSIGNED", "客资已有有效派发单", 409, {"assignment_id": active.id})
-    company = db.get(Company, company_id)
+
+    # Serialize point reservations for this receiver. Company creation normally
+    # creates the points account; locking the company also covers missing legacy
+    # accounts without introducing a read-side mutation.
+    company = db.scalar(select(Company).where(Company.id == company_id).with_for_update())
     if company is None:
         raise AppError("COMPANY_NOT_FOUND", "目标公司不存在", 404)
-    candidate = evaluate_candidate(db, lead=lead, company=company)
+    candidate = evaluate_candidate(db, lead=lead, company=company, lock_account=True)
     if not candidate.eligible:
         raise AppError(
             "DISPATCH_CANDIDATE_INELIGIBLE",
@@ -205,6 +271,7 @@ def dispatch_manually(
             409,
             {"reasons": list(candidate.exclusion_reasons)},
         )
+
     now = datetime.now(timezone.utc)
     phone = decrypt_text(lead.phone_encrypted)
     assignment = Assignment(
@@ -267,9 +334,7 @@ def _reward_for_claim(
 ) -> SupplierLeadReward | None:
     if not lead.supplier_company_id or lead.supplier_company_id == assignment.company_id:
         return None
-    existing = db.scalar(
-        select(SupplierLeadReward).where(SupplierLeadReward.assignment_id == assignment.id)
-    )
+    existing = db.scalar(select(SupplierLeadReward).where(SupplierLeadReward.assignment_id == assignment.id))
     if existing:
         return existing
     eligible = lead.duplicate_status not in {
@@ -305,26 +370,23 @@ def claim_assignment(
     company_id: str,
     claimed_by: str,
 ) -> ClaimResult:
-    assignment = db.scalar(
-        select(Assignment).where(Assignment.id == assignment_id).with_for_update()
-    )
+    assignment = db.scalar(select(Assignment).where(Assignment.id == assignment_id).with_for_update())
     if assignment is None:
         raise AppError("ASSIGNMENT_NOT_FOUND", "派发单不存在", 404)
     if assignment.company_id != company_id:
         raise AppError("ASSIGNMENT_FORBIDDEN", "无权领取其他公司的派发单", 403)
+
     existing_ledger = db.scalar(
         select(PointsLedger).where(
             PointsLedger.company_id == company_id,
             PointsLedger.idempotency_key == f"v12-claim:{assignment.id}",
         )
     )
-    if assignment.status in {AssignmentStatus.CLAIMED.value, AssignmentStatus.FOLLOWING.value}:
+    if assignment.status in CLAIMED_CONTACT_STATUSES:
         if existing_ledger is None:
             raise AppError("CLAIM_LEDGER_MISSING", "派发单已领取但积分流水缺失", 500)
         lead = get_dispatch_lead(db, assignment.lead_id)
-        reward = db.scalar(
-            select(SupplierLeadReward).where(SupplierLeadReward.assignment_id == assignment.id)
-        )
+        reward = db.scalar(select(SupplierLeadReward).where(SupplierLeadReward.assignment_id == assignment.id))
         return ClaimResult(
             assignment=assignment,
             ledger=existing_ledger,
@@ -334,8 +396,10 @@ def claim_assignment(
         )
     if assignment.status != AssignmentStatus.PENDING_CLAIM.value:
         raise AppError("ASSIGNMENT_NOT_CLAIMABLE", "派发单当前不可领取", 409, {"status": assignment.status})
+
     now = datetime.now(timezone.utc)
-    if assignment.expires_at and assignment.expires_at < now:
+    expires_at = as_utc(assignment.expires_at)
+    if expires_at and expires_at <= now:
         raise AppError("ASSIGNMENT_EXPIRED", "派发单已过期", 409)
     require_lead_capability(db, company_id, "LEAD_RECEIVER")
     lead = get_dispatch_lead(db, assignment.lead_id, lock=True)
@@ -350,6 +414,7 @@ def claim_assignment(
         lead=lead,
         company_id=company_id,
         exclude_assignment_id=assignment.id,
+        now=now,
     )
     if duplicate:
         raise AppError(
@@ -358,6 +423,7 @@ def claim_assignment(
             409,
             {"assignment_id": duplicate.id},
         )
+
     account = db.scalar(
         select(PointsAccount).where(PointsAccount.company_id == company_id).with_for_update()
     )
@@ -379,6 +445,7 @@ def claim_assignment(
         created_by=claimed_by,
         metadata={"lead_id": lead.id, "points_price": int(assignment.points_price)},
     )
+
     deadline = WorkdayCalendarService(db).add_workdays(now, 3)
     assignment.status = AssignmentStatus.CLAIMED.value
     assignment.claimed_at = now
@@ -436,8 +503,8 @@ def lead_pool_item(lead: Lead) -> dict[str, Any]:
     }
 
 
-def candidate_to_dict(item: CandidateResult) -> dict[str, Any]:
-    return {
+def candidate_to_dict(item: CandidateResult, *, include_financials: bool = False) -> dict[str, Any]:
+    data: dict[str, Any] = {
         "company_id": item.company_id,
         "company_name": item.company_name,
         "eligible": item.eligible,
@@ -445,9 +512,15 @@ def candidate_to_dict(item: CandidateResult) -> dict[str, Any]:
         "points_price": item.points_price,
         "price_rule_id": item.price_rule_id,
         "price_version": item.price_version,
-        "points_balance": item.points_balance,
-        "points_reserved": item.points_reserved,
-        "points_available": item.points_available,
         "region_match": item.region_match,
         "duplicate_to_receiver": item.duplicate_to_receiver,
     }
+    if include_financials:
+        data.update(
+            {
+                "points_balance": item.points_balance,
+                "points_reserved": item.points_reserved,
+                "points_available": item.points_available,
+            }
+        )
+    return data
