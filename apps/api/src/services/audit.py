@@ -30,7 +30,10 @@ def sanitize_audit_value(value: Any, *, key: str | None = None) -> Any:
         if any(part in normalized_key for part in _SENSITIVE_KEY_PARTS):
             return _REDACTED
     if isinstance(value, dict):
-        return {str(item_key): sanitize_audit_value(item_value, key=str(item_key)) for item_key, item_value in value.items()}
+        return {
+            str(item_key): sanitize_audit_value(item_value, key=str(item_key))
+            for item_key, item_value in value.items()
+        }
     if isinstance(value, (list, tuple, set)):
         return [sanitize_audit_value(item) for item in value]
     return value
@@ -70,4 +73,21 @@ def write_audit(
         user_agent=user_agent,
     )
     db.add(log)
+    if action.startswith("V12_"):
+        try:
+            from .notification_v12 import project_v12_notifications
+
+            project_v12_notifications(
+                db,
+                action=action,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                company_id=company_id,
+                before=before,
+                after=after,
+                metadata=safe_metadata,
+            )
+        except Exception as exc:  # pragma: no cover - defensive projection boundary
+            safe_metadata["notification_projection_error"] = type(exc).__name__
+            log.metadata_json = sanitize_audit_value(safe_metadata)
     return log

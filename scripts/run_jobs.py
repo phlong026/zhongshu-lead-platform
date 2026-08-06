@@ -15,9 +15,9 @@ from apps.api.src.core.database import SessionLocal, init_database
 from apps.api.src.services.claim_service import run_assignment_timeouts
 from apps.api.src.services.followup_service import run_followup_overdue
 from apps.api.src.services.feishu_sync_service import fetch_and_import_feishu, writeback_feishu_results
+from apps.api.src.services.notification_v12 import drain_due_supplier_reward_settlement_notified
 from apps.api.src.services.outbox_worker import process_outbox
 from apps.api.src.services.points_service import run_low_points_warnings
-from apps.api.src.services.supplier_reward_v12 import drain_due_supplier_reward_settlement
 
 
 def main() -> int:
@@ -49,7 +49,7 @@ def main() -> int:
         if args.job in {"outbox", "all"}:
             output["outbox"] = process_outbox(db, limit=args.limit)
         if args.job in {"supplier-rewards", "all"}:
-            output["supplier_rewards"] = drain_due_supplier_reward_settlement(
+            output["supplier_rewards"] = drain_due_supplier_reward_settlement_notified(
                 db,
                 batch_size=args.limit,
                 max_batches=args.max_batches,
