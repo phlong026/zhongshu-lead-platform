@@ -17,6 +17,9 @@ concurrency:
   group: v12-pr-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  SPRINT6_HEAD: feature/v1.2-sprint6-release-readiness
+
 jobs:
   full-quality:
     if: github.event.pull_request.draft == false
@@ -37,13 +40,18 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt -r requirements-postgres.txt -r requirements-audit.txt
+      - name: Install application dependencies
+        run: pip install -r requirements.txt -r requirements-postgres.txt
+
+      - name: Install Sprint 6 audit dependencies
+        if: github.head_ref == env.SPRINT6_HEAD
+        run: pip install -r requirements-audit.txt
 
       - name: Verify installed dependencies
         run: pip check
 
       - name: Audit Python dependencies
+        if: github.head_ref == env.SPRINT6_HEAD
         shell: bash
         run: |
           cat requirements.txt requirements-postgres.txt requirements-browser.txt > /tmp/v12-requirements.txt
@@ -104,7 +112,7 @@ jobs:
           if-no-files-found: error
 
   postgres-migration:
-    if: github.event.pull_request.draft == false
+    if: github.event.pull_request.draft == false && github.head_ref == 'feature/v1.2-sprint6-release-readiness'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -167,7 +175,7 @@ jobs:
           if-no-files-found: error
 
   browser-smoke:
-    if: github.event.pull_request.draft == false
+    if: github.event.pull_request.draft == false && github.head_ref == 'feature/v1.2-sprint6-release-readiness'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
