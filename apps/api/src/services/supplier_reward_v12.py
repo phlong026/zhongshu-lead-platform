@@ -138,25 +138,44 @@ def settle_supplier_reward(
     return RewardSettlementResult(reward=reward, ledger=ledger)
 
 
+def _select_due_reward_ids(
+    db: Session,
+    *,
+    as_of: datetime,
+    limit: int,
+    exclude_reward_ids: set[str] | None = None,
+) -> list[str]:
+    filters = [
+        SupplierLeadReward.status == RewardStatus.OBSERVING.value,
+        SupplierLeadReward.reward_due_at.is_not(None),
+        SupplierLeadReward.reward_due_at <= as_of,
+    ]
+    if exclude_reward_ids:
+        filters.append(SupplierLeadReward.id.not_in(exclude_reward_ids))
+    return list(
+        db.scalars(
+            select(SupplierLeadReward.id)
+            .where(*filters)
+            .order_by(SupplierLeadReward.reward_due_at.asc(), SupplierLeadReward.id.asc())
+            .limit(max(1, min(int(limit), 1000)))
+        ).all()
+    )
+
+
 def run_due_supplier_reward_settlement(
     db: Session,
     *,
     as_of: datetime | None = None,
     limit: int = 100,
     settled_by: str | None = None,
+    exclude_reward_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     now = _now(as_of)
-    reward_ids = list(
-        db.scalars(
-            select(SupplierLeadReward.id)
-            .where(
-                SupplierLeadReward.status == RewardStatus.OBSERVING.value,
-                SupplierLeadReward.reward_due_at.is_not(None),
-                SupplierLeadReward.reward_due_at <= now,
-            )
-            .order_by(SupplierLeadReward.reward_due_at.asc(), SupplierLeadReward.id.asc())
-            .limit(max(1, min(int(limit), 1000)))
-        ).all()
+    reward_ids = _select_due_reward_ids(
+        db,
+        as_of=now,
+        limit=limit,
+        exclude_reward_ids=exclude_reward_ids,
     )
     settled = 0
     idempotent = 0
@@ -196,8 +215,73 @@ def run_due_supplier_reward_settlement(
         "skipped": skipped,
         "failed": failed,
         "errors": errors[:20],
+        "processed_reward_ids": reward_ids,
         "as_of": now.isoformat(),
     }
+
+
+def drain_due_supplier_reward_settlement(
+    db: Session,
+    *,
+    as_of: datetime | None = None,
+    batch_size: int = 500,
+    max_batches: int = 20,
+    settled_by: str | None = None,
+) -> dict[str, Any]:
+    """Drain due rewards without letting a bad oldest row block valid rows.
+
+    Each reward is attempted at most once per drain cycle. Failed rows remain
+    OBSERVING and are retried by the next hourly cycle; later valid rows can
+    still settle now. The safety bound caps one cycle at 20,000 rows because
+    batch_size itself is capped at 1,000.
+    """
+
+    now = _now(as_of)
+    safe_batch_size = max(1, min(int(batch_size), 1000))
+    safe_max_batches = max(1, min(int(max_batches), 100))
+    attempted: set[str] = set()
+    totals: dict[str, Any] = {
+        "batches": 0,
+        "scanned": 0,
+        "settled": 0,
+        "idempotent": 0,
+        "frozen": 0,
+        "skipped": 0,
+        "failed": 0,
+        "errors": [],
+        "as_of": now.isoformat(),
+    }
+    for _ in range(safe_max_batches):
+        result = run_due_supplier_reward_settlement(
+            db,
+            as_of=now,
+            limit=safe_batch_size,
+            settled_by=settled_by,
+            exclude_reward_ids=attempted,
+        )
+        reward_ids = set(result.pop("processed_reward_ids", []))
+        if not reward_ids:
+            break
+        attempted.update(reward_ids)
+        totals["batches"] += 1
+        for key in ("scanned", "settled", "idempotent", "frozen", "skipped", "failed"):
+            totals[key] += int(result[key])
+        totals["errors"].extend(result.get("errors", []))
+        if int(result["scanned"]) < safe_batch_size:
+            break
+
+    remaining_due = len(
+        _select_due_reward_ids(
+            db,
+            as_of=now,
+            limit=1,
+            exclude_reward_ids=attempted,
+        )
+    )
+    totals["errors"] = totals["errors"][:50]
+    totals["attempted_unique"] = len(attempted)
+    totals["safety_limit_reached"] = bool(remaining_due)
+    return totals
 
 
 def _change_points_allow_negative(
