@@ -17,16 +17,20 @@ def test_preflight_redacts_injected_secrets_from_subprocess_output() -> None:
     env = {
         "POSTGRES_PASSWORD": "database-password-value",
         "WECHAT_APP_SECRET": "wechat-secret-value",
+        "DATABASE_URL": "postgresql+psycopg://user:url-password@db:5432/zhongshu",
         "NORMAL_VALUE": "public-value",
     }
     sensitive = _sensitive_values(env)
     redacted = _redact(
-        "database-password-value wechat-secret-value public-value",
+        "database-password-value wechat-secret-value "
+        "postgresql+psycopg://user:url-password@db:5432/zhongshu "
+        "url-password public-value",
         sensitive,
     )
     assert "database-password-value" not in redacted
     assert "wechat-secret-value" not in redacted
-    assert redacted.count("[REDACTED]") == 2
+    assert "url-password" not in redacted
+    assert "postgresql+psycopg://" not in redacted
     assert "public-value" in redacted
 
 
@@ -50,6 +54,7 @@ def test_ci_contains_postgres_browser_and_dependency_security_gates() -> None:
     for relative in (".github/workflows/v12-pr-ci.yml", ".github/workflows/v12-release-ci.yml"):
         workflow = Path(relative).read_text(encoding="utf-8")
         assert "postgres:16-alpine" in workflow
+        assert "baseline_v101.py" in workflow
         assert "migrate_v12_data.py" in workflow
         assert "browser_smoke_v12.py" in workflow
         assert "pip-audit" in workflow
