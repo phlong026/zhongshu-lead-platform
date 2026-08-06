@@ -4,11 +4,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -44,6 +45,46 @@ def _redact(text: str, sensitive_values: tuple[str, ...]) -> str:
     return redacted
 
 
+def _database_url_from_postgres(env: dict[str, str]) -> str | None:
+    """Build the same internal PostgreSQL URL used by docker-compose.yml.
+
+    The URL is used by host-side configuration validation only. Database reads
+    are executed inside the Compose network so the `db` hostname is reachable.
+    """
+
+    user = env.get("POSTGRES_USER", "").strip()
+    password = env.get("POSTGRES_PASSWORD", "").strip()
+    database = env.get("POSTGRES_DB", "").strip()
+    if not user or not password or not database:
+        return None
+    return (
+        "postgresql+psycopg://"
+        f"{quote(user, safe='')}:{quote(password, safe='')}@db:5432/{quote(database, safe='')}"
+    )
+
+
+def _compose_python_command(env_file: Path, python_args: list[str]) -> list[str]:
+    docker = shutil.which("docker") or "docker"
+    return [
+        docker,
+        "compose",
+        "--env-file",
+        str(env_file),
+        "-f",
+        str(ROOT / "docker-compose.yml"),
+        "-f",
+        str(ROOT / "docker-compose.prod.yml"),
+        "run",
+        "--rm",
+        "-T",
+        "-e",
+        "RUN_DB_MIGRATIONS=false",
+        "api",
+        "python",
+        *python_args,
+    ]
+
+
 def _run(
     name: str,
     command: list[str],
@@ -51,7 +92,17 @@ def _run(
     env: dict[str, str],
     sensitive_values: tuple[str, ...],
 ) -> dict[str, Any]:
-    result = subprocess.run(command, cwd=ROOT, env=env, text=True, capture_output=True)
+    try:
+        result = subprocess.run(command, cwd=ROOT, env=env, text=True, capture_output=True)
+    except OSError as exc:
+        return {
+            "name": name,
+            "command": command,
+            "returncode": 127,
+            "stdout": "",
+            "stderr": _redact(str(exc), sensitive_values),
+            "valid": False,
+        }
     return {
         "name": name,
         "command": command,
@@ -67,19 +118,30 @@ def main() -> int:
     parser.add_argument("--env-file", type=Path, default=ROOT / ".env")
     parser.add_argument("--require-certificates", action="store_true")
     parser.add_argument("--allow-incomplete-backfill", action="store_true")
+    parser.add_argument(
+        "--compose-database",
+        action="store_true",
+        help="Run Alembic/reconciliation inside the production Compose network",
+    )
     parser.add_argument("--output", type=Path, default=ROOT / "dist" / "v12-preflight.json")
     args = parser.parse_args()
 
-    values = load_dotenv(args.env_file)
+    env_file = args.env_file.resolve()
+    values = load_dotenv(env_file)
     # Runtime-injected variables have the same precedence used by Settings and
     # validate_production_env.py, so the report reflects the process that will run.
     env = {**values, **os.environ}
+    if args.compose_database and not env.get("DATABASE_URL"):
+        derived = _database_url_from_postgres(env)
+        if derived:
+            env["DATABASE_URL"] = derived
     sensitive_values = _sensitive_values(env)
     python = sys.executable
+
     commands: list[tuple[str, list[str]]] = [
         (
             "production-environment",
-            [python, "scripts/validate_production_env.py", "--env-file", str(args.env_file)],
+            [python, "scripts/validate_production_env.py", "--env-file", str(env_file)],
         ),
         (
             "deployment-prerequisites",
@@ -87,27 +149,59 @@ def main() -> int:
                 python,
                 "scripts/verify_production.py",
                 "--env-file",
-                str(args.env_file),
+                str(env_file),
                 *(["--require-certificates"] if args.require_certificates else []),
             ],
         ),
-        ("database-revision", [python, "-m", "alembic", "-c", "alembic.ini", "current", "--check-heads"]),
-        (
-            "v12-reconciliation",
+    ]
+    database_revision = ["-m", "alembic", "-c", "alembic.ini", "current", "--check-heads"]
+    reconciliation = [
+        "scripts/reconcile_v12.py",
+        *(["--allow-incomplete-backfill"] if args.allow_incomplete_backfill else []),
+    ]
+    if args.compose_database:
+        if not shutil.which("docker"):
+            commands.extend(
+                [
+                    ("database-revision", ["docker", "compose", "<unavailable>"]),
+                    ("v12-reconciliation", ["docker", "compose", "<unavailable>"]),
+                ]
+            )
+        else:
+            commands.extend(
+                [
+                    ("database-revision", _compose_python_command(env_file, database_revision)),
+                    ("v12-reconciliation", _compose_python_command(env_file, reconciliation)),
+                ]
+            )
+    else:
+        commands.extend(
             [
-                python,
-                "scripts/reconcile_v12.py",
-                *(["--allow-incomplete-backfill"] if args.allow_incomplete_backfill else []),
-            ],
-        ),
-    ]
-    checks = [
-        _run(name, command, env=env, sensitive_values=sensitive_values)
-        for name, command in commands
-    ]
+                ("database-revision", [python, *database_revision]),
+                ("v12-reconciliation", [python, *reconciliation]),
+            ]
+        )
+
+    checks: list[dict[str, Any]] = []
+    for name, command in commands:
+        if command[-1:] == ["<unavailable>"]:
+            checks.append(
+                {
+                    "name": name,
+                    "command": command,
+                    "returncode": 127,
+                    "stdout": "",
+                    "stderr": "docker CLI 不可用，无法在 Compose 网络内验证生产数据库",
+                    "valid": False,
+                }
+            )
+            continue
+        checks.append(_run(name, command, env=env, sensitive_values=sensitive_values))
+
     payload = {
         "valid": all(item["valid"] for item in checks),
-        "env_file": str(args.env_file),
+        "env_file": str(env_file),
+        "compose_database": bool(args.compose_database),
         "checks": checks,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
