@@ -13,6 +13,13 @@ class InvalidStateTransition(ValueError):
         super().__init__(f"invalid {domain} transition: {current} -> {target}")
 
 
+class UnknownLegacyStatus(ValueError):
+    def __init__(self, domain: str, value: str) -> None:
+        self.domain = domain
+        self.value = value
+        super().__init__(f"unknown legacy {domain} status: {value}")
+
+
 LEAD_TRANSITIONS: Mapping[LeadV12Status, Set[LeadV12Status]] = {
     LeadV12Status.DRAFT: {LeadV12Status.PENDING_REVIEW, LeadV12Status.READY_DISPATCH, LeadV12Status.CLOSED},
     LeadV12Status.PENDING_REVIEW: {
@@ -96,9 +103,35 @@ def assert_reward_transition(current: RewardStatus | str, target: RewardStatus |
     _assert_transition("reward", REWARD_TRANSITIONS, RewardStatus(current), RewardStatus(target))
 
 
-def map_legacy_lead_status(value: str) -> LeadV12Status:
-    return LEGACY_LEAD_STATUS_MAP.get(value, LeadV12Status.CLOSED)
+def _canonical_legacy_status(value: str) -> str:
+    return value.strip().upper()
 
 
-def map_legacy_return_status(value: str) -> ReturnV12Status:
-    return LEGACY_RETURN_STATUS_MAP.get(value, ReturnV12Status.EXPIRED)
+def try_map_legacy_lead_status(value: str) -> LeadV12Status | None:
+    """Return a read-only V1.2 view, or None when manual mapping is required."""
+
+    return LEGACY_LEAD_STATUS_MAP.get(_canonical_legacy_status(value))
+
+
+def try_map_legacy_return_status(value: str) -> ReturnV12Status | None:
+    """Return a read-only V1.2 view, or None when manual mapping is required."""
+
+    return LEGACY_RETURN_STATUS_MAP.get(_canonical_legacy_status(value))
+
+
+def map_legacy_lead_status(value: str, *, strict: bool = False) -> LeadV12Status:
+    mapped = try_map_legacy_lead_status(value)
+    if mapped is not None:
+        return mapped
+    if strict:
+        raise UnknownLegacyStatus("lead", value)
+    return LeadV12Status.CLOSED
+
+
+def map_legacy_return_status(value: str, *, strict: bool = False) -> ReturnV12Status:
+    mapped = try_map_legacy_return_status(value)
+    if mapped is not None:
+        return mapped
+    if strict:
+        raise UnknownLegacyStatus("return", value)
+    return ReturnV12Status.EXPIRED
