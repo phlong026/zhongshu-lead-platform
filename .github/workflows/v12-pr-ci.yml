@@ -21,7 +21,7 @@ jobs:
   full-quality:
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -38,7 +38,16 @@ jobs:
           node-version: "22"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt -r requirements-postgres.txt
+        run: pip install -r requirements.txt -r requirements-postgres.txt -r requirements-audit.txt
+
+      - name: Verify installed dependencies
+        run: pip check
+
+      - name: Audit Python dependencies
+        shell: bash
+        run: |
+          cat requirements.txt requirements-postgres.txt requirements-browser.txt > /tmp/v12-requirements.txt
+          pip-audit -r /tmp/v12-requirements.txt --progress-spinner off
 
       - name: Run backend tests
         shell: bash
@@ -51,6 +60,9 @@ jobs:
             python -c "from pathlib import Path; text=Path('pytest-output.txt').read_text(encoding='utf-8', errors='replace')[-6000:]; text=text.replace('%','%25').replace(chr(13),'%0D').replace(chr(10),'%0A'); print('::error title=Pytest failed::'+text)"
             exit "$status"
           fi
+
+      - name: Export V1.2 OpenAPI contract
+        run: python scripts/export_openapi.py
 
       - name: Run JavaScript checks
         run: python scripts/check_js.py
@@ -82,3 +94,125 @@ jobs:
             python -c "from pathlib import Path; text=Path('migration-output.txt').read_text(encoding='utf-8', errors='replace')[-6000:]; text=text.replace('%','%25').replace(chr(13),'%0D').replace(chr(10),'%0A'); print('::error title=Migration smoke failed::'+text)"
             exit "$status"
           fi
+
+      - name: Upload generated OpenAPI contract
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v12-openapi-${{ github.run_id }}
+          path: docs/api/openapi.json
+          if-no-files-found: error
+
+  postgres-migration:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: zhongshu_ci
+          POSTGRES_USER: zhongshu
+          POSTGRES_PASSWORD: ci-postgres-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U zhongshu -d zhongshu_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql+psycopg://zhongshu:ci-postgres-password@127.0.0.1:5432/zhongshu_ci
+      FIELD_ENCRYPTION_KEY: ci-field-encryption-key-at-least-32-characters
+      PHONE_HASH_SECRET: ci-phone-hash-secret-at-least-24
+      PHONE_FINGERPRINT_SECRET: ci-phone-fingerprint-secret-at-least-32-characters
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-postgres.txt
+
+      - name: Create V1.0.1 schema, historical fixture and PII-free baseline
+        run: |
+          mkdir -p dist
+          python -m alembic -c alembic.ini upgrade 0001_initial
+          python scripts/seed_v101_migration_fixture.py
+          python scripts/baseline_v101.py --output dist/v101-baseline.json
+
+      - name: Upgrade PostgreSQL to V1.2 and backfill historical data
+        run: |
+          python -m alembic -c alembic.ini upgrade head
+          python scripts/migrate_v12_data.py --dry-run --batch-size 50 --max-batches 10 --fail-on-row-error
+          python scripts/migrate_v12_data.py --batch-size 50 --max-batches 10 --fail-on-row-error
+          python scripts/verify_v12_postgres_migration.py
+
+      - name: Verify PostgreSQL downgrade and clean re-upgrade
+        run: |
+          python -m alembic -c alembic.ini downgrade 0001_initial
+          python -m alembic -c alembic.ini upgrade head
+
+      - name: Upload PostgreSQL migration evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v12-postgres-migration-${{ github.run_id }}
+          path: dist/v101-baseline.json
+          if-no-files-found: error
+
+  browser-smoke:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      DATABASE_URL: sqlite:///./dist/v12-browser-smoke.db
+      APP_ENV: development
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install application and browser dependencies
+        run: |
+          pip install -r requirements.txt -r requirements-browser.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Initialize isolated browser database
+        run: |
+          mkdir -p dist/browser-smoke
+          python scripts/init_db.py
+          python scripts/seed_demo.py
+
+      - name: Start API and run Chromium smoke
+        shell: bash
+        run: |
+          uvicorn apps.api.src.main:app --host 127.0.0.1 --port 8000 > dist/browser-smoke/server.log 2>&1 &
+          server_pid=$!
+          trap 'kill $server_pid || true' EXIT
+          for attempt in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:8000/health/ready >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8000/health/ready
+          python scripts/browser_smoke_v12.py --output-dir dist/browser-smoke
+
+      - name: Upload browser review evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v12-browser-smoke-${{ github.run_id }}
+          path: dist/browser-smoke
+          if-no-files-found: error
