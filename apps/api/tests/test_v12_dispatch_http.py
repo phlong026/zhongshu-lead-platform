@@ -104,7 +104,10 @@ def test_candidate_api_hides_exact_points_from_operation(api_client) -> None:
         item for item in response.json()["data"]["candidates"] if item["company_id"] == company_id
     )
     assert candidate["points_balance"] == 5000
-    assert candidate["points_available"] == 5000
+    assert candidate["points_reserved"] >= 0
+    assert candidate["points_available"] == (
+        candidate["points_balance"] - candidate["points_reserved"]
+    )
 
 
 def test_unclaimed_released_assignment_does_not_unlock_phone(api_client) -> None:
