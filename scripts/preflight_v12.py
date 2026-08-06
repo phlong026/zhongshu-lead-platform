@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -16,14 +17,23 @@ if str(ROOT) not in sys.path:
 from scripts.validate_production_env import load_dotenv
 
 _SENSITIVE_KEY_MARKERS = ("SECRET", "PASSWORD", "TOKEN", "PRIVATE_KEY", "ACCESS_KEY")
+_SENSITIVE_EXACT_KEYS = {"DATABASE_URL"}
 
 
 def _sensitive_values(env: dict[str, str]) -> tuple[str, ...]:
-    values = {
-        value
-        for key, value in env.items()
-        if value and any(marker in key.upper() for marker in _SENSITIVE_KEY_MARKERS)
-    }
+    values: set[str] = set()
+    for key, value in env.items():
+        if not value:
+            continue
+        upper_key = key.upper()
+        if upper_key in _SENSITIVE_EXACT_KEYS or any(
+            marker in upper_key for marker in _SENSITIVE_KEY_MARKERS
+        ):
+            values.add(value)
+        if upper_key == "DATABASE_URL":
+            parsed = urlparse(value)
+            if parsed.password:
+                values.add(parsed.password)
     return tuple(sorted(values, key=len, reverse=True))
 
 
