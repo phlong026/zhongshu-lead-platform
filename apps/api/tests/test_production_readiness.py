@@ -39,14 +39,47 @@ def production_settings(**overrides) -> Settings:
     return Settings(_env_file=None, **values)
 
 
+def _production_env() -> dict[str, str]:
+    return {"POSTGRES_PASSWORD": "A-strong-production-password-2026", "SEED_DEMO": "false"}
+
+
 def test_production_validation_accepts_strong_configuration_with_local_storage_warning():
-    result = validate_production_settings(
-        production_settings(),
-        {"POSTGRES_PASSWORD": "A-strong-production-password-2026", "SEED_DEMO": "false"},
-    )
+    result = validate_production_settings(production_settings(), _production_env())
     assert result.valid is True
     assert not result.errors
     assert any("本地对象存储" in warning for warning in result.warnings)
+
+
+def test_production_validation_accepts_aws_s3_default_endpoint():
+    result = validate_production_settings(
+        production_settings(
+            object_storage_backend="s3",
+            s3_endpoint_url="",
+            s3_access_key_id="aws-access-key",
+            s3_secret_access_key="aws-secret-key",
+            s3_bucket="zhongshu-private",
+            s3_region="ap-southeast-1",
+        ),
+        _production_env(),
+    )
+    assert result.valid is True
+    assert not any("S3_ENDPOINT_URL" in error for error in result.errors)
+
+
+def test_production_validation_rejects_insecure_custom_s3_endpoint():
+    result = validate_production_settings(
+        production_settings(
+            object_storage_backend="s3",
+            s3_endpoint_url="http://cos.internal.example.com",
+            s3_access_key_id="cos-access-key",
+            s3_secret_access_key="cos-secret-key",
+            s3_bucket="zhongshu-private",
+            s3_region="ap-guangzhou",
+        ),
+        _production_env(),
+    )
+    assert result.valid is False
+    assert any("S3_ENDPOINT_URL" in error for error in result.errors)
 
 
 def test_production_validation_allows_explicitly_disabled_feishu_without_credentials():
@@ -58,7 +91,7 @@ def test_production_validation_allows_explicitly_disabled_feishu_without_credent
             feishu_app_token="",
             feishu_table_id="",
         ),
-        {"POSTGRES_PASSWORD": "A-strong-production-password-2026", "SEED_DEMO": "false"},
+        _production_env(),
     )
     assert result.valid is True
     assert not any("FEISHU_" in error for error in result.errors)
@@ -67,7 +100,7 @@ def test_production_validation_allows_explicitly_disabled_feishu_without_credent
 def test_production_validation_requires_feishu_credentials_when_enabled():
     result = validate_production_settings(
         production_settings(feishu_app_token="", feishu_table_id=""),
-        {"POSTGRES_PASSWORD": "A-strong-production-password-2026", "SEED_DEMO": "false"},
+        _production_env(),
     )
     assert result.valid is False
     assert any("FEISHU_APP_TOKEN" in error for error in result.errors)
@@ -77,7 +110,7 @@ def test_production_validation_requires_feishu_credentials_when_enabled():
 def test_production_validation_rejects_shared_phone_secrets():
     result = validate_production_settings(
         production_settings(phone_hash_secret="S" * 40, phone_fingerprint_secret="S" * 40),
-        {"POSTGRES_PASSWORD": "A-strong-production-password-2026", "SEED_DEMO": "false"},
+        _production_env(),
     )
     assert result.valid is False
     assert any("必须与 PHONE_HASH_SECRET 独立" in error for error in result.errors)
