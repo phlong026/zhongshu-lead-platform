@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import pytest
 
-from apps.api.src.core.models import Company, Lead, PointsAccount, PointsLedger
-from apps.api.src.core.models_v12 import V12MigrationCheckpoint
+from apps.api.src.core.models import Assignment, Company, Lead, PointsAccount, PointsLedger
+from apps.api.src.core.models_v12 import SupplierLeadReward, V12MigrationCheckpoint
 from apps.api.src.core.security import encrypt_text, hash_phone
 from apps.api.src.core.state_machine_v12 import (
     UnknownLegacyStatus,
     map_legacy_lead_status,
     try_map_legacy_lead_status,
 )
-from apps.api.src.core.v12_enums import LeadV12Status
+from apps.api.src.core.v12_enums import LeadV12Status, RewardStatus
 from apps.api.src.services.migration_v12 import (
     PHONE_FINGERPRINT_CHECKPOINT,
     backfill_phone_fingerprints_batch,
@@ -103,6 +103,68 @@ def test_reconciliation_detects_incomplete_backfill_and_points_mismatch(db) -> N
     codes = {item["code"] for item in report.errors}
     assert "PHONE_FINGERPRINT_INCOMPLETE" in codes
     assert "POINTS_RECONCILIATION_MISMATCH" in codes
+    assert report.valid is False
+
+
+def test_reconciliation_rejects_reward_ledger_with_wrong_business_semantics(db) -> None:
+    lead = _lead("reward-ledger-lead", "13500135000")
+    supplier = Company(code="SUP-SEM", name="供应公司", status="ACTIVE")
+    receiver = Company(code="REC-SEM", name="接收公司", status="ACTIVE")
+    db.add_all([lead, supplier, receiver])
+    db.flush()
+    backfill_phone_fingerprints_batch(db, secret="F" * 40)
+
+    supplier_account = PointsAccount(company_id=supplier.id, balance=30)
+    receiver_account = PointsAccount(company_id=receiver.id, balance=0)
+    db.add_all([supplier_account, receiver_account])
+    db.flush()
+    assignment = Assignment(
+        id="reward-semantic-assignment",
+        lead_id=lead.id,
+        company_id=receiver.id,
+        status="CLAIMED",
+        points_price=100,
+        price_version=1,
+        lead_snapshot={},
+        assigned_by="test-reviewer",
+    )
+    db.add(assignment)
+    db.flush()
+    wrong_ledger = PointsLedger(
+        account_id=supplier_account.id,
+        company_id=supplier.id,
+        ledger_type="REWARD",
+        delta=30,
+        balance_after=30,
+        business_type="UNRELATED_BUSINESS",
+        business_id="unrelated-id",
+        idempotency_key="reward-semantic-wrong-ledger",
+        metadata_json={},
+    )
+    db.add(wrong_ledger)
+    db.flush()
+    db.add(
+        SupplierLeadReward(
+            id="reward-semantic-reward",
+            lead_id=lead.id,
+            assignment_id=assignment.id,
+            supplier_company_id=supplier.id,
+            receiver_company_id=receiver.id,
+            status=RewardStatus.SETTLED.value,
+            claim_points=100,
+            reward_ratio_bps=3000,
+            reward_points=30,
+            rule_version=1,
+            ledger_id=wrong_ledger.id,
+        )
+    )
+    db.flush()
+
+    report = reconcile_v12(db)
+    codes = {item["code"] for item in report.errors}
+    assert "POINTS_RECONCILIATION_MISMATCH" not in codes
+    assert "REWARD_LEDGER_SEMANTIC_MISMATCH" in codes
+    assert report.metrics["reward_ledger_semantic_mismatches"] == 1
     assert report.valid is False
 
 
