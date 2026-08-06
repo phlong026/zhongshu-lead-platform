@@ -46,12 +46,7 @@ jobs:
           status=$?
           cat pytest-output.txt
           if [ "$status" -ne 0 ]; then
-            python - <<'PY'
-            from pathlib import Path
-            text = Path('pytest-output.txt').read_text(encoding='utf-8', errors='replace')[-6000:]
-            text = text.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
-            print(f'::error title=Pytest failed::{text}')
-            PY
+            python -c "from pathlib import Path; text=Path('pytest-output.txt').read_text(encoding='utf-8', errors='replace')[-6000:]; text=text.replace('%','%25').replace(chr(13),'%0D').replace(chr(10),'%0A'); print('::error title=Pytest failed::'+text)"
             exit "$status"
           fi
 
@@ -82,11 +77,6 @@ jobs:
           status=$?
           cat migration-output.txt
           if [ "$status" -ne 0 ]; then
-            python - <<'PY'
-            from pathlib import Path
-            text = Path('migration-output.txt').read_text(encoding='utf-8', errors='replace')[-6000:]
-            text = text.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
-            print(f'::error title=Migration smoke failed::{text}')
-            PY
+            python -c "from pathlib import Path; text=Path('migration-output.txt').read_text(encoding='utf-8', errors='replace')[-6000:]; text=text.replace('%','%25').replace(chr(13),'%0D').replace(chr(10),'%0A'); print('::error title=Migration smoke failed::'+text)"
             exit "$status"
           fi
