@@ -20,6 +20,7 @@ ROLE_PERMISSION_MATRIX: dict[str, tuple[str, list[str]]] = {
             "reward.read",
             "return.read",
             "audit.read",
+            "report.v12.read",
         ],
     ),
     "LEAD_ENTRY": (
@@ -47,6 +48,8 @@ ROLE_PERMISSION_MATRIX: dict[str, tuple[str, list[str]]] = {
             "reward.read",
             "notification.retry",
             "dashboard.operation.read",
+            "audit.read",
+            "report.v12.read",
         ],
     ),
     "TELESALES": (
@@ -72,6 +75,7 @@ ROLE_PERMISSION_MATRIX: dict[str, tuple[str, list[str]]] = {
             "reward.reverse",
             "dashboard.finance.read",
             "company.read",
+            "report.v12.read",
         ],
     ),
     "RETURN_REVIEWER": (
@@ -108,6 +112,7 @@ def seed_rbac(db: Session) -> None:
         "lead.dedup.override",
         "reward.manage",
         "reward.reverse",
+        "audit.read",
     }
     for code in sorted(all_codes):
         permission = db.scalar(select(Permission).where(Permission.code == code))
