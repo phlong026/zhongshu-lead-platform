@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
+
+from apps.api.src.main import app
 
 
 def test_release_quality_documents_exist():
@@ -21,9 +22,8 @@ def test_release_quality_documents_exist():
         assert Path(path).is_file(), path
 
 
-def test_openapi_contains_v12_contract_and_no_online_payment():
-    document = json.loads(Path("docs/api/openapi.json").read_text(encoding="utf-8"))
-    paths = document["paths"]
+def test_live_openapi_contains_v12_contract_and_no_online_payment():
+    paths = app.openapi()["paths"]
     legacy_required = {
         "/api/v1/leads/feishu/sync",
         "/api/v1/verification/tasks/{task_id}/submit",
