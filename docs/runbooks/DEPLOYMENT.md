@@ -34,6 +34,8 @@ python scripts/validate_production_env.py --env-file .env
 python scripts/verify_production.py --env-file .env --require-certificates
 ```
 
+上述两个宿主机检查会在 `.env` 未显式提供 `DATABASE_URL` 时，按 `POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_DB` 推导出与 Compose 一致的内部 PostgreSQL URL，仅用于配置一致性验证；真正的数据库 revision 和业务对账必须在 Compose 网络内执行。
+
 飞书为显式可选能力：
 
 - 启用：`FEISHU_ENABLED=true`，并配置 App、Token、Table 和字段映射；
@@ -68,25 +70,28 @@ docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml 
 
 ```bash
 docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml \
-  run --rm -e RUN_DB_MIGRATIONS=false api \
+  run --rm -T -e RUN_DB_MIGRATIONS=false api \
   python scripts/migrate_v12_data.py --dry-run --batch-size 500 --max-batches 10000 --fail-on-row-error
 
 docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml \
-  run --rm -e RUN_DB_MIGRATIONS=false api \
+  run --rm -T -e RUN_DB_MIGRATIONS=false api \
   python scripts/migrate_v12_data.py --batch-size 500 --max-batches 10000 --fail-on-row-error
 ```
 
-执行数据对账：
+执行数据对账，并将 JSON 证据写入宿主机 `dist/`，禁止写入 `run --rm` 容器内的临时路径：
 
 ```bash
+mkdir -p dist
 docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml \
-  run --rm -e RUN_DB_MIGRATIONS=false api \
-  python scripts/reconcile_v12.py --output /tmp/v12-reconciliation.json
+  run --rm -T -e RUN_DB_MIGRATIONS=false api \
+  python scripts/reconcile_v12.py \
+  > dist/v12-reconciliation.json
+python -m json.tool dist/v12-reconciliation.json >/dev/null
 ```
 
 出现失败行、未知历史状态、重复有效派发单、积分差异、缺失奖励/返分流水或证据元数据异常时，判定为 `NO-GO`。
 
-## 7. 启动应用
+## 7. 启动应用与最终 Preflight
 
 ```bash
 docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml up -d api
@@ -99,8 +104,14 @@ docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml 
 docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml ps
 curl -fsS https://app.example.com/health/live
 curl -fsS https://app.example.com/health/ready
-python scripts/preflight_v12.py --env-file .env --require-certificates --output dist/v12-preflight.json
+python scripts/preflight_v12.py \
+  --env-file .env \
+  --require-certificates \
+  --compose-database \
+  --output dist/v12-preflight.json
 ```
+
+`--compose-database` 是 Docker 生产部署的强制参数：宿主机负责配置、证书和 Compose 结构检查，Alembic revision 与 V1.2 数据对账通过一次性 API 容器在生产 Compose 网络中执行，从而使用真实 `db:5432` PostgreSQL，而不会误读本地 SQLite。
 
 ## 8. 上线冒烟
 
