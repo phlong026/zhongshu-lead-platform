@@ -8,11 +8,12 @@
   "tracked_file_count": null,
   "source_archive_policy": "Git tracked files only; runtime data and secrets excluded",
   "quality_gates": [
-    "Full pytest and JavaScript checks",
+    "Full pytest, dependency audit and JavaScript checks",
     "Repository secret and Python compile checks",
     "SQLite V1.0.1 to V1.2 migration cycle",
-    "PostgreSQL 16 historical migration, fingerprint backfill and reconciliation",
-    "Desktop admin and mobile H5 Chromium smoke"
+    "PostgreSQL 16 historical migration, semantic reconciliation and concurrency/idempotency constraints",
+    "Desktop admin and mobile H5 Chromium smoke",
+    "Comprehensive code/security review with no unresolved P0/P1/P2"
   ],
   "runtime_boundaries": [
     "Manual dispatch only; no automatic, random, rotation, weighted or grab-order dispatch",
