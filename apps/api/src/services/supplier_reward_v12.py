@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from ..core.enums import PointsLedgerType
 from ..core.errors import AppError
-from ..core.models import Company, PointsAccount, PointsLedger, ReturnRequest
+from ..core.models import PointsAccount, PointsLedger, ReturnRequest
 from ..core.models_v12 import SupplierLeadReward
 from ..core.state_machine_v12 import assert_reward_transition
 from ..core.time import as_utc
@@ -30,6 +30,7 @@ class RewardSettlementResult:
     reward: SupplierLeadReward
     ledger: PointsLedger | None
     idempotent: bool = False
+    frozen: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,7 +82,7 @@ def settle_supplier_reward(
             raise AppError("REWARD_LEDGER_MISSING", "奖励已结算但积分流水缺失", 500)
         return RewardSettlementResult(reward=reward, ledger=existing_ledger, idempotent=True)
     if reward.status == RewardStatus.FROZEN.value:
-        raise AppError("REWARD_FROZEN", "奖励处于申诉冻结状态", 409)
+        return RewardSettlementResult(reward=reward, ledger=None, frozen=True)
     if reward.status != RewardStatus.OBSERVING.value:
         raise AppError(
             "REWARD_NOT_SETTLEABLE",
@@ -104,7 +105,7 @@ def settle_supplier_reward(
         reward.status = RewardStatus.FROZEN.value
         reward.frozen_at = reward.frozen_at or now
         db.flush()
-        raise AppError("REWARD_APPEAL_ACTIVE", "奖励存在有效申诉，已转为冻结", 409)
+        return RewardSettlementResult(reward=reward, ledger=None, frozen=True)
     if int(reward.reward_points) <= 0:
         raise AppError("REWARD_POINTS_INVALID", "奖励积分必须大于 0 才能结算", 409)
 
@@ -172,14 +173,14 @@ def run_due_supplier_reward_settlement(
                     as_of=now,
                     settled_by=settled_by,
                 )
-                if result.idempotent:
+                if result.frozen:
+                    frozen += 1
+                elif result.idempotent:
                     idempotent += 1
                 else:
                     settled += 1
         except AppError as exc:
-            if exc.code in {"REWARD_FROZEN", "REWARD_APPEAL_ACTIVE"}:
-                frozen += 1
-            elif exc.code in {"REWARD_NOT_DUE", "REWARD_NOT_SETTLEABLE"}:
+            if exc.code in {"REWARD_NOT_DUE", "REWARD_NOT_SETTLEABLE"}:
                 skipped += 1
             else:
                 failed += 1
@@ -329,11 +330,20 @@ def reward_to_dict(reward: SupplierLeadReward) -> dict[str, Any]:
 
 def supplier_reward_summary(db: Session, supplier_company_id: str) -> dict[str, int]:
     rows = db.execute(
-        select(SupplierLeadReward.status, func.count(SupplierLeadReward.id), func.coalesce(func.sum(SupplierLeadReward.reward_points), 0))
+        select(
+            SupplierLeadReward.status,
+            func.count(SupplierLeadReward.id),
+            func.coalesce(func.sum(SupplierLeadReward.reward_points), 0),
+        )
         .where(SupplierLeadReward.supplier_company_id == supplier_company_id)
         .group_by(SupplierLeadReward.status)
     ).all()
-    result: dict[str, int] = {"total_count": 0, "settled_points": 0, "observing_points": 0, "frozen_points": 0}
+    result: dict[str, int] = {
+        "total_count": 0,
+        "settled_points": 0,
+        "observing_points": 0,
+        "frozen_points": 0,
+    }
     for status, count, points in rows:
         result["total_count"] += int(count)
         if status == RewardStatus.SETTLED.value:
