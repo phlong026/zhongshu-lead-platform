@@ -78,13 +78,18 @@ class CapabilityReviewBody(BaseModel):
 
 class ServiceAreaReplaceBody(BaseModel):
     region_codes: list[str] = Field(min_length=1, max_length=100)
-    primary_city_code: str | None = Field(default=None, max_length=32)
+    primary_city_code: str = Field(min_length=1, max_length=32)
 
     @field_validator("region_codes")
     @classmethod
     def normalize_region_codes(cls, values: list[str]) -> list[str]:
         cleaned = [value.strip() for value in values if value.strip()]
         return list(dict.fromkeys(cleaned))
+
+    @field_validator("primary_city_code")
+    @classmethod
+    def normalize_primary_city(cls, value: str) -> str:
+        return value.strip()
 
 
 class ServiceAreaReviewBody(BaseModel):
