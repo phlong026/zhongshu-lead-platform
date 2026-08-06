@@ -17,17 +17,20 @@ from apps.api.src.services.migration_v12 import (
     preview_phone_fingerprint_backfill,
 )
 
+_RESET_CONFIRMATION = "RESET_PHONE_FINGERPRINT_CHECKPOINT"
 
-def _validate_runtime_secret() -> str:
+
+def _validate_runtime_secret() -> tuple[str, bool]:
     settings = get_settings()
+    production = settings.app_env.lower() == "production"
     secret = settings.phone_fingerprint_secret.strip()
-    if settings.app_env.lower() == "production":
+    if production:
         if len(secret) < 32:
             raise RuntimeError("生产环境必须显式配置至少 32 位 PHONE_FINGERPRINT_SECRET")
         if secret == settings.phone_hash_secret:
             raise RuntimeError("PHONE_FINGERPRINT_SECRET 不得与 PHONE_HASH_SECRET 相同")
-        return secret
-    return secret or settings.effective_phone_fingerprint_secret
+        return secret, True
+    return secret or settings.effective_phone_fingerprint_secret, False
 
 
 def main() -> int:
@@ -36,12 +39,21 @@ def main() -> int:
     parser.add_argument("--max-batches", type=int, default=20)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--reset", action="store_true")
+    parser.add_argument("--confirm-reset", default="")
     parser.add_argument("--fail-on-row-error", action="store_true")
     args = parser.parse_args()
 
     if args.max_batches < 1:
         parser.error("--max-batches 必须大于 0")
-    secret = _validate_runtime_secret()
+    if args.dry_run and args.reset:
+        parser.error("--dry-run 不允许与 --reset 同时使用")
+    secret, production = _validate_runtime_secret()
+    if production and args.reset and args.confirm_reset != _RESET_CONFIRMATION:
+        parser.error(
+            "生产重置检查点必须同时传入 "
+            f"--confirm-reset {_RESET_CONFIRMATION}"
+        )
+    fail_on_row_error = args.fail_on_row_error or production
 
     with SessionLocal() as db:
         if args.dry_run:
@@ -54,7 +66,7 @@ def main() -> int:
             print(json.dumps({"mode": "dry-run", **result.to_dict()}, ensure_ascii=False, indent=2))
             if result.truncated:
                 return 3
-            return 2 if args.fail_on_row_error and result.errors else 0
+            return 2 if fail_on_row_error and result.errors else 0
 
         totals = {"batches": 0, "scanned": 0, "updated": 0, "errors": 0}
         last: dict[str, object] = {}
@@ -91,7 +103,7 @@ def main() -> int:
 
         payload = {"mode": "write", **totals, "last_batch": last, "complete": True}
         print(json.dumps(payload, ensure_ascii=False, indent=2))
-        return 2 if args.fail_on_row_error and totals["errors"] else 0
+        return 2 if fail_on_row_error and totals["errors"] else 0
 
 
 if __name__ == "__main__":
