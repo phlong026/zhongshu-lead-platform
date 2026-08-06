@@ -32,6 +32,7 @@ from .routers import (
     returns,
     users,
     v12_admin,
+    v12_dispatch,
     v12_lead_supply,
     v12_supplier_review,
     verification,
@@ -91,6 +92,7 @@ app.include_router(master_data.router, prefix=api_prefix)
 app.include_router(v12_admin.router, prefix=api_prefix)
 app.include_router(v12_lead_supply.router, prefix=api_prefix)
 app.include_router(v12_supplier_review.router, prefix=api_prefix)
+app.include_router(v12_dispatch.router, prefix=api_prefix)
 
 
 @app.get("/health")
