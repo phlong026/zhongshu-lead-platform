@@ -75,6 +75,7 @@ def evaluate_phone(
         select(Lead)
         .where(
             Lead.id != lead.id,
+            Lead.status != LeadV12Status.DRAFT.value,
             or_(
                 Lead.phone_fingerprint == fingerprint,
                 Lead.phone_hash == legacy_hash,
