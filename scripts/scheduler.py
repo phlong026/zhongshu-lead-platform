@@ -16,6 +16,7 @@ from apps.api.src.services.claim_service import run_assignment_timeouts
 from apps.api.src.services.followup_service import run_followup_overdue
 from apps.api.src.services.outbox_worker import process_outbox
 from apps.api.src.services.points_service import run_low_points_warnings
+from apps.api.src.services.supplier_reward_v12 import run_due_supplier_reward_settlement
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("scheduler")
@@ -27,23 +28,27 @@ def stop(*_: object) -> None:
     running = False
 
 
-def run_cycle(run_slow_jobs: bool) -> None:
+def run_cycle(run_slow_jobs: bool, run_hourly_jobs: bool) -> None:
     with SessionLocal() as db:
         try:
             outbox = process_outbox(db, limit=200)
+            metrics: dict[str, object] = {"outbox": outbox}
             if run_slow_jobs:
-                timeouts = run_assignment_timeouts(db)
-                overdue = run_followup_overdue(db)
-                low_points = run_low_points_warnings(db)
-                logger.info(
-                    "cycle outbox=%s timeouts=%s followup_overdue=%s low_points=%s",
-                    outbox,
-                    timeouts,
-                    overdue,
-                    low_points,
+                metrics.update(
+                    {
+                        "timeouts": run_assignment_timeouts(db),
+                        "followup_overdue": run_followup_overdue(db),
+                        "low_points": run_low_points_warnings(db),
+                    }
                 )
-            elif outbox.get("sent") or outbox.get("failed"):
-                logger.info("outbox=%s", outbox)
+            if run_hourly_jobs:
+                metrics["supplier_rewards"] = run_due_supplier_reward_settlement(
+                    db,
+                    limit=500,
+                    settled_by=None,
+                )
+            if run_slow_jobs or run_hourly_jobs or outbox.get("sent") or outbox.get("failed"):
+                logger.info("cycle metrics=%s", metrics)
             db.commit()
         except Exception:
             db.rollback()
@@ -56,7 +61,12 @@ def main() -> int:
     init_database()
     tick = 0
     while running:
-        run_cycle(run_slow_jobs=tick % 10 == 0)
+        # Base tick is 30 seconds. Slow jobs run every 5 minutes; supplier
+        # reward settlement runs on startup and then once every hour.
+        run_cycle(
+            run_slow_jobs=tick % 10 == 0,
+            run_hourly_jobs=tick % 120 == 0,
+        )
         tick += 1
         for _ in range(30):
             if not running:
