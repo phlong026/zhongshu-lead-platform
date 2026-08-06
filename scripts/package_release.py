@@ -28,6 +28,7 @@ PROHIBITED_PATTERNS = (
     re.compile(r"(^|/)\.pytest_cache/"),
     re.compile(r"(^|/)\.coverage$"),
 )
+GENERATED_ARCHIVE_FILES = {"RELEASE_MANIFEST.json", "GIT_HISTORY.txt"}
 
 
 def git(*args: str, text: bool = True) -> str | bytes:
@@ -116,6 +117,8 @@ def build_source_zip(output: Path, *, version: str, dirty: bool) -> dict[str, ob
     output.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for relative in files:
+            if relative.as_posix() in GENERATED_ARCHIVE_FILES:
+                continue
             source = ROOT / relative
             mode = source.stat().st_mode & 0o777
             info = _zip_info(f"{root_name}/{relative.as_posix()}", timestamp, mode=mode)
