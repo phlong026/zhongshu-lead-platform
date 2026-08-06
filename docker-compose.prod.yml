@@ -13,7 +13,7 @@ services:
       - no-new-privileges:true
 
   api:
-    image: ${APP_IMAGE:-zhongshu-lead-platform:1.0.1}
+    image: ${APP_IMAGE:?APP_IMAGE must reference the reviewed V1.2 image}
     init: true
     read_only: true
     tmpfs:
@@ -34,7 +34,7 @@ services:
       start_period: 30s
 
   scheduler:
-    image: ${APP_IMAGE:-zhongshu-lead-platform:1.0.1}
+    image: ${APP_IMAGE:?APP_IMAGE must reference the reviewed V1.2 image}
     depends_on:
       db:
         condition: service_healthy
