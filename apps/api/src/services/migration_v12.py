@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from ..core.config import get_settings
@@ -66,18 +66,41 @@ def _phone_for_fingerprint(lead: Lead) -> str:
     return normalized
 
 
-def _select_missing_batch(db: Session, *, cursor: str | None, batch_size: int) -> list[Lead]:
+def _select_missing_batch(
+    db: Session,
+    *,
+    cursor: str | None,
+    batch_size: int,
+    lock_rows: bool,
+) -> list[Lead]:
     if batch_size < 1 or batch_size > 5000:
         raise ValueError("batch_size 必须在 1 到 5000 之间")
     statement = select(Lead).where(Lead.phone_fingerprint.is_(None))
     if cursor:
         statement = statement.where(Lead.id > cursor)
-    statement = statement.order_by(Lead.id).limit(batch_size).with_for_update(skip_locked=True)
+    statement = statement.order_by(Lead.id).limit(batch_size)
+    if lock_rows:
+        statement = statement.with_for_update(skip_locked=True)
     return list(db.scalars(statement).all())
 
 
+def _acquire_migration_lock(db: Session) -> None:
+    """Serialize writers on PostgreSQL while keeping SQLite test behavior simple."""
+
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+            {"key": PHONE_FINGERPRINT_CHECKPOINT},
+        )
+
+
 def _get_or_create_checkpoint(db: Session, *, reset: bool) -> V12MigrationCheckpoint:
-    checkpoint = db.get(V12MigrationCheckpoint, PHONE_FINGERPRINT_CHECKPOINT)
+    _acquire_migration_lock(db)
+    checkpoint = db.scalar(
+        select(V12MigrationCheckpoint)
+        .where(V12MigrationCheckpoint.key == PHONE_FINGERPRINT_CHECKPOINT)
+        .with_for_update()
+    )
     if checkpoint is not None and reset:
         db.delete(checkpoint)
         db.flush()
@@ -125,11 +148,16 @@ def backfill_phone_fingerprints_batch(
                 checkpoint_status=checkpoint.status,
             )
         # A later data import can introduce new historical rows. A previously
-        # clean completion may safely start a fresh pass over only missing rows.
+        # clean completion safely starts a new pass over only missing rows.
         checkpoint.cursor = None
         checkpoint.status = "RUNNING"
 
-    rows = _select_missing_batch(db, cursor=checkpoint.cursor, batch_size=batch_size)
+    rows = _select_missing_batch(
+        db,
+        cursor=checkpoint.cursor,
+        batch_size=batch_size,
+        lock_rows=True,
+    )
     if not rows:
         status = "COMPLETED_WITH_ERRORS" if checkpoint.error_count else "COMPLETED"
         checkpoint.status = status
@@ -203,7 +231,7 @@ def preview_phone_fingerprint_backfill(
     max_batches: int = 20,
     secret: str | None = None,
 ) -> FingerprintPreviewResult:
-    """Read-only scan of rows requiring T30 backfill."""
+    """Read-only scan of rows requiring T30 backfill without row locks."""
 
     resolved_secret = _resolve_secret(secret)
     if max_batches < 1 or max_batches > 10000:
@@ -213,7 +241,12 @@ def preview_phone_fingerprint_backfill(
     samples: list[dict[str, str]] = []
     truncated = False
     for _ in range(max_batches):
-        rows = _select_missing_batch(db, cursor=cursor, batch_size=batch_size)
+        rows = _select_missing_batch(
+            db,
+            cursor=cursor,
+            batch_size=batch_size,
+            lock_rows=False,
+        )
         if not rows:
             break
         for lead in rows:
