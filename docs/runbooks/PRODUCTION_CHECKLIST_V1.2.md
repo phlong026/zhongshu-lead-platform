@@ -7,8 +7,10 @@
 - [ ] 上线提交来自 `release/v1.2.0`，对应受保护的 V1.2 tag；
 - [ ] PR 与 Release CI 的全量测试、PostgreSQL 迁移和 Chromium 浏览器任务全部通过；
 - [ ] PR 无未解决的 Critical/High/P1/P2 评审问题；
-- [ ] `APP_VERSION=1.2.x`，Dockerfile 默认 `APP_VERSION=1.2.0`，`APP_IMAGE` 指向已评审镜像，正式窗口使用 digest；
-- [ ] README、部署、迁移、回滚、UAT 和发布说明均为 V1.2；
+- [ ] `APP_VERSION=1.2.x`，Dockerfile 默认 `APP_VERSION=1.2.0`；
+- [ ] `APP_IMAGE` 采用 `repo:APP_VERSION@sha256:digest`，显式 tag 与 `APP_VERSION` 完全一致；
+- [ ] `docker image inspect` 的 OCI `org.opencontainers.image.version` 与 `APP_VERSION` 完全一致；
+- [ ] README、部署、迁移、回滚、UAT、测试、安全审计和发布说明均为 V1.2；
 - [ ] 依赖、镜像和仓库密钥扫描无未接受的 Critical/High 风险。
 
 ## B. 基础设施
@@ -24,9 +26,10 @@
 ## C. 生产配置
 
 - [ ] `python scripts/validate_production_env.py --env-file .env` 返回 valid；
-- [ ] `python scripts/verify_production.py --env-file .env --require-certificates` 返回 valid；
+- [ ] `python scripts/verify_production.py --env-file .env --require-certificates --require-image-digest --require-image-inspect` 返回 valid；
 - [ ] `python scripts/preflight_v12.py --env-file .env --require-certificates --compose-database --output dist/v12-preflight.json` 返回 valid；
 - [ ] 标准 Docker 部署的数据库 revision 和 V1.2 reconciliation 均在 Compose 网络内执行，未回退到本地 SQLite；
+- [ ] API/Scheduler 使用 `docker/prepare-env.sh` URL 编码后的 `DATABASE_URL`，特殊字符凭据已验证；
 - [ ] `JWT_SECRET`、`FIELD_ENCRYPTION_KEY`、`PHONE_HASH_SECRET`、`PHONE_FINGERPRINT_SECRET` 独立且已托管；
 - [ ] `PHONE_FINGERPRINT_SECRET` 与 `PHONE_HASH_SECRET` 不相同；
 - [ ] `AUTO_CREATE_SCHEMA=false`、`SEED_DEMO=false`、`RUN_DB_MIGRATIONS=false`；
@@ -38,6 +41,7 @@
 ## D. 数据迁移和对账
 
 - [ ] PostgreSQL V1.0.1 备份副本升级到 V1.2 的预演通过；
+- [ ] PostgreSQL 验证确认有效派发部分唯一索引、积分幂等、退回唯一和供应奖励唯一约束实际存在；
 - [ ] 记录迁移耗时、锁等待、磁盘增长和停止条件；
 - [ ] 上线窗口完成即时数据库和对象存储备份；
 - [ ] `migrate_v12_data.py --dry-run` 无失败行；
@@ -45,8 +49,10 @@
 - [ ] `reconcile_v12.py` 返回 valid；
 - [ ] `dist/v101-baseline-before.json`、`dist/v12-reconciliation-before-backfill.json`、`dist/v12-reconciliation-after.json` 和 `dist/v12-preflight.json` 已持久化到宿主机并归档；
 - [ ] 所有 JSON 证据通过 `python -m json.tool` 校验，未保存在 `run --rm` 容器临时目录；
-- [ ] 无未知历史状态、重复有效派发单、积分差异或缺失奖励/返分流水；
-- [ ] 截图、录音的 `object_key`、SHA-256 与实际对象抽查一致。
+- [ ] 无未知历史状态、重复有效派发单或积分余额差异；
+- [ ] 奖励结算/冲正流水的公司、类型、业务 ID、金额和关联原流水与奖励事实一致；
+- [ ] APPROVED 退回返分流水及其关联原 CLAIM 流水与公司、assignment、return 和金额事实一致；
+- [ ] 截图、录音的 `object_key`、64 位 SHA-256 与实际对象抽查一致。
 
 ## E. 真实外部联调
 
@@ -74,7 +80,7 @@
 - [ ] Outbox DEAD、Scheduler 停摆、奖励积压、备份失败和证书到期有告警；
 - [ ] PostgreSQL 每日备份和对象存储版本策略已自动执行；
 - [ ] 数据库、对象、密钥和应用的联合恢复演练通过；
-- [ ] 上一版本镜像、上线前备份和回滚命令已复核；
+- [ ] 上一版本不可变镜像、上线前备份和回滚命令已复核；
 - [ ] 上线值班表、P0/P1 响应时限和升级联系人已发布。
 
 ## H. 灰度和全量
