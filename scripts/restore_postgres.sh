@@ -25,6 +25,7 @@ if [ "$MANAGE" = "true" ]; then
 fi
 finish() {
   status=$?
+  trap - EXIT HUP INT TERM
   if [ "$MANAGE" = "true" ]; then
     if [ "$RESTORE_SUCCEEDED" = "true" ]; then
       compose up -d api scheduler
