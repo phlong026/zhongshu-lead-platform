@@ -18,7 +18,6 @@ from ..core.models import (
     ReturnEvidence,
     ReturnRequest,
     Role,
-    SupplierLeadReward if False else Assignment,
     User,
     UserRole,
     VerificationTask,
@@ -28,25 +27,24 @@ from ..core.security import decrypt_text, mask_phone
 from ..core.state_machine_v12 import assert_return_transition
 from ..core.time import as_utc, utcnow
 from ..core.v12_enums import (
+    LeadV12Status,
     ReturnReasonCode,
     ReturnV12Status,
     RewardStatus,
     VerificationTaskType,
-    LeadV12Status,
 )
 from .points_service import change_points
 from .workday_calendar import WorkdayCalendarService
 
-
 VALID_RETURN_REASONS = {item.value for item in ReturnReasonCode}
+RETURN_EVIDENCE_TYPES = {
+    EvidenceType.CHAT_SCREENSHOT.value,
+    EvidenceType.CALL_RECORDING.value,
+}
 ACTIVE_RETURN_TASK_STATUSES = {
     VerificationTaskStatus.PENDING.value,
     VerificationTaskStatus.ASSIGNED.value,
     VerificationTaskStatus.IN_PROGRESS.value,
-}
-RETURN_EVIDENCE_TYPES = {
-    EvidenceType.CHAT_SCREENSHOT.value,
-    EvidenceType.CALL_RECORDING.value,
 }
 
 
@@ -67,19 +65,6 @@ class ReturnFinalReviewResult:
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _appeal_deadline(db: Session, assignment: Assignment) -> datetime:
-    existing = as_utc(assignment.appeal_deadline_at)
-    if existing:
-        return existing
-    claimed_at = as_utc(assignment.claimed_at)
-    if not claimed_at:
-        raise AppError("RETURN_NOT_CLAIMED", "未领取客资不能申请退回", 409)
-    deadline = WorkdayCalendarService(db).add_workdays(claimed_at, 3)
-    assignment.appeal_deadline_at = deadline
-    assignment.reward_due_at = assignment.reward_due_at or deadline
-    return deadline
 
 
 def _get_return(db: Session, return_id: str, *, lock: bool = False) -> ReturnRequest:
@@ -112,6 +97,19 @@ def _get_lead(db: Session, lead_id: str, *, lock: bool = False) -> Lead:
     return item
 
 
+def _appeal_deadline(db: Session, assignment: Assignment) -> datetime:
+    existing = as_utc(assignment.appeal_deadline_at)
+    if existing:
+        return existing
+    claimed_at = as_utc(assignment.claimed_at)
+    if not claimed_at:
+        raise AppError("RETURN_NOT_CLAIMED", "未领取客资不能申请退回", 409)
+    deadline = WorkdayCalendarService(db).add_workdays(claimed_at, 3)
+    assignment.appeal_deadline_at = deadline
+    assignment.reward_due_at = assignment.reward_due_at or deadline
+    return deadline
+
+
 def create_or_update_return_draft(
     db: Session,
     *,
@@ -127,18 +125,23 @@ def create_or_update_return_draft(
     if reason not in VALID_RETURN_REASONS:
         raise AppError("RETURN_REASON_INVALID", "退回原因不在 V1.2 冻结范围内", 422)
 
-    existing = db.scalar(select(ReturnRequest).where(ReturnRequest.assignment_id == assignment.id).with_for_update())
-    if existing:
-        if existing.company_id != principal.company_id:
+    item = db.scalar(
+        select(ReturnRequest)
+        .where(ReturnRequest.assignment_id == assignment.id)
+        .with_for_update()
+    )
+    if item:
+        if item.company_id != principal.company_id:
             raise AppError("FORBIDDEN", "无权修改该退回申请", 403)
-        if existing.status not in {
+        if item.status not in {
             ReturnV12Status.DRAFT.value,
             ReturnV12Status.NEED_MORE_EVIDENCE.value,
         }:
-            raise AppError("RETURN_NOT_EDITABLE", "退回申请当前不可编辑", 409, {"status": existing.status})
-        existing.reason_code = reason
-        existing.description = description.strip()
-        return existing
+            raise AppError("RETURN_NOT_EDITABLE", "退回申请当前不可编辑", 409, {"status": item.status})
+        item.reason_code = reason
+        item.description = description.strip()
+        db.flush()
+        return item
 
     if assignment.status not in {
         AssignmentStatus.CLAIMED.value,
@@ -148,7 +151,6 @@ def create_or_update_return_draft(
     deadline = _appeal_deadline(db, assignment)
     if utcnow() > deadline:
         raise AppError("RETURN_WINDOW_EXPIRED", "已超过 3 个工作日退回申诉期", 409)
-
     item = ReturnRequest(
         assignment_id=assignment.id,
         lead_id=assignment.lead_id,
@@ -210,14 +212,12 @@ def add_return_evidence(
 
 
 def _evidence_summary(db: Session, return_id: str) -> dict[str, int]:
-    return {
-        str(evidence_type): int(count)
-        for evidence_type, count in db.execute(
-            select(ReturnEvidence.evidence_type, func.count(ReturnEvidence.id))
-            .where(ReturnEvidence.return_request_id == return_id)
-            .group_by(ReturnEvidence.evidence_type)
-        ).all()
-    }
+    rows = db.execute(
+        select(ReturnEvidence.evidence_type, func.count(ReturnEvidence.id))
+        .where(ReturnEvidence.return_request_id == return_id)
+        .group_by(ReturnEvidence.evidence_type)
+    ).all()
+    return {str(evidence_type): int(count) for evidence_type, count in rows}
 
 
 def _active_return_task(db: Session, return_id: str) -> VerificationTask | None:
@@ -258,11 +258,10 @@ def submit_return_request(
         ReturnV12Status.VERIFYING.value,
         ReturnV12Status.REVIEWING.value,
     }:
-        return ReturnSubmitResult(
-            request=request,
-            task=_active_return_task(db, request.id) or db.get(VerificationTask, request.verification_task_id),
-            idempotent=True,
-        )
+        task = _active_return_task(db, request.id)
+        if task is None and request.verification_task_id:
+            task = db.get(VerificationTask, request.verification_task_id)
+        return ReturnSubmitResult(request=request, task=task, idempotent=True)
     if request.status not in {
         ReturnV12Status.DRAFT.value,
         ReturnV12Status.NEED_MORE_EVIDENCE.value,
@@ -287,7 +286,10 @@ def submit_return_request(
             "RETURN_EVIDENCE_REQUIRED",
             "请至少上传 1 张沟通截图或 1 份电话录音",
             422,
-            {"screenshot_count": counts.get(EvidenceType.CHAT_SCREENSHOT.value, 0), "recording_count": counts.get(EvidenceType.CALL_RECORDING.value, 0)},
+            {
+                "screenshot_count": counts.get(EvidenceType.CHAT_SCREENSHOT.value, 0),
+                "recording_count": counts.get(EvidenceType.CALL_RECORDING.value, 0),
+            },
         )
 
     assignment = _get_assignment(db, request.assignment_id, lock=True)
@@ -305,7 +307,6 @@ def submit_return_request(
     active_task = _active_return_task(db, request.id)
     if active_task:
         return ReturnSubmitResult(request=request, task=active_task, idempotent=True)
-
     if request.status == ReturnV12Status.DRAFT.value:
         assert_return_transition(ReturnV12Status.DRAFT, ReturnV12Status.SUBMITTED)
     else:
@@ -325,8 +326,6 @@ def submit_return_request(
         task_type=VerificationTaskType.RETURN_VERIFY.value,
         return_request_id=request.id,
         assignment_id=assignment.id,
-        assigned_by=None,
-        assigned_at=None,
     )
     db.add(task)
     db.flush()
@@ -484,9 +483,11 @@ def _current_verification_task(db: Session, request: ReturnRequest) -> Verificat
 
 
 def _restore_assignment_status(lead: Lead) -> str:
-    if lead.status == LeadV12Status.FOLLOWING.value:
-        return AssignmentStatus.FOLLOWING.value
-    return AssignmentStatus.CLAIMED.value
+    return (
+        AssignmentStatus.FOLLOWING.value
+        if lead.status == LeadV12Status.FOLLOWING.value
+        else AssignmentStatus.CLAIMED.value
+    )
 
 
 def final_review_return(
@@ -506,6 +507,7 @@ def final_review_return(
         return ReturnFinalReviewResult(request=request, refund_ledger=None, idempotent=True)
     if request.status != ReturnV12Status.REVIEWING.value:
         raise AppError("RETURN_NOT_FINAL_REVIEWABLE", "退回申请当前不可终审", 409, {"status": request.status})
+
     task = _current_verification_task(db, request)
     assignment = _get_assignment(db, request.assignment_id, lock=True)
     lead = _get_lead(db, request.lead_id, lock=True)
@@ -562,7 +564,6 @@ def final_review_return(
         raise AppError("RETURN_FINAL_DECISION_INVALID", "终审决定无效", 422)
     if reward and reward.status == RewardStatus.SETTLED.value:
         raise AppError("REWARD_ALREADY_SETTLED", "供应商奖励已结算，需走异常冲正流程", 409)
-
     claim_ledger = _claim_ledger(db, request, assignment)
     refund_points = abs(int(claim_ledger.delta))
     refund_ledger = change_points(
@@ -593,10 +594,7 @@ def final_review_return(
     lead.status = LeadV12Status.READY_DISPATCH.value
     lead.pending_reason = "V12_RETURN_APPROVED"
     lead.current_follow_status = None
-    if reward and reward.status in {
-        RewardStatus.FROZEN.value,
-        RewardStatus.OBSERVING.value,
-    }:
+    if reward and reward.status in {RewardStatus.FROZEN.value, RewardStatus.OBSERVING.value}:
         reward.status = RewardStatus.CANCELLED.value
         reward.cancelled_at = now
     db.add(
@@ -671,7 +669,9 @@ def return_request_to_dict(db: Session, item: ReturnRequest, *, include_evidence
             "conclusion": task.verification_conclusion,
             "submitted_at": task.submitted_at.isoformat() if task.submitted_at else None,
         }
-    reward = db.scalar(select(SupplierLeadReward).where(SupplierLeadReward.assignment_id == item.assignment_id))
+    reward = db.scalar(
+        select(SupplierLeadReward).where(SupplierLeadReward.assignment_id == item.assignment_id)
+    )
     if reward:
         data["reward"] = {
             "id": reward.id,
@@ -698,7 +698,6 @@ def return_verification_task_to_dict(
         and task.assignee_user_id == principal.user_id
         and (principal.can("lead.phone.read") or principal.can("*"))
     )
-    evidence_summary = _evidence_summary(db, request.id) if request else {}
     return {
         "id": task.id,
         "task_type": task.task_type,
@@ -717,7 +716,7 @@ def return_verification_task_to_dict(
             "appeal_deadline_at": (request.appeal_deadline_at or request.due_at).isoformat()
             if request and (request.appeal_deadline_at or request.due_at)
             else None,
-            "evidence_summary": evidence_summary,
+            "evidence_summary": _evidence_summary(db, request.id) if request else {},
         },
         "assignment": {
             "id": assignment.id if assignment else None,
