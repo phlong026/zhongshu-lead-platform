@@ -15,6 +15,12 @@ from ..core.v12_enums import DuplicateDecision, LeadSourceKind, LeadV12Status
 
 settings = get_settings()
 
+REVIEWABLE_DUPLICATE_DECISIONS = {
+    DuplicateDecision.HARD_DUPLICATE.value,
+    DuplicateDecision.REWARD_DUPLICATE.value,
+    DuplicateDecision.HISTORICAL_SUSPECT.value,
+}
+
 
 @dataclass(frozen=True, slots=True)
 class DedupResult:
@@ -171,19 +177,24 @@ def override_duplicate(
         .where(LeadDedupEvent.lead_id == lead.id)
         .order_by(LeadDedupEvent.created_at.desc())
     )
+    if event is None or event.lead_id != lead.id:
+        raise ValueError("未找到当前客资的去重结论")
+    if event.decision not in REVIEWABLE_DUPLICATE_DECISIONS:
+        raise ValueError("仅重复或历史疑似结论允许人工覆盖")
+    if lead.duplicate_status not in REVIEWABLE_DUPLICATE_DECISIONS:
+        raise ValueError("当前客资不存在可覆盖的重复状态")
     override = DedupOverride(
         lead_id=lead.id,
-        dedup_event_id=event.id if event else None,
+        dedup_event_id=event.id,
         reason=clean_reason,
         approved_by=approved_by,
     )
     db.add(override)
-    if event:
-        event.decision = DuplicateDecision.OVERRIDDEN.value
-        details: dict[str, Any] = dict(event.details_json or {})
-        details["override_reason"] = clean_reason
-        details["overridden_by"] = approved_by
-        event.details_json = details
+    event.decision = DuplicateDecision.OVERRIDDEN.value
+    details: dict[str, Any] = dict(event.details_json or {})
+    details["override_reason"] = clean_reason
+    details["overridden_by"] = approved_by
+    event.details_json = details
     lead.duplicate_status = DuplicateDecision.OVERRIDDEN.value
     lead.pending_reason = None
     if lead.source_kind == LeadSourceKind.SUPPLIER_H5.value and lead.review_status != "APPROVED":
