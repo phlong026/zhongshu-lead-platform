@@ -151,7 +151,9 @@ def _return_refund_semantic_mismatches(db: Session) -> list[dict[str, Any]]:
                 refund,
                 company_id=request.company_id,
                 ledger_type=PointsLedgerType.RETURN.value,
-                business_types={"V12_RETURN_REFUND"},
+                # V1.0.x used RETURN_REQUEST; V1.2 uses V12_RETURN_REFUND.
+                # Both are valid historical facts if all other semantics match.
+                business_types={"V12_RETURN_REFUND", "RETURN_REQUEST"},
                 business_id=request.id,
                 delta=refund_points,
             )
