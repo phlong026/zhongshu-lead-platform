@@ -1,48 +1,96 @@
-# V1.0.1 生产部署手册
+# V1.2 生产部署手册
 
-## 1. 生产拓扑
+## 1. 适用范围
 
-- Nginx：80 端口强制跳转 HTTPS，443 终止 TLS，并配置请求限流、安全响应头和 25MB 上传限制；
-- API：FastAPI 单体应用，托管加盟商 H5、电销 H5、管理后台和业务接口；
-- Scheduler：处理微信通知 Outbox、24/48 小时任务、跟进逾期与低积分提醒；
-- PostgreSQL：唯一业务主库；
-- 私有对象存储：聊天截图、电话录音和回单，生产优先使用 S3/COS/OSS 私有桶；
-- 备份目录或异地备份桶：保存数据库与本地私有文件备份。
+本手册用于将已评审的 V1.2 镜像部署到生产环境。真实服务号联调、业务 UAT 和灰度批准必须另行完成，代码通过不等于业务可以全量开放。
 
-## 2. 生产前准备
+## 2. 生产拓扑
+
+- Nginx：80 强制跳转 HTTPS，443 终止 TLS，配置安全响应头、限流和 25MB 上传限制；
+- API：FastAPI，托管加盟商 H5、内部电销 H5、管理后台和业务接口；
+- Scheduler：处理通知 Outbox、领取/跟进任务、低积分提醒和每小时供应奖励结算；
+- PostgreSQL 16：唯一生产主库；
+- 私有 S3/COS/OSS：保存聊天截图和电话录音；
+- 日志与告警平台：采集 API、Scheduler、Nginx、数据库和备份任务；
+- 异地备份：保存 PostgreSQL 自定义格式备份及对象存储版本。
+
+## 3. 生产前提
+
+1. `release/v1.2.0` 最新 CI 全绿，PR 无 Critical/High 未解决项；
+2. `APP_IMAGE` 指向已评审 V1.2 镜像，正式窗口优先使用 `@sha256:` digest；
+3. 正式域名、TLS、服务号授权域名和 OAuth 回调已配置；
+4. PostgreSQL、对象存储、日志、告警和备份已验收；
+5. `PHONE_HASH_SECRET` 与 `PHONE_FINGERPRINT_SECRET` 分离并妥善托管；
+6. 演示账号、`SEED_DEMO`、微信/飞书模拟开关全部关闭；
+7. 已完成 `V1.2_MIGRATION_RUNBOOK.md` 的预演和 `V1.2_ROLLBACK.md` 的恢复演练。
+
+## 4. 配置校验
 
 ```bash
 cp .env.docker.example .env
-# 填写真实域名、随机密钥、数据库口令、微信、飞书和对象存储配置
-mkdir -p infra/certs backups
-# 放置证书：infra/certs/fullchain.pem 和 infra/certs/privkey.pem
+mkdir -p infra/certs backups dist
+# 放置 fullchain.pem、privkey.pem，并填写 .env 的真实配置
 python scripts/validate_production_env.py --env-file .env
 python scripts/verify_production.py --env-file .env --require-certificates
 ```
 
-生产必须满足：
+飞书为显式可选能力：
 
-- `APP_ENV=production`；
-- `APP_BASE_URL` 和微信 OAuth 回调使用同一个 HTTPS 域名；
-- `WECHAT_DEV_MOCK=false`、`FEISHU_DEV_MOCK=false`；
-- 不使用示例密钥、示例数据库口令和演示数据；
-- `AUTO_CREATE_SCHEMA=false`，数据库结构仅通过 Alembic 管理；
-- `TRUSTED_HOSTS`、`CORS_ORIGINS` 使用明确生产域名；
-- 微信、飞书和对象存储凭据通过环境变量注入，不提交 Git。
+- 启用：`FEISHU_ENABLED=true`，并配置 App、Token、Table 和字段映射；
+- 不启用：`FEISHU_ENABLED=false`，不保留无效凭据；
+- 无论是否启用，生产均要求 `FEISHU_DEV_MOCK=false`。
 
-## 3. 构建与启动
+## 5. 拉取镜像和启动数据库
 
 ```bash
-docker compose \
-  --env-file .env \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
-  build --pull api scheduler
-docker compose \
-  --env-file .env \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
-  up -d
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml pull
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml up -d db
+```
+
+生产覆盖配置将 API 的 `RUN_DB_MIGRATIONS` 固定为 `false`，避免应用启动时隐式迁移或多个实例竞争执行迁移。
+
+## 6. 备份、迁移和回填
+
+首先进入维护窗口并停止业务写入：
+
+```bash
+ENV_FILE=.env BACKUP_RETENTION_DAYS=30 sh scripts/backup_postgres.sh
+```
+
+显式执行 Alembic：
+
+```bash
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml \
+  run --rm -e RUN_DB_MIGRATIONS=true api true
+```
+
+先只读预检，再执行历史手机号指纹回填：
+
+```bash
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml \
+  run --rm -e RUN_DB_MIGRATIONS=false api \
+  python scripts/migrate_v12_data.py --dry-run --batch-size 500 --max-batches 10000 --fail-on-row-error
+
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml \
+  run --rm -e RUN_DB_MIGRATIONS=false api \
+  python scripts/migrate_v12_data.py --batch-size 500 --max-batches 10000 --fail-on-row-error
+```
+
+执行数据对账：
+
+```bash
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml \
+  run --rm -e RUN_DB_MIGRATIONS=false api \
+  python scripts/reconcile_v12.py --output /tmp/v12-reconciliation.json
+```
+
+出现失败行、未知历史状态、重复有效派发单、积分差异、缺失奖励/返分流水或证据元数据异常时，判定为 `NO-GO`。
+
+## 7. 启动应用
+
+```bash
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml up -d api
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml up -d scheduler nginx
 ```
 
 检查：
@@ -51,23 +99,37 @@ docker compose \
 docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml ps
 curl -fsS https://app.example.com/health/live
 curl -fsS https://app.example.com/health/ready
+python scripts/preflight_v12.py --env-file .env --require-certificates --output dist/v12-preflight.json
 ```
 
-## 4. 发布顺序
+## 8. 上线冒烟
 
-1. 执行数据库和对象存储备份；
-2. 运行生产配置校验；
-3. 构建带版本号的应用镜像；
-4. API 启动脚本执行 `alembic upgrade head`；
-5. API 健康后 Scheduler 才启动；
-6. 检查微信 OAuth、飞书同步、人工派发、领取扣分、退回审核和积分对账；
-7. 灰度 3～5 家加盟商后再全量开放。
+必须按真实角色验证：
 
-## 5. 回滚
+1. 微信 OAuth 登录和公司绑定；
+2. 平台手工录入和供应商上传；
+3. 供应商资料初审；
+4. 候选公司和人工派发；
+5. 加盟商领取、单次扣分和手机号解锁；
+6. 截图或录音退回申诉、后置电销核验和终审返分；
+7. 奖励观察、冻结、结算和异常冲正；
+8. 微信通知和深链；
+9. V1.2 报表、审计和业务 ID 追踪；
+10. 全公司积分与流水对账。
 
-- 应用回滚：切换 `APP_IMAGE` 到上一镜像版本后重新 `up -d`；
-- 数据库迁移：只有经过评审且确认可逆时执行 Alembic downgrade；
-- 业务数据：使用 `scripts/restore_postgres.sh`，恢复前必须进入维护窗口；
-- 私有文件：本地存储使用 `scripts/restore_private_storage.sh`，云对象存储使用版本控制或供应商恢复功能。
+## 9. 灰度策略
 
-生产不得在未备份时直接回滚数据库。
+- 第一批仅开放 3–5 家已完成培训的加盟商；
+- 连续观察 24–72 小时；
+- 每日核对 5xx、Outbox DEAD、奖励积压、积分差异和用户反馈；
+- 无 P0/P1 缺陷并由产品、业务、财务、技术共同签字后逐批扩大；
+- 禁止首次直接向全部加盟商开放。
+
+## 10. 回滚
+
+- 应用回滚：将 `APP_IMAGE` 切换为上一已验证 digest 后重新启动；
+- 数据库：优先恢复上线前备份，不得未经评审盲目 downgrade；
+- 私有对象：使用对象存储版本或供应商恢复能力；
+- 账务异常：立即停止领取、结算和返分入口，保留不可变流水与审计证据。
+
+详细触发条件和命令见 `docs/runbooks/V1.2_ROLLBACK.md`。未完成备份与恢复演练时禁止正式上线。
