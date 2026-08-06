@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from apps.api.src.core.models import Lead, PointsAccount, PointsLedger
+from apps.api.src.core.models import Company, Lead, PointsAccount, PointsLedger
 from apps.api.src.core.models_v12 import V12MigrationCheckpoint
 from apps.api.src.core.security import encrypt_text, hash_phone
 from apps.api.src.core.state_machine_v12 import (
@@ -78,17 +78,16 @@ def test_preview_is_read_only_and_row_errors_never_include_plaintext(db) -> None
 
 def test_reconciliation_detects_incomplete_backfill_and_points_mismatch(db) -> None:
     lead = _lead("reconcile-lead", "13700137000")
-    db.add(lead)
+    company = Company(code="RECON", name="对账测试公司", status="ACTIVE")
+    db.add_all([lead, company])
     db.flush()
-    account = PointsAccount(company_id="missing-company", balance=50)
-    # SQLite fixtures do not enforce foreign keys by default; this deliberately
-    # simulates a historical accounting inconsistency for the read-only checker.
+    account = PointsAccount(company_id=company.id, balance=50)
     db.add(account)
     db.flush()
     db.add(
         PointsLedger(
             account_id=account.id,
-            company_id="missing-company",
+            company_id=company.id,
             ledger_type="RECHARGE",
             delta=40,
             balance_after=40,
