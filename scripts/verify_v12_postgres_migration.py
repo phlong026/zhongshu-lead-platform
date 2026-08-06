@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -19,6 +19,57 @@ from apps.api.src.services.reconciliation_v12 import reconcile_v12
 from scripts.seed_v101_migration_fixture import FIXTURE_LEAD_ID
 
 
+def _unique_constraint_names(inspector, table: str) -> set[str]:
+    return {
+        str(item["name"])
+        for item in inspector.get_unique_constraints(table)
+        if item.get("name")
+    }
+
+
+def _verify_postgres_constraints(bind) -> dict[str, object]:
+    if bind.dialect.name != "postgresql":
+        raise RuntimeError("PostgreSQL migration verification must run against PostgreSQL")
+    inspector = inspect(bind)
+
+    assignment_indexes = {
+        str(item["name"]): item
+        for item in inspector.get_indexes("assignments")
+        if item.get("name")
+    }
+    active_index = assignment_indexes.get("uq_assignments_active_lead_v12")
+    if not active_index or not active_index.get("unique"):
+        raise RuntimeError("active assignment partial unique index is missing or not unique")
+    if list(active_index.get("column_names") or []) != ["lead_id"]:
+        raise RuntimeError("active assignment unique index does not target lead_id")
+    predicate = str((active_index.get("dialect_options") or {}).get("postgresql_where") or "")
+    for status in ("PENDING_CLAIM", "CLAIMED", "FOLLOWING", "RETURN_PENDING"):
+        if status not in predicate:
+            raise RuntimeError(f"active assignment partial index predicate is missing {status}")
+
+    required_unique_constraints = {
+        "points_ledgers": "uq_points_idempotency",
+        "return_requests": "uq_return_assignment",
+        "supplier_lead_rewards": "uq_supplier_reward_assignment",
+    }
+    observed: dict[str, list[str]] = {}
+    for table, required in required_unique_constraints.items():
+        names = _unique_constraint_names(inspector, table)
+        observed[table] = sorted(names)
+        if required not in names:
+            raise RuntimeError(f"required unique constraint missing: {table}.{required}")
+
+    return {
+        "active_assignment_index": {
+            "name": "uq_assignments_active_lead_v12",
+            "unique": True,
+            "columns": ["lead_id"],
+            "predicate": predicate,
+        },
+        "unique_constraints": observed,
+    }
+
+
 def main() -> int:
     with SessionLocal() as db:
         lead = db.scalar(select(Lead).where(Lead.id == FIXTURE_LEAD_ID))
@@ -28,11 +79,14 @@ def main() -> int:
             raise RuntimeError("historical phone fingerprint was not backfilled")
         if map_legacy_lead_status(lead.status, strict=True) is not LeadV12Status.READY_DISPATCH:
             raise RuntimeError("historical lead status mapping is incorrect")
+        constraints = _verify_postgres_constraints(db.get_bind())
         report = reconcile_v12(db)
+        fingerprint_length = len(lead.phone_fingerprint)
     payload = {
         "fixture_lead_id": FIXTURE_LEAD_ID,
-        "fingerprint_length": len(lead.phone_fingerprint),
+        "fingerprint_length": fingerprint_length,
         "mapped_status": LeadV12Status.READY_DISPATCH.value,
+        "postgres_constraints": constraints,
         "reconciliation": report.to_dict(),
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
