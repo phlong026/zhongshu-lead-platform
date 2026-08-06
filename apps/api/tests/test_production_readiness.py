@@ -13,15 +13,18 @@ def _secret(prefix: str, length: int = 40) -> str:
 def production_settings(**overrides) -> Settings:
     values = {
         "app_env": "production",
+        "app_version": "1.2.0",
         "app_base_url": "https://app.zhongshu.example.cn",
         "database_url": "postgresql+psycopg://zhongshu:secret@db:5432/zhongshu",
         "jwt_secret": "J" * 48,
         "field_encryption_key": "E" * 48,
-        "phone_hash_secret": "P" * 32,
+        "phone_hash_secret": "H" * 32,
+        "phone_fingerprint_secret": "F" * 48,
         "wechat_app_id": "wx-production",
         "wechat_app_secret": _secret("wechat"),
         "wechat_oauth_redirect_uri": "https://app.zhongshu.example.cn/api/v1/auth/wechat/callback",
         "wechat_dev_mock": False,
+        "feishu_enabled": True,
         "feishu_app_id": "cli-production",
         "feishu_app_secret": _secret("feishu"),
         "feishu_app_token": "bitable-token",
@@ -46,14 +49,50 @@ def test_production_validation_accepts_strong_configuration_with_local_storage_w
     assert any("本地对象存储" in warning for warning in result.warnings)
 
 
+def test_production_validation_allows_explicitly_disabled_feishu_without_credentials():
+    result = validate_production_settings(
+        production_settings(
+            feishu_enabled=False,
+            feishu_app_id="",
+            feishu_app_secret="",
+            feishu_app_token="",
+            feishu_table_id="",
+        ),
+        {"POSTGRES_PASSWORD": "A-strong-production-password-2026", "SEED_DEMO": "false"},
+    )
+    assert result.valid is True
+    assert not any("FEISHU_" in error for error in result.errors)
+
+
+def test_production_validation_requires_feishu_credentials_when_enabled():
+    result = validate_production_settings(
+        production_settings(feishu_app_token="", feishu_table_id=""),
+        {"POSTGRES_PASSWORD": "A-strong-production-password-2026", "SEED_DEMO": "false"},
+    )
+    assert result.valid is False
+    assert any("FEISHU_APP_TOKEN" in error for error in result.errors)
+    assert any("FEISHU_TABLE_ID" in error for error in result.errors)
+
+
+def test_production_validation_rejects_shared_phone_secrets():
+    result = validate_production_settings(
+        production_settings(phone_hash_secret="S" * 40, phone_fingerprint_secret="S" * 40),
+        {"POSTGRES_PASSWORD": "A-strong-production-password-2026", "SEED_DEMO": "false"},
+    )
+    assert result.valid is False
+    assert any("必须与 PHONE_HASH_SECRET 独立" in error for error in result.errors)
+
+
 def test_production_validation_rejects_placeholders_mocks_and_insecure_urls():
     result = validate_production_settings(
         production_settings(
+            app_version="1.0.1",
             app_base_url="http://localhost:8000",
             database_url="sqlite:///./prod.db",
             jwt_secret="dev-" + "change-me",
             field_encryption_key="replace-key",
             phone_hash_secret="dev-secret",
+            phone_fingerprint_secret="",
             wechat_dev_mock=True,
             feishu_dev_mock=True,
             cors_origins="*",
@@ -62,7 +101,7 @@ def test_production_validation_rejects_placeholders_mocks_and_insecure_urls():
         {"POSTGRES_PASSWORD": "change-this-database-password", "SEED_DEMO": "true"},
     )
     assert result.valid is False
-    assert len(result.errors) >= 8
+    assert len(result.errors) >= 10
 
 
 def test_production_deployment_files_enforce_tls_least_privilege_and_restore_confirmation():
