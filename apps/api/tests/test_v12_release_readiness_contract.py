@@ -9,15 +9,24 @@ from scripts.preflight_v12 import (
     _sensitive_values,
 )
 from scripts.validate_production_env import derive_compose_database_url
+from scripts.verify_production import image_tag
 
 
 def test_production_compose_requires_reviewed_image_and_disables_implicit_migration() -> None:
-    compose = Path("docker-compose.prod.yml").read_text(encoding="utf-8")
+    prod_compose = Path("docker-compose.prod.yml").read_text(encoding="utf-8")
+    base_compose = Path("docker-compose.yml").read_text(encoding="utf-8")
     entrypoint = Path("docker/entrypoint.sh").read_text(encoding="utf-8")
+    scheduler_entrypoint = Path("docker/scheduler-entrypoint.sh").read_text(encoding="utf-8")
+    prepare_env = Path("docker/prepare-env.sh").read_text(encoding="utf-8")
     dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
-    assert "APP_IMAGE must reference the reviewed V1.2 image" in compose
-    assert 'RUN_DB_MIGRATIONS: "false"' in compose
+    assert "APP_IMAGE must reference the reviewed V1.2 image" in prod_compose
+    assert 'RUN_DB_MIGRATIONS: "false"' in prod_compose
     assert 'if [ "${RUN_DB_MIGRATIONS:-true}" = "true" ]' in entrypoint
+    assert ". /app/docker/prepare-env.sh" in entrypoint
+    assert ". /app/docker/prepare-env.sh" in scheduler_entrypoint
+    assert "DATABASE_URL: postgresql" not in base_compose
+    assert "POSTGRES_PASSWORD:" in base_compose
+    assert "quote(os.environ" in prepare_env
     assert "ARG APP_VERSION=1.2.0" in dockerfile
 
 
@@ -42,15 +51,19 @@ def test_preflight_redacts_injected_secrets_from_subprocess_output() -> None:
     assert "public-value" in redacted
 
 
-def test_compose_database_url_is_derived_from_postgres_settings_without_plaintext_logging() -> None:
+def test_compose_database_url_is_derived_from_postgres_settings_with_matching_encoding() -> None:
     env = {
         "POSTGRES_USER": "zhong shu",
-        "POSTGRES_PASSWORD": "p@ss/word",
+        "POSTGRES_PASSWORD": "p@ss/word#1",
         "POSTGRES_DB": "lead db",
     }
-    expected = "postgresql+psycopg://zhong%20shu:p%40ss%2Fword@db:5432/lead%20db"
+    expected = "postgresql+psycopg://zhong%20shu:p%40ss%2Fword%231@db:5432/lead%20db"
     assert derive_compose_database_url(env) == expected
     assert _database_url_from_postgres(env) == expected
+    prepare_env = Path("docker/prepare-env.sh").read_text(encoding="utf-8")
+    assert 'quote(os.environ["POSTGRES_USER"], safe="")' in prepare_env
+    assert 'quote(os.environ["POSTGRES_PASSWORD"], safe="")' in prepare_env
+    assert 'quote(os.environ["POSTGRES_DB"], safe="")' in prepare_env
 
 
 def test_compose_database_preflight_runs_database_checks_inside_api_service(monkeypatch) -> None:
@@ -64,12 +77,25 @@ def test_compose_database_preflight_runs_database_checks_inside_api_service(monk
     assert "RUN_DB_MIGRATIONS=false" in command
 
 
+def test_image_reference_parser_requires_exact_version_tag() -> None:
+    assert image_tag("registry.example.com/app:1.2.0@sha256:" + "a" * 64) == "1.2.0"
+    assert image_tag("registry.example.com:5000/team/app:1.2.9") == "1.2.9"
+    assert image_tag("registry.example.com:5000/team/app@sha256:" + "a" * 64) is None
+
+
 def test_deployment_persists_reconciliation_and_uses_compose_database_preflight() -> None:
     deployment = Path("docs/runbooks/DEPLOYMENT.md").read_text(encoding="utf-8")
+    migration = Path("docs/runbooks/V1.2_MIGRATION_RUNBOOK.md").read_text(encoding="utf-8")
+    preflight = Path("scripts/preflight_v12.py").read_text(encoding="utf-8")
     assert "> dist/v12-reconciliation.json" in deployment
     assert "python -m json.tool dist/v12-reconciliation.json" in deployment
     assert "--compose-database" in deployment
     assert "/tmp/v12-reconciliation.json" not in deployment
+    assert "reconcile_status=$?" in migration
+    assert 'exit "$reconcile_status"' in migration
+    assert "reconciliation-before-backfill.json || true" not in migration
+    assert "--require-image-digest" in preflight
+    assert "--require-image-inspect" in preflight
 
 
 def test_sprint6_runbooks_and_release_documents_exist() -> None:
@@ -88,7 +114,7 @@ def test_sprint6_runbooks_and_release_documents_exist() -> None:
         assert len(content) > 500
 
 
-def test_ci_contains_postgres_browser_and_dependency_security_gates() -> None:
+def test_ci_contains_postgres_browser_dependency_and_evidence_gates() -> None:
     for relative in (".github/workflows/v12-pr-ci.yml", ".github/workflows/v12-release-ci.yml"):
         workflow = Path(relative).read_text(encoding="utf-8")
         assert "postgres:16-alpine" in workflow
@@ -97,3 +123,4 @@ def test_ci_contains_postgres_browser_and_dependency_security_gates() -> None:
         assert "browser_smoke_v12.py" in workflow
         assert "pip-audit" in workflow
         assert "requirements-browser.txt" in workflow
+        assert "v12-postgres-verification.json" in workflow
