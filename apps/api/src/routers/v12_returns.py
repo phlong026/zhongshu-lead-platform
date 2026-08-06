@@ -1,0 +1,500 @@
+from __future__ import annotations
+
+import mimetypes
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
+from fastapi.responses import Response
+from sqlalchemy import func, or_, select
+from sqlalchemy.orm import Session
+
+from ..core.auth import CurrentPrincipal, require_permissions
+from ..core.database import get_db
+from ..core.enums import EvidenceType, VerificationTaskStatus
+from ..core.errors import AppError
+from ..core.models import ReturnEvidence, ReturnRequest, VerificationTask
+from ..core.responses import ok, page
+from ..core.v12_enums import VerificationTaskType
+from ..schemas.v12_returns import (
+    ReturnDraftV12Body,
+    ReturnFinalReviewBody,
+    ReturnVerificationAssignBody,
+    ReturnVerificationSubmitBody,
+)
+from ..services.audit import write_audit
+from ..services.return_v12 import (
+    add_return_evidence,
+    assign_return_verification_task,
+    claim_return_verification_task,
+    create_or_update_return_draft,
+    final_review_return,
+    return_request_to_dict,
+    return_verification_task_to_dict,
+    submit_return_request,
+    submit_return_verification,
+)
+from ..services.storage import create_file_access_token, decode_file_access_token, get_storage
+
+router = APIRouter(prefix="/v1.2", tags=["v1.2-return-verification"])
+
+IMAGE_MIME = {"image/jpeg", "image/png", "image/webp"}
+AUDIO_MIME = {
+    "audio/mpeg",
+    "audio/mp3",
+    "audio/wav",
+    "audio/x-wav",
+    "audio/mp4",
+    "audio/x-m4a",
+    "audio/aac",
+    "application/octet-stream",
+}
+
+
+def _can_read_return(principal, item: ReturnRequest) -> bool:
+    if principal.can("*") or principal.can("return.read") or principal.can("return.evidence.read"):
+        return True
+    return bool(principal.company_id and item.company_id == principal.company_id and principal.can("return.own.manage"))
+
+
+@router.post("/returns/assignments/{assignment_id}/draft")
+def save_return_draft(
+    assignment_id: str,
+    body: ReturnDraftV12Body,
+    request: Request,
+    principal=Depends(require_permissions("return.own.manage")),
+    db: Session = Depends(get_db),
+):
+    item = create_or_update_return_draft(
+        db,
+        assignment_id=assignment_id,
+        principal=principal,
+        reason_code=body.reason_code,
+        description=body.description,
+    )
+    write_audit(
+        db,
+        principal=principal,
+        action="V12_RETURN_DRAFT_SAVE",
+        resource_type="return_request",
+        resource_id=item.id,
+        company_id=item.company_id,
+        after={"reason_code": item.reason_code, "status": item.status},
+        request_id=request.state.request_id,
+    )
+    db.commit()
+    return ok(request, return_request_to_dict(db, item, include_evidence=True), "退回草稿已保存")
+
+
+@router.post("/returns/{return_id}/evidence")
+async def upload_return_evidence(
+    return_id: str,
+    request: Request,
+    principal=Depends(require_permissions("return.own.manage")),
+    db: Session = Depends(get_db),
+    evidence_type: str = Form(...),
+    duration_seconds: int | None = Form(default=None),
+    file: UploadFile = File(...),
+):
+    item = db.get(ReturnRequest, return_id)
+    if item is None:
+        raise AppError("RETURN_NOT_FOUND", "退回申请不存在", 404)
+    content = await file.read()
+    mime = file.content_type or mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
+    normalized_type = evidence_type.strip().upper()
+    if normalized_type == EvidenceType.CHAT_SCREENSHOT.value:
+        if mime not in IMAGE_MIME or len(content) > 5 * 1024 * 1024:
+            raise AppError("EVIDENCE_IMAGE_INVALID", "截图仅支持 JPG/PNG/WEBP，单张不超过 5MB", 422)
+    elif normalized_type == EvidenceType.CALL_RECORDING.value:
+        if mime not in AUDIO_MIME or len(content) > 20 * 1024 * 1024:
+            raise AppError("EVIDENCE_AUDIO_INVALID", "录音格式或大小不符合要求，最大 20MB", 422)
+    else:
+        raise AppError("EVIDENCE_TYPE_INVALID", "证据类型无效", 422)
+
+    stored = get_storage().save(
+        content,
+        prefix=f"evidence/v1.2/{datetime.utcnow():%Y/%m}/{item.id}",
+        filename=file.filename or "evidence.bin",
+        mime_type=mime,
+    )
+    evidence = add_return_evidence(
+        db,
+        request=item,
+        principal=principal,
+        evidence_type=normalized_type,
+        object_key=stored.object_key,
+        original_name=file.filename or "evidence.bin",
+        mime_type=stored.mime_type,
+        file_size=stored.size,
+        sha256=stored.sha256,
+        duration_seconds=duration_seconds,
+    )
+    write_audit(
+        db,
+        principal=principal,
+        action="V12_RETURN_EVIDENCE_UPLOAD",
+        resource_type="return_evidence",
+        resource_id=evidence.id,
+        company_id=item.company_id,
+        after={"type": evidence.evidence_type, "size": evidence.file_size, "sha256": evidence.sha256},
+        request_id=request.state.request_id,
+    )
+    db.commit()
+    return ok(
+        request,
+        {
+            "id": evidence.id,
+            "type": evidence.evidence_type,
+            "size": evidence.file_size,
+            "sha256": evidence.sha256,
+        },
+        "证据已上传",
+    )
+
+
+@router.post("/returns/{return_id}/submit")
+def submit_return(
+    return_id: str,
+    request: Request,
+    principal=Depends(require_permissions("return.own.manage")),
+    db: Session = Depends(get_db),
+):
+    result = submit_return_request(db, return_id=return_id, principal=principal)
+    write_audit(
+        db,
+        principal=principal,
+        action="V12_RETURN_SUBMIT",
+        resource_type="return_request",
+        resource_id=result.request.id,
+        company_id=result.request.company_id,
+        after={
+            "status": result.request.status,
+            "verification_task_id": result.task.id if result.task else None,
+            "expired": result.expired,
+            "idempotent": result.idempotent,
+        },
+        request_id=request.state.request_id,
+    )
+    db.commit()
+    if result.expired:
+        raise AppError("RETURN_WINDOW_EXPIRED", "已超过 3 个工作日退回申诉期", 409)
+    return ok(
+        request,
+        return_request_to_dict(db, result.request, include_evidence=True),
+        "退回申请已提交，等待后置电销核验" if not result.idempotent else "退回申请已提交",
+    )
+
+
+@router.get("/returns")
+def list_returns_v12(
+    request: Request,
+    principal: CurrentPrincipal,
+    db: Session = Depends(get_db),
+    status: str | None = Query(default=None),
+    company_id: str | None = Query(default=None),
+    page_no: int = Query(default=1, alias="page", ge=1),
+    page_size: int = Query(default=20, ge=1, le=200),
+):
+    filters = []
+    if principal.can("*") or principal.can("return.read"):
+        if company_id:
+            filters.append(ReturnRequest.company_id == company_id)
+    elif principal.can("return.own.manage") and principal.company_id:
+        filters.append(ReturnRequest.company_id == principal.company_id)
+    else:
+        raise AppError("FORBIDDEN", "无权查看退回申请", 403)
+    if status:
+        filters.append(ReturnRequest.status == status.strip().upper())
+    total = db.scalar(select(func.count(ReturnRequest.id)).where(*filters)) or 0
+    items = db.scalars(
+        select(ReturnRequest)
+        .where(*filters)
+        .order_by(ReturnRequest.created_at.desc())
+        .offset((page_no - 1) * page_size)
+        .limit(page_size)
+    ).all()
+    return ok(
+        request,
+        page([return_request_to_dict(db, item) for item in items], int(total), page_no, page_size),
+    )
+
+
+@router.get("/returns/{return_id}")
+def return_detail_v12(
+    return_id: str,
+    request: Request,
+    principal: CurrentPrincipal,
+    db: Session = Depends(get_db),
+):
+    item = db.get(ReturnRequest, return_id)
+    if item is None:
+        raise AppError("RETURN_NOT_FOUND", "退回申请不存在", 404)
+    if not _can_read_return(principal, item):
+        raise AppError("FORBIDDEN", "无权查看退回申请", 403)
+    data = return_request_to_dict(db, item, include_evidence=True)
+    for evidence in data.get("evidences", []):
+        evidence["access_token"] = create_file_access_token(evidence["id"], principal.user_id)
+    return ok(request, data)
+
+
+@router.get("/return-evidences/{evidence_id}/download")
+def download_return_evidence_v12(
+    evidence_id: str,
+    token: str,
+    request: Request,
+    principal: CurrentPrincipal,
+    db: Session = Depends(get_db),
+):
+    payload = decode_file_access_token(token)
+    if payload.get("sub") != evidence_id or payload.get("uid") != principal.user_id:
+        raise AppError("FILE_TOKEN_MISMATCH", "文件访问凭据不匹配", 403)
+    evidence = db.get(ReturnEvidence, evidence_id)
+    if evidence is None:
+        raise AppError("FILE_NOT_FOUND", "证据文件不存在", 404)
+    item = db.get(ReturnRequest, evidence.return_request_id)
+    if item is None or not _can_read_return(principal, item):
+        raise AppError("FORBIDDEN", "无权访问证据文件", 403)
+    content = get_storage().read(evidence.object_key)
+    write_audit(
+        db,
+        principal=principal,
+        action="V12_RETURN_EVIDENCE_READ",
+        resource_type="return_evidence",
+        resource_id=evidence.id,
+        company_id=item.company_id,
+        request_id=request.state.request_id,
+    )
+    db.commit()
+    safe_name = evidence.original_name.replace('"', "")
+    return Response(
+        content=content,
+        media_type=evidence.mime_type,
+        headers={"Content-Disposition": f'inline; filename="{safe_name}"'},
+    )
+
+
+@router.get("/return-verifications/tasks")
+def list_return_verification_tasks(
+    request: Request,
+    principal: CurrentPrincipal,
+    db: Session = Depends(get_db),
+    status: str | None = Query(default=None),
+    mine: bool = Query(default=False),
+    page_no: int = Query(default=1, alias="page", ge=1),
+    page_size: int = Query(default=20, ge=1, le=200),
+):
+    if not (
+        principal.can("verification.read")
+        or principal.can("verification.task.read")
+        or principal.can("*")
+    ):
+        raise AppError("FORBIDDEN", "无权查看退回核验任务", 403)
+    filters = [VerificationTask.task_type == VerificationTaskType.RETURN_VERIFY.value]
+    if mine or principal.has_any_role("TELESALES"):
+        filters.append(
+            or_(
+                VerificationTask.assignee_user_id == principal.user_id,
+                VerificationTask.assignee_user_id.is_(None),
+            )
+        )
+    if status:
+        filters.append(VerificationTask.status == status.strip().upper())
+    total = db.scalar(select(func.count(VerificationTask.id)).where(*filters)) or 0
+    tasks = db.scalars(
+        select(VerificationTask)
+        .where(*filters)
+        .order_by(VerificationTask.created_at.desc())
+        .offset((page_no - 1) * page_size)
+        .limit(page_size)
+    ).all()
+    return ok(
+        request,
+        page(
+            [return_verification_task_to_dict(db, task, principal) for task in tasks],
+            int(total),
+            page_no,
+            page_size,
+        ),
+    )
+
+
+@router.get("/return-verifications/tasks/{task_id}")
+def return_verification_task_detail(
+    task_id: str,
+    request: Request,
+    principal: CurrentPrincipal,
+    db: Session = Depends(get_db),
+):
+    task = db.get(VerificationTask, task_id)
+    if task is None or task.task_type != VerificationTaskType.RETURN_VERIFY.value:
+        raise AppError("RETURN_VERIFY_TASK_NOT_FOUND", "退回核验任务不存在", 404)
+    if principal.has_any_role("TELESALES") and task.assignee_user_id not in {None, principal.user_id}:
+        raise AppError("FORBIDDEN", "无权查看该退回核验任务", 403)
+    if not (
+        principal.can("verification.read")
+        or principal.can("verification.task.read")
+        or principal.can("*")
+    ):
+        raise AppError("FORBIDDEN", "无权查看退回核验任务", 403)
+    return ok(
+        request,
+        return_verification_task_to_dict(
+            db,
+            task,
+            principal,
+            include_phone=task.assignee_user_id == principal.user_id,
+        ),
+    )
+
+
+@router.post("/return-verifications/tasks/{task_id}/assign")
+def assign_return_verification(
+    task_id: str,
+    body: ReturnVerificationAssignBody,
+    request: Request,
+    principal=Depends(require_permissions("verification.read")),
+    db: Session = Depends(get_db),
+):
+    task = assign_return_verification_task(
+        db,
+        task_id=task_id,
+        assignee_user_id=body.assignee_user_id,
+        assigned_by=principal.user_id,
+    )
+    write_audit(
+        db,
+        principal=principal,
+        action="V12_RETURN_VERIFY_ASSIGN",
+        resource_type="verification_task",
+        resource_id=task.id,
+        after={"assignee_user_id": task.assignee_user_id, "status": task.status},
+        request_id=request.state.request_id,
+    )
+    db.commit()
+    return ok(request, return_verification_task_to_dict(db, task, principal), "任务已分配")
+
+
+@router.post("/return-verifications/tasks/{task_id}/claim")
+def claim_return_verification(
+    task_id: str,
+    request: Request,
+    principal=Depends(require_permissions("verification.task.claim")),
+    db: Session = Depends(get_db),
+):
+    task = claim_return_verification_task(db, task_id=task_id, principal=principal)
+    write_audit(
+        db,
+        principal=principal,
+        action="V12_RETURN_VERIFY_CLAIM",
+        resource_type="verification_task",
+        resource_id=task.id,
+        after={"assignee_user_id": task.assignee_user_id, "status": task.status},
+        request_id=request.state.request_id,
+    )
+    db.commit()
+    return ok(
+        request,
+        return_verification_task_to_dict(db, task, principal, include_phone=True),
+        "任务已领取",
+    )
+
+
+@router.post("/return-verifications/tasks/{task_id}/dial")
+def dial_return_verification(
+    task_id: str,
+    request: Request,
+    principal=Depends(require_permissions("lead.phone.dial")),
+    db: Session = Depends(get_db),
+):
+    task = db.get(VerificationTask, task_id)
+    if (
+        task is None
+        or task.task_type != VerificationTaskType.RETURN_VERIFY.value
+        or task.assignee_user_id != principal.user_id
+        or task.status != VerificationTaskStatus.IN_PROGRESS.value
+    ):
+        raise AppError("FORBIDDEN", "无权拨打该退回核验电话", 403)
+    data = return_verification_task_to_dict(db, task, principal, include_phone=True)
+    phone = data["lead"]["phone"]
+    write_audit(
+        db,
+        principal=principal,
+        action="V12_RETURN_VERIFY_DIAL",
+        resource_type="verification_task",
+        resource_id=task.id,
+        metadata={"return_request_id": task.return_request_id},
+        request_id=request.state.request_id,
+    )
+    db.commit()
+    return ok(request, {"phone": phone, "tel_url": f"tel:{phone}"})
+
+
+@router.post("/return-verifications/tasks/{task_id}/submit")
+def submit_return_verification_result(
+    task_id: str,
+    body: ReturnVerificationSubmitBody,
+    request: Request,
+    principal=Depends(require_permissions("verification.submit")),
+    db: Session = Depends(get_db),
+):
+    task = submit_return_verification(
+        db,
+        task_id=task_id,
+        principal=principal,
+        contact_result=body.contact_result,
+        conclusion=body.conclusion,
+        note=body.note,
+    )
+    write_audit(
+        db,
+        principal=principal,
+        action="V12_RETURN_VERIFY_SUBMIT",
+        resource_type="verification_task",
+        resource_id=task.id,
+        after={
+            "contact_result": task.contact_result,
+            "conclusion": task.verification_conclusion,
+            "status": task.status,
+        },
+        request_id=request.state.request_id,
+    )
+    db.commit()
+    return ok(request, return_verification_task_to_dict(db, task, principal), "事实核验已提交")
+
+
+@router.post("/returns/{return_id}/final-review")
+def final_review_return_request(
+    return_id: str,
+    body: ReturnFinalReviewBody,
+    request: Request,
+    principal=Depends(require_permissions("return.review")),
+    db: Session = Depends(get_db),
+):
+    result = final_review_return(
+        db,
+        return_id=return_id,
+        principal=principal,
+        decision=body.decision,
+        note=body.note,
+    )
+    write_audit(
+        db,
+        principal=principal,
+        action="V12_RETURN_FINAL_REVIEW",
+        resource_type="return_request",
+        resource_id=result.request.id,
+        company_id=result.request.company_id,
+        after={
+            "decision": body.decision,
+            "status": result.request.status,
+            "refund_ledger_id": result.refund_ledger.id if result.refund_ledger else None,
+            "idempotent": result.idempotent,
+        },
+        reason=body.note,
+        request_id=request.state.request_id,
+    )
+    db.commit()
+    return ok(
+        request,
+        return_request_to_dict(db, result.request, include_evidence=True),
+        "退回终审已完成",
+    )
