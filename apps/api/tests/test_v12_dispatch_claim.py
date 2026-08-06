@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 
 from apps.api.src.core.enums import AssignmentStatus
 from apps.api.src.core.errors import AppError
@@ -12,6 +12,7 @@ from apps.api.src.core.models_v12 import CompanyLeadCapability, CompanyServiceAr
 from apps.api.src.core.security import encrypt_text, fingerprint_phone, hash_phone
 from apps.api.src.core.v12_enums import LeadSourceKind, LeadV12Status, RewardStatus
 from apps.api.src.services.dispatch_v12 import (
+    candidate_to_dict,
     claim_assignment,
     dispatch_manually,
     evaluate_candidate,
@@ -109,7 +110,7 @@ def dispatch_setup(db):
     return supplier, supplier_user, receiver, receiver_user, lead
 
 
-def test_dispatch_pool_only_contains_ready_dispatch_leads(db, dispatch_setup) -> None:
+def test_dispatch_pool_only_contains_ready_unassigned_leads(db, dispatch_setup) -> None:
     _, supplier_user, _, _, ready = dispatch_setup
     _lead(
         db,
@@ -123,6 +124,12 @@ def test_dispatch_pool_only_contains_ready_dispatch_leads(db, dispatch_setup) ->
     assert total == 1
     assert [item.id for item in items] == [ready.id]
 
+    ready.current_assignment_id = "stale-assignment-id"
+    db.commit()
+    items, total = list_dispatch_pool(db, page_no=1, page_size=20)
+    assert total == 0
+    assert items == []
+
 
 def test_candidate_filter_blocks_self_supply_and_accepts_eligible_receiver(db, dispatch_setup) -> None:
     supplier, _, receiver, _, lead = dispatch_setup
@@ -133,6 +140,21 @@ def test_candidate_filter_blocks_self_supply_and_accepts_eligible_receiver(db, d
     assert receiver_result.eligible is True
     assert receiver_result.points_price == 100
     assert receiver_result.points_available == 1000
+
+
+def test_candidate_serialization_hides_exact_balance_by_default(db, dispatch_setup) -> None:
+    _, _, receiver, _, lead = dispatch_setup
+    result = evaluate_candidate(db, lead=lead, company=receiver)
+    public = candidate_to_dict(result)
+    assert public["points_price"] == 100
+    assert "points_balance" not in public
+    assert "points_reserved" not in public
+    assert "points_available" not in public
+
+    finance = candidate_to_dict(result, include_financials=True)
+    assert finance["points_balance"] == 1000
+    assert finance["points_reserved"] == 0
+    assert finance["points_available"] == 1000
 
 
 def test_manual_dispatch_does_not_deduct_points_and_claim_is_atomic_and_idempotent(db, dispatch_setup) -> None:
@@ -194,6 +216,70 @@ def test_manual_dispatch_does_not_deduct_points_and_claim_is_atomic_and_idempote
     assert len(ledgers) == 1
 
 
+def test_platform_lead_claim_does_not_create_supplier_reward(db, dispatch_setup) -> None:
+    _, supplier_user, receiver, receiver_user, _ = dispatch_setup
+    lead = _lead(
+        db,
+        phone="13800138103",
+        submitter_id=supplier_user.id,
+        supplier_company_id=None,
+    )
+    db.commit()
+    assignment = dispatch_manually(
+        db,
+        lead_id=lead.id,
+        company_id=receiver.id,
+        assigned_by=receiver_user.id,
+        idempotency_key="dispatch-platform-0001",
+    )
+    db.commit()
+    result = claim_assignment(
+        db,
+        assignment_id=assignment.id,
+        company_id=receiver.id,
+        claimed_by=receiver_user.id,
+    )
+    db.commit()
+    assert result.reward is None
+    assert db.scalar(
+        select(SupplierLeadReward).where(SupplierLeadReward.assignment_id == assignment.id)
+    ) is None
+
+
+def test_pending_dispatch_reservations_prevent_oversubscription(db, dispatch_setup) -> None:
+    _, supplier_user, receiver, receiver_user, lead = dispatch_setup
+    account = db.scalar(select(PointsAccount).where(PointsAccount.company_id == receiver.id))
+    assert account is not None
+    account.balance = 150
+    second_lead = _lead(
+        db,
+        phone="13800138104",
+        submitter_id=supplier_user.id,
+        supplier_company_id=None,
+    )
+    db.commit()
+
+    dispatch_manually(
+        db,
+        lead_id=lead.id,
+        company_id=receiver.id,
+        assigned_by=receiver_user.id,
+        idempotency_key="dispatch-reserve-0001",
+    )
+    db.commit()
+    with pytest.raises(AppError) as exc_info:
+        dispatch_manually(
+            db,
+            lead_id=second_lead.id,
+            company_id=receiver.id,
+            assigned_by=receiver_user.id,
+            idempotency_key="dispatch-reserve-0002",
+        )
+    assert exc_info.value.code == "DISPATCH_CANDIDATE_INELIGIBLE"
+    assert "POINTS_INSUFFICIENT" in exc_info.value.details["reasons"]
+    assert account.balance == 150
+
+
 def test_claim_rechecks_receiver_history_duplicate(db, dispatch_setup) -> None:
     _, supplier_user, receiver, receiver_user, lead = dispatch_setup
     historical = _lead(
@@ -234,6 +320,29 @@ def test_claim_rechecks_receiver_history_duplicate(db, dispatch_setup) -> None:
     assert exc_info.value.code == "DISPATCH_CANDIDATE_INELIGIBLE"
 
 
+def test_claim_rejects_expired_assignment_with_naive_database_datetime(db, dispatch_setup) -> None:
+    _, _, receiver, receiver_user, lead = dispatch_setup
+    assignment = dispatch_manually(
+        db,
+        lead_id=lead.id,
+        company_id=receiver.id,
+        assigned_by=receiver_user.id,
+        idempotency_key="dispatch-expired-0001",
+    )
+    assignment.expires_at = datetime.now() - timedelta(minutes=1)
+    db.commit()
+    db.expire_all()
+
+    with pytest.raises(AppError) as exc_info:
+        claim_assignment(
+            db,
+            assignment_id=assignment.id,
+            company_id=receiver.id,
+            claimed_by=receiver_user.id,
+        )
+    assert exc_info.value.code == "ASSIGNMENT_EXPIRED"
+
+
 def test_manual_dispatch_idempotency_key_cannot_be_reused_for_other_target(db, dispatch_setup) -> None:
     _, _, receiver, receiver_user, lead = dispatch_setup
     first = dispatch_manually(
@@ -252,3 +361,9 @@ def test_manual_dispatch_idempotency_key_cannot_be_reused_for_other_target(db, d
         idempotency_key="dispatch-test-0003",
     )
     assert repeated.id == first.id
+
+
+def test_active_assignment_partial_unique_index_is_registered(db) -> None:
+    indexes = inspect(db.get_bind()).get_indexes("assignments")
+    index = next(item for item in indexes if item["name"] == "uq_assignments_active_lead_v12")
+    assert index["unique"] == 1
