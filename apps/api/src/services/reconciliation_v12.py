@@ -4,8 +4,9 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
+from ..core.enums import PointsLedgerType
 from ..core.models import Assignment, Lead, PointsAccount, PointsLedger, ReturnEvidence, ReturnRequest
 from ..core.models_v12 import SupplierLeadReward, V12MigrationCheckpoint
 from ..core.state_machine_v12 import LEGACY_LEAD_STATUS_MAP, LEGACY_RETURN_STATUS_MAP
@@ -13,6 +14,7 @@ from ..core.v12_enums import LeadV12Status, ReturnV12Status, RewardStatus
 from .migration_v12 import PHONE_FINGERPRINT_CHECKPOINT
 
 _ACTIVE_ASSIGNMENT_STATUSES = ("PENDING_CLAIM", "CLAIMED", "FOLLOWING", "RETURN_PENDING")
+_MAX_SEMANTIC_SAMPLES = 50
 
 
 @dataclass(slots=True)
@@ -38,6 +40,146 @@ def _count(db: Session, model: type, *criteria: Any) -> int:
     if criteria:
         statement = statement.where(*criteria)
     return int(db.scalar(statement) or 0)
+
+
+def _ledger_mismatch_fields(
+    ledger: PointsLedger | None,
+    *,
+    company_id: str,
+    ledger_type: str,
+    business_types: set[str],
+    business_id: str,
+    delta: int,
+    related_ledger_id: str | None = None,
+    require_related_match: bool = False,
+) -> list[str]:
+    if ledger is None:
+        return ["missing"]
+    mismatches: list[str] = []
+    if ledger.company_id != company_id:
+        mismatches.append("company_id")
+    if ledger.ledger_type != ledger_type:
+        mismatches.append("ledger_type")
+    if ledger.business_type not in business_types:
+        mismatches.append("business_type")
+    if ledger.business_id != business_id:
+        mismatches.append("business_id")
+    if int(ledger.delta) != int(delta):
+        mismatches.append("delta")
+    if require_related_match and ledger.related_ledger_id != related_ledger_id:
+        mismatches.append("related_ledger_id")
+    return mismatches
+
+
+def _reward_ledger_semantic_mismatches(db: Session) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    original_mismatches: list[dict[str, Any]] = []
+    reversal_mismatches: list[dict[str, Any]] = []
+
+    original_ledger = aliased(PointsLedger)
+    original_rows = db.execute(
+        select(SupplierLeadReward, original_ledger)
+        .outerjoin(original_ledger, original_ledger.id == SupplierLeadReward.ledger_id)
+        .where(SupplierLeadReward.status.in_((RewardStatus.SETTLED.value, RewardStatus.REVERSED.value)))
+        .order_by(SupplierLeadReward.id)
+    ).all()
+    for reward, ledger in original_rows:
+        fields = _ledger_mismatch_fields(
+            ledger,
+            company_id=reward.supplier_company_id,
+            ledger_type=PointsLedgerType.REWARD.value,
+            business_types={"V12_SUPPLIER_REWARD"},
+            business_id=reward.id,
+            delta=int(reward.reward_points),
+        )
+        if fields:
+            original_mismatches.append(
+                {
+                    "reward_id": reward.id,
+                    "ledger_id": reward.ledger_id,
+                    "fields": fields,
+                }
+            )
+
+    reversal_ledger = aliased(PointsLedger)
+    reversal_rows = db.execute(
+        select(SupplierLeadReward, reversal_ledger)
+        .outerjoin(reversal_ledger, reversal_ledger.id == SupplierLeadReward.reversal_ledger_id)
+        .where(SupplierLeadReward.status == RewardStatus.REVERSED.value)
+        .order_by(SupplierLeadReward.id)
+    ).all()
+    for reward, ledger in reversal_rows:
+        fields = _ledger_mismatch_fields(
+            ledger,
+            company_id=reward.supplier_company_id,
+            ledger_type=PointsLedgerType.REVERSAL.value,
+            business_types={"V12_SUPPLIER_REWARD_REVERSAL"},
+            business_id=reward.id,
+            delta=-abs(int(reward.reward_points)),
+            related_ledger_id=reward.ledger_id,
+            require_related_match=True,
+        )
+        if fields:
+            reversal_mismatches.append(
+                {
+                    "reward_id": reward.id,
+                    "ledger_id": reward.reversal_ledger_id,
+                    "fields": fields,
+                }
+            )
+    return original_mismatches, reversal_mismatches
+
+
+def _return_refund_semantic_mismatches(db: Session) -> list[dict[str, Any]]:
+    refund_ledger = aliased(PointsLedger)
+    claim_ledger = aliased(PointsLedger)
+    rows = db.execute(
+        select(ReturnRequest, refund_ledger, claim_ledger)
+        .outerjoin(refund_ledger, refund_ledger.id == ReturnRequest.refund_ledger_id)
+        .outerjoin(claim_ledger, claim_ledger.id == refund_ledger.related_ledger_id)
+        .where(ReturnRequest.status == ReturnV12Status.APPROVED.value)
+        .order_by(ReturnRequest.id)
+    ).all()
+    mismatches: list[dict[str, Any]] = []
+    for request, refund, claim in rows:
+        fields: list[str] = []
+        refund_points = int(request.refund_points or 0)
+        if refund_points <= 0:
+            fields.append("refund_points")
+        fields.extend(
+            f"refund.{field}"
+            for field in _ledger_mismatch_fields(
+                refund,
+                company_id=request.company_id,
+                ledger_type=PointsLedgerType.RETURN.value,
+                business_types={"V12_RETURN_REFUND"},
+                business_id=request.id,
+                delta=refund_points,
+            )
+        )
+        if refund is not None:
+            if not refund.related_ledger_id:
+                fields.append("refund.related_ledger_id")
+            fields.extend(
+                f"claim.{field}"
+                for field in _ledger_mismatch_fields(
+                    claim,
+                    company_id=request.company_id,
+                    ledger_type=PointsLedgerType.CLAIM.value,
+                    business_types={"V12_ASSIGNMENT_CLAIM", "ASSIGNMENT"},
+                    business_id=request.assignment_id,
+                    delta=-refund_points,
+                )
+            )
+        if fields:
+            mismatches.append(
+                {
+                    "return_id": request.id,
+                    "refund_ledger_id": request.refund_ledger_id,
+                    "claim_ledger_id": refund.related_ledger_id if refund is not None else None,
+                    "fields": sorted(set(fields)),
+                }
+            )
+    return mismatches
 
 
 def reconcile_v12(db: Session, *, require_completed_backfill: bool = True) -> ReconciliationReport:
@@ -189,13 +331,21 @@ def reconcile_v12(db: Session, *, require_completed_backfill: bool = True) -> Re
     evidence_invalid = _count(
         db,
         ReturnEvidence,
-        (ReturnEvidence.object_key == "") | (ReturnEvidence.sha256 == "") | (ReturnEvidence.file_size <= 0),
+        (ReturnEvidence.object_key == "")
+        | (ReturnEvidence.sha256 == "")
+        | (func.length(ReturnEvidence.sha256) != 64)
+        | (ReturnEvidence.file_size <= 0),
     )
+    reward_ledger_mismatches, reward_reversal_mismatches = _reward_ledger_semantic_mismatches(db)
+    return_refund_mismatches = _return_refund_semantic_mismatches(db)
     report.metrics.update(
         {
             "settled_rewards_without_ledger": settled_without_ledger,
             "reversed_rewards_without_ledger": reversed_without_ledger,
             "approved_returns_without_refund_ledger": approved_without_refund,
+            "reward_ledger_semantic_mismatches": len(reward_ledger_mismatches),
+            "reward_reversal_ledger_semantic_mismatches": len(reward_reversal_mismatches),
+            "return_refund_ledger_semantic_mismatches": len(return_refund_mismatches),
             "invalid_evidence_records": evidence_invalid,
         }
     )
@@ -207,6 +357,33 @@ def reconcile_v12(db: Session, *, require_completed_backfill: bool = True) -> Re
     ):
         if count:
             report.errors.append(_issue(code, message, count=count))
+    if reward_ledger_mismatches:
+        report.errors.append(
+            _issue(
+                "REWARD_LEDGER_SEMANTIC_MISMATCH",
+                "供应商奖励结算流水与奖励事实不一致",
+                count=len(reward_ledger_mismatches),
+                samples=reward_ledger_mismatches[:_MAX_SEMANTIC_SAMPLES],
+            )
+        )
+    if reward_reversal_mismatches:
+        report.errors.append(
+            _issue(
+                "REWARD_REVERSAL_LEDGER_SEMANTIC_MISMATCH",
+                "供应商奖励冲正流水与原奖励事实不一致",
+                count=len(reward_reversal_mismatches),
+                samples=reward_reversal_mismatches[:_MAX_SEMANTIC_SAMPLES],
+            )
+        )
+    if return_refund_mismatches:
+        report.errors.append(
+            _issue(
+                "RETURN_REFUND_LEDGER_SEMANTIC_MISMATCH",
+                "退回返分流水与退回/原领取事实不一致",
+                count=len(return_refund_mismatches),
+                samples=return_refund_mismatches[:_MAX_SEMANTIC_SAMPLES],
+            )
+        )
 
     if not accounts:
         report.warnings.append(_issue("NO_POINTS_ACCOUNTS", "当前数据库没有积分账户"))
