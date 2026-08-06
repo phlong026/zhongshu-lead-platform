@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..core.errors import AppError
@@ -13,6 +13,7 @@ from ..core.v12_enums import CompanyLeadCapabilityCode
 
 VALID_CAPABILITIES = {item.value for item in CompanyLeadCapabilityCode}
 VALID_REVIEW_STATUSES = {"PENDING", "APPROVED", "REJECTED"}
+REMOVAL_REQUEST_PREFIX = "[REMOVE_REQUEST]"
 
 
 def require_active_company(db: Session, company_id: str | None) -> Company:
@@ -125,6 +126,14 @@ def replace_service_areas(
     region_codes: list[str],
     primary_city_code: str | None,
 ) -> list[CompanyServiceAreaV12]:
+    """Submit a reviewed replacement without interrupting approved coverage.
+
+    New or reactivated regions remain inactive until approved. Removal requests
+    retain their currently approved coverage until the platform approves the
+    removal, preventing an unreviewed profile edit from changing dispatch
+    eligibility immediately.
+    """
+
     require_active_company(db, company_id)
     cleaned = list(dict.fromkeys(code.strip() for code in region_codes if code.strip()))
     if not cleaned:
@@ -138,22 +147,63 @@ def replace_service_areas(
     missing = sorted(set(cleaned) - set(regions))
     if missing:
         raise AppError("REGION_NOT_FOUND", "存在无效或停用的地区编码", 422, {"region_codes": missing})
-    db.execute(delete(CompanyServiceAreaV12).where(CompanyServiceAreaV12.company_id == company_id))
-    items: list[CompanyServiceAreaV12] = []
+
+    existing_items = list(
+        db.scalars(
+            select(CompanyServiceAreaV12).where(CompanyServiceAreaV12.company_id == company_id)
+        ).all()
+    )
+    existing_by_code = {item.region_code: item for item in existing_items}
+    desired_codes = set(cleaned)
+    result: list[CompanyServiceAreaV12] = []
+
     for code in cleaned:
         region = regions[code]
-        item = CompanyServiceAreaV12(
-            company_id=company_id,
-            region_code=code,
-            region_level=region.level,
-            is_primary_city=code == primary_city_code,
-            active=False,
-            review_status="PENDING",
-        )
-        db.add(item)
-        items.append(item)
+        item = existing_by_code.get(code)
+        if item is None:
+            item = CompanyServiceAreaV12(
+                company_id=company_id,
+                region_code=code,
+                region_level=region.level,
+                is_primary_city=code == primary_city_code,
+                active=False,
+                review_status="PENDING",
+            )
+            db.add(item)
+        else:
+            item.region_level = region.level
+            item.is_primary_city = code == primary_city_code
+            removal_pending = bool(item.review_note and item.review_note.startswith(REMOVAL_REQUEST_PREFIX))
+            if removal_pending and item.active:
+                item.review_status = "APPROVED"
+                item.review_note = None
+                item.reviewed_by = None
+                item.reviewed_at = None
+            elif item.review_status == "REJECTED" or (item.review_status == "APPROVED" and not item.active):
+                item.review_status = "PENDING"
+                item.active = False
+                item.review_note = None
+                item.reviewed_by = None
+                item.reviewed_at = None
+        result.append(item)
+
+    for item in existing_items:
+        if item.region_code in desired_codes:
+            continue
+        removal_pending = bool(item.review_note and item.review_note.startswith(REMOVAL_REQUEST_PREFIX))
+        if item.active and item.review_status == "APPROVED":
+            item.review_status = "PENDING"
+            item.review_note = f"{REMOVAL_REQUEST_PREFIX} 公司申请移除服务区域"
+            item.reviewed_by = None
+            item.reviewed_at = None
+            result.append(item)
+        elif removal_pending and item.active:
+            result.append(item)
+        else:
+            db.delete(item)
+
     db.flush()
-    return items
+    return sorted(result, key=lambda item: (not item.is_primary_city, item.region_code))
 
 
 def review_service_area(
@@ -167,10 +217,17 @@ def review_service_area(
     item = db.get(CompanyServiceAreaV12, area_id)
     if item is None:
         raise AppError("SERVICE_AREA_NOT_FOUND", "服务区域申请不存在", 404)
-    item.review_status = "APPROVED" if approve else "REJECTED"
-    item.active = approve
+    removal_request = bool(item.review_note and item.review_note.startswith(REMOVAL_REQUEST_PREFIX))
+    clean_note = note.strip() if note else None
+    if removal_request:
+        item.review_status = "APPROVED"
+        item.active = not approve
+        item.review_note = clean_note or ("移除申请已批准" if approve else "移除申请已驳回")
+    else:
+        item.review_status = "APPROVED" if approve else "REJECTED"
+        item.active = approve
+        item.review_note = clean_note
     item.reviewed_by = reviewed_by
     item.reviewed_at = datetime.now(timezone.utc)
-    item.review_note = note.strip() if note else None
     db.flush()
     return item
