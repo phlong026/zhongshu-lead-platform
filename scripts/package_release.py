@@ -11,14 +11,12 @@ import argparse
 import datetime as dt
 import hashlib
 import json
-import os
 import re
 import shutil
 import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import Iterable
 
 ROOT = Path(__file__).resolve().parents[1]
 PROHIBITED_PATTERNS = (
@@ -100,11 +98,19 @@ def build_source_zip(output: Path, *, version: str, dirty: bool) -> dict[str, ob
         "generated_at_utc": generated_at,
         "tracked_file_count": len(files),
         "source_archive_policy": "Git tracked files only; runtime data and secrets excluded",
+        "quality_gates": [
+            "Full pytest and JavaScript checks",
+            "Repository secret and Python compile checks",
+            "SQLite V1.0.1 to V1.2 migration cycle",
+            "PostgreSQL 16 historical migration and reconciliation",
+            "Desktop admin and mobile H5 Chromium smoke",
+        ],
         "runtime_boundaries": [
-            "No online payment in P0",
-            "Manual dispatch in P0; automatic rotation is P1",
-            "Real WeChat and Feishu credentials require production Gate 0",
-            "H5 cannot record native phone calls automatically",
+            "Manual dispatch only; no automatic, random, rotation, weighted or grab-order dispatch",
+            "Return evidence requires screenshot OR call recording",
+            "Return appeal and supplier reward observation use three workdays",
+            "No online payment, WeChat Mini Program, cloud calling or automatic H5 call recording",
+            "Real WeChat, target infrastructure, UAT, recovery drill and gray release remain production gates",
         ],
     }
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -137,14 +143,14 @@ def _write_delivery_note(path: Path, *, version: str, commit: str, dirty: bool, 
         "",
         f"- Git 提交：`{commit}`",
         f"- 工作区状态：{'包含未提交变更（仅测试构建）' if dirty else '干净'}",
-        "- 交付范围：P0/MVP 可运行代码基线、全部评审记录、测试、部署脚本和源需求文件",
+        "- 交付范围：V1.2 可运行代码、迁移和对账工具、自动质量门禁、评审记录与上线 Runbook",
         "",
         "## 文件说明",
         "",
-        f"- `{files['source'].name}`：干净源码包，只包含 Git 已跟踪文件；不含 `.git`、数据库、上传证据、缓存和 `.env`。",
+        f"- `{files['source'].name}`：只包含 Git 已跟踪文件；不含数据库、证据、缓存和 `.env`。",
         f"- `{files['bundle'].name}`：完整 Git 提交历史，可使用 `git clone <bundle> <目录>` 恢复仓库。",
         "- `SHA256SUMS.txt`：交付文件完整性校验值。",
-        "- `质量与发布资料/`：质量报告、实现矩阵和发布说明。",
+        "- `质量与发布资料/`：V1.2 质量、迁移、UAT、回滚和发布资料。",
         "",
         "## 本地启动",
         "",
@@ -160,7 +166,7 @@ def _write_delivery_note(path: Path, *, version: str, commit: str, dirty: bool, 
         "",
         "## 生产前置条件",
         "",
-        "真实微信公众号、飞书、PostgreSQL、私有对象存储、域名 HTTPS、备份恢复与隐私合规仍需在目标环境完成 Gate 验证。P0 不包含在线支付、自动派发、加盟商内部二次派发或自动通话录音。",
+        "真实微信公众号、PostgreSQL、私有对象存储、域名 HTTPS、历史数据迁移、备份恢复、业务 UAT、监控告警、隐私合规和 3–5 家加盟商灰度必须在目标环境完成。代码交付不代表这些现场门禁已签字。",
         "",
     ]
     path.write_text("\n".join(lines), encoding="utf-8")
@@ -171,10 +177,18 @@ def _copy_release_docs(target: Path) -> None:
     sources = [
         ROOT / "docs" / "quality" / "TEST_REPORT.md",
         ROOT / "docs" / "traceability" / "IMPLEMENTATION_MATRIX.md",
-        ROOT / "docs" / "release" / "RELEASE_NOTES_V1.0.0-P0.md",
+        ROOT / "docs" / "release" / "RELEASE_NOTES_V1.2.0.md",
         ROOT / "docs" / "reviews" / "INDEX.md",
+        ROOT / "docs" / "runbooks" / "PRODUCTION_CHECKLIST_V1.2.md",
+        ROOT / "docs" / "runbooks" / "V1.2_MIGRATION_RUNBOOK.md",
+        ROOT / "docs" / "runbooks" / "V1.2_UAT.md",
+        ROOT / "docs" / "runbooks" / "V1.2_GO_NO_GO.md",
+        ROOT / "docs" / "runbooks" / "V1.2_ROLLBACK.md",
+        ROOT / "docs" / "runbooks" / "V1.2_POST_LAUNCH.md",
     ]
     for source in sources:
+        if not source.is_file():
+            raise RuntimeError(f"release document missing: {source.relative_to(ROOT)}")
         shutil.copy2(source, target / source.name)
 
 
@@ -227,8 +241,8 @@ def package_release(output_dir: Path, *, version: str, allow_dirty: bool = False
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Package reviewed source and full Git history")
-    parser.add_argument("--version", default="V1.0.0-P0")
+    parser = argparse.ArgumentParser(description="Package reviewed V1.2 source and full Git history")
+    parser.add_argument("--version", default="V1.2.0")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "dist" / "release")
     parser.add_argument("--allow-dirty", action="store_true", help="only for package-script tests")
     args = parser.parse_args()
