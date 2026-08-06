@@ -76,7 +76,7 @@ def request_capability(db: Session, company_id: str, capability_code: str) -> Co
             review_status="PENDING",
         )
         db.add(item)
-    elif item.review_status != "APPROVED":
+    elif item.review_status != "APPROVED" or not item.active:
         item.review_status = "PENDING"
         item.active = False
         item.reviewed_by = None
@@ -119,6 +119,25 @@ def list_service_areas(db: Session, company_id: str) -> list[CompanyServiceAreaV
     )
 
 
+def _validate_region_hierarchy(regions: dict[str, Region], primary_city_code: str) -> None:
+    primary = regions[primary_city_code]
+    if primary.level != "CITY":
+        raise AppError("PRIMARY_CITY_LEVEL_INVALID", "主要城市必须选择城市级地区", 422)
+    invalid_codes: list[str] = []
+    for code, region in regions.items():
+        if code == primary_city_code:
+            continue
+        if region.level != "DISTRICT" or region.parent_code != primary_city_code:
+            invalid_codes.append(code)
+    if invalid_codes:
+        raise AppError(
+            "SERVICE_AREA_HIERARCHY_INVALID",
+            "服务区县必须隶属于所选主要城市",
+            422,
+            {"region_codes": sorted(invalid_codes), "primary_city_code": primary_city_code},
+        )
+
+
 def replace_service_areas(
     db: Session,
     *,
@@ -138,7 +157,9 @@ def replace_service_areas(
     cleaned = list(dict.fromkeys(code.strip() for code in region_codes if code.strip()))
     if not cleaned:
         raise AppError("SERVICE_AREA_REQUIRED", "至少配置一个服务区域", 422)
-    if primary_city_code and primary_city_code not in cleaned:
+    if not primary_city_code:
+        raise AppError("PRIMARY_CITY_REQUIRED", "必须配置一个主要城市", 422)
+    if primary_city_code not in cleaned:
         raise AppError("PRIMARY_CITY_INVALID", "主要城市必须包含在服务区域中", 422)
     regions = {
         region.code: region
@@ -147,6 +168,7 @@ def replace_service_areas(
     missing = sorted(set(cleaned) - set(regions))
     if missing:
         raise AppError("REGION_NOT_FOUND", "存在无效或停用的地区编码", 422, {"region_codes": missing})
+    _validate_region_hierarchy(regions, primary_city_code)
 
     existing_items = list(
         db.scalars(
