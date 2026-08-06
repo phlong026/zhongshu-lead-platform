@@ -46,11 +46,7 @@ def _redact(text: str, sensitive_values: tuple[str, ...]) -> str:
 
 
 def _database_url_from_postgres(env: dict[str, str]) -> str | None:
-    """Build the same internal PostgreSQL URL used by docker-compose.yml.
-
-    The URL is used by host-side configuration validation only. Database reads
-    are executed inside the Compose network so the `db` hostname is reachable.
-    """
+    """Build the same encoded internal PostgreSQL URL used by container startup."""
 
     user = env.get("POSTGRES_USER", "").strip()
     password = env.get("POSTGRES_PASSWORD", "").strip()
@@ -132,15 +128,13 @@ def main() -> int:
     parser.add_argument(
         "--compose-database",
         action="store_true",
-        help="Run Alembic/reconciliation inside the production Compose network",
+        help="Run Alembic/reconciliation inside the production Compose network and require immutable image verification",
     )
     parser.add_argument("--output", type=Path, default=ROOT / "dist" / "v12-preflight.json")
     args = parser.parse_args()
 
     env_file = args.env_file.resolve()
     values = load_dotenv(env_file)
-    # Runtime-injected variables have the same precedence used by Settings and
-    # validate_production_env.py, so the report reflects the process that will run.
     env = {**values, **os.environ}
     explicit_database_url = bool(env.get("DATABASE_URL", "").strip())
     if args.compose_database and not explicit_database_url:
@@ -150,21 +144,20 @@ def main() -> int:
     sensitive_values = _sensitive_values(env)
     python = sys.executable
 
+    verify_args = [
+        python,
+        "scripts/verify_production.py",
+        "--env-file",
+        str(env_file),
+        *(["--require-certificates"] if args.require_certificates else []),
+        *(["--require-image-digest", "--require-image-inspect"] if args.compose_database else []),
+    ]
     commands: list[tuple[str, list[str]]] = [
         (
             "production-environment",
             [python, "scripts/validate_production_env.py", "--env-file", str(env_file)],
         ),
-        (
-            "deployment-prerequisites",
-            [
-                python,
-                "scripts/verify_production.py",
-                "--env-file",
-                str(env_file),
-                *(["--require-certificates"] if args.require_certificates else []),
-            ],
-        ),
+        ("deployment-prerequisites", verify_args),
     ]
     database_revision = ["-m", "alembic", "-c", "alembic.ini", "current", "--check-heads"]
     reconciliation = [
