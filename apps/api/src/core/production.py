@@ -96,7 +96,6 @@ def validate_production_settings(settings: Settings, environ: dict[str, str] | N
         errors.append("OBJECT_STORAGE_BACKEND 仅支持 local 或 s3")
     if storage_backend == "s3":
         for name, value in (
-            ("S3_ENDPOINT_URL", settings.s3_endpoint_url),
             ("S3_ACCESS_KEY_ID", settings.s3_access_key_id),
             ("S3_SECRET_ACCESS_KEY", settings.s3_secret_access_key),
             ("S3_BUCKET", settings.s3_bucket),
@@ -104,6 +103,10 @@ def validate_production_settings(settings: Settings, environ: dict[str, str] | N
         ):
             if not value:
                 errors.append(f"{name} 未配置")
+        if settings.s3_endpoint_url:
+            endpoint = urlparse(settings.s3_endpoint_url)
+            if endpoint.scheme != "https" or not endpoint.netloc:
+                errors.append("S3_ENDPOINT_URL 自定义地址必须使用有效 HTTPS URL；AWS S3 可留空使用默认区域端点")
     else:
         warnings.append("生产环境仍使用本地对象存储，正式全量前应切换私有 S3/COS/OSS 或完成异地备份与恢复演练")
     if not settings.trusted_host_list or "*" in settings.trusted_host_list:
