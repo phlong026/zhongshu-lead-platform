@@ -59,7 +59,7 @@ def test_compose_database_preflight_runs_database_checks_inside_api_service(monk
     assert command[:2] == ["/usr/bin/docker", "compose"]
     assert "--env-file" in command
     assert "run" in command and "--rm" in command and "-T" in command
-    assert command[-3:] == ["python", "scripts/reconcile_v12.py"][-3:]
+    assert command[-2:] == ["python", "scripts/reconcile_v12.py"]
     assert "api" in command
     assert "RUN_DB_MIGRATIONS=false" in command
 
