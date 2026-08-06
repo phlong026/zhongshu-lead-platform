@@ -1,0 +1,56 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from scripts.preflight_v12 import _redact, _sensitive_values
+
+
+def test_production_compose_requires_reviewed_image_and_disables_implicit_migration() -> None:
+    compose = Path("docker-compose.prod.yml").read_text(encoding="utf-8")
+    entrypoint = Path("docker/entrypoint.sh").read_text(encoding="utf-8")
+    assert "APP_IMAGE must reference the reviewed V1.2 image" in compose
+    assert 'RUN_DB_MIGRATIONS: "false"' in compose
+    assert 'if [ "${RUN_DB_MIGRATIONS:-true}" = "true" ]' in entrypoint
+
+
+def test_preflight_redacts_injected_secrets_from_subprocess_output() -> None:
+    env = {
+        "POSTGRES_PASSWORD": "database-password-value",
+        "WECHAT_APP_SECRET": "wechat-secret-value",
+        "NORMAL_VALUE": "public-value",
+    }
+    sensitive = _sensitive_values(env)
+    redacted = _redact(
+        "database-password-value wechat-secret-value public-value",
+        sensitive,
+    )
+    assert "database-password-value" not in redacted
+    assert "wechat-secret-value" not in redacted
+    assert redacted.count("[REDACTED]") == 2
+    assert "public-value" in redacted
+
+
+def test_sprint6_runbooks_and_release_documents_exist() -> None:
+    required = (
+        "docs/runbooks/PRODUCTION_CHECKLIST_V1.2.md",
+        "docs/runbooks/V1.2_MIGRATION_RUNBOOK.md",
+        "docs/runbooks/V1.2_UAT.md",
+        "docs/runbooks/V1.2_GO_NO_GO.md",
+        "docs/runbooks/V1.2_ROLLBACK.md",
+        "docs/runbooks/V1.2_POST_LAUNCH.md",
+        "docs/release/RELEASE_NOTES_V1.2.0.md",
+    )
+    for relative in required:
+        content = Path(relative).read_text(encoding="utf-8")
+        assert "V1.2" in content
+        assert len(content) > 500
+
+
+def test_ci_contains_postgres_browser_and_dependency_security_gates() -> None:
+    for relative in (".github/workflows/v12-pr-ci.yml", ".github/workflows/v12-release-ci.yml"):
+        workflow = Path(relative).read_text(encoding="utf-8")
+        assert "postgres:16-alpine" in workflow
+        assert "migrate_v12_data.py" in workflow
+        assert "browser_smoke_v12.py" in workflow
+        assert "pip-audit" in workflow
+        assert "requirements-browser.txt" in workflow
