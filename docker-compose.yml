@@ -22,7 +22,9 @@ services:
         condition: service_healthy
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-zhongshu}:${POSTGRES_PASSWORD:-change-this-database-password}@db:5432/${POSTGRES_DB:-zhongshu}
+      POSTGRES_DB: ${POSTGRES_DB:-zhongshu}
+      POSTGRES_USER: ${POSTGRES_USER:-zhongshu}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-this-database-password}
       OBJECT_STORAGE_DIR: /app/storage
     volumes:
       - private_storage:/app/storage
@@ -36,7 +38,9 @@ services:
         condition: service_healthy
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-zhongshu}:${POSTGRES_PASSWORD:-change-this-database-password}@db:5432/${POSTGRES_DB:-zhongshu}
+      POSTGRES_DB: ${POSTGRES_DB:-zhongshu}
+      POSTGRES_USER: ${POSTGRES_USER:-zhongshu}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-this-database-password}
       OBJECT_STORAGE_DIR: /app/storage
     volumes:
       - private_storage:/app/storage
