@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     wechat_oauth_redirect_uri: str = "http://localhost:8000/api/v1/auth/wechat/callback"
     wechat_oauth_scope: str = "snsapi_base"
     wechat_dev_mock: bool = True
+    feishu_enabled: bool = False
     feishu_app_id: str = ""
     feishu_app_secret: str = ""
     feishu_app_token: str = ""
@@ -50,6 +51,7 @@ class Settings(BaseSettings):
     low_points_warning_threshold: int = 1000
     assignment_reminder_hours: int = 24
     assignment_expire_hours: int = 48
+    # V1.0.1 compatibility only. V1.2 return appeals use the workday calendar.
     return_window_hours: int = 48
     first_followup_hours: int = 48
     trusted_hosts: str = "localhost,127.0.0.1,testserver"
