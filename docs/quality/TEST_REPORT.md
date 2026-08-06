@@ -10,8 +10,8 @@
 
 V1.2 的代码质量体系已从早期 SQLite/P0 单层测试升级为三层正式发布门禁：
 
-1. `release-quality`：依赖一致性、依赖漏洞扫描、全量 Pytest、OpenAPI、JavaScript、密钥扫描、Python 编译、空白检查和 SQLite 迁移循环；
-2. `release-postgres-migration`：PostgreSQL 16 上从 V1.0.1 历史夹具升级到 V1.2、手机号指纹回填、数据语义对账、降级和再升级；
+1. `release-quality`：依赖一致性、依赖漏洞扫描、全量 Pytest、OpenAPI、JavaScript、密钥扫描、Python 编译、空白检查、SQLite 迁移循环，并从完整 Git 历史构建最终 V1.2.0 交付包；
+2. `release-postgres-migration`：PostgreSQL 16 上从 V1.0.1 历史夹具升级到 V1.2、手机号指纹回填、数据语义对账、关键并发/幂等约束验证、降级和再升级；
 3. `release-browser-smoke`：真实 Chromium 中的桌面管理后台和移动 H5 登录、加载、console/pageerror、关键组件与截图证据。
 
 本文件描述代码层测试范围和发布门禁，不伪造尚未发生的生产结果。正式版本只有在发布分支对应三组 Actions 均成功后，才可作为“代码可进入目标环境 UAT/灰度”的证据；真实服务号、生产数据库、对象存储、恢复演练、业务 UAT 和灰度仍需现场 Go/No-Go。
@@ -42,19 +42,19 @@ V1.2 的代码质量体系已从早期 SQLite/P0 单层测试升级为三层正�
 | 维度 | 主要验证 |
 |---|---|
 | 数据迁移 | V1.0.1 基线、Alembic upgrade、手机号指纹 dry-run/回填、检查点、断点续跑、错误阻断、downgrade/re-upgrade |
-| PostgreSQL | PostgreSQL 16 服务、真实 DDL、部分唯一约束、迁移后验证 JSON、账务语义对账 |
+| PostgreSQL | PostgreSQL 16 服务、真实 DDL、有效派发部分唯一索引、积分/退回/奖励唯一约束、迁移后验证 JSON、账务语义对账 |
 | 客资供给 | 平台录入、供应商上传、公司能力、服务区域、审核状态、去重结论 |
 | 人工派发 | 仅人工入口、候选资格、自供禁止、区域匹配、接收历史去重、积分可用额、有效派发唯一约束 |
 | 领取扣分 | 行锁、状态重检、过期校验、单次扣分、幂等流水、手机号领取后解锁 |
-| 退回申诉 | 3 个工作日、截图或录音至少一项、任务分配/领取/提交、终审、返分幂等、奖励冻结/取消 |
+| 退回申诉 | 3 个工作日、截图或录音至少一项、任务分配/领取/提交、终审、返分幂等、奖励冻结/取消；兼容 V1.0.x `RETURN_REQUEST` 与 V1.2 `V12_RETURN_REFUND` 两种合法历史流水语义 |
 | 供应奖励 | 观察期、活动申诉冻结、有界批结算、坏行隔离、奖励结算、异常冲正、规则快照 |
 | 积分账务 | 账户余额、不可变流水、`balance_after` 序列、领取/返分/奖励/冲正业务关联语义 |
 | RBAC/隐私 | 公司隔离、角色权限、手机号脱敏、财务字段限制、审计快照脱敏、深链越权 |
 | 外部集成 | 飞书启用开关 fail-closed、分页/token/回写契约；微信生产 mock 禁止与通知 Outbox 契约 |
 | 对象存储 | 本地私有测试存储、S3 配置校验、自定义 endpoint HTTPS、安全访问契约 |
-| 生产配置 | HTTPS、CORS、Trusted Hosts、独立密钥、禁止 Demo、禁止隐式 schema 创建、不可变镜像版本一致性 |
+| 生产配置 | HTTPS、CORS、Trusted Hosts、独立密钥、禁止 Demo、禁止隐式 schema 创建、不可变镜像 tag/digest/OCI 版本一致性、Compose 凭据 URL 编码 |
 | 浏览器 | 1440×900 管理后台、390×844 H5、登录、关键 KPI/导航、可见错误、console error、pageerror |
-| 发布包 | 跟踪文件白名单、真实 `.env` 排除、Manifest 唯一、校验和、Runbook/评审/质量资料完整性 |
+| 发布包 | 完整 Git history、跟踪文件白名单、真实 `.env` 排除、Manifest 唯一、校验和、Runbook/评审/测试/安全审计资料强制齐全 |
 
 ## 4. V1.2 数据迁移与账务对账门禁
 
@@ -66,7 +66,7 @@ V1.2 的代码质量体系已从早期 SQLite/P0 单层测试升级为三层正�
 - 同一客资最多一个有效派发单；
 - 每个积分账户余额等于流水 delta 汇总，最新 `balance_after` 与账户一致；
 - 已结算/已冲正供应奖励的流水公司、业务类型、业务 ID、流水类型、金额和关联原流水必须正确；
-- 已批准退回的返分流水必须与公司、退回 ID、返分金额及原领取扣分流水完全对应；
+- 已批准退回的返分流水必须与公司、退回 ID、返分金额及原领取扣分流水完全对应；V1.0.x 的 `RETURN_REQUEST` 与 V1.2 的 `V12_RETURN_REFUND` 作为明确白名单历史语义处理，其余关联字段仍严格一致；
 - 证据对象键、64 位 SHA-256 和文件大小完整。
 
 只要任一语义不一致，生产 reconciliation 返回非零并触发 `NO-GO`。
@@ -85,10 +85,11 @@ V1.2 的代码质量体系已从早期 SQLite/P0 单层测试升级为三层正�
 - `APP_IMAGE` 显式版本 tag 与 `APP_VERSION` 完全相同；
 - 正式 Go/No-Go 使用 `@sha256:` digest；
 - 实际拉取镜像的 OCI `org.opencontainers.image.version` 与 `APP_VERSION` 相同；
+- API/Scheduler 与宿主机校验使用一致的 PostgreSQL URL 编码规则；
 - Alembic revision 和数据 reconciliation 在生产 Compose 网络中连接真实 `db:5432`，禁止误读宿主机 SQLite；
 - Preflight 输出对数据库 URL、口令、Token 和访问密钥脱敏。
 
-## 6. 浏览器证据
+## 6. 浏览器与发布证据
 
 浏览器任务使用 Playwright Chromium：
 
@@ -99,9 +100,12 @@ V1.2 的代码质量体系已从早期 SQLite/P0 单层测试升级为三层正�
 
 发布分支 Artifact 应至少包含：
 
-- `v12-release-openapi-*`；
-- `v12-release-postgres-migration-*`：V1.0.1 基线 + V1.2 PostgreSQL 验证 JSON；
+- `v12-release-openapi-*`：冻结的运行时 OpenAPI；
+- `v12-release-package-*`：V1.2.0 完整源码 ZIP、完整 Git 提交历史 bundle、完整交付包与 SHA-256 校验文件；
+- `v12-release-postgres-migration-*`：V1.0.1 基线 + V1.2 PostgreSQL 验证/约束 JSON；
 - `v12-release-browser-smoke-*`：桌面/移动截图、浏览器报告、服务器日志。
+
+PR 阶段 `full-quality` 也使用 `fetch-depth: 0` 构建 `V1.2.0-rc` 完整交付包，提前验证发布脚本、Git bundle、文档齐备和校验和逻辑。
 
 ## 7. 已有历史 CI 证据
 
@@ -131,10 +135,10 @@ Sprint 6 改变了迁移、生产配置、浏览器和发布门禁，因此历�
 代码层 `GO` 的必要条件：
 
 1. 最新 Codex/人工综合评审无未解决 P0/P1/P2；
-2. `release-quality` 成功；
-3. `release-postgres-migration` 成功；
-4. `release-browser-smoke` 成功；
-5. 发布 Artifact 可下载且内容完整；
-6. 发布包脚本和校验和验证通过。
+2. `release-quality` 成功并产生 `v12-release-openapi-*` 与 `v12-release-package-*`；
+3. `release-postgres-migration` 成功并产生完整迁移/约束证据；
+4. `release-browser-smoke` 成功并产生浏览器截图/报告；
+5. 所有发布 Artifact 可下载且内容完整；
+6. 最终交付包 SHA-256 校验通过。
 
 满足以上条件仅表示“代码可进入生产环境最终 UAT/灰度”，不等于可以直接向全部加盟商开放。
