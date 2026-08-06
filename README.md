@@ -58,15 +58,9 @@ uvicorn apps.api.src.main:app --host 0.0.0.0 --port 8000 --reload
 
 ## T30 历史数据迁移
 
-生产写入冻结并完成备份后执行：
+生产环境必须在维护窗口、写入冻结和备份完成后，通过生产 Compose 网络执行迁移和对账。正式命令见 `docs/runbooks/V1.2_MIGRATION_RUNBOOK.md` 与 `docs/runbooks/DEPLOYMENT.md`。
 
-```bash
-python scripts/migrate_v12_data.py --dry-run --batch-size 500 --max-batches 10000 --fail-on-row-error
-python scripts/migrate_v12_data.py --batch-size 500 --max-batches 10000 --fail-on-row-error
-python scripts/reconcile_v12.py --output dist/v12-reconciliation.json
-```
-
-迁移任务使用 `v12_migration_checkpoints` 断点续跑；检查点和错误样本只保存业务 ID 与错误码，不保存明文手机号。
+迁移任务使用 `v12_migration_checkpoints` 断点续跑；检查点和错误样本只保存业务 ID 与错误码，不保存明文手机号。最终对账证据固定持久化到宿主机 `dist/v12-reconciliation.json`，不得仅写入 `docker compose run --rm` 的临时容器。
 
 ## 生产部署
 
@@ -75,9 +69,15 @@ cp .env.docker.example .env
 # 填写正式域名、独立随机密钥、微信、PostgreSQL、对象存储和不可变 APP_IMAGE
 python scripts/validate_production_env.py --env-file .env
 python scripts/verify_production.py --env-file .env --require-certificates
-python scripts/preflight_v12.py --env-file .env --require-certificates
-docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml up -d
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml up -d db
+python scripts/preflight_v12.py \
+  --env-file .env \
+  --require-certificates \
+  --compose-database \
+  --output dist/v12-preflight.json
 ```
+
+当 `.env` 只配置 `POSTGRES_*` 时，配置校验会推导与 Compose 一致的内部 PostgreSQL URL；真正的 Alembic revision 和 V1.2 数据对账由 `--compose-database` 通过 API 一次性容器在生产 Compose 网络执行，避免宿主机误连 SQLite。
 
 飞书是显式可选集成：启用时设置 `FEISHU_ENABLED=true` 并配置全部凭据；不启用时不得保留无效生产凭据。
 
