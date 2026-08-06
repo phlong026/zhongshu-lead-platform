@@ -28,6 +28,7 @@ REQUIRED_FILES = (
     "docker/scheduler-entrypoint.sh",
     "scripts/backup_postgres.sh",
     "scripts/restore_postgres.sh",
+    "scripts/baseline_v101.py",
     "scripts/migrate_v12_data.py",
     "scripts/reconcile_v12.py",
     "docs/runbooks/PRODUCTION_CHECKLIST_V1.2.md",
