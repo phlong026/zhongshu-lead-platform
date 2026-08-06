@@ -6,8 +6,8 @@
 
 - [ ] 上线提交来自 `release/v1.2.0`，对应受保护的 V1.2 tag；
 - [ ] PR 与 Release CI 的全量测试、PostgreSQL 迁移和 Chromium 浏览器任务全部通过；
-- [ ] PR 无未解决的 Critical/High 评审问题；
-- [ ] `APP_VERSION=1.2.x`，`APP_IMAGE` 指向已评审镜像，正式窗口使用 digest；
+- [ ] PR 无未解决的 Critical/High/P1/P2 评审问题；
+- [ ] `APP_VERSION=1.2.x`，Dockerfile 默认 `APP_VERSION=1.2.0`，`APP_IMAGE` 指向已评审镜像，正式窗口使用 digest；
 - [ ] README、部署、迁移、回滚、UAT 和发布说明均为 V1.2；
 - [ ] 依赖、镜像和仓库密钥扫描无未接受的 Critical/High 风险。
 
@@ -25,6 +25,8 @@
 
 - [ ] `python scripts/validate_production_env.py --env-file .env` 返回 valid；
 - [ ] `python scripts/verify_production.py --env-file .env --require-certificates` 返回 valid；
+- [ ] `python scripts/preflight_v12.py --env-file .env --require-certificates --compose-database --output dist/v12-preflight.json` 返回 valid；
+- [ ] 标准 Docker 部署的数据库 revision 和 V1.2 reconciliation 均在 Compose 网络内执行，未回退到本地 SQLite；
 - [ ] `JWT_SECRET`、`FIELD_ENCRYPTION_KEY`、`PHONE_HASH_SECRET`、`PHONE_FINGERPRINT_SECRET` 独立且已托管；
 - [ ] `PHONE_FINGERPRINT_SECRET` 与 `PHONE_HASH_SECRET` 不相同；
 - [ ] `AUTO_CREATE_SCHEMA=false`、`SEED_DEMO=false`、`RUN_DB_MIGRATIONS=false`；
@@ -41,6 +43,8 @@
 - [ ] `migrate_v12_data.py --dry-run` 无失败行；
 - [ ] 正式手机号指纹回填完成，检查点状态为 `COMPLETED`；
 - [ ] `reconcile_v12.py` 返回 valid；
+- [ ] `dist/v101-baseline-before.json`、`dist/v12-reconciliation-before-backfill.json`、`dist/v12-reconciliation-after.json` 和 `dist/v12-preflight.json` 已持久化到宿主机并归档；
+- [ ] 所有 JSON 证据通过 `python -m json.tool` 校验，未保存在 `run --rm` 容器临时目录；
 - [ ] 无未知历史状态、重复有效派发单、积分差异或缺失奖励/返分流水；
 - [ ] 截图、录音的 `object_key`、SHA-256 与实际对象抽查一致。
 
