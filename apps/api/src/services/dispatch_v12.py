@@ -18,6 +18,7 @@ from ..core.time import as_utc
 from ..core.v12_enums import DuplicateDecision, LeadV12Status, RewardStatus
 from .company_profile_v12 import has_lead_capability, require_lead_capability
 from .points_service import change_points, resolve_price
+from .reward_rule_v12 import SupplierRewardRule, resolve_supplier_reward_rule
 from .workday_calendar import WorkdayCalendarService
 
 settings = get_settings()
@@ -92,7 +93,12 @@ def _region_matches(db: Session, company_id: str, lead: Lead) -> bool:
     ) is not None
 
 
-def _points_snapshot(db: Session, company_id: str, *, lock_account: bool = False) -> tuple[int, int, int]:
+def _points_snapshot(
+    db: Session,
+    company_id: str,
+    *,
+    lock_account: bool = False,
+) -> tuple[int, int, int]:
     """Read balance/reservations without creating an account during a GET.
 
     Dispatch calls this while the company row and points account are locked, so
@@ -120,8 +126,11 @@ def _receiver_duplicate_assignment(
     company_id: str,
     exclude_assignment_id: str | None = None,
     now: datetime | None = None,
+    reward_rule: SupplierRewardRule | None = None,
 ) -> Assignment | None:
-    cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=settings.lead_historical_suspect_days)
+    current = as_utc(now) or datetime.now(timezone.utc)
+    rule = reward_rule or resolve_supplier_reward_rule(db, as_of=current)
+    cutoff = current - timedelta(days=rule.historical_suspect_days)
     match_clauses = [Lead.phone_hash == lead.phone_hash]
     if lead.phone_fingerprint:
         match_clauses.insert(0, Lead.phone_fingerprint == lead.phone_fingerprint)
@@ -150,6 +159,7 @@ def evaluate_candidate(
     lead: Lead,
     company: Company,
     lock_account: bool = False,
+    reward_rule: SupplierRewardRule | None = None,
 ) -> CandidateResult:
     reasons: list[str] = []
     if company.status != "ACTIVE":
@@ -161,11 +171,20 @@ def evaluate_candidate(
     region_match = _region_matches(db, company.id, lead)
     if not region_match:
         reasons.append("SERVICE_REGION_MISMATCH")
-    duplicate_assignment = _receiver_duplicate_assignment(db, lead=lead, company_id=company.id)
+    duplicate_assignment = _receiver_duplicate_assignment(
+        db,
+        lead=lead,
+        company_id=company.id,
+        reward_rule=reward_rule,
+    )
     if duplicate_assignment is not None:
         reasons.append("DUPLICATE_TO_RECEIVER")
-    points_price, rule = resolve_price(db, lead, company)
-    balance, reserved, available = _points_snapshot(db, company.id, lock_account=lock_account)
+    points_price, price_rule = resolve_price(db, lead, company)
+    balance, reserved, available = _points_snapshot(
+        db,
+        company.id,
+        lock_account=lock_account,
+    )
     if available < points_price:
         reasons.append("POINTS_INSUFFICIENT")
     return CandidateResult(
@@ -174,8 +193,8 @@ def evaluate_candidate(
         eligible=not reasons,
         exclusion_reasons=tuple(reasons),
         points_price=points_price,
-        price_rule_id=rule.id if rule else None,
-        price_version=rule.version if rule else 1,
+        price_rule_id=price_rule.id if price_rule else None,
+        price_version=price_rule.version if price_rule else 1,
         points_balance=balance,
         points_reserved=reserved,
         points_available=available,
@@ -186,7 +205,16 @@ def evaluate_candidate(
 
 def list_candidates(db: Session, *, lead: Lead) -> list[CandidateResult]:
     companies = db.scalars(select(Company).order_by(Company.name.asc(), Company.id.asc())).all()
-    return [evaluate_candidate(db, lead=lead, company=company) for company in companies]
+    reward_rule = resolve_supplier_reward_rule(db)
+    return [
+        evaluate_candidate(
+            db,
+            lead=lead,
+            company=company,
+            reward_rule=reward_rule,
+        )
+        for company in companies
+    ]
 
 
 def list_dispatch_pool(
@@ -334,7 +362,9 @@ def _reward_for_claim(
 ) -> SupplierLeadReward | None:
     if not lead.supplier_company_id or lead.supplier_company_id == assignment.company_id:
         return None
-    existing = db.scalar(select(SupplierLeadReward).where(SupplierLeadReward.assignment_id == assignment.id))
+    existing = db.scalar(
+        select(SupplierLeadReward).where(SupplierLeadReward.assignment_id == assignment.id)
+    )
     if existing:
         return existing
     eligible = lead.duplicate_status not in {
@@ -370,7 +400,9 @@ def claim_assignment(
     company_id: str,
     claimed_by: str,
 ) -> ClaimResult:
-    assignment = db.scalar(select(Assignment).where(Assignment.id == assignment_id).with_for_update())
+    assignment = db.scalar(
+        select(Assignment).where(Assignment.id == assignment_id).with_for_update()
+    )
     if assignment is None:
         raise AppError("ASSIGNMENT_NOT_FOUND", "派发单不存在", 404)
     if assignment.company_id != company_id:
@@ -386,7 +418,9 @@ def claim_assignment(
         if existing_ledger is None:
             raise AppError("CLAIM_LEDGER_MISSING", "派发单已领取但积分流水缺失", 500)
         lead = get_dispatch_lead(db, assignment.lead_id)
-        reward = db.scalar(select(SupplierLeadReward).where(SupplierLeadReward.assignment_id == assignment.id))
+        reward = db.scalar(
+            select(SupplierLeadReward).where(SupplierLeadReward.assignment_id == assignment.id)
+        )
         return ClaimResult(
             assignment=assignment,
             ledger=existing_ledger,
@@ -395,7 +429,12 @@ def claim_assignment(
             idempotent=True,
         )
     if assignment.status != AssignmentStatus.PENDING_CLAIM.value:
-        raise AppError("ASSIGNMENT_NOT_CLAIMABLE", "派发单当前不可领取", 409, {"status": assignment.status})
+        raise AppError(
+            "ASSIGNMENT_NOT_CLAIMABLE",
+            "派发单当前不可领取",
+            409,
+            {"status": assignment.status},
+        )
 
     now = datetime.now(timezone.utc)
     expires_at = as_utc(assignment.expires_at)

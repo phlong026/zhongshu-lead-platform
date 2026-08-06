@@ -12,6 +12,7 @@ from ..core.models import Lead, LeadDuplicateRelation
 from ..core.models_v12 import DedupOverride, LeadDedupEvent
 from ..core.security import fingerprint_phone, hash_phone
 from ..core.v12_enums import DuplicateDecision, LeadSourceKind, LeadV12Status
+from .reward_rule_v12 import SupplierRewardRule, resolve_supplier_reward_rule
 
 settings = get_settings()
 
@@ -55,13 +56,21 @@ def _lead_business_time(lead: Lead) -> datetime:
     return _as_utc(lead.submitted_at or lead.imported_at or lead.created_at)
 
 
-def classify_age(age_days: int) -> tuple[DuplicateDecision, int | None]:
-    if age_days <= settings.lead_hard_duplicate_days:
-        return DuplicateDecision.HARD_DUPLICATE, settings.lead_hard_duplicate_days
-    if age_days <= settings.lead_reward_duplicate_days:
-        return DuplicateDecision.REWARD_DUPLICATE, settings.lead_reward_duplicate_days
-    if age_days <= settings.lead_historical_suspect_days:
-        return DuplicateDecision.HISTORICAL_SUSPECT, settings.lead_historical_suspect_days
+def classify_age(
+    age_days: int,
+    rule: SupplierRewardRule | None = None,
+) -> tuple[DuplicateDecision, int | None]:
+    hard_days = rule.hard_duplicate_days if rule else settings.lead_hard_duplicate_days
+    reward_days = rule.reward_duplicate_days if rule else settings.lead_reward_duplicate_days
+    historical_days = (
+        rule.historical_suspect_days if rule else settings.lead_historical_suspect_days
+    )
+    if age_days <= hard_days:
+        return DuplicateDecision.HARD_DUPLICATE, hard_days
+    if age_days <= reward_days:
+        return DuplicateDecision.REWARD_DUPLICATE, reward_days
+    if age_days <= historical_days:
+        return DuplicateDecision.HISTORICAL_SUSPECT, historical_days
     return DuplicateDecision.CLEAR, None
 
 
@@ -74,9 +83,10 @@ def evaluate_phone(
     now: datetime | None = None,
 ) -> DedupResult:
     now = _as_utc(now or datetime.now(timezone.utc))
+    rule = resolve_supplier_reward_rule(db, as_of=now)
     fingerprint = fingerprint_phone(normalized_phone)
     legacy_hash = hash_phone(normalized_phone)
-    cutoff = now - timedelta(days=settings.lead_historical_suspect_days)
+    cutoff = now - timedelta(days=rule.historical_suspect_days)
     candidates = db.scalars(
         select(Lead)
         .where(
@@ -102,7 +112,7 @@ def evaluate_phone(
     if matched is None or matched_age is None:
         decision, window_days = DuplicateDecision.CLEAR, None
     else:
-        decision, window_days = classify_age(matched_age)
+        decision, window_days = classify_age(matched_age, rule)
 
     event = LeadDedupEvent(
         lead_id=lead.id,
@@ -116,6 +126,13 @@ def evaluate_phone(
             "reward_eligible": decision not in {
                 DuplicateDecision.HARD_DUPLICATE,
                 DuplicateDecision.REWARD_DUPLICATE,
+            },
+            "rule_version": rule.version,
+            "rule_config_id": rule.config_id,
+            "dedup_windows": {
+                "hard_duplicate_days": rule.hard_duplicate_days,
+                "reward_duplicate_days": rule.reward_duplicate_days,
+                "historical_suspect_days": rule.historical_suspect_days,
             },
         },
     )

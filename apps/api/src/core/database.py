@@ -33,6 +33,7 @@ def get_db() -> Generator[Session, None, None]:
 def init_database() -> None:
     from . import models  # noqa: F401
     from . import models_v12  # noqa: F401
+    from . import reward_models_v12  # noqa: F401
 
     if settings.app_env.lower() == "production" and not settings.auto_create_schema:
         return
