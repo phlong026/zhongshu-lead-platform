@@ -139,14 +139,17 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt -r requirements-postgres.txt
 
-      - name: Create V1.0.1 schema and historical fixture
+      - name: Create V1.0.1 schema, historical fixture and PII-free baseline
         run: |
+          mkdir -p dist
           python -m alembic -c alembic.ini upgrade 0001_initial
           python scripts/seed_v101_migration_fixture.py
+          python scripts/baseline_v101.py --output dist/v101-baseline.json
 
       - name: Upgrade PostgreSQL to V1.2 and backfill historical data
         run: |
           python -m alembic -c alembic.ini upgrade head
+          python scripts/migrate_v12_data.py --dry-run --batch-size 50 --max-batches 10 --fail-on-row-error
           python scripts/migrate_v12_data.py --batch-size 50 --max-batches 10 --fail-on-row-error
           python scripts/verify_v12_postgres_migration.py
 
@@ -154,6 +157,14 @@ jobs:
         run: |
           python -m alembic -c alembic.ini downgrade 0001_initial
           python -m alembic -c alembic.ini upgrade head
+
+      - name: Upload PostgreSQL migration evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v12-postgres-migration-${{ github.run_id }}
+          path: dist/v101-baseline.json
+          if-no-files-found: error
 
   browser-smoke:
     if: github.event.pull_request.draft == false
