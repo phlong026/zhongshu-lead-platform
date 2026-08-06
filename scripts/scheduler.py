@@ -16,7 +16,7 @@ from apps.api.src.services.claim_service import run_assignment_timeouts
 from apps.api.src.services.followup_service import run_followup_overdue
 from apps.api.src.services.outbox_worker import process_outbox
 from apps.api.src.services.points_service import run_low_points_warnings
-from apps.api.src.services.supplier_reward_v12 import run_due_supplier_reward_settlement
+from apps.api.src.services.supplier_reward_v12 import drain_due_supplier_reward_settlement
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("scheduler")
@@ -42,9 +42,10 @@ def run_cycle(run_slow_jobs: bool, run_hourly_jobs: bool) -> None:
                     }
                 )
             if run_hourly_jobs:
-                metrics["supplier_rewards"] = run_due_supplier_reward_settlement(
+                metrics["supplier_rewards"] = drain_due_supplier_reward_settlement(
                     db,
-                    limit=500,
+                    batch_size=500,
+                    max_batches=20,
                     settled_by=None,
                 )
             if run_slow_jobs or run_hourly_jobs or outbox.get("sent") or outbox.get("failed"):
