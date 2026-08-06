@@ -16,13 +16,14 @@
 
 ## 3. 生产前提
 
-1. `release/v1.2.0` 最新 CI 全绿，PR 无 Critical/High 未解决项；
-2. `APP_IMAGE` 指向已评审 V1.2 镜像，正式窗口优先使用 `@sha256:` digest；
-3. 正式域名、TLS、服务号授权域名和 OAuth 回调已配置；
-4. PostgreSQL、对象存储、日志、告警和备份已验收；
-5. `PHONE_HASH_SECRET` 与 `PHONE_FINGERPRINT_SECRET` 分离并妥善托管；
-6. 演示账号、`SEED_DEMO`、微信/飞书模拟开关全部关闭；
-7. 已完成 `V1.2_MIGRATION_RUNBOOK.md` 的预演和 `V1.2_ROLLBACK.md` 的恢复演练。
+1. `release/v1.2.0` 最新 CI 全绿，PR 无 Critical/High/P1/P2 未解决项；
+2. `APP_IMAGE` 使用 `仓库:APP_VERSION@sha256:digest` 形式，例如 `registry.example.com/zhongshu-lead-platform:1.2.0@sha256:...`；
+3. 镜像 OCI `org.opencontainers.image.version` 与 `APP_VERSION` 完全一致；
+4. 正式域名、TLS、服务号授权域名和 OAuth 回调已配置；
+5. PostgreSQL、对象存储、日志、告警和备份已验收；
+6. `PHONE_HASH_SECRET` 与 `PHONE_FINGERPRINT_SECRET` 分离并妥善托管；
+7. 演示账号、`SEED_DEMO`、微信/飞书模拟开关全部关闭；
+8. 已完成 `V1.2_MIGRATION_RUNBOOK.md` 的预演和 `V1.2_ROLLBACK.md` 的恢复演练。
 
 ## 4. 配置校验
 
@@ -34,7 +35,9 @@ python scripts/validate_production_env.py --env-file .env
 python scripts/verify_production.py --env-file .env --require-certificates
 ```
 
-上述两个宿主机检查会在 `.env` 未显式提供 `DATABASE_URL` 时，按 `POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_DB` 推导出与 Compose 一致的内部 PostgreSQL URL，仅用于配置一致性验证；真正的数据库 revision 和业务对账必须在 Compose 网络内执行。
+上述宿主机检查会在 `.env` 未显式提供 `DATABASE_URL` 时，按 `POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_DB` 生成 URL 编码后的 Compose 内部 PostgreSQL URL，仅用于配置一致性验证。API 与 Scheduler 容器启动时由 `docker/prepare-env.sh` 使用同一 URL 编码规则生成 `DATABASE_URL`，因此密码、用户名或数据库名包含 `/`、`#`、`@`、空格等保留字符时不会出现宿主机校验与容器实际连接语义不一致。
+
+真正的数据库 revision 和业务对账必须在 Compose 网络内执行。
 
 飞书为显式可选能力：
 
@@ -42,14 +45,17 @@ python scripts/verify_production.py --env-file .env --require-certificates
 - 不启用：`FEISHU_ENABLED=false`，不保留无效凭据；
 - 无论是否启用，生产均要求 `FEISHU_DEV_MOCK=false`。
 
-## 5. 拉取镜像和启动数据库
+## 5. 拉取不可变镜像并启动数据库
+
+在 `.env` 中将 `APP_IMAGE` 设置为已评审的版本 tag + sha256 digest，然后执行：
 
 ```bash
 docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml pull
+docker image inspect "$APP_IMAGE" --format '{{ index .Config.Labels "org.opencontainers.image.version" }}'
 docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml up -d db
 ```
 
-生产覆盖配置将 API 的 `RUN_DB_MIGRATIONS` 固定为 `false`，避免应用启动时隐式迁移或多个实例竞争执行迁移。
+inspect 输出必须与 `APP_VERSION` 完全相同。生产覆盖配置将 API 的 `RUN_DB_MIGRATIONS` 固定为 `false`，避免应用启动时隐式迁移或多个实例竞争执行迁移。
 
 ## 6. 备份、迁移和回填
 
@@ -63,7 +69,7 @@ ENV_FILE=.env BACKUP_RETENTION_DAYS=30 sh scripts/backup_postgres.sh
 
 ```bash
 docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml \
-  run --rm -e RUN_DB_MIGRATIONS=true api true
+  run --rm -T -e RUN_DB_MIGRATIONS=true api true
 ```
 
 先只读预检，再执行历史手机号指纹回填：
@@ -89,7 +95,7 @@ docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml 
 python -m json.tool dist/v12-reconciliation.json >/dev/null
 ```
 
-出现失败行、未知历史状态、重复有效派发单、积分差异、缺失奖励/返分流水或证据元数据异常时，判定为 `NO-GO`。
+出现失败行、未知历史状态、重复有效派发单、积分差异、奖励/返分流水语义不一致或证据元数据异常时，判定为 `NO-GO`。
 
 ## 7. 启动应用与最终 Preflight
 
@@ -111,7 +117,13 @@ python scripts/preflight_v12.py \
   --output dist/v12-preflight.json
 ```
 
-`--compose-database` 是 Docker 生产部署的强制参数：宿主机负责配置、证书和 Compose 结构检查，Alembic revision 与 V1.2 数据对账通过一次性 API 容器在生产 Compose 网络中执行，从而使用真实 `db:5432` PostgreSQL，而不会误读本地 SQLite。
+`--compose-database` 是 Docker 生产部署的强制参数。它同时执行以下强门禁：
+
+- `APP_IMAGE` 的显式版本 tag 必须与 `APP_VERSION` 完全一致；
+- `APP_IMAGE` 必须包含 `@sha256:` digest；
+- 本机实际拉取镜像的 OCI `org.opencontainers.image.version` 必须与 `APP_VERSION` 一致；
+- Alembic revision 与 V1.2 数据对账必须通过一次性 API 容器在真实 `db:5432` Compose 网络内执行；
+- 没有显式可达 `DATABASE_URL` 且未使用 Compose 模式时直接失败，禁止误读本地 SQLite。
 
 ## 8. 上线冒烟
 
@@ -138,7 +150,7 @@ python scripts/preflight_v12.py \
 
 ## 10. 回滚
 
-- 应用回滚：将 `APP_IMAGE` 切换为上一已验证 digest 后重新启动；
+- 应用回滚：将 `APP_IMAGE` 切换为上一已验证的 `版本tag@sha256:digest` 后重新启动；
 - 数据库：优先恢复上线前备份，不得未经评审盲目 downgrade；
 - 私有对象：使用对象存储版本或供应商恢复能力；
 - 账务异常：立即停止领取、结算和返分入口，保留不可变流水与审计证据。
