@@ -8,13 +8,21 @@ from apps.api.src.main import app
 def test_release_quality_documents_exist():
     required = [
         "docs/quality/TEST_REPORT.md",
+        "docs/quality/SECURITY_AUDIT.md",
         "docs/traceability/IMPLEMENTATION_MATRIX.md",
         "docs/release/RELEASE_NOTES_V1.2.0.md",
+        "docs/reviews/INDEX_V1.2.md",
+        "docs/reviews/53-v1.2-sprint6-comprehensive-final-review.md",
+        "docs/runbooks/DEPLOYMENT.md",
+        "docs/runbooks/BACKUP_RESTORE.md",
+        "docs/runbooks/SECURITY_CHECKLIST.md",
         "docs/runbooks/PRODUCTION_CHECKLIST_V1.2.md",
         "docs/runbooks/V1.2_MIGRATION_RUNBOOK.md",
         "docs/runbooks/V1.2_UAT.md",
         "docs/runbooks/V1.2_GO_NO_GO.md",
         "docs/runbooks/V1.2_ROLLBACK.md",
+        "docs/runbooks/V1.2_POST_LAUNCH.md",
+        "docs/runbooks/WECHAT_GATE0.md",
         "docs/source/PRD_V1.0_执行版.pdf",
         "docs/source/详细开发计划_V1.0.xlsx",
     ]
