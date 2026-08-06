@@ -51,11 +51,15 @@ python scripts/verify_production.py --env-file .env --require-certificates
 
 ```bash
 docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml pull
-docker image inspect "$APP_IMAGE" --format '{{ index .Config.Labels "org.opencontainers.image.version" }}'
+python scripts/verify_production.py \
+  --env-file .env \
+  --require-certificates \
+  --require-image-digest \
+  --require-image-inspect
 docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml up -d db
 ```
 
-inspect 输出必须与 `APP_VERSION` 完全相同。生产覆盖配置将 API 的 `RUN_DB_MIGRATIONS` 固定为 `false`，避免应用启动时隐式迁移或多个实例竞争执行迁移。
+`verify_production.py` 直接从 `.env` 读取 `APP_IMAGE` 与 `APP_VERSION`，不会依赖宿主 shell 已导出同名变量；它会检查显式版本 tag、sha256 digest 和实际拉取镜像的 OCI 版本标签。生产覆盖配置将 API 的 `RUN_DB_MIGRATIONS` 固定为 `false`，避免应用启动时隐式迁移或多个实例竞争执行迁移。
 
 ## 6. 备份、迁移和回填
 
