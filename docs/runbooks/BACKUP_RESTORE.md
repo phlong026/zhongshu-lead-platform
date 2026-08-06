@@ -29,7 +29,35 @@ CONFIRM_RESTORE=YES ENV_FILE=.env \
   sh scripts/restore_postgres.sh backups/postgres/zhongshu-YYYYMMDDTHHMMSSZ.dump
 ```
 
-恢复脚本会校验 SHA-256、停止 API/Scheduler、执行 `pg_restore --clean --if-exists` 并验证数据库可连接。恢复后不得立即开放业务，必须先执行 Alembic 版本检查和 V1.2 对账。
+恢复脚本会：
+
+1. 校验 SHA-256（存在校验文件时）；
+2. 默认停止 API/Scheduler；
+3. 使用 `pg_restore --exit-on-error --clean --if-exists`，任一 SQL 错误立即失败；
+4. 用 `psql -v ON_ERROR_STOP=1 -c "SELECT 1"` 检查数据库基本可连接性；
+5. **无论成功或失败，默认都保持 API/Scheduler 停止**，等待完整的 revision、数据对账和业务冒烟。
+
+只有在隔离演练环境、且已经有额外自动验证包围恢复命令时，才允许显式设置 `RESTORE_RESTART_SERVICES=YES` 让成功恢复后自动重启。正式生产回滚默认不得设置该变量。
+
+恢复后执行：
+
+```bash
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml \
+  run --rm -T -e RUN_DB_MIGRATIONS=false api \
+  python -m alembic -c alembic.ini current --check-heads
+
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml \
+  run --rm -T -e RUN_DB_MIGRATIONS=false api \
+  python scripts/reconcile_v12.py \
+  > dist/v12-reconciliation-after-restore.json
+python -m json.tool dist/v12-reconciliation-after-restore.json >/dev/null
+```
+
+上述检查和核心角色冒烟全部通过后，才手工恢复服务：
+
+```bash
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml up -d api scheduler
+```
 
 ## 3. 对象存储
 
@@ -73,13 +101,14 @@ CONFIRM_RESTORE=YES sh scripts/restore_private_storage.sh \
 
 1. 在隔离网络建立空白 PostgreSQL；
 2. 校验备份 SHA-256 并恢复数据库；
-3. 恢复或挂载对象存储版本；
-4. 注入与备份对应的密钥；
-5. 执行 `alembic current --check-heads`；
-6. 执行 `python scripts/reconcile_v12.py`；
-7. 抽查历史手机号指纹、派发单、退回证据、奖励和积分流水；
-8. 启动 API/Scheduler，完成真实角色冒烟；
-9. 记录 RPO、RTO、失败步骤、人工操作和整改责任人。
+3. 确认 API/Scheduler 在恢复后仍保持停止；
+4. 恢复或挂载对象存储版本；
+5. 注入与备份对应的密钥；
+6. 执行 `alembic current --check-heads`；
+7. 执行 V1.2 reconciliation；
+8. 抽查历史手机号指纹、派发单、退回证据、奖励和积分流水；
+9. 启动 API/Scheduler，完成真实角色冒烟；
+10. 记录 RPO、RTO、失败步骤、人工操作和整改责任人。
 
 ## 6. 上线前恢复门禁
 
@@ -87,6 +116,8 @@ CONFIRM_RESTORE=YES sh scripts/restore_private_storage.sh \
 
 - 最新备份没有校验文件或校验失败；
 - 未保存上线前即时备份；
+- 恢复失败后服务被错误自动重启；
+- 恢复成功但未完成 revision/reconciliation/冒烟就恢复流量；
 - 对象存储版本不可恢复；
 - 密钥恢复流程未验证；
 - `reconcile_v12.py` 返回非零；
