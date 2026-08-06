@@ -33,6 +33,7 @@ from .routers import (
     users,
     v12_admin,
     v12_lead_supply,
+    v12_supplier_review,
     verification,
 )
 from .services.rbac import seed_rbac
@@ -89,6 +90,7 @@ app.include_router(notifications.router, prefix=api_prefix)
 app.include_router(master_data.router, prefix=api_prefix)
 app.include_router(v12_admin.router, prefix=api_prefix)
 app.include_router(v12_lead_supply.router, prefix=api_prefix)
+app.include_router(v12_supplier_review.router, prefix=api_prefix)
 
 
 @app.get("/health")
