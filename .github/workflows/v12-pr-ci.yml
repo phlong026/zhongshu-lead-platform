@@ -151,7 +151,8 @@ jobs:
           python -m alembic -c alembic.ini upgrade head
           python scripts/migrate_v12_data.py --dry-run --batch-size 50 --max-batches 10 --fail-on-row-error
           python scripts/migrate_v12_data.py --batch-size 50 --max-batches 10 --fail-on-row-error
-          python scripts/verify_v12_postgres_migration.py
+          python scripts/verify_v12_postgres_migration.py > dist/v12-postgres-verification.json
+          python -m json.tool dist/v12-postgres-verification.json >/dev/null
 
       - name: Verify PostgreSQL downgrade and clean re-upgrade
         run: |
@@ -163,7 +164,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: v12-postgres-migration-${{ github.run_id }}
-          path: dist/v101-baseline.json
+          path: |
+            dist/v101-baseline.json
+            dist/v12-postgres-verification.json
           if-no-files-found: error
 
   browser-smoke:
