@@ -137,7 +137,7 @@ def test_production_validation_rejects_placeholders_mocks_and_insecure_urls():
     assert len(result.errors) >= 10
 
 
-def test_production_deployment_files_enforce_tls_least_privilege_and_restore_confirmation():
+def test_production_deployment_files_enforce_tls_least_privilege_and_fail_closed_restore():
     compose = Path("docker-compose.prod.yml").read_text(encoding="utf-8")
     nginx = Path("infra/nginx/production.conf.template").read_text(encoding="utf-8")
     headers = Path("infra/nginx/security-headers.conf").read_text(encoding="utf-8")
@@ -151,6 +151,12 @@ def test_production_deployment_files_enforce_tls_least_privilege_and_restore_con
     assert "Strict-Transport-Security" in headers and "Content-Security-Policy" in headers
     assert "validate_production_env.py" in entrypoint
     assert "CONFIRM_RESTORE" in restore and "sha256sum -c" in restore
+    assert "--exit-on-error" in restore and "ON_ERROR_STOP=1" in restore
+    assert "RESTORE_SUCCEEDED=false" in restore
+    assert "RESTORE_RESTART_SERVICES:-NO" in restore
+    assert 'if [ "$RESTORE_SUCCEEDED" = "true" ] && [ "$RESTART" = "YES" ]' in restore
+    assert "restore did not complete successfully; api and scheduler remain stopped" in restore
+    assert "restore completed; api and scheduler remain stopped" in restore
 
 
 def test_health_and_api_responses_include_version_security_and_no_store(api_client):
