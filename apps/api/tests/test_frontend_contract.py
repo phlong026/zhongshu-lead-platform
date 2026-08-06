@@ -9,6 +9,19 @@ PUBLIC_ROOTS = [
     Path("apps/call-h5/public"),
     Path("apps/admin/public"),
 ]
+PUBLIC_MOUNTS = {
+    "/h5/": Path("apps/h5/public"),
+    "/call/": Path("apps/call-h5/public"),
+    "/admin/": Path("apps/admin/public"),
+}
+
+
+def _resolve_static_reference(root: Path, reference: str) -> Path:
+    path = reference.split("?", 1)[0]
+    for prefix, mounted_root in PUBLIC_MOUNTS.items():
+        if path.startswith(prefix):
+            return mounted_root / path.removeprefix(prefix)
+    return root / path.lstrip("./")
 
 
 def test_frontend_static_references_exist_and_are_self_contained():
@@ -20,7 +33,7 @@ def test_frontend_static_references_exist_and_are_self_contained():
         for reference in references:
             if reference.startswith(("#", "data:", "/api/")):
                 continue
-            target = root / reference.split("?", 1)[0].lstrip("./")
+            target = _resolve_static_reference(root, reference)
             assert target.exists(), f"missing static reference {reference} from {index}"
         assert (root / "logo.png").exists()
 

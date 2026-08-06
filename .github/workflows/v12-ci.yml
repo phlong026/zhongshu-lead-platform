@@ -1,0 +1,82 @@
+name: V1.2 CI
+
+on:
+  pull_request:
+    branches: [release/v1.2.0]
+  push:
+    branches:
+      - release/v1.2.0
+      - feature/v1.2-*
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v12-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-postgres.txt
+
+      - name: Run backend tests
+        shell: bash
+        run: |
+          set +e
+          pytest -q > pytest-output.txt 2>&1
+          status=$?
+          cat pytest-output.txt
+          if [ "$status" -ne 0 ]; then
+            python -c "from pathlib import Path; text=Path('pytest-output.txt').read_text(encoding='utf-8', errors='replace')[-6000:]; text=text.replace('%','%25').replace(chr(13),'%0D').replace(chr(10),'%0A'); print('::error title=Pytest failed::'+text)"
+            exit "$status"
+          fi
+
+      - name: Run JavaScript checks
+        run: python scripts/check_js.py
+
+      - name: Scan repository secrets
+        run: python scripts/secret_scan.py
+
+      - name: Compile Python sources
+        run: python -m compileall -q apps scripts migrations
+
+      - name: Check patch whitespace
+        run: git diff --check
+
+      - name: Verify V1.0.1 to V1.2 migration on SQLite
+        shell: bash
+        env:
+          DATABASE_URL: sqlite:///./dist/v12-migration-smoke.db
+        run: |
+          set +e
+          mkdir -p dist
+          {
+            python -m alembic -c alembic.ini upgrade head &&
+            python -m alembic -c alembic.ini downgrade 0001_initial &&
+            python -m alembic -c alembic.ini upgrade head
+          } > migration-output.txt 2>&1
+          status=$?
+          cat migration-output.txt
+          if [ "$status" -ne 0 ]; then
+            python -c "from pathlib import Path; text=Path('migration-output.txt').read_text(encoding='utf-8', errors='replace')[-6000:]; text=text.replace('%','%25').replace(chr(13),'%0D').replace(chr(10),'%0A'); print('::error title=Migration smoke failed::'+text)"
+            exit "$status"
+          fi
