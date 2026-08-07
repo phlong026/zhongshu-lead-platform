@@ -17,6 +17,7 @@ from apps.api.src.services.migration_v12 import (
     preview_phone_fingerprint_backfill,
 )
 from apps.api.src.services.reconciliation_v12 import reconcile_v12
+from scripts.migrate_v12_data import _write_exit_code
 
 
 def _lead(lead_id: str, phone: str, *, encrypted: str | None = None) -> Lead:
@@ -74,6 +75,28 @@ def test_preview_is_read_only_and_row_errors_never_include_plaintext(db) -> None
     checkpoint = db.get(V12MigrationCheckpoint, PHONE_FINGERPRINT_CHECKPOINT)
     assert checkpoint is not None
     assert "13800138000" not in str(checkpoint.metadata_json)
+
+
+def test_write_exit_code_preserves_failed_checkpoint_on_clean_rerun() -> None:
+    totals = {"batches": 1, "scanned": 0, "updated": 0, "errors": 0}
+    failed_checkpoint = {"checkpoint_status": "COMPLETED_WITH_ERRORS"}
+    clean_checkpoint = {"checkpoint_status": "COMPLETED"}
+
+    assert _write_exit_code(
+        fail_on_row_error=True,
+        totals=totals,
+        last=failed_checkpoint,
+    ) == 2
+    assert _write_exit_code(
+        fail_on_row_error=True,
+        totals=totals,
+        last=clean_checkpoint,
+    ) == 0
+    assert _write_exit_code(
+        fail_on_row_error=False,
+        totals=totals,
+        last=failed_checkpoint,
+    ) == 0
 
 
 def test_reconciliation_detects_incomplete_backfill_and_points_mismatch(db) -> None:
