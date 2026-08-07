@@ -4,8 +4,9 @@ from contextlib import asynccontextmanager
 import os
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import Cookie, FastAPI
 from fastapi.responses import RedirectResponse
+from jwt import InvalidTokenError
 from sqlalchemy import text
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -16,8 +17,10 @@ from .core.database import SessionLocal, init_database
 from .core.errors import register_error_handlers
 from .core.legacy_guard import LegacyWriteGuardMiddleware
 from .core.logging import configure_logging
+from .core.models import User
 from .core.production import validate_production_settings
 from .core.request_context import RequestContextMiddleware
+from .core.security import decode_access_token
 from .routers import (
     admin,
     admin_meta,
@@ -127,16 +130,38 @@ def health_ready() -> dict[str, str]:
     return {"status": "ready", "database": "ok", "storage": storage, "version": settings.app_version}
 
 
+def _has_valid_web_session(access_token: str | None) -> bool:
+    if not access_token:
+        return False
+    try:
+        payload = decode_access_token(access_token)
+    except InvalidTokenError:
+        return False
+    user_id = payload.get("sub")
+    session_version = payload.get("sv")
+    if not user_id:
+        return False
+    with SessionLocal() as db:
+        user = db.get(User, user_id)
+        return bool(
+            user
+            and user.status == "ACTIVE"
+            and user.session_version == session_version
+        )
+
+
 @app.get("/admin", include_in_schema=False)
 @app.get("/admin/", include_in_schema=False)
-def admin_entry() -> RedirectResponse:
-    return RedirectResponse(url="/admin/v12-operations.html", status_code=302)
+def admin_entry(access_token: str | None = Cookie(default=None)) -> RedirectResponse:
+    target = "/admin/v12-operations.html" if _has_valid_web_session(access_token) else "/admin/index.html"
+    return RedirectResponse(url=target, status_code=302)
 
 
 @app.get("/h5", include_in_schema=False)
 @app.get("/h5/", include_in_schema=False)
-def h5_entry() -> RedirectResponse:
-    return RedirectResponse(url="/h5/v12-workbench.html", status_code=302)
+def h5_entry(access_token: str | None = Cookie(default=None)) -> RedirectResponse:
+    target = "/h5/v12-workbench.html" if _has_valid_web_session(access_token) else "/h5/index.html"
+    return RedirectResponse(url=target, status_code=302)
 
 
 @app.get("/admin/legacy", include_in_schema=False)
