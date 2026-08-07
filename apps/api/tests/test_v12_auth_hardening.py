@@ -32,6 +32,19 @@ def test_browser_login_uses_http_only_cookie_without_raw_jwt(api_client) -> None
     assert "path=/" in set_cookie
 
 
+def test_production_login_cookie_is_secure(api_client, monkeypatch) -> None:
+    client, _ = api_client
+    import apps.api.src.routers.auth as auth_router
+
+    monkeypatch.setattr(auth_router.settings, "app_env", "production")
+    response = _login(client, "admin", "Admin123!")
+    assert response.status_code == 200, response.text
+    set_cookie = response.headers["set-cookie"].lower()
+    assert "secure" in set_cookie
+    assert "httponly" in set_cookie
+    assert "samesite=lax" in set_cookie
+
+
 def test_internal_login_failures_persist_lock_and_expire_with_audit(api_client) -> None:
     client, factory = api_client
     wrong_password = "Definitely-Wrong-Password!"
@@ -111,8 +124,7 @@ def test_disabled_user_invalidates_existing_cookie_and_cannot_relogin(api_client
     client, factory = api_client
     login = _login(client, "operation", "Operation123!")
     assert login.status_code == 200
-    token = login.cookies.get("access_token")
-    assert token
+    assert login.cookies.get("access_token")
 
     with factory() as db:
         user = db.scalar(select(User).where(User.username == "operation"))
@@ -120,7 +132,6 @@ def test_disabled_user_invalidates_existing_cookie_and_cannot_relogin(api_client
         user.status = "DISABLED"
         db.commit()
 
-    client.cookies.set("access_token", token)
     me = client.get("/api/v1/auth/me")
     assert me.status_code == 401
     assert me.json()["code"] == "AUTH_INVALID"
@@ -128,6 +139,24 @@ def test_disabled_user_invalidates_existing_cookie_and_cannot_relogin(api_client
     relogin = _login(client, "operation", "Operation123!")
     assert relogin.status_code == 403
     assert relogin.json()["code"] == "AUTH_ACCOUNT_DISABLED"
+
+
+def test_logout_invalidates_previous_bearer_token_via_session_version(api_client) -> None:
+    client, _ = api_client
+    login = _login(client, "owner", "Owner123!")
+    assert login.status_code == 200
+    token = login.cookies.get("access_token")
+    assert token
+
+    logout = client.post("/api/v1/auth/logout")
+    assert logout.status_code == 200
+
+    old_token = client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert old_token.status_code == 401
+    assert old_token.json()["code"] == "AUTH_INVALID"
 
 
 def test_unknown_username_keeps_generic_failure_contract(api_client) -> None:
