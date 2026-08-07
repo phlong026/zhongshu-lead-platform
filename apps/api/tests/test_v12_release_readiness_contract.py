@@ -143,5 +143,9 @@ def test_ci_contains_postgres_browser_dependency_evidence_and_packaging_gates() 
         assert "DEPENDENCY_RISK_ACCEPTANCE.md" in workflow
         assert "dist/openapi/openapi.json" in workflow
         assert "path: docs/api/openapi.json" not in workflow
+        assert "dist/quality/pytest-output.txt" in workflow
+        assert "dist/quality/migration-output.txt" in workflow
+        assert "> pytest-output.txt" not in workflow
+        assert "> migration-output.txt" not in workflow
     assert "--version V1.2.0-rc" in pr_workflow
     assert "--version V1.2.0" in release_workflow
