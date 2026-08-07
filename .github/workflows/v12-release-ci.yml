@@ -42,7 +42,14 @@ jobs:
       - name: Audit Python dependencies
         shell: bash
         run: |
-          cat requirements.txt requirements-postgres.txt requirements-browser.txt > /tmp/v12-requirements.txt
+          {
+            cat requirements.txt
+            printf '\n'
+            cat requirements-postgres.txt
+            printf '\n'
+            cat requirements-browser.txt
+            printf '\n'
+          } > /tmp/v12-requirements.txt
           pip-audit -r /tmp/v12-requirements.txt --progress-spinner off
 
       - name: Run backend tests
