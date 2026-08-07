@@ -67,7 +67,7 @@ jobs:
           fi
 
       - name: Export V1.2 OpenAPI contract
-        run: python scripts/export_openapi.py
+        run: python scripts/export_openapi.py --output dist/openapi/openapi.json
 
       - name: Run JavaScript checks
         run: python scripts/check_js.py
@@ -108,7 +108,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: v12-release-openapi-${{ github.run_id }}
-          path: docs/api/openapi.json
+          path: dist/openapi/openapi.json
           if-no-files-found: error
 
       - name: Upload final V1.2 release package
