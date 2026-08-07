@@ -115,6 +115,13 @@ def test_sprint6_runbooks_and_release_documents_exist() -> None:
     assert "V1.2" in Path("docs/runbooks/V1.2_GO_NO_GO.md").read_text(encoding="utf-8")
 
 
+def test_openapi_is_generated_build_artifact_not_tracked_stale_json() -> None:
+    assert not Path("docs/api/openapi.json").exists()
+    exporter = Path("scripts/export_openapi.py").read_text(encoding="utf-8")
+    assert "dist" in exporter and "openapi" in exporter
+    assert "def openapi_text()" in exporter
+
+
 def test_ci_contains_postgres_browser_dependency_evidence_and_packaging_gates() -> None:
     pr_workflow = Path(".github/workflows/v12-pr-ci.yml").read_text(encoding="utf-8")
     release_workflow = Path(".github/workflows/v12-release-ci.yml").read_text(encoding="utf-8")
@@ -134,5 +141,7 @@ def test_ci_contains_postgres_browser_dependency_evidence_and_packaging_gates() 
         assert "--ignore-vuln PYSEC-2026-3552" in workflow
         assert workflow.count("--ignore-vuln") == 1
         assert "DEPENDENCY_RISK_ACCEPTANCE.md" in workflow
+        assert "dist/openapi/openapi.json" in workflow
+        assert "path: docs/api/openapi.json" not in workflow
     assert "--version V1.2.0-rc" in pr_workflow
     assert "--version V1.2.0" in release_workflow
