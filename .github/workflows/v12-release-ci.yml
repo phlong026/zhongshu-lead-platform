@@ -57,12 +57,13 @@ jobs:
       - name: Run backend tests
         shell: bash
         run: |
+          mkdir -p dist/quality
           set +e
-          pytest -q > pytest-output.txt 2>&1
+          pytest -q > dist/quality/pytest-output.txt 2>&1
           status=$?
-          cat pytest-output.txt
+          cat dist/quality/pytest-output.txt
           if [ "$status" -ne 0 ]; then
-            python -c "from pathlib import Path; text=Path('pytest-output.txt').read_text(encoding='utf-8', errors='replace')[-6000:]; text=text.replace('%','%25').replace(chr(13),'%0D').replace(chr(10),'%0A'); print('::error title=Pytest failed::'+text)"
+            python -c "from pathlib import Path; text=Path('dist/quality/pytest-output.txt').read_text(encoding='utf-8', errors='replace')[-6000:]; text=text.replace('%','%25').replace(chr(13),'%0D').replace(chr(10),'%0A'); print('::error title=Pytest failed::'+text)"
             exit "$status"
           fi
 
@@ -87,16 +88,16 @@ jobs:
           DATABASE_URL: sqlite:///./dist/v12-migration-smoke.db
         run: |
           set +e
-          mkdir -p dist
+          mkdir -p dist/quality
           {
             python -m alembic -c alembic.ini upgrade head &&
             python -m alembic -c alembic.ini downgrade 0001_initial &&
             python -m alembic -c alembic.ini upgrade head
-          } > migration-output.txt 2>&1
+          } > dist/quality/migration-output.txt 2>&1
           status=$?
-          cat migration-output.txt
+          cat dist/quality/migration-output.txt
           if [ "$status" -ne 0 ]; then
-            python -c "from pathlib import Path; text=Path('migration-output.txt').read_text(encoding='utf-8', errors='replace')[-6000:]; text=text.replace('%','%25').replace(chr(13),'%0D').replace(chr(10),'%0A'); print('::error title=Migration smoke failed::'+text)"
+            python -c "from pathlib import Path; text=Path('dist/quality/migration-output.txt').read_text(encoding='utf-8', errors='replace')[-6000:]; text=text.replace('%','%25').replace(chr(13),'%0D').replace(chr(10),'%0A'); print('::error title=Migration smoke failed::'+text)"
             exit "$status"
           fi
 
