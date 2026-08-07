@@ -8,7 +8,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from apps.api.src.core.database import Base
-from apps.api.src.core import models  # noqa: F401
+from apps.api.src.core import auth_models, models  # noqa: F401
 from apps.api.src.services.rbac import seed_rbac
 
 
