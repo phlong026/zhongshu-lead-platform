@@ -21,7 +21,10 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from scripts.export_openapi import openapi_text
+try:
+    from scripts.export_openapi import openapi_text
+except ModuleNotFoundError:  # direct execution: python scripts/package_release.py
+    from export_openapi import openapi_text
 
 ROOT = Path(__file__).resolve().parents[1]
 PROHIBITED_PATTERNS = (
