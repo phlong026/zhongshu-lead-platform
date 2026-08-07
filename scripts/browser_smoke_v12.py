@@ -9,14 +9,22 @@ from typing import Any, Callable
 from playwright.sync_api import Browser, Page, sync_playwright
 
 
-def _attach_error_capture(page: Page, errors: list[str]) -> None:
+def _attach_pageerror_capture(page: Page, errors: list[str]) -> None:
     page.on("pageerror", lambda exc: errors.append(f"pageerror: {exc}"))
+
+
+def _attach_console_error_capture(page: Page, errors: list[str]) -> None:
     page.on(
         "console",
         lambda message: errors.append(f"console-error: {message.text}")
         if message.type == "error"
         else None,
     )
+
+
+def _attach_error_capture(page: Page, errors: list[str]) -> None:
+    _attach_pageerror_capture(page, errors)
+    _attach_console_error_capture(page, errors)
 
 
 def _assert_no_visible_error(page: Page, selectors: tuple[str, ...]) -> None:
@@ -31,10 +39,17 @@ def _admin_smoke(browser: Browser, base_url: str, output: Path, errors: list[str
     context = browser.new_context(viewport={"width": 1440, "height": 900}, locale="zh-CN")
     try:
         page = context.new_page()
-        _attach_error_capture(page, errors)
+        # The admin app intentionally probes /auth/me on first load. An unauthenticated
+        # 401 is therefore expected before the login form appears. Capture page-level
+        # JavaScript errors from the first byte, but start console-error capture only
+        # after the login form has rendered so real post-login console failures remain
+        # release blockers without treating the expected pre-auth 401 as a defect.
+        _attach_pageerror_capture(page, errors)
         page.goto(f"{base_url}/admin/", wait_until="networkidle")
+        page.wait_for_selector("#username", timeout=15000)
         page.locator("#username").fill("admin")
         page.locator("#password").fill("Admin123!")
+        _attach_console_error_capture(page, errors)
         page.locator("#login-btn").click()
         page.wait_for_selector(".layout", timeout=15000)
         page.goto(f"{base_url}/admin/v12-operations.html?view=overview", wait_until="networkidle")
