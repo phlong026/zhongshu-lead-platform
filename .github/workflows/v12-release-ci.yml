@@ -50,7 +50,9 @@ jobs:
             cat requirements-browser.txt
             printf '\n'
           } > /tmp/v12-requirements.txt
-          pip-audit -r /tmp/v12-requirements.txt --progress-spinner off
+          # Temporary, single-ID exception. See docs/quality/DEPENDENCY_RISK_ACCEPTANCE.md.
+          # Remove immediately when cryptography 50.0.0 (or an official equivalent fix) is released.
+          pip-audit -r /tmp/v12-requirements.txt --progress-spinner off --ignore-vuln PYSEC-2026-3552
 
       - name: Run backend tests
         shell: bash
