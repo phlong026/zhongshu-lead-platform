@@ -38,4 +38,7 @@ def test_release_package_contains_source_history_and_quality_docs(tmp_path: Path
         assert artifacts["bundle"].name in names
         assert "交付说明.md" in names
         assert "SHA256SUMS.txt" in names
-        assert "质量与发布资料/TEST_REPORT.md" in names
+        assert "质量与发布资料/docs__quality__TEST_REPORT.md" in names
+        assert "质量与发布资料/docs__quality__SECURITY_AUDIT.md" in names
+        assert "质量与发布资料/docs__quality__DEPENDENCY_RISK_ACCEPTANCE.md" in names
+        assert "质量与发布资料/docs__runbooks__V1.2_GO_NO_GO.md" in names
