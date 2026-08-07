@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Create reviewed source, Git-history and complete V1.2 delivery archives.
 
-Only Git-tracked files are included in the source archive. Local databases,
-private uploads, caches and environment secrets are therefore excluded by
-construction. The delivery archive fails closed when any required V1.2 quality,
-review or production runbook is missing.
+Git-tracked source files form the immutable source baseline. Runtime data,
+private uploads, caches and environment secrets are excluded by construction.
+The OpenAPI JSON is a deterministic build artifact generated from the reviewed
+application code and pinned dependencies, then embedded into the source and
+delivery archives. The delivery archive fails closed when any required V1.2
+quality, review or production runbook is missing.
 """
 from __future__ import annotations
 
@@ -19,6 +21,8 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+from scripts.export_openapi import openapi_text
+
 ROOT = Path(__file__).resolve().parents[1]
 PROHIBITED_PATTERNS = (
     re.compile(r"(^|/)\.env$"),
@@ -29,7 +33,7 @@ PROHIBITED_PATTERNS = (
     re.compile(r"(^|/)\.pytest_cache/"),
     re.compile(r"(^|/)\.coverage$"),
 )
-GENERATED_ARCHIVE_FILES = {"RELEASE_MANIFEST.json", "GIT_HISTORY.txt"}
+GENERATED_ARCHIVE_FILES = {"RELEASE_MANIFEST.json", "GIT_HISTORY.txt", "docs/api/openapi.json"}
 REQUIRED_RELEASE_DOCS = (
     "README.md",
     "RELEASE_MANIFEST.json",
@@ -86,7 +90,7 @@ def tracked_files() -> list[Path]:
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        for chunk in iter(lambda: stream.read(1024 * 1024, b""), b""):
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -134,7 +138,7 @@ def build_source_zip(output: Path, *, version: str, dirty: bool) -> dict[str, ob
         "dirty_worktree": dirty,
         "generated_at_utc": generated_at,
         "tracked_file_count": len(files),
-        "source_archive_policy": "Git tracked files only; runtime data and secrets excluded",
+        "source_archive_policy": "Git-tracked reviewed source plus deterministic generated OpenAPI; runtime data and secrets excluded",
         "quality_gates": [
             "Full pytest, dependency audit and JavaScript checks",
             "Repository secret and Python compile checks",
@@ -161,6 +165,10 @@ def build_source_zip(output: Path, *, version: str, dirty: bool) -> dict[str, ob
             info = _zip_info(f"{root_name}/{relative.as_posix()}", timestamp, mode=mode)
             archive.writestr(info, source.read_bytes())
         archive.writestr(
+            _zip_info(f"{root_name}/docs/api/openapi.json", timestamp),
+            openapi_text().encode("utf-8"),
+        )
+        archive.writestr(
             _zip_info(f"{root_name}/RELEASE_MANIFEST.json", timestamp),
             json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
         )
@@ -183,14 +191,14 @@ def _write_delivery_note(path: Path, *, version: str, commit: str, dirty: bool, 
         "",
         f"- Git 提交：`{commit}`",
         f"- 工作区状态：{'包含未提交变更（仅测试构建）' if dirty else '干净'}",
-        "- 交付范围：V1.2 可运行代码、迁移与对账工具、自动质量门禁、测试/安全报告、完整评审链与上线 Runbook",
+        "- 交付范围：V1.2 可运行代码、实时生成的 OpenAPI、迁移与对账工具、自动质量门禁、测试/安全报告、完整评审链与上线 Runbook",
         "",
         "## 文件说明",
         "",
-        f"- `{files['source'].name}`：只包含 Git 已跟踪文件；不含数据库、证据、缓存和 `.env`。",
+        f"- `{files['source'].name}`：Git 已跟踪源码 + 从该源码实时生成的 OpenAPI；不含数据库、证据、缓存和 `.env`。",
         f"- `{files['bundle'].name}`：完整 Git 提交历史，可使用 `git clone <bundle> <目录>` 恢复仓库。",
         "- `SHA256SUMS.txt`：交付文件完整性校验值。",
-        "- `质量与发布资料/`：V1.2 测试、安全审计、依赖风险接受、评审、部署、迁移、UAT、回滚、复盘和发布资料。",
+        "- `质量与发布资料/`：V1.2 OpenAPI、测试、安全审计、依赖风险接受、评审、部署、迁移、UAT、回滚、复盘和发布资料。",
         "",
         "## 本地启动",
         "",
@@ -227,6 +235,7 @@ def _copy_release_docs(target: Path) -> None:
     target.mkdir(parents=True, exist_ok=True)
     for source in validate_release_docs():
         shutil.copy2(source, target / _delivery_doc_name(source))
+    (target / "docs__api__openapi.json").write_text(openapi_text(), encoding="utf-8")
 
 
 def package_release(output_dir: Path, *, version: str, allow_dirty: bool = False) -> dict[str, Path]:
