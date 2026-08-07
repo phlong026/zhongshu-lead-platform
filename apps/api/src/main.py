@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
 from sqlalchemy import text
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -13,6 +14,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .core.config import get_settings
 from .core.database import SessionLocal, init_database
 from .core.errors import register_error_handlers
+from .core.legacy_guard import LegacyWriteGuardMiddleware
 from .core.logging import configure_logging
 from .core.production import validate_production_settings
 from .core.request_context import RequestContextMiddleware
@@ -66,6 +68,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.add_middleware(RequestContextMiddleware)
+app.add_middleware(LegacyWriteGuardMiddleware)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_host_list)
 app.add_middleware(
     CORSMiddleware,
@@ -122,6 +125,28 @@ def health_ready() -> dict[str, str]:
         if not storage_root.is_dir() or not os.access(storage_root, os.W_OK):
             raise RuntimeError("对象存储目录不可写")
     return {"status": "ready", "database": "ok", "storage": storage, "version": settings.app_version}
+
+
+@app.get("/admin", include_in_schema=False)
+@app.get("/admin/", include_in_schema=False)
+def admin_entry() -> RedirectResponse:
+    return RedirectResponse(url="/admin/v12-operations.html", status_code=302)
+
+
+@app.get("/h5", include_in_schema=False)
+@app.get("/h5/", include_in_schema=False)
+def h5_entry() -> RedirectResponse:
+    return RedirectResponse(url="/h5/v12-workbench.html", status_code=302)
+
+
+@app.get("/admin/legacy", include_in_schema=False)
+def admin_legacy_entry() -> RedirectResponse:
+    return RedirectResponse(url="/admin/index.html", status_code=302)
+
+
+@app.get("/h5/legacy", include_in_schema=False)
+def h5_legacy_entry() -> RedirectResponse:
+    return RedirectResponse(url="/h5/index.html", status_code=302)
 
 
 for route, directory, name in [
