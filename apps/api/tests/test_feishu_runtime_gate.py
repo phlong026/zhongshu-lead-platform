@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
+from apps.api.src.core.errors import AppError
+
 
 def _login_admin(client) -> None:
     response = client.post(
@@ -38,3 +42,14 @@ def test_mock_sync_is_unavailable_when_mock_switch_is_off(api_client, monkeypatc
     )
     assert response.status_code == 404
     assert response.json()["code"] == "FEISHU_MOCK_DISABLED"
+
+
+def test_direct_feishu_import_service_is_blocked_when_legacy_writes_are_disabled(db, monkeypatch) -> None:
+    import apps.api.src.services.feishu_sync_service as sync_service
+
+    monkeypatch.setattr(sync_service.settings, "legacy_write_enabled", False)
+    monkeypatch.setattr(sync_service.settings, "feishu_enabled", True)
+    with pytest.raises(AppError) as exc:
+        sync_service.fetch_and_import_feishu(db)
+    assert exc.value.code == "LEGACY_WRITE_DISABLED"
+    assert exc.value.status_code == 410

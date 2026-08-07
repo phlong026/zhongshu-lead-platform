@@ -86,21 +86,30 @@ def overdue_followups(db: Session, now: datetime | None = None) -> list[Assignme
     ).all()
 
 
+def _followup_deep_links(assignment: Assignment) -> tuple[str, tuple[str, ...]]:
+    legacy_link = f"/h5/#/lead/{assignment.id}"
+    if getattr(assignment, "receiver_company_id", None):
+        v12_link = f"/h5/v12-workbench.html?view=assignments&id={assignment.id}"
+        return v12_link, (v12_link, legacy_link)
+    return legacy_link, (legacy_link,)
+
+
 def run_followup_overdue(db: Session, now: datetime | None = None) -> dict[str, int]:
     """Create one durable reminder per overdue assignment.
 
-    The outbox event key and station-message lookup make the job safe to rerun
-    from the API, CLI or scheduler without generating duplicate reminders.
+    V1.2 assignments deep-link to the V1.2 workbench. The lookup also accepts the
+    historical hash link so upgrading an already-overdue assignment does not create a
+    second station message. The outbox event key keeps delivery retries idempotent.
     """
     assignments = overdue_followups(db, now=now)
     notified = 0
     for assignment in assignments:
-        deep_link = f"/h5/#/lead/{assignment.id}"
+        deep_link, compatible_links = _followup_deep_links(assignment)
         existing = db.scalar(
             select(Notification.id).where(
                 Notification.company_id == assignment.company_id,
                 Notification.scene == "FOLLOWUP_OVERDUE",
-                Notification.deep_link == deep_link,
+                Notification.deep_link.in_(compatible_links),
             )
         )
         if not existing:

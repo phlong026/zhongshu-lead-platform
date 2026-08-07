@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     assignment_expire_hours: int = 48
     # V1.0.1 compatibility only. V1.2 return appeals use the workday calendar.
     return_window_hours: int = 48
+    # Development/test may keep legacy mutation APIs for historical regression tests.
+    # Production validation requires this to be false so all new business facts use V1.2.
+    legacy_write_enabled: bool = True
     first_followup_hours: int = 48
     trusted_hosts: str = "localhost,127.0.0.1,testserver"
     auto_create_schema: bool = True

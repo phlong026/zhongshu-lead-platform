@@ -12,7 +12,7 @@ import argparse
 import json
 
 from apps.api.src.core.database import SessionLocal, init_database
-from apps.api.src.services.claim_service import run_assignment_timeouts
+from apps.api.src.services.assignment_timeout_v12 import run_assignment_timeouts_active
 from apps.api.src.services.followup_service import run_followup_overdue
 from apps.api.src.services.feishu_sync_service import fetch_and_import_feishu, writeback_feishu_results
 from apps.api.src.services.notification_v12 import drain_due_supplier_reward_settlement_notified
@@ -41,7 +41,7 @@ def main() -> int:
     output: dict[str, object] = {}
     with SessionLocal() as db:
         if args.job in {"assignment-timeouts", "all"}:
-            output["assignment_timeouts"] = run_assignment_timeouts(db)
+            output["assignment_timeouts"] = run_assignment_timeouts_active(db)
         if args.job in {"followup-overdue", "all"}:
             output["followup_overdue"] = run_followup_overdue(db)
         if args.job in {"low-points", "all"}:

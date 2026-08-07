@@ -89,6 +89,8 @@ def validate_production_settings(settings: Settings, environ: dict[str, str] | N
         errors.append("POSTGRES_PASSWORD 长度不足或仍为示例值")
     if settings.auto_create_schema:
         errors.append("生产环境必须设置 AUTO_CREATE_SCHEMA=false，仅允许 Alembic 管理结构")
+    if settings.legacy_write_enabled:
+        errors.append("生产环境必须设置 LEGACY_WRITE_ENABLED=false，禁止 V1.0.1 历史流程继续写入")
     if not settings.log_json:
         warnings.append("建议生产环境设置 LOG_JSON=true 以便日志采集")
     storage_backend = settings.object_storage_backend.lower()

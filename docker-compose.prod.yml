@@ -24,8 +24,10 @@ services:
       - ALL
     stop_grace_period: 30s
     environment:
+      APP_ENV: "production"
       AUTO_CREATE_SCHEMA: "false"
       RUN_DB_MIGRATIONS: "false"
+      LEGACY_WRITE_ENABLED: "false"
     logging: *json-logging
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]
@@ -51,7 +53,9 @@ services:
       - ALL
     stop_grace_period: 30s
     environment:
+      APP_ENV: "production"
       AUTO_CREATE_SCHEMA: "false"
+      LEGACY_WRITE_ENABLED: "false"
     logging: *json-logging
 
   nginx:
