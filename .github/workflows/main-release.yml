@@ -1,0 +1,103 @@
+name: Main Release Verification
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: main-release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-main:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install verification dependencies
+        run: pip install -r requirements.txt -r requirements-postgres.txt -r requirements-audit.txt
+
+      - name: Verify installed dependencies
+        run: pip check
+
+      - name: Validate temporary dependency waiver expiry
+        run: python scripts/check_dependency_waiver.py
+
+      - name: Audit Python dependencies
+        shell: bash
+        run: |
+          {
+            cat requirements.txt
+            printf '\n'
+            cat requirements-postgres.txt
+            printf '\n'
+            cat requirements-browser.txt
+            printf '\n'
+          } > /tmp/main-release-requirements.txt
+          pip-audit -r /tmp/main-release-requirements.txt --progress-spinner off --ignore-vuln PYSEC-2026-3552
+
+      - name: Run backend tests
+        run: pytest -q
+
+      - name: Generate current OpenAPI contract
+        run: python scripts/export_openapi.py --output dist/openapi/openapi.json
+
+      - name: Run JavaScript checks
+        run: python scripts/check_js.py
+
+      - name: Scan repository secrets
+        run: python scripts/secret_scan.py
+
+      - name: Compile Python sources
+        run: python -m compileall -q apps scripts migrations
+
+      - name: Check patch whitespace
+        run: git diff --check
+
+      - name: Verify release metadata and main workflow contract
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          manifest_path = Path("RELEASE_MANIFEST.json")
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+          release = str(manifest.get("release") or "")
+          assert re.fullmatch(r"V\d+\.\d+\.\d+", release), release
+
+          expected_branch = f"release/v{release[1:]}"
+          assert manifest.get("branch") == expected_branch, manifest.get("branch")
+          assert manifest.get("dirty_worktree") is False
+
+          release_notes = Path("docs/release") / f"RELEASE_NOTES_{release}.md"
+          assert release_notes.is_file(), release_notes
+
+          legacy_workflow = Path(".github/workflows/v101-release.yml")
+          assert not legacy_workflow.exists(), "legacy V1.0.1 main packaging workflow must remain retired"
+
+          print(f"main release metadata verified: {release} from {expected_branch}")
+          PY
