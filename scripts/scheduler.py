@@ -11,7 +11,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from apps.api.src.core.config import get_settings
 from apps.api.src.core.database import SessionLocal, init_database
+from apps.api.src.services.assignment_timeout_v12 import run_assignment_timeouts_v12
 from apps.api.src.services.claim_service import run_assignment_timeouts
 from apps.api.src.services.followup_service import run_followup_overdue
 from apps.api.src.services.notification_v12 import drain_due_supplier_reward_settlement_notified
@@ -20,6 +22,7 @@ from apps.api.src.services.points_service import run_low_points_warnings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("scheduler")
+settings = get_settings()
 running = True
 
 
@@ -34,9 +37,14 @@ def run_cycle(run_slow_jobs: bool, run_hourly_jobs: bool) -> None:
             outbox = process_outbox(db, limit=200)
             metrics: dict[str, object] = {"outbox": outbox}
             if run_slow_jobs:
+                timeout_metrics = (
+                    run_assignment_timeouts(db)
+                    if settings.legacy_write_enabled
+                    else run_assignment_timeouts_v12(db)
+                )
                 metrics.update(
                     {
-                        "timeouts": run_assignment_timeouts(db),
+                        "timeouts": timeout_metrics,
                         "followup_overdue": run_followup_overdue(db),
                         "low_points": run_low_points_warnings(db),
                     }
