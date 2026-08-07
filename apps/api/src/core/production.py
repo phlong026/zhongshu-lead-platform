@@ -8,6 +8,7 @@ from .config import Settings
 
 
 _PLACEHOLDER_MARKERS = ("replace-", "change-this", "dev-", "example", "changeme")
+_UNSAFE_TRUSTED_PROXY_VALUES = {"*", "0.0.0.0/0", "::/0"}
 
 
 @dataclass(frozen=True)
@@ -84,6 +85,9 @@ def validate_production_settings(settings: Settings, environ: dict[str, str] | N
         errors.append("CORS_ORIGINS 必须配置为生产 HTTPS 域名且不能使用通配符")
     if env.get("SEED_DEMO", "false").lower() == "true":
         errors.append("生产环境不得启用 SEED_DEMO")
+    trusted_proxy_cidr = env.get("TRUSTED_PROXY_CIDR", "127.0.0.1/32").strip()
+    if not trusted_proxy_cidr or trusted_proxy_cidr in _UNSAFE_TRUSTED_PROXY_VALUES:
+        errors.append("TRUSTED_PROXY_CIDR 必须是明确可信代理网段，禁止通配符或全网段")
     database_password = env.get("POSTGRES_PASSWORD", "")
     if _unsafe_secret(database_password, minimum=16):
         errors.append("POSTGRES_PASSWORD 长度不足或仍为示例值")
