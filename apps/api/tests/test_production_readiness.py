@@ -13,15 +13,18 @@ def _secret(prefix: str, length: int = 40) -> str:
 def production_settings(**overrides) -> Settings:
     values = {
         "app_env": "production",
+        "app_version": "1.2.0",
         "app_base_url": "https://app.zhongshu.example.cn",
         "database_url": "postgresql+psycopg://zhongshu:secret@db:5432/zhongshu",
         "jwt_secret": "J" * 48,
         "field_encryption_key": "E" * 48,
-        "phone_hash_secret": "P" * 32,
+        "phone_hash_secret": "H" * 32,
+        "phone_fingerprint_secret": "F" * 48,
         "wechat_app_id": "wx-production",
         "wechat_app_secret": _secret("wechat"),
         "wechat_oauth_redirect_uri": "https://app.zhongshu.example.cn/api/v1/auth/wechat/callback",
         "wechat_dev_mock": False,
+        "feishu_enabled": True,
         "feishu_app_id": "cli-production",
         "feishu_app_secret": _secret("feishu"),
         "feishu_app_token": "bitable-token",
@@ -36,24 +39,93 @@ def production_settings(**overrides) -> Settings:
     return Settings(_env_file=None, **values)
 
 
+def _production_env() -> dict[str, str]:
+    return {"POSTGRES_PASSWORD": "A-strong-production-password-2026", "SEED_DEMO": "false"}
+
+
 def test_production_validation_accepts_strong_configuration_with_local_storage_warning():
-    result = validate_production_settings(
-        production_settings(),
-        {"POSTGRES_PASSWORD": "A-strong-production-password-2026", "SEED_DEMO": "false"},
-    )
+    result = validate_production_settings(production_settings(), _production_env())
     assert result.valid is True
     assert not result.errors
     assert any("本地对象存储" in warning for warning in result.warnings)
 
 
+def test_production_validation_accepts_aws_s3_default_endpoint():
+    result = validate_production_settings(
+        production_settings(
+            object_storage_backend="s3",
+            s3_endpoint_url="",
+            s3_access_key_id="aws-access-key",
+            s3_secret_access_key=_secret("aws"),
+            s3_bucket="zhongshu-private",
+            s3_region="ap-southeast-1",
+        ),
+        _production_env(),
+    )
+    assert result.valid is True
+    assert not any("S3_ENDPOINT_URL" in error for error in result.errors)
+
+
+def test_production_validation_rejects_insecure_custom_s3_endpoint():
+    result = validate_production_settings(
+        production_settings(
+            object_storage_backend="s3",
+            s3_endpoint_url="http://cos.internal.example.com",
+            s3_access_key_id="cos-access-key",
+            s3_secret_access_key=_secret("cos"),
+            s3_bucket="zhongshu-private",
+            s3_region="ap-guangzhou",
+        ),
+        _production_env(),
+    )
+    assert result.valid is False
+    assert any("S3_ENDPOINT_URL" in error for error in result.errors)
+
+
+def test_production_validation_allows_explicitly_disabled_feishu_without_credentials():
+    result = validate_production_settings(
+        production_settings(
+            feishu_enabled=False,
+            feishu_app_id="",
+            feishu_app_secret="",
+            feishu_app_token="",
+            feishu_table_id="",
+        ),
+        _production_env(),
+    )
+    assert result.valid is True
+    assert not any("FEISHU_" in error for error in result.errors)
+
+
+def test_production_validation_requires_feishu_credentials_when_enabled():
+    result = validate_production_settings(
+        production_settings(feishu_app_token="", feishu_table_id=""),
+        _production_env(),
+    )
+    assert result.valid is False
+    assert any("FEISHU_APP_TOKEN" in error for error in result.errors)
+    assert any("FEISHU_TABLE_ID" in error for error in result.errors)
+
+
+def test_production_validation_rejects_shared_phone_secrets():
+    result = validate_production_settings(
+        production_settings(phone_hash_secret="S" * 40, phone_fingerprint_secret="S" * 40),
+        _production_env(),
+    )
+    assert result.valid is False
+    assert any("必须与 PHONE_HASH_SECRET 独立" in error for error in result.errors)
+
+
 def test_production_validation_rejects_placeholders_mocks_and_insecure_urls():
     result = validate_production_settings(
         production_settings(
+            app_version="1.0.1",
             app_base_url="http://localhost:8000",
             database_url="sqlite:///./prod.db",
             jwt_secret="dev-" + "change-me",
             field_encryption_key="replace-key",
             phone_hash_secret="dev-secret",
+            phone_fingerprint_secret="",
             wechat_dev_mock=True,
             feishu_dev_mock=True,
             cors_origins="*",
@@ -62,10 +134,10 @@ def test_production_validation_rejects_placeholders_mocks_and_insecure_urls():
         {"POSTGRES_PASSWORD": "change-this-database-password", "SEED_DEMO": "true"},
     )
     assert result.valid is False
-    assert len(result.errors) >= 8
+    assert len(result.errors) >= 10
 
 
-def test_production_deployment_files_enforce_tls_least_privilege_and_restore_confirmation():
+def test_production_deployment_files_enforce_tls_least_privilege_and_fail_closed_restore():
     compose = Path("docker-compose.prod.yml").read_text(encoding="utf-8")
     nginx = Path("infra/nginx/production.conf.template").read_text(encoding="utf-8")
     headers = Path("infra/nginx/security-headers.conf").read_text(encoding="utf-8")
@@ -79,6 +151,12 @@ def test_production_deployment_files_enforce_tls_least_privilege_and_restore_con
     assert "Strict-Transport-Security" in headers and "Content-Security-Policy" in headers
     assert "validate_production_env.py" in entrypoint
     assert "CONFIRM_RESTORE" in restore and "sha256sum -c" in restore
+    assert "--exit-on-error" in restore and "ON_ERROR_STOP=1" in restore
+    assert "RESTORE_SUCCEEDED=false" in restore
+    assert "RESTORE_RESTART_SERVICES:-NO" in restore
+    assert 'if [ "$RESTORE_SUCCEEDED" = "true" ] && [ "$RESTART" = "YES" ]' in restore
+    assert "restore did not complete successfully; api and scheduler remain stopped" in restore
+    assert "restore completed; api and scheduler remain stopped" in restore
 
 
 def test_health_and_api_responses_include_version_security_and_no_store(api_client):
