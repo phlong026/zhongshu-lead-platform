@@ -12,7 +12,9 @@ TEXT_SUFFIXES = {".js", ".html", ".json", ".webmanifest", ".css"}
 FORBIDDEN_PUBLIC_TOKENS = (
     "Admin123!",
     "Franchise123!",
+    "Telesales123!",
     "franchise_demo",
+    'value="telesales"',
     "ChangeMe123!",
     "演示账号见项目文档",
     "本地演示环境",
@@ -54,3 +56,12 @@ def test_h5_login_is_wechat_only_without_demo_account_form() -> None:
     assert 'id="password"' not in source
     assert "demo-login" not in source
     assert "登录方式</dt><dd>微信授权</dd>" in source
+
+
+def test_call_h5_internal_login_requires_explicit_credentials() -> None:
+    source = Path("apps/call-h5/public/app.js").read_text(encoding="utf-8")
+    assert 'id="user" class="input" autocomplete="username" placeholder="请输入电销账号"' in source
+    assert 'id="pass" class="input" type="password" autocomplete="current-password" placeholder="请输入密码"' in source
+    assert 'value="telesales"' not in source
+    assert "Telesales123!" not in source
+    assert "api('/auth/login'" in source
