@@ -28,15 +28,16 @@ def is_legacy_write(method: str, path: str) -> bool:
 class LegacyWriteGuardMiddleware(BaseHTTPMiddleware):
     """Keep V1.0.1 history readable while preventing new legacy business facts.
 
-    Development and tests can opt into the legacy mutation APIs for historical
-    regression coverage. Production must set LEGACY_WRITE_ENABLED=false; when
-    disabled, V1.0.1 mutation paths fail closed before they reach a router.
+    LEGACY_WRITE_ENABLED is the authoritative runtime gate. When it is false,
+    legacy mutation paths fail closed regardless of APP_ENV so an environment
+    label misconfiguration cannot reopen retired V1.0.1 business workflows.
+    Development/tests that need historical mutation regression coverage must
+    opt in explicitly with LEGACY_WRITE_ENABLED=true.
     """
 
     async def dispatch(self, request: Request, call_next):
         blocked = (
-            settings.app_env.lower() == "production"
-            and not settings.legacy_write_enabled
+            not settings.legacy_write_enabled
             and is_legacy_write(request.method, request.url.path)
         )
         if blocked:
@@ -44,7 +45,7 @@ class LegacyWriteGuardMiddleware(BaseHTTPMiddleware):
                 status_code=410,
                 content=error_payload(
                     "LEGACY_WRITE_DISABLED",
-                    "V1.0.1 历史写入接口已在生产环境停用，请使用 V1.2 业务接口",
+                    "V1.0.1 历史写入接口已停用，请使用 V1.2 业务接口",
                     getattr(request.state, "request_id", None),
                     {"path": request.url.path},
                 ),
