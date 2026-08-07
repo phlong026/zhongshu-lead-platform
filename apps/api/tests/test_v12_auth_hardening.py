@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -7,6 +8,7 @@ from sqlalchemy import select
 
 from apps.api.src.core.auth_models import AuthLoginState
 from apps.api.src.core.models import AuditLog, User
+from apps.api.src.services.auth_service import InternalAuthError, authenticate_internal
 
 
 def _login(client, username: str, password: str):
@@ -58,7 +60,6 @@ def test_internal_login_failures_persist_lock_and_expire_with_audit(api_client) 
     assert locked.status_code == 429
     assert locked.json()["code"] == "AUTH_LOGIN_THROTTLED"
 
-    # A correct password must not bypass an active account lock.
     blocked_correct = _login(client, "admin", "Admin123!")
     assert blocked_correct.status_code == 429
     assert blocked_correct.json()["code"] == "AUTH_LOGIN_THROTTLED"
@@ -77,9 +78,7 @@ def test_internal_login_failures_persist_lock_and_expire_with_audit(api_client) 
         assert "AUTH_LOGIN_LOCKED" in actions
         assert "AUTH_LOGIN_BLOCKED" in actions
 
-        logs = db.scalars(
-            select(AuditLog).where(AuditLog.resource_id == user.id)
-        ).all()
+        logs = db.scalars(select(AuditLog).where(AuditLog.resource_id == user.id)).all()
         serialized = "\n".join(
             str(
                 {
@@ -118,6 +117,32 @@ def test_internal_login_failures_persist_lock_and_expire_with_audit(api_client) 
         logs = db.scalars(select(AuditLog).where(AuditLog.resource_id == user.id)).all()
         serialized = "\n".join(str(item.metadata_json) for item in logs)
         assert token not in serialized
+
+
+def test_sqlite_parallel_failed_logins_are_atomically_counted(api_client) -> None:
+    _, factory = api_client
+
+    def fail_once(index: int) -> str:
+        with factory() as db:
+            try:
+                authenticate_internal(db, "admin", f"parallel-wrong-{index}!")
+            except InternalAuthError as exc:
+                db.commit()
+                return exc.code
+            raise AssertionError("wrong password unexpectedly authenticated")
+
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        codes = list(pool.map(fail_once, range(5)))
+
+    with factory() as db:
+        user = db.scalar(select(User).where(User.username == "admin"))
+        assert user is not None
+        state = db.get(AuthLoginState, user.id)
+        assert state is not None
+        assert state.failed_count == 5
+        assert state.locked_until is not None
+    assert codes.count("AUTH_LOGIN_FAILED") == 4
+    assert codes.count("AUTH_LOGIN_THROTTLED") == 1
 
 
 def test_disabled_user_invalidates_existing_cookie_and_cannot_relogin(api_client) -> None:
@@ -167,18 +192,25 @@ def test_unknown_username_keeps_generic_failure_contract(api_client) -> None:
     assert response.json()["message"] == "用户名或密码错误"
 
 
-def test_production_nginx_has_dedicated_login_rate_limit() -> None:
+def test_production_nginx_has_dedicated_login_rate_limit_and_trusted_real_ip() -> None:
     nginx = Path("infra/nginx/production.conf.template").read_text(encoding="utf-8")
+    compose = Path("docker-compose.prod.yml").read_text(encoding="utf-8")
+    assert "set_real_ip_from ${TRUSTED_PROXY_CIDR};" in nginx
+    assert "real_ip_header X-Forwarded-For;" in nginx
+    assert "real_ip_recursive on;" in nginx
     assert "zone=auth_login_limit:10m rate=10r/m" in nginx
     assert "location = /api/v1/auth/login" in nginx
     assert "limit_req zone=auth_login_limit burst=5 nodelay;" in nginx
     assert "limit_req_status 429;" in nginx
     assert nginx.index("location = /api/v1/auth/login") < nginx.index("location /api/")
+    assert "TRUSTED_PROXY_CIDR: ${TRUSTED_PROXY_CIDR:-127.0.0.1/32}" in compose
 
 
-def test_auth_login_state_migration_is_on_current_chain() -> None:
+def test_auth_login_state_migration_is_on_current_chain_and_registered_with_alembic() -> None:
     migration = Path("migrations/versions/0005_auth_login_hardening.py").read_text(encoding="utf-8")
+    env = Path("migrations/env.py").read_text(encoding="utf-8")
     assert 'revision = "0005_auth_login_hardening"' in migration
     assert 'down_revision = "0004_v12_reward_snapshot"' in migration
     assert '"auth_login_state"' in migration
     assert '"locked_until"' in migration
+    assert "auth_models" in env
