@@ -10,9 +10,18 @@ from ..core.enums import AssignmentStatus
 from ..core.models import Assignment, AssignmentEvent, Lead
 from ..core.time import as_utc
 from ..core.v12_enums import LeadV12Status
+from .claim_service import run_assignment_timeouts as run_assignment_timeouts_legacy
 from .notification_service import create_station_message, enqueue_outbox
 
 settings = get_settings()
+
+
+def run_assignment_timeouts_active(db: Session) -> dict[str, int]:
+    """Route every supported timeout entrypoint through the active business version."""
+
+    if settings.legacy_write_enabled:
+        return run_assignment_timeouts_legacy(db)
+    return run_assignment_timeouts_v12(db)
 
 
 def run_assignment_timeouts_v12(db: Session, *, now: datetime | None = None) -> dict[str, int]:
@@ -21,13 +30,17 @@ def run_assignment_timeouts_v12(db: Session, *, now: datetime | None = None) -> 
     A V1.2 pending assignment is identified by the lead/assignment invariant created by
     dispatch_manually: the lead is DISPATCHED and points at the same current_assignment_id.
     Historical V1.0.1 pending assignments are deliberately not mutated here.
+
+    Candidate discovery selects only primary keys. Each row is then reloaded under a
+    database lock with ``populate_existing`` so a worker that waited for another worker
+    cannot act on stale ``reminder_sent_at`` or status values from SQLAlchemy's identity map.
     """
 
     current = as_utc(now) or datetime.now(timezone.utc)
     reminded = 0
     expired = 0
-    pending = db.scalars(
-        select(Assignment)
+    pending_ids = db.scalars(
+        select(Assignment.id)
         .join(Lead, Lead.id == Assignment.lead_id)
         .where(
             Assignment.status == AssignmentStatus.PENDING_CLAIM.value,
@@ -37,13 +50,21 @@ def run_assignment_timeouts_v12(db: Session, *, now: datetime | None = None) -> 
         .order_by(Assignment.assigned_at.asc(), Assignment.id.asc())
     ).all()
 
-    for candidate in pending:
+    for assignment_id in pending_ids:
         assignment = db.scalar(
-            select(Assignment).where(Assignment.id == candidate.id).with_for_update()
+            select(Assignment)
+            .where(Assignment.id == assignment_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
         if assignment is None or assignment.status != AssignmentStatus.PENDING_CLAIM.value:
             continue
-        lead = db.scalar(select(Lead).where(Lead.id == assignment.lead_id).with_for_update())
+        lead = db.scalar(
+            select(Lead)
+            .where(Lead.id == assignment.lead_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
         if (
             lead is None
             or lead.current_assignment_id != assignment.id
