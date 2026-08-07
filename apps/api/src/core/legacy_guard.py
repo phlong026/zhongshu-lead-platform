@@ -1,0 +1,52 @@
+from __future__ import annotations
+
+from fastapi import Request
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+
+from .config import get_settings
+from .errors import error_payload
+
+settings = get_settings()
+
+SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+LEGACY_WRITE_PREFIXES = (
+    "/api/v1/leads",
+    "/api/v1/verification",
+    "/api/v1/dispatch",
+    "/api/v1/claims",
+    "/api/v1/returns",
+)
+
+
+def is_legacy_write(method: str, path: str) -> bool:
+    if method.upper() in SAFE_METHODS:
+        return False
+    return any(path == prefix or path.startswith(prefix + "/") for prefix in LEGACY_WRITE_PREFIXES)
+
+
+class LegacyWriteGuardMiddleware(BaseHTTPMiddleware):
+    """Keep V1.0.1 history readable while preventing new legacy business facts.
+
+    Development and tests can opt into the legacy mutation APIs for historical
+    regression coverage. Production must set LEGACY_WRITE_ENABLED=false; when
+    disabled, V1.0.1 mutation paths fail closed before they reach a router.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        blocked = (
+            settings.app_env.lower() == "production"
+            and not settings.legacy_write_enabled
+            and is_legacy_write(request.method, request.url.path)
+        )
+        if blocked:
+            return JSONResponse(
+                status_code=410,
+                content=error_payload(
+                    "LEGACY_WRITE_DISABLED",
+                    "V1.0.1 历史写入接口已在生产环境停用，请使用 V1.2 业务接口",
+                    getattr(request.state, "request_id", None),
+                    {"path": request.url.path},
+                ),
+            )
+        return await call_next(request)
