@@ -43,6 +43,7 @@ def _count(db: Session, model: type, *criteria: Any) -> int:
 
 
 def _ledger_mismatch_fields(
+    db: Session,
     ledger: PointsLedger | None,
     *,
     company_id: str,
@@ -58,6 +59,11 @@ def _ledger_mismatch_fields(
     mismatches: list[str] = []
     if ledger.company_id != company_id:
         mismatches.append("company_id")
+    account = db.get(PointsAccount, ledger.account_id)
+    if account is None:
+        mismatches.append("account_id_missing")
+    elif account.company_id != ledger.company_id:
+        mismatches.append("account_id_company")
     if ledger.ledger_type != ledger_type:
         mismatches.append("ledger_type")
     if ledger.business_type not in business_types:
@@ -84,6 +90,7 @@ def _reward_ledger_semantic_mismatches(db: Session) -> tuple[list[dict[str, Any]
     ).all()
     for reward, ledger in original_rows:
         fields = _ledger_mismatch_fields(
+            db,
             ledger,
             company_id=reward.supplier_company_id,
             ledger_type=PointsLedgerType.REWARD.value,
@@ -109,6 +116,7 @@ def _reward_ledger_semantic_mismatches(db: Session) -> tuple[list[dict[str, Any]
     ).all()
     for reward, ledger in reversal_rows:
         fields = _ledger_mismatch_fields(
+            db,
             ledger,
             company_id=reward.supplier_company_id,
             ledger_type=PointsLedgerType.REVERSAL.value,
@@ -148,11 +156,10 @@ def _return_refund_semantic_mismatches(db: Session) -> list[dict[str, Any]]:
         fields.extend(
             f"refund.{field}"
             for field in _ledger_mismatch_fields(
+                db,
                 refund,
                 company_id=request.company_id,
                 ledger_type=PointsLedgerType.RETURN.value,
-                # V1.0.x used RETURN_REQUEST; V1.2 uses V12_RETURN_REFUND.
-                # Both are valid historical facts if all other semantics match.
                 business_types={"V12_RETURN_REFUND", "RETURN_REQUEST"},
                 business_id=request.id,
                 delta=refund_points,
@@ -164,6 +171,7 @@ def _return_refund_semantic_mismatches(db: Session) -> list[dict[str, Any]]:
             fields.extend(
                 f"claim.{field}"
                 for field in _ledger_mismatch_fields(
+                    db,
                     claim,
                     company_id=request.company_id,
                     ledger_type=PointsLedgerType.CLAIM.value,
@@ -182,6 +190,40 @@ def _return_refund_semantic_mismatches(db: Session) -> list[dict[str, Any]]:
                 }
             )
     return mismatches
+
+
+def _ledger_account_mismatches(db: Session) -> tuple[int, list[dict[str, Any]]]:
+    mismatch_filter = (PointsAccount.id.is_(None)) | (PointsAccount.company_id != PointsLedger.company_id)
+    total = int(
+        db.scalar(
+            select(func.count())
+            .select_from(PointsLedger)
+            .outerjoin(PointsAccount, PointsAccount.id == PointsLedger.account_id)
+            .where(mismatch_filter)
+        )
+        or 0
+    )
+    rows = db.execute(
+        select(
+            PointsLedger.id,
+            PointsLedger.account_id,
+            PointsLedger.company_id,
+            PointsAccount.company_id.label("account_company_id"),
+        )
+        .outerjoin(PointsAccount, PointsAccount.id == PointsLedger.account_id)
+        .where(mismatch_filter)
+        .order_by(PointsLedger.created_at.asc(), PointsLedger.id.asc())
+        .limit(_MAX_SEMANTIC_SAMPLES)
+    ).all()
+    return total, [
+        {
+            "ledger_id": row.id,
+            "account_id": row.account_id,
+            "ledger_company_id": row.company_id,
+            "account_company_id": row.account_company_id,
+        }
+        for row in rows
+    ]
 
 
 def reconcile_v12(db: Session, *, require_completed_backfill: bool = True) -> ReconciliationReport:
@@ -273,42 +315,92 @@ def reconcile_v12(db: Session, *, require_completed_backfill: bool = True) -> Re
             _issue("UNKNOWN_RETURN_STATUS", "发现无法映射的历史退回状态", statuses=unknown_return_statuses)
         )
 
+    allowed_reward_statuses = {item.value for item in RewardStatus}
+    reward_statuses = set(db.scalars(select(SupplierLeadReward.status).distinct()).all())
+    unknown_reward_statuses = sorted(status for status in reward_statuses if status not in allowed_reward_statuses)
+    report.metrics["unknown_supplier_reward_statuses"] = unknown_reward_statuses
+    if unknown_reward_statuses:
+        report.errors.append(
+            _issue(
+                "UNKNOWN_SUPPLIER_REWARD_STATUS",
+                "发现无法识别的供应奖励状态",
+                statuses=unknown_reward_statuses,
+            )
+        )
+
+    ledger_account_mismatch_count, ledger_account_mismatch_samples = _ledger_account_mismatches(db)
+    report.metrics["points_ledger_account_mismatches"] = ledger_account_mismatch_count
+    if ledger_account_mismatch_count:
+        report.errors.append(
+            _issue(
+                "POINTS_LEDGER_ACCOUNT_MISMATCH",
+                "积分流水 account_id 与 company_id 归属不一致",
+                count=ledger_account_mismatch_count,
+                samples=ledger_account_mismatch_samples,
+            )
+        )
+
     account_mismatches: list[dict[str, Any]] = []
+    sequence_error_total = 0
     accounts = list(db.scalars(select(PointsAccount).order_by(PointsAccount.company_id)).all())
     for account in accounts:
-        ledger_sum = int(
-            db.scalar(
-                select(func.coalesce(func.sum(PointsLedger.delta), 0)).where(
-                    PointsLedger.account_id == account.id
+        ledgers = list(
+            db.scalars(
+                select(PointsLedger)
+                .where(PointsLedger.account_id == account.id)
+                .order_by(PointsLedger.created_at.asc(), PointsLedger.id.asc())
+            ).all()
+        )
+        running = 0
+        sequence_errors: list[dict[str, Any]] = []
+        company_errors: list[dict[str, Any]] = []
+        for ledger in ledgers:
+            running += int(ledger.delta)
+            if int(ledger.balance_after) != running:
+                sequence_errors.append(
+                    {
+                        "ledger_id": ledger.id,
+                        "expected_balance_after": running,
+                        "actual_balance_after": int(ledger.balance_after),
+                    }
                 )
-            )
-            or 0
-        )
-        latest_balance = db.scalar(
-            select(PointsLedger.balance_after)
-            .where(PointsLedger.account_id == account.id)
-            .order_by(PointsLedger.created_at.desc(), PointsLedger.id.desc())
-            .limit(1)
-        )
-        if ledger_sum != account.balance or (
-            latest_balance is not None and int(latest_balance) != account.balance
+            if ledger.company_id != account.company_id:
+                company_errors.append(
+                    {
+                        "ledger_id": ledger.id,
+                        "ledger_company_id": ledger.company_id,
+                        "account_company_id": account.company_id,
+                    }
+                )
+        sequence_error_total += len(sequence_errors)
+        latest_balance = int(ledgers[-1].balance_after) if ledgers else None
+        if (
+            running != int(account.balance)
+            or (latest_balance is not None and latest_balance != int(account.balance))
+            or sequence_errors
+            or company_errors
         ):
             account_mismatches.append(
                 {
                     "company_id": account.company_id,
                     "account_balance": int(account.balance),
-                    "ledger_sum": ledger_sum,
-                    "latest_balance_after": int(latest_balance) if latest_balance is not None else None,
+                    "ledger_sum": running,
+                    "latest_balance_after": latest_balance,
+                    "sequence_error_count": len(sequence_errors),
+                    "sequence_errors": sequence_errors[:_MAX_SEMANTIC_SAMPLES],
+                    "company_error_count": len(company_errors),
+                    "company_errors": company_errors[:_MAX_SEMANTIC_SAMPLES],
                 }
             )
     report.metrics["points_accounts_total"] = len(accounts)
     report.metrics["points_account_mismatches"] = len(account_mismatches)
+    report.metrics["points_ledger_sequence_errors"] = sequence_error_total
     if account_mismatches:
         report.errors.append(
             _issue(
                 "POINTS_RECONCILIATION_MISMATCH",
                 "积分账户与不可变流水不一致",
-                samples=account_mismatches[:50],
+                samples=account_mismatches[:_MAX_SEMANTIC_SAMPLES],
             )
         )
 
