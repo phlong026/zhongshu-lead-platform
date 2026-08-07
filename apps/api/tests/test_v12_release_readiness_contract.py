@@ -128,5 +128,7 @@ def test_ci_contains_postgres_browser_dependency_evidence_and_packaging_gates() 
         assert "fetch-depth: 0" in workflow
         assert "scripts/package_release.py" in workflow
         assert "release-package-${{ github.run_id }}" in workflow
+        assert "cat requirements.txt requirements-postgres.txt requirements-browser.txt" not in workflow
+        assert workflow.count("printf '\\n'") >= 3
     assert "--version V1.2.0-rc" in pr_workflow
     assert "--version V1.2.0" in release_workflow
