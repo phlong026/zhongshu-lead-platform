@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..core.config import get_settings
+from ..core.errors import AppError
 from ..core.models import Lead, SyncBatch
 from ..integrations.feishu import FeishuClient, FeishuRecord
 from .lead_service import import_records
@@ -41,12 +42,22 @@ def configured_mapping() -> dict[str, str]:
     return {**DEFAULT_FIELD_MAPPING, **{str(k): str(v) for k, v in custom.items() if v}}
 
 
+def _require_legacy_import_enabled() -> None:
+    if not settings.legacy_write_enabled:
+        raise AppError(
+            "LEGACY_WRITE_DISABLED",
+            "V1.0.1 飞书新增客资导入已停用，请使用 V1.2 平台录客或供应商供客",
+            410,
+        )
+
+
 def fetch_and_import_feishu(
     db: Session,
     *,
     requested_by: str | None = None,
     client: FeishuClient | None = None,
 ) -> tuple[SyncBatch, list[FeishuRecord]]:
+    _require_legacy_import_enabled()
     FeishuClient.ensure_enabled()
     adapter = client or FeishuClient()
     records = list(
@@ -72,6 +83,7 @@ def writeback_feishu_results(
     *,
     client: FeishuClient | None = None,
 ) -> dict[str, int]:
+    _require_legacy_import_enabled()
     FeishuClient.ensure_enabled()
     if not getattr(settings, "feishu_writeback_enabled", True):
         return {"written": 0, "failed": 0}
