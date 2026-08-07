@@ -34,6 +34,7 @@ def production_settings(**overrides) -> Settings:
         "cors_origins": "https://app.zhongshu.example.cn",
         "trusted_hosts": "app.zhongshu.example.cn",
         "auto_create_schema": False,
+        "legacy_write_enabled": False,
     }
     values.update(overrides)
     return Settings(_env_file=None, **values)
@@ -116,6 +117,15 @@ def test_production_validation_rejects_shared_phone_secrets():
     assert any("必须与 PHONE_HASH_SECRET 独立" in error for error in result.errors)
 
 
+def test_production_validation_rejects_legacy_write_enablement():
+    result = validate_production_settings(
+        production_settings(legacy_write_enabled=True),
+        _production_env(),
+    )
+    assert result.valid is False
+    assert any("LEGACY_WRITE_ENABLED=false" in error for error in result.errors)
+
+
 def test_production_validation_rejects_placeholders_mocks_and_insecure_urls():
     result = validate_production_settings(
         production_settings(
@@ -130,6 +140,7 @@ def test_production_validation_rejects_placeholders_mocks_and_insecure_urls():
             feishu_dev_mock=True,
             cors_origins="*",
             trusted_hosts="*",
+            legacy_write_enabled=True,
         ),
         {"POSTGRES_PASSWORD": "change-this-database-password", "SEED_DEMO": "true"},
     )
@@ -146,6 +157,7 @@ def test_production_deployment_files_enforce_tls_least_privilege_and_fail_closed
     assert "read_only: true" in compose
     assert "no-new-privileges:true" in compose
     assert "cap_drop:" in compose and "AUTO_CREATE_SCHEMA" in compose
+    assert 'LEGACY_WRITE_ENABLED: "false"' in compose
     assert "listen 443 ssl" in nginx and "return 301 https://" in nginx
     assert "client_max_body_size 25m" in nginx and "limit_req_zone" in nginx
     assert "Strict-Transport-Security" in headers and "Content-Security-Policy" in headers
