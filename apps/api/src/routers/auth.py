@@ -16,19 +16,101 @@ from ..core.security import create_signed_state, decode_signed_state, hash_token
 from ..core.time import as_utc, utcnow
 from ..schemas.auth import InviteCreateBody, LoginBody, WechatMockCallbackBody
 from ..services.audit import write_audit
-from ..services.auth_service import authenticate_internal, bind_wechat_by_invite, create_company_invite, login_or_bind_wechat
+from ..services.auth_service import (
+    InternalAuthError,
+    authenticate_internal,
+    bind_wechat_by_invite,
+    create_company_invite,
+    login_or_bind_wechat,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
 
 
+def _request_ip(request: Request) -> str | None:
+    return request.headers.get("x-real-ip") or (request.client.host if request.client else None)
+
+
+def _audit_unlock(db: Session, *, user_id: str | None, request: Request) -> None:
+    if not user_id:
+        return
+    write_audit(
+        db,
+        principal=None,
+        action="AUTH_LOGIN_UNLOCKED",
+        resource_type="user",
+        resource_id=user_id,
+        metadata={"reason_code": "LOCK_EXPIRED"},
+        request_id=request.state.request_id,
+        ip_address=_request_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+
+
+def _set_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        "access_token",
+        token,
+        httponly=True,
+        secure=settings.app_env.lower() == "production",
+        samesite="lax",
+        max_age=settings.jwt_expire_minutes * 60,
+        path="/",
+    )
+
+
 @router.post("/login")
 def login(body: LoginBody, request: Request, response: Response, db: Annotated[Session, Depends(get_db)]):
-    user, token = authenticate_internal(db, body.username, body.password)
-    write_audit(db, principal=None, action="AUTH_LOGIN", resource_type="user", resource_id=user.id, request_id=request.state.request_id)
+    try:
+        result = authenticate_internal(db, body.username, body.password)
+    except InternalAuthError as exc:
+        if exc.lock_released:
+            _audit_unlock(db, user_id=exc.user_id, request=request)
+        write_audit(
+            db,
+            principal=None,
+            action=exc.audit_action,
+            resource_type="user",
+            resource_id=exc.user_id,
+            metadata={
+                "reason_code": exc.code,
+                "failure_count": exc.failure_count,
+                "locked_until": exc.locked_until.isoformat() if exc.locked_until else None,
+            },
+            request_id=request.state.request_id,
+            ip_address=_request_ip(request),
+            user_agent=request.headers.get("user-agent"),
+        )
+        # Authentication failure state is security data and must survive the error response.
+        db.commit()
+        raise
+
+    user = result.user
+    if result.lock_released:
+        _audit_unlock(db, user_id=user.id, request=request)
+    write_audit(
+        db,
+        principal=None,
+        action="AUTH_LOGIN",
+        resource_type="user",
+        resource_id=user.id,
+        request_id=request.state.request_id,
+        ip_address=_request_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
     db.commit()
-    response.set_cookie("access_token", token, httponly=True, secure=settings.app_env == "production", samesite="lax", max_age=settings.jwt_expire_minutes * 60)
-    return ok(request, {"token": token, "user": {"id": user.id, "display_name": user.display_name, "roles": [r.code for r in user.roles]}})
+    _set_session_cookie(response, result.token)
+    return ok(
+        request,
+        {
+            "user": {
+                "id": user.id,
+                "display_name": user.display_name,
+                "roles": [r.code for r in user.roles],
+            }
+        },
+    )
 
 
 @router.post("/logout")
@@ -38,7 +120,13 @@ def logout(request: Request, response: Response, principal: CurrentPrincipal, db
         user.session_version += 1
     write_audit(db, principal=principal, action="AUTH_LOGOUT", resource_type="user", resource_id=principal.user_id, request_id=request.state.request_id)
     db.commit()
-    response.delete_cookie("access_token")
+    response.delete_cookie(
+        "access_token",
+        path="/",
+        secure=settings.app_env.lower() == "production",
+        httponly=True,
+        samesite="lax",
+    )
     return ok(request, message="已退出")
 
 
@@ -93,7 +181,7 @@ def wechat_mock_callback(body: WechatMockCallbackBody, request: Request, respons
     user, token = bind_wechat_by_invite(db, body.invite_token, body.openid, body.nickname)
     write_audit(db, principal=None, action="WECHAT_BIND", resource_type="user", resource_id=user.id, company_id=user.company_id, request_id=request.state.request_id)
     db.commit()
-    response.set_cookie("access_token", token, httponly=True, secure=False, samesite="lax", max_age=settings.jwt_expire_minutes * 60)
+    response.set_cookie("access_token", token, httponly=True, secure=False, samesite="lax", max_age=settings.jwt_expire_minutes * 60, path="/")
     return ok(request, {"token": token, "user_id": user.id, "company_id": user.company_id})
 
 
@@ -154,8 +242,9 @@ def wechat_callback(
         "access_token",
         token,
         httponly=True,
-        secure=settings.app_env == "production",
+        secure=settings.app_env.lower() == "production",
         samesite="lax",
         max_age=settings.jwt_expire_minutes * 60,
+        path="/",
     )
     return response
