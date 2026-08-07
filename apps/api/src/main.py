@@ -4,16 +4,17 @@ from contextlib import asynccontextmanager
 import os
 from pathlib import Path
 
-from fastapi import Cookie, FastAPI
+from fastapi import Cookie, Depends, FastAPI
 from fastapi.responses import RedirectResponse
 from jwt import InvalidTokenError
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .core.config import get_settings
-from .core.database import SessionLocal, init_database
+from .core.database import SessionLocal, get_db, init_database
 from .core.errors import register_error_handlers
 from .core.legacy_guard import LegacyWriteGuardMiddleware
 from .core.logging import configure_logging
@@ -130,7 +131,7 @@ def health_ready() -> dict[str, str]:
     return {"status": "ready", "database": "ok", "storage": storage, "version": settings.app_version}
 
 
-def _has_valid_web_session(access_token: str | None) -> bool:
+def _has_valid_web_session(db: Session, access_token: str | None) -> bool:
     if not access_token:
         return False
     try:
@@ -141,26 +142,31 @@ def _has_valid_web_session(access_token: str | None) -> bool:
     session_version = payload.get("sv")
     if not user_id:
         return False
-    with SessionLocal() as db:
-        user = db.get(User, user_id)
-        return bool(
-            user
-            and user.status == "ACTIVE"
-            and user.session_version == session_version
-        )
+    user = db.get(User, user_id)
+    return bool(
+        user
+        and user.status == "ACTIVE"
+        and user.session_version == session_version
+    )
 
 
 @app.get("/admin", include_in_schema=False)
 @app.get("/admin/", include_in_schema=False)
-def admin_entry(access_token: str | None = Cookie(default=None)) -> RedirectResponse:
-    target = "/admin/v12-operations.html" if _has_valid_web_session(access_token) else "/admin/index.html"
+def admin_entry(
+    access_token: str | None = Cookie(default=None),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    target = "/admin/v12-operations.html" if _has_valid_web_session(db, access_token) else "/admin/index.html"
     return RedirectResponse(url=target, status_code=302)
 
 
 @app.get("/h5", include_in_schema=False)
 @app.get("/h5/", include_in_schema=False)
-def h5_entry(access_token: str | None = Cookie(default=None)) -> RedirectResponse:
-    target = "/h5/v12-workbench.html" if _has_valid_web_session(access_token) else "/h5/index.html"
+def h5_entry(
+    access_token: str | None = Cookie(default=None),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    target = "/h5/v12-workbench.html" if _has_valid_web_session(db, access_token) else "/h5/index.html"
     return RedirectResponse(url=target, status_code=302)
 
 
