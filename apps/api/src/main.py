@@ -67,8 +67,8 @@ app = FastAPI(
     version=settings.app_version,
     lifespan=lifespan,
 )
-app.add_middleware(RequestContextMiddleware)
 app.add_middleware(LegacyWriteGuardMiddleware)
+app.add_middleware(RequestContextMiddleware)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_host_list)
 app.add_middleware(
     CORSMiddleware,
