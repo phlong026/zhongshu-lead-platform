@@ -24,6 +24,7 @@ services:
       - ALL
     stop_grace_period: 30s
     environment:
+      APP_ENV: "production"
       AUTO_CREATE_SCHEMA: "false"
       RUN_DB_MIGRATIONS: "false"
       LEGACY_WRITE_ENABLED: "false"
@@ -52,6 +53,7 @@ services:
       - ALL
     stop_grace_period: 30s
     environment:
+      APP_ENV: "production"
       AUTO_CREATE_SCHEMA: "false"
       LEGACY_WRITE_ENABLED: "false"
     logging: *json-logging
