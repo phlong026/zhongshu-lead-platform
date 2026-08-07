@@ -39,6 +39,9 @@ jobs:
       - name: Verify installed dependencies
         run: pip check
 
+      - name: Validate temporary dependency waiver expiry
+        run: python scripts/check_dependency_waiver.py
+
       - name: Audit Python dependencies
         shell: bash
         run: |
