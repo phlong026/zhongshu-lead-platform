@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from apps.api.src.core import models_v12 as _models_v12  # noqa: F401
 from apps.api.src.core.enums import AssignmentStatus
@@ -185,13 +185,13 @@ def test_v12_timeout_refreshes_locked_row_before_sending_reminder(api_client) ->
     _, factory = api_client
     current = datetime.now(timezone.utc)
 
-    with factory() as setup:
-        admin = setup.scalar(select(User).where(User.username == "admin"))
-        company = setup.scalar(select(Company).where(Company.code == "SH-DEMO"))
+    with factory() as db:
+        admin = db.scalar(select(User).where(User.username == "admin"))
+        company = db.scalar(select(Company).where(Company.code == "SH-DEMO"))
         assert admin is not None and company is not None
         lead = _lead("13800138013", "V1.2 并发提醒", LeadV12Status.DISPATCHED.value)
-        setup.add(lead)
-        setup.flush()
+        db.add(lead)
+        db.flush()
         assignment = Assignment(
             lead_id=lead.id,
             company_id=company.id,
@@ -204,26 +204,28 @@ def test_v12_timeout_refreshes_locked_row_before_sending_reminder(api_client) ->
             assigned_at=current - timedelta(hours=25),
             expires_at=current + timedelta(hours=23),
         )
-        setup.add(assignment)
-        setup.flush()
+        db.add(assignment)
+        db.flush()
         lead.current_assignment_id = assignment.id
         assignment_id = assignment.id
         company_id = company.id
-        setup.commit()
+        db.commit()
 
-    with factory() as stale_session:
-        stale = stale_session.get(Assignment, assignment_id)
+        stale = db.get(Assignment, assignment_id)
         assert stale is not None and stale.reminder_sent_at is None
+        db.execute(
+            update(Assignment)
+            .where(Assignment.id == assignment_id)
+            .values(reminder_sent_at=current - timedelta(minutes=1))
+            .execution_options(synchronize_session=False)
+        )
+        db.commit()
+        assert stale.reminder_sent_at is None
 
-        with factory() as competing_session:
-            competing = competing_session.get(Assignment, assignment_id)
-            assert competing is not None
-            competing.reminder_sent_at = current - timedelta(minutes=1)
-            competing_session.commit()
-
-        result = run_assignment_timeouts_v12(stale_session, now=current)
+        result = run_assignment_timeouts_v12(db, now=current)
         assert result == {"reminded": 0, "expired": 0}
-        reminder = stale_session.scalar(
+        assert stale.reminder_sent_at is not None
+        reminder = db.scalar(
             select(Notification.id).where(
                 Notification.company_id == company_id,
                 Notification.scene == "V12_CLAIM_REMINDER",
