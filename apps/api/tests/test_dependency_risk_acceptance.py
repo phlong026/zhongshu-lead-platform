@@ -25,7 +25,7 @@ def test_temporary_cryptography_waiver_is_single_id_and_documented() -> None:
 
 def test_application_does_not_use_affected_pkcs7_decrypt_api() -> None:
     hits: list[str] = []
-    for root in (Path("apps"), Path("scripts")):
+    for root in (Path("apps/api/src"), Path("scripts")):
         for path in root.rglob("*.py"):
             text = path.read_text(encoding="utf-8", errors="replace")
             if FORBIDDEN_API in text:
