@@ -19,9 +19,9 @@ from apps.api.src.services.reconciliation_v12 import reconcile_v12
 from scripts.seed_v101_migration_fixture import FIXTURE_LEAD_ID
 
 
-def _unique_constraint_names(inspector, table: str) -> set[str]:
+def _unique_constraints(inspector, table: str) -> dict[str, list[str]]:
     return {
-        str(item["name"])
+        str(item["name"]): list(item.get("column_names") or [])
         for item in inspector.get_unique_constraints(table)
         if item.get("name")
     }
@@ -48,16 +48,29 @@ def _verify_postgres_constraints(bind) -> dict[str, object]:
             raise RuntimeError(f"active assignment partial index predicate is missing {status}")
 
     required_unique_constraints = {
-        "points_ledgers": "uq_points_idempotency",
-        "return_requests": "uq_return_assignment",
-        "supplier_lead_rewards": "uq_supplier_reward_assignment",
+        "points_ledgers": {
+            "uq_points_idempotency": ["company_id", "idempotency_key"],
+        },
+        "return_requests": {
+            "uq_return_assignment": ["assignment_id"],
+        },
+        "supplier_lead_rewards": {
+            "uq_supplier_reward_assignment": ["assignment_id"],
+        },
     }
-    observed: dict[str, list[str]] = {}
-    for table, required in required_unique_constraints.items():
-        names = _unique_constraint_names(inspector, table)
-        observed[table] = sorted(names)
-        if required not in names:
-            raise RuntimeError(f"required unique constraint missing: {table}.{required}")
+    observed: dict[str, dict[str, list[str]]] = {}
+    for table, required_constraints in required_unique_constraints.items():
+        constraints = _unique_constraints(inspector, table)
+        observed[table] = constraints
+        for name, expected_columns in required_constraints.items():
+            actual_columns = constraints.get(name)
+            if actual_columns is None:
+                raise RuntimeError(f"required unique constraint missing: {table}.{name}")
+            if actual_columns != expected_columns:
+                raise RuntimeError(
+                    f"unique constraint columns mismatch: {table}.{name}; "
+                    f"expected={expected_columns}, actual={actual_columns}"
+                )
 
     return {
         "active_assignment_index": {
