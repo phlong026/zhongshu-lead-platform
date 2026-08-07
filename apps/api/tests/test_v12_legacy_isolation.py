@@ -5,12 +5,14 @@ from pathlib import Path
 
 from sqlalchemy import select
 
+from apps.api.src.core import models_v12 as _models_v12  # noqa: F401
 from apps.api.src.core.enums import AssignmentStatus
 from apps.api.src.core.legacy_guard import is_legacy_write
-from apps.api.src.core.models import Assignment, AssignmentEvent, Company, Lead, User
+from apps.api.src.core.models import Assignment, AssignmentEvent, Company, Lead, Notification, User
 from apps.api.src.core.security import encrypt_text, hash_phone
 from apps.api.src.core.v12_enums import LeadV12Status
 from apps.api.src.services.assignment_timeout_v12 import run_assignment_timeouts_v12
+from apps.api.src.services.followup_service import run_followup_overdue
 
 
 def test_legacy_write_classifier_blocks_only_legacy_mutations() -> None:
@@ -106,6 +108,16 @@ def test_legacy_mutations_fail_closed_even_when_app_env_is_mislabelled(
     assert v12_write.json()["code"] != "LEGACY_WRITE_DISABLED"
 
 
+def _lead(phone: str, name: str, status: str) -> Lead:
+    return Lead(
+        customer_name=name,
+        phone_encrypted=encrypt_text(phone),
+        phone_hash=hash_phone(phone),
+        status=status,
+        raw_payload={},
+    )
+
+
 def test_v12_timeout_returns_expired_lead_to_ready_dispatch_without_touching_legacy(api_client) -> None:
     _, factory = api_client
     current = datetime.now(timezone.utc)
@@ -115,26 +127,15 @@ def test_v12_timeout_returns_expired_lead_to_ready_dispatch_without_touching_leg
         company = db.scalar(select(Company).where(Company.code == "SH-DEMO"))
         assert admin is not None and company is not None
 
-        v12_lead = Lead(
-            customer_name="V1.2 超时客资",
-            phone_encrypted=encrypt_text("13800138011"),
-            phone_hash=hash_phone("13800138011"),
-            status=LeadV12Status.DISPATCHED.value,
-            raw_payload={},
-        )
-        legacy_lead = Lead(
-            customer_name="Legacy 待领取客资",
-            phone_encrypted=encrypt_text("13800138012"),
-            phone_hash=hash_phone("13800138012"),
-            status="QUALIFIED",
-            raw_payload={},
-        )
+        v12_lead = _lead("13800138011", "V1.2 超时客资", LeadV12Status.DISPATCHED.value)
+        legacy_lead = _lead("13800138012", "Legacy 待领取客资", "QUALIFIED")
         db.add_all([v12_lead, legacy_lead])
         db.flush()
 
         v12_assignment = Assignment(
             lead_id=v12_lead.id,
             company_id=company.id,
+            receiver_company_id=company.id,
             status=AssignmentStatus.PENDING_CLAIM.value,
             points_price=100,
             price_version=1,
@@ -180,8 +181,106 @@ def test_v12_timeout_returns_expired_lead_to_ready_dispatch_without_touching_leg
         assert event is not None
 
 
-def test_scheduler_uses_v12_timeout_job_when_legacy_writes_are_disabled() -> None:
-    source = Path("scripts/scheduler.py").read_text(encoding="utf-8")
-    assert "run_assignment_timeouts_v12" in source
-    assert "if settings.legacy_write_enabled" in source
-    assert "else run_assignment_timeouts_v12(db)" in source
+def test_v12_timeout_refreshes_locked_row_before_sending_reminder(api_client) -> None:
+    _, factory = api_client
+    current = datetime.now(timezone.utc)
+
+    with factory() as setup:
+        admin = setup.scalar(select(User).where(User.username == "admin"))
+        company = setup.scalar(select(Company).where(Company.code == "SH-DEMO"))
+        assert admin is not None and company is not None
+        lead = _lead("13800138013", "V1.2 并发提醒", LeadV12Status.DISPATCHED.value)
+        setup.add(lead)
+        setup.flush()
+        assignment = Assignment(
+            lead_id=lead.id,
+            company_id=company.id,
+            receiver_company_id=company.id,
+            status=AssignmentStatus.PENDING_CLAIM.value,
+            points_price=100,
+            price_version=1,
+            lead_snapshot={},
+            assigned_by=admin.id,
+            assigned_at=current - timedelta(hours=25),
+            expires_at=current + timedelta(hours=23),
+        )
+        setup.add(assignment)
+        setup.flush()
+        lead.current_assignment_id = assignment.id
+        assignment_id = assignment.id
+        company_id = company.id
+        setup.commit()
+
+    with factory() as stale_session:
+        stale = stale_session.get(Assignment, assignment_id)
+        assert stale is not None and stale.reminder_sent_at is None
+
+        with factory() as competing_session:
+            competing = competing_session.get(Assignment, assignment_id)
+            assert competing is not None
+            competing.reminder_sent_at = current - timedelta(minutes=1)
+            competing_session.commit()
+
+        result = run_assignment_timeouts_v12(stale_session, now=current)
+        assert result == {"reminded": 0, "expired": 0}
+        reminder = stale_session.scalar(
+            select(Notification.id).where(
+                Notification.company_id == company_id,
+                Notification.scene == "V12_CLAIM_REMINDER",
+                Notification.deep_link == f"/h5/v12-workbench.html?view=assignments&id={assignment_id}",
+            )
+        )
+        assert reminder is None
+
+
+def test_v12_overdue_followup_notification_uses_workbench_deep_link(api_client) -> None:
+    _, factory = api_client
+    current = datetime.now(timezone.utc)
+
+    with factory() as db:
+        admin = db.scalar(select(User).where(User.username == "admin"))
+        company = db.scalar(select(Company).where(Company.code == "SH-DEMO"))
+        assert admin is not None and company is not None
+        lead = _lead("13800138014", "V1.2 跟进逾期", LeadV12Status.CLAIMED.value)
+        db.add(lead)
+        db.flush()
+        assignment = Assignment(
+            lead_id=lead.id,
+            company_id=company.id,
+            receiver_company_id=company.id,
+            status=AssignmentStatus.CLAIMED.value,
+            points_price=100,
+            price_version=1,
+            lead_snapshot={},
+            assigned_by=admin.id,
+            assigned_at=current - timedelta(hours=48),
+            claimed_at=current - timedelta(hours=30),
+            first_followup_due_at=current - timedelta(hours=1),
+        )
+        db.add(assignment)
+        db.flush()
+        lead.current_assignment_id = assignment.id
+        assignment_id = assignment.id
+        company_id = company.id
+
+        result = run_followup_overdue(db, now=current)
+        assert result["overdue"] >= 1
+        notification = db.scalar(
+            select(Notification).where(
+                Notification.company_id == company_id,
+                Notification.scene == "FOLLOWUP_OVERDUE",
+                Notification.deep_link == f"/h5/v12-workbench.html?view=assignments&id={assignment_id}",
+            )
+        )
+        assert notification is not None
+
+
+def test_all_timeout_entrypoints_use_shared_active_version_router() -> None:
+    scheduler = Path("scripts/scheduler.py").read_text(encoding="utf-8")
+    manual_jobs = Path("scripts/run_jobs.py").read_text(encoding="utf-8")
+    for source in (scheduler, manual_jobs):
+        assert "run_assignment_timeouts_active" in source
+        assert "run_assignment_timeouts_v12" not in source
+        assert "from apps.api.src.services.claim_service import run_assignment_timeouts" not in source
+    assert 'output["assignment_timeouts"] = run_assignment_timeouts_active(db)' in manual_jobs
+    assert '"timeouts": run_assignment_timeouts_active(db)' in scheduler
