@@ -33,6 +33,18 @@ def _validate_runtime_secret() -> tuple[str, bool]:
     return secret or settings.effective_phone_fingerprint_secret, False
 
 
+def _write_exit_code(
+    *,
+    fail_on_row_error: bool,
+    totals: dict[str, int],
+    last: dict[str, object],
+) -> int:
+    if not fail_on_row_error:
+        return 0
+    checkpoint_failed = last.get("checkpoint_status") == "COMPLETED_WITH_ERRORS"
+    return 2 if totals["errors"] or checkpoint_failed else 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="V1.2 T30 historical data migration")
     parser.add_argument("--batch-size", type=int, default=500)
@@ -103,7 +115,11 @@ def main() -> int:
 
         payload = {"mode": "write", **totals, "last_batch": last, "complete": True}
         print(json.dumps(payload, ensure_ascii=False, indent=2))
-        return 2 if fail_on_row_error and totals["errors"] else 0
+        return _write_exit_code(
+            fail_on_row_error=fail_on_row_error,
+            totals=totals,
+            last=last,
+        )
 
 
 if __name__ == "__main__":
