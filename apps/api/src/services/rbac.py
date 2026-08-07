@@ -17,8 +17,17 @@ ROLE_PERMISSION_MATRIX: dict[str, tuple[str, list[str]]] = {
             "company.read",
             "assignment.read",
             "points.read",
+            "reward.read",
             "return.read",
             "audit.read",
+            "report.v12.read",
+        ],
+    ),
+    "LEAD_ENTRY": (
+        "平台客资录入员",
+        [
+            "lead.read",
+            "lead.manual.manage",
         ],
     ),
     "OPERATION": (
@@ -26,14 +35,21 @@ ROLE_PERMISSION_MATRIX: dict[str, tuple[str, list[str]]] = {
         [
             "lead.read",
             "lead.edit",
+            "lead.manual.manage",
+            "lead.supplier.review",
+            "lead.dedup.override",
             "lead.dispatch",
             "assignment.read",
             "assignment.release",
             "company.read_eligibility",
+            "company.profile.review",
             "verification.read",
             "return.read",
+            "reward.read",
             "notification.retry",
             "dashboard.operation.read",
+            "audit.read",
+            "report.v12.read",
         ],
     ),
     "TELESALES": (
@@ -54,8 +70,12 @@ ROLE_PERMISSION_MATRIX: dict[str, tuple[str, list[str]]] = {
             "points.package.manage",
             "points.recharge",
             "points.reverse",
+            "reward.read",
+            "reward.manage",
+            "reward.reverse",
             "dashboard.finance.read",
             "company.read",
+            "report.v12.read",
         ],
     ),
     "RETURN_REVIEWER": (
@@ -69,6 +89,9 @@ ROLE_PERMISSION_MATRIX: dict[str, tuple[str, list[str]]] = {
             "assignment.own.read",
             "assignment.own.claim",
             "lead.own.phone.read",
+            "supplier.lead.manage",
+            "supplier.reward.own.read",
+            "company.profile.manage",
             "followup.own.manage",
             "return.own.manage",
             "points.own.read",
@@ -81,11 +104,26 @@ ROLE_PERMISSION_MATRIX: dict[str, tuple[str, list[str]]] = {
 def seed_rbac(db: Session) -> None:
     permission_cache: dict[str, Permission] = {}
     all_codes = {code for _, codes in ROLE_PERMISSION_MATRIX.values() for code in codes}
+    sensitive_codes = {
+        "*",
+        "lead.phone.read",
+        "points.recharge",
+        "points.reverse",
+        "lead.dedup.override",
+        "reward.manage",
+        "reward.reverse",
+        "audit.read",
+    }
     for code in sorted(all_codes):
         permission = db.scalar(select(Permission).where(Permission.code == code))
         if not permission:
             module = code.split(".", 1)[0] if code != "*" else "system"
-            permission = Permission(code=code, name=code, module=module, sensitive=code in {"*", "lead.phone.read", "points.recharge", "points.reverse"})
+            permission = Permission(
+                code=code,
+                name=code,
+                module=module,
+                sensitive=code in sensitive_codes,
+            )
             db.add(permission)
             db.flush()
         permission_cache[code] = permission

@@ -69,9 +69,21 @@ def normalize_phone(value: str) -> str:
     return digits
 
 
-def hash_phone(value: str) -> str:
+def _phone_hmac(value: str, secret: str) -> str:
     normalized = normalize_phone(value)
-    return hmac.new(settings.phone_hash_secret.encode("utf-8"), normalized.encode("utf-8"), hashlib.sha256).hexdigest()
+    return hmac.new(secret.encode("utf-8"), normalized.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def hash_phone(value: str) -> str:
+    """Legacy compatible HMAC field used by V1.0.1 records."""
+
+    return _phone_hmac(value, settings.phone_hash_secret)
+
+
+def fingerprint_phone(value: str, *, secret: str | None = None) -> str:
+    """Return the non-reversible V1.2 phone deduplication fingerprint."""
+
+    return _phone_hmac(value, secret or settings.effective_phone_fingerprint_secret)
 
 
 def mask_phone(value: str | None) -> str | None:

@@ -78,3 +78,24 @@ def test_h5_v13_notifications_patch_contract():
     assert "function zsPatchNotifications" in js
     assert "function zsNotificationType" in js
     assert "/api/v1/notifications/" in js
+
+
+def test_h5_v13_status_pages_contract():
+    index=(H5 / "index.html").read_text(encoding="utf-8")
+    css=(H5 / "status-pages-v13.css").read_text(encoding="utf-8")
+    js=(H5 / "status-pages-v13.js").read_text(encoding="utf-8")
+    assert "./status-pages-v13.css" in index
+    assert "./status-pages-v13.js" in index
+    for selector in (".zs-v13-auth-route", ".zs-v13-invite-card", ".zs-v13-state-page", ".zs-v13-link-landing"):
+        assert selector in css
+    assert "/auth/invites/preview" in js
+    assert "window.zsRenderBindingStatus" in js
+    assert "window.zsRenderReturnSuccess" in js
+    assert "ZS_STATUS_NATIVE_FETCH" in js
+    assert "stopImmediatePropagation" in js
+
+
+def test_h5_v13_invalid_link_security_state_precedes_loading_landing():
+    js=(H5 / "status-pages-v13.js").read_text(encoding="utf-8")
+    assert "if(zsPatchInvalidLink())return;zsPatchLinkLanding();" in js
+    assert "document.body.classList.remove('zs-v13-link-loading');return true" in js

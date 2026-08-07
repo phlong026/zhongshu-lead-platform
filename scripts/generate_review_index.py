@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a concise index for all task-level code review records."""
+"""Generate a concise index for task-level code review records."""
 from __future__ import annotations
 
 import re
@@ -24,30 +24,40 @@ def review_metadata(path: Path) -> tuple[str, str, str, str]:
     )
 
 
+def review_files() -> list[Path]:
+    """Return review records while excluding generated/legacy index documents."""
+
+    return sorted(
+        path
+        for path in REVIEWS.glob("*.md")
+        if not path.name.upper().startswith("INDEX")
+    )
+
+
 def main() -> int:
-    files = sorted(path for path in REVIEWS.glob("*.md") if path.name != OUTPUT.name)
+    files = review_files()
+    metadata = [(path, *review_metadata(path)) for path in files]
     lines = [
         "# 任务级代码评审索引",
         "",
-        "> 本索引由 `scripts/generate_review_index.py` 自动生成。每一项任务在提交前均执行 Python 编译、后端测试、前端 JavaScript 语法检查与敏感信息扫描。",
+        "> 本索引由 `scripts/generate_review_index.py` 自动生成。`INDEX*.md` 不参与评审记录计数。没有标准评审元数据的历史/上下文文档会保留，但不会误计为“通过”。",
         "",
-        f"- 评审记录总数：**{len(files)}**",
-        f"- 通过数：**{sum(review_metadata(path)[3] == '通过' for path in files)}**",
+        f"- 评审/上下文记录总数：**{len(files)}**",
+        f"- 明确通过数：**{sum(conclusion == '通过' for _, _, _, _, conclusion in metadata)}**",
         "",
         "| 序号 | 评审任务 | 结论 | 评审时间（UTC） | 评审范围 |",
         "|---:|---|---|---|---|",
     ]
-    for index, path in enumerate(files, 1):
-        title, reviewed_at, scope, conclusion = review_metadata(path)
+    for index, (path, title, reviewed_at, scope, conclusion) in enumerate(metadata, 1):
         rel = path.relative_to(ROOT).as_posix()
         lines.append(f"| {index} | [{title}](../../{rel}) | {conclusion} | {reviewed_at} | {scope} |")
     lines += [
         "",
         "## 使用规则",
         "",
-        "1. 每个小任务必须同时提交实现、测试与对应评审记录。",
-        "2. 评审失败时不得进入主分支；修复后重新执行同一任务评审。",
-        "3. 生产环境微信、飞书、PostgreSQL 和对象存储联调属于上线 Gate，不以本地自动检查替代。",
+        "1. 每个开发任务应提交实现、测试与对应评审记录；上下文/预评审文档不得伪装成已通过结论。",
+        "2. 评审失败时不得进入发布分支；修复后重新执行对应评审。",
+        "3. 生产环境微信、飞书、PostgreSQL、对象存储、恢复演练、UAT 与灰度属于上线 Gate，不以代码级自动检查替代。",
         "",
     ]
     OUTPUT.write_text("\n".join(lines), encoding="utf-8")

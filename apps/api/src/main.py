@@ -16,7 +16,30 @@ from .core.errors import register_error_handlers
 from .core.logging import configure_logging
 from .core.production import validate_production_settings
 from .core.request_context import RequestContextMiddleware
-from .routers import admin, auth, claim, companies, dispatch, followups, leads, master_data, notifications, points, returns, users, verification
+from .routers import (
+    admin,
+    admin_meta,
+    auth,
+    claim,
+    companies,
+    dispatch,
+    followups,
+    invite_preview,
+    leads,
+    master_data,
+    notifications,
+    points,
+    returns,
+    users,
+    v12_admin,
+    v12_dispatch,
+    v12_insights,
+    v12_lead_supply,
+    v12_returns,
+    v12_rewards,
+    v12_supplier_review,
+    verification,
+)
 from .services.rbac import seed_rbac
 
 settings = get_settings()
@@ -55,7 +78,9 @@ register_error_handlers(app)
 
 api_prefix = "/api/v1"
 app.include_router(admin.router, prefix=api_prefix)
+app.include_router(admin_meta.router, prefix=api_prefix)
 app.include_router(auth.router, prefix=api_prefix)
+app.include_router(invite_preview.router, prefix=api_prefix)
 app.include_router(users.router, prefix=api_prefix)
 app.include_router(companies.router, prefix=api_prefix)
 app.include_router(leads.router, prefix=api_prefix)
@@ -67,6 +92,13 @@ app.include_router(followups.router, prefix=api_prefix)
 app.include_router(returns.router, prefix=api_prefix)
 app.include_router(notifications.router, prefix=api_prefix)
 app.include_router(master_data.router, prefix=api_prefix)
+app.include_router(v12_admin.router, prefix=api_prefix)
+app.include_router(v12_lead_supply.router, prefix=api_prefix)
+app.include_router(v12_supplier_review.router, prefix=api_prefix)
+app.include_router(v12_dispatch.router, prefix=api_prefix)
+app.include_router(v12_returns.router, prefix=api_prefix)
+app.include_router(v12_rewards.router, prefix=api_prefix)
+app.include_router(v12_insights.router, prefix=api_prefix)
 
 
 @app.get("/health")

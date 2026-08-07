@@ -1,0 +1,247 @@
+name: V1.2 Pull Request CI
+
+on:
+  pull_request:
+    branches:
+      - release/v1.2.0
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v12-pr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  full-quality:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-postgres.txt -r requirements-audit.txt
+
+      - name: Verify installed dependencies
+        run: pip check
+
+      - name: Validate temporary dependency waiver expiry
+        run: python scripts/check_dependency_waiver.py
+
+      - name: Audit Python dependencies
+        shell: bash
+        run: |
+          {
+            cat requirements.txt
+            printf '\n'
+            cat requirements-postgres.txt
+            printf '\n'
+            cat requirements-browser.txt
+            printf '\n'
+          } > /tmp/v12-requirements.txt
+          # Temporary, single-ID exception. See docs/quality/DEPENDENCY_RISK_ACCEPTANCE.md.
+          # Remove immediately when cryptography 50.0.0 (or an official equivalent fix) is released.
+          pip-audit -r /tmp/v12-requirements.txt --progress-spinner off --ignore-vuln PYSEC-2026-3552
+
+      - name: Run backend tests
+        shell: bash
+        run: |
+          mkdir -p dist/quality
+          set +e
+          pytest -q > dist/quality/pytest-output.txt 2>&1
+          status=$?
+          cat dist/quality/pytest-output.txt
+          if [ "$status" -ne 0 ]; then
+            python -c "from pathlib import Path; text=Path('dist/quality/pytest-output.txt').read_text(encoding='utf-8', errors='replace')[-6000:]; text=text.replace('%','%25').replace(chr(13),'%0D').replace(chr(10),'%0A'); print('::error title=Pytest failed::'+text)"
+            exit "$status"
+          fi
+
+      - name: Export V1.2 OpenAPI contract
+        run: python scripts/export_openapi.py --output dist/openapi/openapi.json
+
+      - name: Run JavaScript checks
+        run: python scripts/check_js.py
+
+      - name: Scan repository secrets
+        run: python scripts/secret_scan.py
+
+      - name: Compile Python sources
+        run: python -m compileall -q apps scripts migrations
+
+      - name: Check patch whitespace
+        run: git diff --check
+
+      - name: Verify V1.0.1 to V1.2 migration on SQLite
+        shell: bash
+        env:
+          DATABASE_URL: sqlite:///./dist/v12-migration-smoke.db
+        run: |
+          set +e
+          mkdir -p dist/quality
+          {
+            python -m alembic -c alembic.ini upgrade head &&
+            python -m alembic -c alembic.ini downgrade 0001_initial &&
+            python -m alembic -c alembic.ini upgrade head
+          } > dist/quality/migration-output.txt 2>&1
+          status=$?
+          cat dist/quality/migration-output.txt
+          if [ "$status" -ne 0 ]; then
+            python -c "from pathlib import Path; text=Path('dist/quality/migration-output.txt').read_text(encoding='utf-8', errors='replace')[-6000:]; text=text.replace('%','%25').replace(chr(13),'%0D').replace(chr(10),'%0A'); print('::error title=Migration smoke failed::'+text)"
+            exit "$status"
+          fi
+
+      - name: Build reviewed V1.2 release candidate package
+        run: python scripts/package_release.py --version V1.2.0-rc --output-dir dist/release
+
+      - name: Upload generated OpenAPI contract
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v12-openapi-${{ github.run_id }}
+          path: dist/openapi/openapi.json
+          if-no-files-found: error
+
+      - name: Upload V1.2 release candidate package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v12-release-package-${{ github.run_id }}
+          path: dist/release
+          if-no-files-found: error
+
+  postgres-migration:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: zhongshu_ci
+          POSTGRES_USER: zhongshu
+          POSTGRES_PASSWORD: ci-postgres-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U zhongshu -d zhongshu_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql+psycopg://zhongshu:ci-postgres-password@127.0.0.1:5432/zhongshu_ci
+      FIELD_ENCRYPTION_KEY: ci-field-encryption-key-at-least-32-characters
+      PHONE_HASH_SECRET: ci-phone-hash-secret-at-least-24
+      PHONE_FINGERPRINT_SECRET: ci-phone-fingerprint-secret-at-least-32-characters
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-postgres.txt
+
+      - name: Create V1.0.1 schema, historical fixture and PII-free baseline
+        run: |
+          mkdir -p dist
+          python -m alembic -c alembic.ini upgrade 0001_initial
+          python scripts/seed_v101_migration_fixture.py
+          python scripts/baseline_v101.py --output dist/v101-baseline.json
+
+      - name: Upgrade PostgreSQL to V1.2 and backfill historical data
+        run: |
+          python -m alembic -c alembic.ini upgrade head
+          python scripts/migrate_v12_data.py --dry-run --batch-size 50 --max-batches 10 --fail-on-row-error
+          python scripts/migrate_v12_data.py --batch-size 50 --max-batches 10 --fail-on-row-error
+          python scripts/verify_v12_postgres_migration.py > dist/v12-postgres-verification.json
+          python -m json.tool dist/v12-postgres-verification.json >/dev/null
+
+      - name: Verify PostgreSQL downgrade and clean re-upgrade
+        run: |
+          python -m alembic -c alembic.ini downgrade 0001_initial
+          python -m alembic -c alembic.ini upgrade head
+
+      - name: Upload PostgreSQL migration evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v12-postgres-migration-${{ github.run_id }}
+          path: |
+            dist/v101-baseline.json
+            dist/v12-postgres-verification.json
+          if-no-files-found: error
+
+  browser-smoke:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      DATABASE_URL: sqlite:///./dist/v12-browser-smoke.db
+      APP_ENV: development
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install application and browser dependencies
+        run: |
+          pip install -r requirements.txt -r requirements-browser.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Initialize isolated browser database
+        run: |
+          mkdir -p dist/browser-smoke
+          python scripts/init_db.py
+          python scripts/seed_demo.py
+
+      - name: Start API and run Chromium smoke
+        shell: bash
+        run: |
+          uvicorn apps.api.src.main:app --host 127.0.0.1 --port 8000 > dist/browser-smoke/server.log 2>&1 &
+          server_pid=$!
+          trap 'kill $server_pid || true' EXIT
+          for attempt in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:8000/health/ready >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8000/health/ready
+          python scripts/browser_smoke_v12.py --output-dir dist/browser-smoke
+
+      - name: Upload browser review evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v12-browser-smoke-${{ github.run_id }}
+          path: dist/browser-smoke
+          if-no-files-found: error

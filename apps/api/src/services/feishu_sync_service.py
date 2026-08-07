@@ -47,8 +47,14 @@ def fetch_and_import_feishu(
     requested_by: str | None = None,
     client: FeishuClient | None = None,
 ) -> tuple[SyncBatch, list[FeishuRecord]]:
+    FeishuClient.ensure_enabled()
     adapter = client or FeishuClient()
-    records = list(adapter.iter_records(page_size=getattr(settings, "feishu_sync_page_size", 200), max_pages=getattr(settings, "feishu_sync_max_pages", 100)))
+    records = list(
+        adapter.iter_records(
+            page_size=getattr(settings, "feishu_sync_page_size", 200),
+            max_pages=getattr(settings, "feishu_sync_max_pages", 100),
+        )
+    )
     batch = import_records(
         db,
         records,
@@ -66,6 +72,7 @@ def writeback_feishu_results(
     *,
     client: FeishuClient | None = None,
 ) -> dict[str, int]:
+    FeishuClient.ensure_enabled()
     if not getattr(settings, "feishu_writeback_enabled", True):
         return {"written": 0, "failed": 0}
     adapter = client or FeishuClient()

@@ -27,13 +27,20 @@ class FeishuClient:
 
     def diagnostics(self) -> dict[str, Any]:
         return {
+            "enabled": settings.feishu_enabled,
             "configured": bool(settings.feishu_app_id and settings.feishu_app_secret and settings.feishu_app_token and settings.feishu_table_id),
             "dev_mock": settings.feishu_dev_mock,
             "app_token_configured": bool(settings.feishu_app_token),
             "table_id_configured": bool(settings.feishu_table_id),
         }
 
+    @staticmethod
+    def ensure_enabled() -> None:
+        if not settings.feishu_enabled:
+            raise AppError("FEISHU_DISABLED", "飞书同步未启用", 503)
+
     def _request(self, method: str, url: str, *, retry: int = 3, auth: bool = False, **kwargs: Any) -> dict[str, Any]:
+        self.ensure_enabled()
         last_error: Exception | None = None
         base_headers = dict(kwargs.pop("headers", {}) or {})
         for attempt in range(retry):
@@ -60,6 +67,7 @@ class FeishuClient:
         raise AppError("FEISHU_UNAVAILABLE", "飞书接口暂时不可用", 502, {"error": str(last_error)}) from last_error
 
     def _tenant_token(self) -> str:
+        self.ensure_enabled()
         if self._token and self._token_expires_at and self._token_expires_at > datetime.now(timezone.utc) + timedelta(minutes=5):
             return self._token
         if not settings.feishu_app_id or not settings.feishu_app_secret:
@@ -76,6 +84,7 @@ class FeishuClient:
         return self._token
 
     def list_records(self, page_token: str | None = None, page_size: int = 200) -> tuple[list[FeishuRecord], str | None, bool]:
+        self.ensure_enabled()
         if settings.feishu_dev_mock:
             return [], None, False
         if not settings.feishu_app_token or not settings.feishu_table_id:
@@ -96,6 +105,7 @@ class FeishuClient:
         return records, data.get("page_token"), bool(data.get("has_more"))
 
     def iter_records(self, *, page_size: int = 200, max_pages: int = 100) -> Iterator[FeishuRecord]:
+        self.ensure_enabled()
         page_token: str | None = None
         seen_tokens: set[str] = set()
         for _ in range(max_pages):
@@ -110,8 +120,11 @@ class FeishuClient:
         raise AppError("FEISHU_PAGE_LIMIT", "飞书同步页数超过安全上限", 409, {"max_pages": max_pages})
 
     def write_back(self, record_id: str, fields: dict[str, Any]) -> None:
+        self.ensure_enabled()
         if settings.feishu_dev_mock:
             return
+        if not settings.feishu_app_token or not settings.feishu_table_id:
+            raise AppError("FEISHU_TABLE_NOT_CONFIGURED", "飞书多维表格尚未配置", 503)
         url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{settings.feishu_app_token}/tables/{settings.feishu_table_id}/records/{record_id}"
         payload = self._request("PUT", url, auth=True, json={"fields": fields})
         if payload.get("code") != 0:

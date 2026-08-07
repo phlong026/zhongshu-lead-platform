@@ -23,6 +23,15 @@ router = APIRouter(prefix="/leads", tags=["leads"])
 settings = get_settings()
 
 
+def _ensure_feishu_enabled() -> None:
+    FeishuClient.ensure_enabled()
+
+
+def _ensure_feishu_mock_allowed() -> None:
+    if settings.app_env.lower() == "production" or not settings.feishu_dev_mock:
+        raise AppError("FEISHU_MOCK_DISABLED", "飞书模拟同步仅允许在已启用模拟的非生产环境使用", 404)
+
+
 @router.post("/feishu/mock-sync")
 def mock_sync(
     body: FeishuMockSyncBody,
@@ -30,6 +39,7 @@ def mock_sync(
     principal=Depends(require_permissions("lead.edit")),
     db: Session = Depends(get_db),
 ):
+    _ensure_feishu_mock_allowed()
     records = [FeishuRecord(record_id=item.record_id, fields=item.fields) for item in body.records]
     batch = import_records(
         db,
@@ -50,6 +60,7 @@ def real_sync(
     principal=Depends(require_permissions("lead.edit")),
     db: Session = Depends(get_db),
 ):
+    _ensure_feishu_enabled()
     client = FeishuClient()
     batch, records = fetch_and_import_feishu(db, requested_by=principal.user_id, client=client)
     write_audit(

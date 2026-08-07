@@ -1,5 +1,5 @@
 FROM python:3.12-slim
-ARG APP_VERSION=1.0.1
+ARG APP_VERSION=1.2.0
 LABEL org.opencontainers.image.title="zhongshu-lead-platform" \
       org.opencontainers.image.version="${APP_VERSION}" \
       org.opencontainers.image.description="众墅之家客资审核、派发与积分管理平台"

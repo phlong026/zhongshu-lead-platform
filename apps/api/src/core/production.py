@@ -31,6 +31,8 @@ def validate_production_settings(settings: Settings, environ: dict[str, str] | N
     warnings: list[str] = []
     if settings.app_env.lower() != "production":
         errors.append("APP_ENV 必须设置为 production")
+    if not settings.app_version.startswith("1.2."):
+        errors.append("APP_VERSION 必须是 V1.2 正式或补丁版本")
     parsed = urlparse(settings.app_base_url)
     if parsed.scheme != "https" or not parsed.netloc:
         errors.append("APP_BASE_URL 必须使用有效 HTTPS 域名")
@@ -40,23 +42,40 @@ def validate_production_settings(settings: Settings, environ: dict[str, str] | N
         ("JWT_SECRET", settings.jwt_secret, 32),
         ("FIELD_ENCRYPTION_KEY", settings.field_encryption_key, 32),
         ("PHONE_HASH_SECRET", settings.phone_hash_secret, 24),
+        ("PHONE_FINGERPRINT_SECRET", settings.phone_fingerprint_secret, 32),
     ):
         if _unsafe_secret(value, minimum=minimum):
-            errors.append(f"{name} 长度不足或仍为示例值")
+            errors.append(f"{name} 长度不足、未显式配置或仍为示例值")
+    if settings.phone_fingerprint_secret and settings.phone_fingerprint_secret == settings.phone_hash_secret:
+        errors.append("PHONE_FINGERPRINT_SECRET 必须与 PHONE_HASH_SECRET 独立")
     if settings.wechat_dev_mock:
         errors.append("生产环境必须关闭 WECHAT_DEV_MOCK")
-    if settings.feishu_dev_mock:
-        errors.append("生产环境必须关闭 FEISHU_DEV_MOCK")
     for name, value in (
         ("WECHAT_APP_ID", settings.wechat_app_id),
         ("WECHAT_APP_SECRET", settings.wechat_app_secret),
-        ("FEISHU_APP_ID", settings.feishu_app_id),
-        ("FEISHU_APP_SECRET", settings.feishu_app_secret),
-        ("FEISHU_APP_TOKEN", settings.feishu_app_token),
-        ("FEISHU_TABLE_ID", settings.feishu_table_id),
     ):
         if not value:
             errors.append(f"{name} 未配置")
+    if settings.feishu_dev_mock:
+        errors.append("生产环境必须关闭 FEISHU_DEV_MOCK")
+    if settings.feishu_enabled:
+        for name, value in (
+            ("FEISHU_APP_ID", settings.feishu_app_id),
+            ("FEISHU_APP_SECRET", settings.feishu_app_secret),
+            ("FEISHU_APP_TOKEN", settings.feishu_app_token),
+            ("FEISHU_TABLE_ID", settings.feishu_table_id),
+        ):
+            if not value:
+                errors.append(f"FEISHU_ENABLED=true 时 {name} 必须配置")
+    elif any(
+        (
+            settings.feishu_app_id,
+            settings.feishu_app_secret,
+            settings.feishu_app_token,
+            settings.feishu_table_id,
+        )
+    ):
+        warnings.append("FEISHU_ENABLED=false，但仍存在飞书凭据；建议移除无效生产密钥")
     oauth_uri = urlparse(settings.wechat_oauth_redirect_uri)
     if oauth_uri.scheme != "https" or (parsed.netloc and oauth_uri.netloc != parsed.netloc):
         errors.append("WECHAT_OAUTH_REDIRECT_URI 必须使用 HTTPS 并与 APP_BASE_URL 使用同一可信域名")
@@ -80,11 +99,16 @@ def validate_production_settings(settings: Settings, environ: dict[str, str] | N
             ("S3_ACCESS_KEY_ID", settings.s3_access_key_id),
             ("S3_SECRET_ACCESS_KEY", settings.s3_secret_access_key),
             ("S3_BUCKET", settings.s3_bucket),
+            ("S3_REGION", settings.s3_region),
         ):
             if not value:
                 errors.append(f"{name} 未配置")
+        if settings.s3_endpoint_url:
+            endpoint = urlparse(settings.s3_endpoint_url)
+            if endpoint.scheme != "https" or not endpoint.netloc:
+                errors.append("S3_ENDPOINT_URL 自定义地址必须使用有效 HTTPS URL；AWS S3 可留空使用默认区域端点")
     else:
-        warnings.append("生产环境仍使用本地对象存储，建议切换私有 S3/COS/OSS 并配置异地备份")
+        warnings.append("生产环境仍使用本地对象存储，正式全量前应切换私有 S3/COS/OSS 或完成异地备份与恢复演练")
     if not settings.trusted_host_list or "*" in settings.trusted_host_list:
         errors.append("TRUSTED_HOSTS 必须配置明确域名，不能使用通配符")
     elif parsed.hostname and parsed.hostname not in settings.trusted_host_list:
