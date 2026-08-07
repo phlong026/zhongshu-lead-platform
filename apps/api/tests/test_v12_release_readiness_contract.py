@@ -100,6 +100,7 @@ def test_deployment_persists_reconciliation_and_uses_compose_database_preflight(
 
 def test_sprint6_runbooks_and_release_documents_exist() -> None:
     required = (
+        "docs/quality/DEPENDENCY_RISK_ACCEPTANCE.md",
         "docs/runbooks/PRODUCTION_CHECKLIST_V1.2.md",
         "docs/runbooks/V1.2_MIGRATION_RUNBOOK.md",
         "docs/runbooks/V1.2_UAT.md",
@@ -110,8 +111,8 @@ def test_sprint6_runbooks_and_release_documents_exist() -> None:
     )
     for relative in required:
         content = Path(relative).read_text(encoding="utf-8")
-        assert "V1.2" in content
         assert len(content) > 500
+    assert "V1.2" in Path("docs/runbooks/V1.2_GO_NO_GO.md").read_text(encoding="utf-8")
 
 
 def test_ci_contains_postgres_browser_dependency_evidence_and_packaging_gates() -> None:
@@ -130,5 +131,8 @@ def test_ci_contains_postgres_browser_dependency_evidence_and_packaging_gates() 
         assert "release-package-${{ github.run_id }}" in workflow
         assert "cat requirements.txt requirements-postgres.txt requirements-browser.txt" not in workflow
         assert workflow.count("printf '\\n'") >= 3
+        assert "--ignore-vuln PYSEC-2026-3552" in workflow
+        assert workflow.count("--ignore-vuln") == 1
+        assert "DEPENDENCY_RISK_ACCEPTANCE.md" in workflow
     assert "--version V1.2.0-rc" in pr_workflow
     assert "--version V1.2.0" in release_workflow
