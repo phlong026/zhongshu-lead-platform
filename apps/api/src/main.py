@@ -13,12 +13,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from .core.auth import get_valid_session_user
 from .core.config import get_settings
 from .core.database import SessionLocal, get_db, init_database
 from .core.errors import register_error_handlers
 from .core.legacy_guard import LegacyWriteGuardMiddleware
 from .core.logging import configure_logging
-from .core.models import User
 from .core.production import validate_production_settings
 from .core.request_context import RequestContextMiddleware
 from .core.security import decode_access_token
@@ -138,16 +138,7 @@ def _has_valid_web_session(db: Session, access_token: str | None) -> bool:
         payload = decode_access_token(access_token)
     except InvalidTokenError:
         return False
-    user_id = payload.get("sub")
-    session_version = payload.get("sv")
-    if not user_id:
-        return False
-    user = db.get(User, user_id)
-    return bool(
-        user
-        and user.status == "ACTIVE"
-        and user.session_version == session_version
-    )
+    return get_valid_session_user(db, payload.get("sub"), payload.get("sv")) is not None
 
 
 @app.get("/admin", include_in_schema=False)
