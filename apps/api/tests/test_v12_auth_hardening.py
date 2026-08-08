@@ -19,6 +19,11 @@ def _login(client, username: str, password: str):
     )
 
 
+def _failure_contract(response) -> tuple[int, str, str]:
+    payload = response.json()
+    return response.status_code, payload["code"], payload["message"]
+
+
 def test_browser_login_uses_http_only_cookie_without_raw_jwt(api_client) -> None:
     client, _ = api_client
     response = _login(client, "admin", "Admin123!")
@@ -50,19 +55,21 @@ def test_production_login_cookie_is_secure(api_client, monkeypatch) -> None:
 def test_internal_login_failures_persist_lock_and_expire_with_audit(api_client) -> None:
     client, factory = api_client
     wrong_password = "Definitely-Wrong-Password!"
+    generic = (401, "AUTH_LOGIN_FAILED", "用户名或密码错误")
 
     for _ in range(4):
         response = _login(client, "admin", wrong_password)
-        assert response.status_code == 401
-        assert response.json()["code"] == "AUTH_LOGIN_FAILED"
+        assert _failure_contract(response) == generic
 
     locked = _login(client, "admin", wrong_password)
-    assert locked.status_code == 429
-    assert locked.json()["code"] == "AUTH_LOGIN_THROTTLED"
+    assert _failure_contract(locked) == generic
 
+    # A correct password must not bypass an active account lock, but the client
+    # must not learn that this username exists or is locked.
     blocked_correct = _login(client, "admin", "Admin123!")
-    assert blocked_correct.status_code == 429
-    assert blocked_correct.json()["code"] == "AUTH_LOGIN_THROTTLED"
+    assert _failure_contract(blocked_correct) == generic
+    unknown = _login(client, "does-not-exist", "Arbitrary-Wrong-Password!")
+    assert _failure_contract(unknown) == generic
 
     with factory() as db:
         user = db.scalar(select(User).where(User.username == "admin"))
@@ -128,11 +135,11 @@ def test_sqlite_parallel_failed_logins_are_atomically_counted(api_client) -> Non
                 authenticate_internal(db, "admin", f"parallel-wrong-{index}!")
             except InternalAuthError as exc:
                 db.commit()
-                return exc.code
+                return exc.audit_action
             raise AssertionError("wrong password unexpectedly authenticated")
 
     with ThreadPoolExecutor(max_workers=5) as pool:
-        codes = list(pool.map(fail_once, range(5)))
+        actions = list(pool.map(fail_once, range(5)))
 
     with factory() as db:
         user = db.scalar(select(User).where(User.username == "admin"))
@@ -141,8 +148,8 @@ def test_sqlite_parallel_failed_logins_are_atomically_counted(api_client) -> Non
         assert state is not None
         assert state.failed_count == 5
         assert state.locked_until is not None
-    assert codes.count("AUTH_LOGIN_FAILED") == 4
-    assert codes.count("AUTH_LOGIN_THROTTLED") == 1
+    assert actions.count("AUTH_LOGIN_FAILED") == 4
+    assert actions.count("AUTH_LOGIN_LOCKED") == 1
 
 
 def test_disabled_user_invalidates_existing_cookie_and_cannot_relogin(api_client) -> None:
@@ -162,8 +169,9 @@ def test_disabled_user_invalidates_existing_cookie_and_cannot_relogin(api_client
     assert me.json()["code"] == "AUTH_INVALID"
 
     relogin = _login(client, "operation", "Operation123!")
-    assert relogin.status_code == 403
-    assert relogin.json()["code"] == "AUTH_ACCOUNT_DISABLED"
+    unknown = _login(client, "does-not-exist", "Arbitrary-Wrong-Password!")
+    assert _failure_contract(relogin) == _failure_contract(unknown)
+    assert _failure_contract(relogin) == (401, "AUTH_LOGIN_FAILED", "用户名或密码错误")
 
 
 def test_logout_invalidates_previous_bearer_token_via_session_version(api_client) -> None:
@@ -187,9 +195,7 @@ def test_logout_invalidates_previous_bearer_token_via_session_version(api_client
 def test_unknown_username_keeps_generic_failure_contract(api_client) -> None:
     client, _ = api_client
     response = _login(client, "does-not-exist", "Arbitrary-Wrong-Password!")
-    assert response.status_code == 401
-    assert response.json()["code"] == "AUTH_LOGIN_FAILED"
-    assert response.json()["message"] == "用户名或密码错误"
+    assert _failure_contract(response) == (401, "AUTH_LOGIN_FAILED", "用户名或密码错误")
 
 
 def test_production_nginx_has_dedicated_login_rate_limit_and_trusted_real_ip() -> None:
