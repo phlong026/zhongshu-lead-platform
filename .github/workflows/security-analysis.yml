@@ -20,9 +20,10 @@ jobs:
     timeout-minutes: 40
     env:
       APP_IMAGE: zhongshu-security:${{ github.sha }}
-      TRIVY_IMAGE: aquasec/trivy@sha256:85e87be1a96459c38a4eea47dc64eb2d342bb14cd4b4cef96adcf6ff03378b7c
+      SEMGREP_IMAGE: semgrep/semgrep@sha256:a8298d1c09c84b9a0bbc75ec915e37023fc4657360b6dbfa645261d2353a366c
       SEMGREP_RULES_COMMIT: 40b8c63f75dc7c22c8a77482d73bfb864b146f7e
       SEMGREP_RULES_DIR: /tmp/semgrep-rules
+      TRIVY_IMAGE: aquasec/trivy@sha256:85e87be1a96459c38a4eea47dc64eb2d342bb14cd4b4cef96adcf6ff03378b7c
       SEMGREP_SEND_METRICS: "off"
     steps:
       - name: Checkout
@@ -35,9 +36,6 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-
-      - name: Install pinned SAST tool
-        run: pip install -r requirements-security.txt
 
       - name: Fetch pinned Semgrep security rules
         shell: bash
@@ -69,33 +67,61 @@ jobs:
             test -d "$SEMGREP_RULES_DIR/$path"
           done
 
-      - name: Run Semgrep Python and JavaScript SAST
+      - name: Run immutable Semgrep Python and JavaScript SAST
         shell: bash
         run: |
           mkdir -p dist/security
+          : > dist/security/semgrep.json
+          printf '%s\n' "$SEMGREP_IMAGE" > dist/security/semgrep-image-ref.txt
           set +e
-          semgrep scan \
-            --metrics off \
-            --config "$SEMGREP_RULES_DIR/python/lang/security" \
-            --config "$SEMGREP_RULES_DIR/python/sqlalchemy/security" \
-            --config "$SEMGREP_RULES_DIR/python/fastapi/security" \
-            --config "$SEMGREP_RULES_DIR/python/boto3/security" \
-            --config "$SEMGREP_RULES_DIR/python/cryptography/security" \
-            --config "$SEMGREP_RULES_DIR/python/jwt/security" \
-            --config "$SEMGREP_RULES_DIR/javascript/lang/security" \
-            --config "$SEMGREP_RULES_DIR/javascript/browser/security" \
-            --config "$SEMGREP_RULES_DIR/javascript/express/security" \
-            --config "$SEMGREP_RULES_DIR/javascript/audit" \
-            --include '*.py' \
-            --include '*.js' \
-            --exclude '.git' \
-            --exclude 'dist' \
-            --exclude 'storage' \
-            --json \
-            --output dist/security/semgrep.json \
-            . > dist/security/semgrep-console.txt 2>&1
-          code=$?
+          docker pull "$SEMGREP_IMAGE" > dist/security/semgrep-pull.txt 2>&1
+          pull_code=$?
+          if [ "$pull_code" -eq 0 ]; then
+            docker run --rm \
+              -w /src \
+              -e SEMGREP_SEND_METRICS=off \
+              -v "$PWD:/src:ro" \
+              -v "$SEMGREP_RULES_DIR:/rules:ro" \
+              -v "$PWD/dist/security/semgrep.json:/tmp/semgrep.json:rw" \
+              "$SEMGREP_IMAGE" semgrep scan \
+              --metrics off \
+              --config /rules/python/lang/security \
+              --config /rules/python/sqlalchemy/security \
+              --config /rules/python/fastapi/security \
+              --config /rules/python/boto3/security \
+              --config /rules/python/cryptography/security \
+              --config /rules/python/jwt/security \
+              --config /rules/javascript/lang/security \
+              --config /rules/javascript/browser/security \
+              --config /rules/javascript/express/security \
+              --config /rules/javascript/audit \
+              --include '*.py' \
+              --include '*.js' \
+              --exclude '.git' \
+              --exclude 'dist' \
+              --exclude 'storage' \
+              --json \
+              --output /tmp/semgrep.json \
+              . > dist/security/semgrep-console.txt 2>&1
+            scan_code=$?
+            docker run --rm "$SEMGREP_IMAGE" semgrep --version \
+              > dist/security/semgrep-version.txt 2>&1
+            version_code=$?
+          else
+            scan_code="$pull_code"
+            version_code="$pull_code"
+            cp dist/security/semgrep-pull.txt dist/security/semgrep-console.txt
+            cp dist/security/semgrep-pull.txt dist/security/semgrep-version.txt
+          fi
           set -e
+
+          if [ "$scan_code" -ne 0 ]; then
+            code="$scan_code"
+          elif [ "$version_code" -ne 0 ]; then
+            code="$version_code"
+          else
+            code=0
+          fi
           printf '%s\n' "$code" > dist/security/semgrep-exit-code.txt
           cat dist/security/semgrep-console.txt
           exit 0
