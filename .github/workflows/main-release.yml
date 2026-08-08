@@ -57,8 +57,30 @@ jobs:
           } > /tmp/main-release-requirements.txt
           pip-audit -r /tmp/main-release-requirements.txt --progress-spinner off --ignore-vuln PYSEC-2026-3552
 
-      - name: Run backend tests
-        run: pytest -q
+      - name: Run backend tests with coverage gate
+        shell: bash
+        run: |
+          mkdir -p dist/coverage
+          pytest \
+            --cov=apps.api.src \
+            --cov-branch \
+            --cov-report=term-missing \
+            --cov-report=xml:dist/coverage/coverage.xml \
+            --cov-report=json:dist/coverage/coverage.json \
+            --cov-fail-under=75
+
+      - name: Summarize critical coverage
+        if: always()
+        run: python scripts/check_coverage_gate.py --coverage dist/coverage/coverage.json --output dist/coverage/critical-coverage.json
+
+      - name: Upload coverage evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: main-coverage-${{ github.run_id }}
+          path: dist/coverage
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Generate current OpenAPI contract
         run: python scripts/export_openapi.py --output dist/openapi/openapi.json
