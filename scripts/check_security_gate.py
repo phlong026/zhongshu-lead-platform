@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -10,8 +12,18 @@ from typing import Any
 
 BLOCKING_SEMGREP_SEVERITIES = {"ERROR"}
 BLOCKING_TRIVY_SEVERITIES = {"HIGH", "CRITICAL"}
-REQUIRED_WAIVER_FIELDS = {"scanner", "id", "scope", "reason", "owner", "expires_on"}
+REQUIRED_WAIVER_FIELDS = {
+    "scanner",
+    "id",
+    "scope",
+    "reason",
+    "owner",
+    "created_on",
+    "expires_on",
+}
 ALLOWED_SCANNERS = {"semgrep", "trivy"}
+MAX_WAIVER_LIFETIME_DAYS = 30
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True)
@@ -30,12 +42,15 @@ class Waiver:
     scope: str
     reason: str
     owner: str
+    created_on: date
     expires_on: date
 
     def matches(self, finding: Finding) -> bool:
-        if self.scanner != finding.scanner or self.finding_id != finding.finding_id:
-            return False
-        return self.scope == "*" or self.scope == finding.scope
+        return (
+            self.scanner == finding.scanner
+            and self.finding_id == finding.finding_id
+            and self.scope == finding.scope
+        )
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -58,6 +73,16 @@ def _read_exit_code(path: Path) -> int:
         return int(raw)
     except ValueError as exc:
         raise RuntimeError(f"invalid scanner exit code in {path}: {raw!r}") from exc
+
+
+def _sha256_file(path: Path) -> str:
+    if not path.is_file():
+        raise RuntimeError(f"scanned image archive missing: {path}")
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def load_waivers(path: Path, *, today: date) -> list[Waiver]:
@@ -83,17 +108,33 @@ def load_waivers(path: Path, *, today: date) -> list[Waiver]:
         scope = str(raw["scope"]).strip()
         reason = str(raw["reason"]).strip()
         owner = str(raw["owner"]).strip()
-        expires_raw = str(raw["expires_on"]).strip()
         if scanner not in ALLOWED_SCANNERS:
             raise RuntimeError(f"security waiver #{index + 1} has unsupported scanner: {scanner}")
         if not finding_id or not scope or not reason or not owner:
             raise RuntimeError(f"security waiver #{index + 1} contains an empty required value")
+        if scope == "*":
+            raise RuntimeError(
+                f"security waiver #{index + 1} uses forbidden repository-wide scope '*'"
+            )
         try:
-            expires_on = date.fromisoformat(expires_raw)
+            created_on = date.fromisoformat(str(raw["created_on"]).strip())
+            expires_on = date.fromisoformat(str(raw["expires_on"]).strip())
         except ValueError as exc:
             raise RuntimeError(
-                f"security waiver #{index + 1} expires_on must be YYYY-MM-DD"
+                f"security waiver #{index + 1} created_on/expires_on must be YYYY-MM-DD"
             ) from exc
+        if created_on > today:
+            raise RuntimeError(
+                f"security waiver #{index + 1} has future created_on {created_on.isoformat()}"
+            )
+        if expires_on < created_on:
+            raise RuntimeError(f"security waiver #{index + 1} expires before it was created")
+        lifetime = (expires_on - created_on).days
+        if lifetime > MAX_WAIVER_LIFETIME_DAYS:
+            raise RuntimeError(
+                f"security waiver #{index + 1} lifetime {lifetime}d exceeds "
+                f"{MAX_WAIVER_LIFETIME_DAYS}d maximum"
+            )
         if expires_on < today:
             raise RuntimeError(
                 f"expired security waiver: {scanner}/{finding_id}/{scope} expired {expires_on.isoformat()}"
@@ -109,6 +150,7 @@ def load_waivers(path: Path, *, today: date) -> list[Waiver]:
                 scope=scope,
                 reason=reason,
                 owner=owner,
+                created_on=created_on,
                 expires_on=expires_on,
             )
         )
@@ -116,56 +158,178 @@ def load_waivers(path: Path, *, today: date) -> list[Waiver]:
 
 
 def semgrep_findings(payload: dict[str, Any]) -> list[Finding]:
-    errors = payload.get("errors") or []
+    if "results" not in payload or not isinstance(payload["results"], list):
+        raise RuntimeError("semgrep report must contain a results array")
+    if "errors" not in payload or not isinstance(payload["errors"], list):
+        raise RuntimeError("semgrep report must contain an errors array")
+    errors = payload["errors"]
     if errors:
         compact = json.dumps(errors[:5], ensure_ascii=False)
         raise RuntimeError(f"semgrep reported scan errors: {compact}")
 
     findings: list[Finding] = []
-    for raw in payload.get("results") or []:
+    for index, raw in enumerate(payload["results"]):
         if not isinstance(raw, dict):
-            continue
-        extra = raw.get("extra") if isinstance(raw.get("extra"), dict) else {}
-        severity = str(extra.get("severity") or "").upper()
+            raise RuntimeError(f"semgrep result #{index + 1} must be an object")
+        check_id = raw.get("check_id")
+        path = raw.get("path")
+        extra = raw.get("extra")
+        if not isinstance(check_id, str) or not check_id.strip():
+            raise RuntimeError(f"semgrep result #{index + 1} missing check_id")
+        if not isinstance(path, str) or not path.strip():
+            raise RuntimeError(f"semgrep result #{index + 1} missing path")
+        if not isinstance(extra, dict):
+            raise RuntimeError(f"semgrep result #{index + 1} missing extra object")
+        severity_raw = extra.get("severity")
+        if not isinstance(severity_raw, str) or not severity_raw.strip():
+            raise RuntimeError(f"semgrep result #{index + 1} missing severity")
+        severity = severity_raw.upper()
         if severity not in BLOCKING_SEMGREP_SEVERITIES:
             continue
         findings.append(
             Finding(
                 scanner="semgrep",
-                finding_id=str(raw.get("check_id") or "UNKNOWN_SEMGREP_RULE"),
+                finding_id=check_id.strip(),
                 severity=severity,
-                scope=str(raw.get("path") or "UNKNOWN_PATH"),
+                scope=path.strip(),
                 message=str(extra.get("message") or "Semgrep security finding"),
             )
         )
     return findings
 
 
-def trivy_findings(payload: dict[str, Any]) -> list[Finding]:
+def trivy_findings(payload: dict[str, Any], *, expected_image_ref: str) -> list[Finding]:
+    if payload.get("SchemaVersion") != 2:
+        raise RuntimeError("trivy report SchemaVersion must be 2")
+    artifact_name = payload.get("ArtifactName")
+    if artifact_name != expected_image_ref:
+        raise RuntimeError(
+            f"trivy report artifact mismatch: expected {expected_image_ref!r}, got {artifact_name!r}"
+        )
+    if payload.get("ArtifactType") != "container_image":
+        raise RuntimeError("trivy report ArtifactType must be container_image")
+    results = payload.get("Results")
+    if not isinstance(results, list):
+        raise RuntimeError("trivy report must contain a Results array")
+
     findings: list[Finding] = []
-    for result in payload.get("Results") or []:
+    for result_index, result in enumerate(results):
         if not isinstance(result, dict):
+            raise RuntimeError(f"trivy result #{result_index + 1} must be an object")
+        target = result.get("Target")
+        if not isinstance(target, str) or not target.strip():
+            raise RuntimeError(f"trivy result #{result_index + 1} missing Target")
+        vulnerabilities = result.get("Vulnerabilities")
+        if vulnerabilities is None:
             continue
-        target = str(result.get("Target") or "UNKNOWN_TARGET")
-        for raw in result.get("Vulnerabilities") or []:
+        if not isinstance(vulnerabilities, list):
+            raise RuntimeError(
+                f"trivy result #{result_index + 1} Vulnerabilities must be null or an array"
+            )
+        for vuln_index, raw in enumerate(vulnerabilities):
             if not isinstance(raw, dict):
-                continue
-            severity = str(raw.get("Severity") or "").upper()
+                raise RuntimeError(
+                    f"trivy vulnerability #{result_index + 1}.{vuln_index + 1} must be an object"
+                )
+            finding_id = raw.get("VulnerabilityID")
+            severity_raw = raw.get("Severity")
+            package = raw.get("PkgName")
+            if not isinstance(finding_id, str) or not finding_id.strip():
+                raise RuntimeError(
+                    f"trivy vulnerability #{result_index + 1}.{vuln_index + 1} missing VulnerabilityID"
+                )
+            if not isinstance(severity_raw, str) or not severity_raw.strip():
+                raise RuntimeError(
+                    f"trivy vulnerability #{result_index + 1}.{vuln_index + 1} missing Severity"
+                )
+            if not isinstance(package, str) or not package.strip():
+                raise RuntimeError(
+                    f"trivy vulnerability #{result_index + 1}.{vuln_index + 1} missing PkgName"
+                )
+            severity = severity_raw.upper()
             if severity not in BLOCKING_TRIVY_SEVERITIES:
                 continue
-            package = str(raw.get("PkgName") or target)
             fixed = str(raw.get("FixedVersion") or "unfixed")
             title = str(raw.get("Title") or raw.get("Description") or "Trivy vulnerability")
             findings.append(
                 Finding(
                     scanner="trivy",
-                    finding_id=str(raw.get("VulnerabilityID") or "UNKNOWN_TRIVY_ID"),
+                    finding_id=finding_id.strip(),
                     severity=severity,
-                    scope=package,
+                    scope=package.strip(),
                     message=f"{title} (installed={raw.get('InstalledVersion')}, fixed={fixed})",
                 )
             )
     return findings
+
+
+def validate_scan_subject(payload: dict[str, Any], *, archive_path: Path) -> dict[str, str]:
+    image_ref = payload.get("image_ref")
+    image_id = payload.get("image_id")
+    archive_sha256 = payload.get("archive_sha256")
+    if not isinstance(image_ref, str) or not image_ref.strip():
+        raise RuntimeError("scan subject missing image_ref")
+    if not isinstance(image_id, str) or not image_id.startswith("sha256:"):
+        raise RuntimeError("scan subject image_id must be a sha256 Docker image ID")
+    if not isinstance(archive_sha256, str) or not _SHA256_RE.fullmatch(archive_sha256):
+        raise RuntimeError("scan subject archive_sha256 must be a lowercase 64-char SHA-256")
+    actual_archive_sha = _sha256_file(archive_path)
+    if actual_archive_sha != archive_sha256:
+        raise RuntimeError(
+            f"scanned image archive SHA-256 mismatch: expected {archive_sha256}, got {actual_archive_sha}"
+        )
+    return {
+        "image_ref": image_ref.strip(),
+        "image_id": image_id.strip(),
+        "archive_sha256": archive_sha256,
+    }
+
+
+def validate_sbom(
+    payload: dict[str, Any],
+    *,
+    expected_image_ref: str,
+    expected_image_id: str,
+) -> dict[str, Any]:
+    if payload.get("bomFormat") != "CycloneDX":
+        raise RuntimeError("SBOM bomFormat must be CycloneDX")
+    spec_version = payload.get("specVersion")
+    if not isinstance(spec_version, str) or not spec_version.strip():
+        raise RuntimeError("SBOM specVersion must be present")
+    if not isinstance(payload.get("components"), list):
+        raise RuntimeError("SBOM components must be an array")
+    metadata = payload.get("metadata")
+    if not isinstance(metadata, dict):
+        raise RuntimeError("SBOM metadata must be an object")
+    component = metadata.get("component")
+    if not isinstance(component, dict):
+        raise RuntimeError("SBOM metadata.component must be an object")
+    if component.get("type") != "container":
+        raise RuntimeError("SBOM metadata.component.type must be container")
+    if component.get("name") != expected_image_ref:
+        raise RuntimeError(
+            f"SBOM image reference mismatch: expected {expected_image_ref!r}, got {component.get('name')!r}"
+        )
+    properties = component.get("properties")
+    if not isinstance(properties, list):
+        raise RuntimeError("SBOM metadata.component.properties must be an array")
+    property_map: dict[str, str] = {}
+    for index, item in enumerate(properties):
+        if not isinstance(item, dict):
+            raise RuntimeError(f"SBOM component property #{index + 1} must be an object")
+        name = item.get("name")
+        value = item.get("value")
+        if isinstance(name, str) and isinstance(value, str):
+            property_map[name] = value
+    if property_map.get("aquasecurity:trivy:Reference") != expected_image_ref:
+        raise RuntimeError("SBOM Trivy reference does not match scanned image")
+    if property_map.get("aquasecurity:trivy:ImageID") != expected_image_id:
+        raise RuntimeError("SBOM Trivy ImageID does not match scanned image")
+    return {
+        "bom_format": "CycloneDX",
+        "spec_version": spec_version,
+        "component_count": len(payload["components"]),
+    }
 
 
 def evaluate(
@@ -173,8 +337,11 @@ def evaluate(
     semgrep_payload: dict[str, Any],
     trivy_payload: dict[str, Any],
     waivers: list[Waiver],
+    expected_image_ref: str,
 ) -> dict[str, Any]:
-    findings = semgrep_findings(semgrep_payload) + trivy_findings(trivy_payload)
+    findings = semgrep_findings(semgrep_payload) + trivy_findings(
+        trivy_payload, expected_image_ref=expected_image_ref
+    )
     blockers: list[Finding] = []
     waived: list[tuple[Finding, Waiver]] = []
     for finding in findings:
@@ -205,6 +372,7 @@ def evaluate(
                 "scope": finding.scope,
                 "owner": waiver.owner,
                 "reason": waiver.reason,
+                "created_on": waiver.created_on.isoformat(),
                 "expires_on": waiver.expires_on.isoformat(),
             }
             for finding, waiver in waived
@@ -218,6 +386,9 @@ def main() -> int:
     parser.add_argument("--semgrep-exit", default="dist/security/semgrep-exit-code.txt")
     parser.add_argument("--trivy", default="dist/security/trivy-image.json")
     parser.add_argument("--trivy-exit", default="dist/security/trivy-exit-code.txt")
+    parser.add_argument("--sbom", default="dist/security/sbom.cdx.json")
+    parser.add_argument("--subject", default="dist/security/scan-subject.json")
+    parser.add_argument("--image-archive", default="dist/security/app-image.tar")
     parser.add_argument("--waivers", default="security/waivers.json")
     parser.add_argument("--output", default="dist/security/security-gate.json")
     parser.add_argument("--today", help="optional YYYY-MM-DD override for deterministic tests")
@@ -235,11 +406,20 @@ def main() -> int:
         if trivy_exit != 0:
             raise RuntimeError(f"trivy scanner/SBOM failed with exit code {trivy_exit}")
 
+        subject = validate_scan_subject(
+            _read_json(Path(args.subject)), archive_path=Path(args.image_archive)
+        )
+        sbom_summary = validate_sbom(
+            _read_json(Path(args.sbom)),
+            expected_image_ref=subject["image_ref"],
+            expected_image_id=subject["image_id"],
+        )
         waivers = load_waivers(Path(args.waivers), today=current)
         report = evaluate(
             semgrep_payload=_read_json(Path(args.semgrep)),
             trivy_payload=_read_json(Path(args.trivy)),
             waivers=waivers,
+            expected_image_ref=subject["image_ref"],
         )
         report.update(
             {
@@ -248,6 +428,8 @@ def main() -> int:
                 "semgrep_exit_code": semgrep_exit,
                 "trivy_exit_code": trivy_exit,
                 "active_waiver_count": len(waivers),
+                "scan_subject": subject,
+                "sbom": sbom_summary,
             }
         )
     except RuntimeError as exc:
