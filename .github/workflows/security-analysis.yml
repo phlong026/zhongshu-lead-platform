@@ -185,8 +185,6 @@ jobs:
             exit 0
           fi
 
-          # Pre-create exactly the two files the scanner may modify. The Trivy
-          # container never receives the evidence directory or Docker socket.
           : > dist/security/trivy-image.json
           : > dist/security/sbom.cdx.json
 
@@ -240,6 +238,11 @@ jobs:
           python scripts/check_security_gate.py \
             --semgrep dist/security/semgrep.json \
             --semgrep-exit dist/security/semgrep-exit-code.txt \
+            --semgrep-image-ref dist/security/semgrep-image-ref.txt \
+            --semgrep-version dist/security/semgrep-version.txt \
+            --semgrep-rules-commit dist/security/semgrep-rules-commit.txt \
+            --semgrep-rules-tree dist/security/semgrep-rules-tree.txt \
+            --source-root . \
             --trivy dist/security/trivy-image.json \
             --trivy-exit dist/security/trivy-exit-code.txt \
             --sbom dist/security/sbom.cdx.json \
@@ -247,6 +250,18 @@ jobs:
             --image-archive dist/security/app-image.tar \
             --waivers security/waivers.json \
             --output dist/security/security-gate.json
+
+      - name: Upload exact green scanned candidate image
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-candidate-image-${{ github.run_id }}
+          path: |
+            dist/security/app-image.tar
+            dist/security/scan-subject.json
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
 
       - name: Remove transient image archive
         if: always()
