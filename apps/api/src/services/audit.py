@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -18,10 +19,27 @@ _SENSITIVE_KEY_PARTS = (
     "phone_hash",
     "phone_fingerprint",
 )
+_PHONE_PATTERN = re.compile(r"(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)")
+_JWT_PATTERN = re.compile(r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?![A-Za-z0-9_-])")
+_BEARER_PATTERN = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
+_COOKIE_TOKEN_PATTERN = re.compile(r"(?i)\b(?:access_token|token|session)=([^;\s,&]+)")
+
+
+def _sanitize_audit_text(value: str) -> str:
+    text = _PHONE_PATTERN.sub(_REDACTED, value)
+    text = _JWT_PATTERN.sub(_REDACTED, text)
+    text = _BEARER_PATTERN.sub(f"Bearer {_REDACTED}", text)
+    text = _COOKIE_TOKEN_PATTERN.sub(lambda match: match.group(0).split("=", 1)[0] + "=" + _REDACTED, text)
+    return text
 
 
 def sanitize_audit_value(value: Any, *, key: str | None = None) -> Any:
-    """Recursively remove secrets and plaintext phone values before persistence."""
+    """Recursively remove secrets and plaintext phone values before persistence.
+
+    Key-based redaction protects structured credential fields. Value-based
+    redaction additionally protects free-form note/reason/description fields in
+    which users may paste phone numbers, JWTs, bearer tokens or session cookies.
+    """
 
     normalized_key = (key or "").lower()
     if normalized_key and "masked" not in normalized_key:
@@ -36,6 +54,8 @@ def sanitize_audit_value(value: Any, *, key: str | None = None) -> Any:
         }
     if isinstance(value, (list, tuple, set)):
         return [sanitize_audit_value(item) for item in value]
+    if isinstance(value, str):
+        return _sanitize_audit_text(value)
     return value
 
 
