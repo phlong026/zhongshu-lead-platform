@@ -14,6 +14,7 @@ from jwt import InvalidTokenError
 
 from ..core.config import get_settings
 from ..core.errors import AppError
+from ..core.security import ensure_canonical_jwt
 
 settings = get_settings()
 
@@ -93,6 +94,7 @@ def create_file_access_token(evidence_id: str, user_id: str, expires_minutes: in
 
 def decode_file_access_token(token: str) -> dict:
     try:
+        ensure_canonical_jwt(token)
         return jwt.decode(token, settings.jwt_secret, algorithms=["HS256"], audience="private-file")
     except InvalidTokenError as exc:
         raise AppError("FILE_TOKEN_INVALID", "文件访问链接已失效", 403) from exc
