@@ -21,19 +21,17 @@ def _percentage(covered: int, total: int) -> float:
 
 
 def _summary(raw: dict) -> dict[str, float | int]:
+    statements = int(raw.get("num_statements", 0))
+    covered_lines = int(raw.get("covered_lines", 0))
+    branches = int(raw.get("num_branches", 0))
+    covered_branches = int(raw.get("covered_branches", 0))
     return {
-        "statements": int(raw.get("num_statements", 0)),
-        "covered_lines": int(raw.get("covered_lines", 0)),
-        "line_percent": round(float(raw.get("percent_covered", 0.0)), 2),
-        "branches": int(raw.get("num_branches", 0)),
-        "covered_branches": int(raw.get("covered_branches", 0)),
-        "branch_percent": round(
-            _percentage(
-                int(raw.get("covered_branches", 0)),
-                int(raw.get("num_branches", 0)),
-            ),
-            2,
-        ),
+        "statements": statements,
+        "covered_lines": covered_lines,
+        "line_percent": round(_percentage(covered_lines, statements), 2),
+        "branches": branches,
+        "covered_branches": covered_branches,
+        "branch_percent": round(_percentage(covered_branches, branches), 2),
     }
 
 
@@ -76,6 +74,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--coverage", default="dist/coverage/coverage.json")
     parser.add_argument("--output", default="dist/coverage/critical-coverage.json")
+    parser.add_argument("--min-global-line", type=float, default=75.0)
+    parser.add_argument("--min-global-branch", type=float, default=75.0)
     args = parser.parse_args()
 
     coverage_path = Path(args.coverage)
@@ -107,6 +107,18 @@ def main() -> int:
             f"  {path}: line={item['line_percent']:.2f}% "
             f"branch={item['branch_percent']:.2f}%"
         )
+
+    failures: list[str] = []
+    if float(global_summary["line_percent"]) < args.min_global_line:
+        failures.append(
+            f"global line coverage {global_summary['line_percent']:.2f}% < {args.min_global_line:.2f}%"
+        )
+    if float(global_summary["branch_percent"]) < args.min_global_branch:
+        failures.append(
+            f"global branch coverage {global_summary['branch_percent']:.2f}% < {args.min_global_branch:.2f}%"
+        )
+    if failures:
+        raise SystemExit("coverage gate failed: " + "; ".join(failures))
     return 0
 
 
