@@ -17,6 +17,7 @@ REQUIRED_WAIVER_FIELDS = {
     "scanner",
     "id",
     "scope",
+    "occurrence",
     "reason",
     "owner",
     "created_on",
@@ -24,18 +25,26 @@ REQUIRED_WAIVER_FIELDS = {
 }
 ALLOWED_SCANNERS = {"semgrep", "trivy"}
 MAX_WAIVER_LIFETIME_DAYS = 30
+SEMGREP_VERSION = "1.172.0"
+SEMGREP_IMAGE_REF = "semgrep/semgrep@sha256:a8298d1c09c84b9a0bbc75ec915e37023fc4657360b6dbfa645261d2353a366c"
+SEMGREP_RULES_COMMIT = "40b8c63f75dc7c22c8a77482d73bfb864b146f7e"
+SEMGREP_RULES_TREE = "9b197569a9029ac2731667ef634f119dd61fb7dc"
+SEMGREP_SOURCE_ROOTS = ("apps", "scripts", "migrations")
 TRIVY_SBOM_VERSION = "0.70.0"
 TRIVY_INPUT_ARTIFACT_NAME = "/tmp/app-image.tar"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _IMAGE_ID_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 @dataclass(frozen=True)
 class Finding:
     scanner: str
     finding_id: str
+    raw_id: str
     severity: str
     scope: str
+    occurrence: str
     message: str
 
 
@@ -44,6 +53,7 @@ class Waiver:
     scanner: str
     finding_id: str
     scope: str
+    occurrence: str
     reason: str
     owner: str
     created_on: date
@@ -54,6 +64,7 @@ class Waiver:
             self.scanner == finding.scanner
             and self.finding_id == finding.finding_id
             and self.scope == finding.scope
+            and self.occurrence == finding.occurrence
         )
 
 
@@ -69,10 +80,17 @@ def _read_json(path: Path) -> dict[str, Any]:
     return payload
 
 
-def _read_exit_code(path: Path) -> int:
+def _read_text(path: Path) -> str:
     if not path.is_file():
-        raise RuntimeError(f"scanner exit-code evidence missing: {path}")
-    raw = path.read_text(encoding="utf-8").strip()
+        raise RuntimeError(f"required security evidence missing: {path}")
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise RuntimeError(f"unable to read security evidence {path}: {exc}") from exc
+
+
+def _read_exit_code(path: Path) -> int:
+    raw = _read_text(path)
     try:
         return int(raw)
     except ValueError as exc:
@@ -98,7 +116,7 @@ def load_waivers(path: Path, *, today: date) -> list[Waiver]:
         raise RuntimeError("security waiver registry 'waivers' must be a list")
 
     waivers: list[Waiver] = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, str, str, str]] = set()
     for index, raw in enumerate(raw_waivers):
         if not isinstance(raw, dict):
             raise RuntimeError(f"security waiver #{index + 1} must be an object")
@@ -110,15 +128,16 @@ def load_waivers(path: Path, *, today: date) -> list[Waiver]:
         scanner = str(raw["scanner"]).strip().lower()
         finding_id = str(raw["id"]).strip()
         scope = str(raw["scope"]).strip()
+        occurrence = str(raw["occurrence"]).strip()
         reason = str(raw["reason"]).strip()
         owner = str(raw["owner"]).strip()
         if scanner not in ALLOWED_SCANNERS:
             raise RuntimeError(f"security waiver #{index + 1} has unsupported scanner: {scanner}")
-        if not finding_id or not scope or not reason or not owner:
+        if not finding_id or not scope or not occurrence or not reason or not owner:
             raise RuntimeError(f"security waiver #{index + 1} contains an empty required value")
-        if scope == "*":
+        if scope == "*" or occurrence == "*":
             raise RuntimeError(
-                f"security waiver #{index + 1} uses forbidden repository-wide scope '*'"
+                f"security waiver #{index + 1} uses forbidden wildcard scope/occurrence"
             )
         try:
             created_on = date.fromisoformat(str(raw["created_on"]).strip())
@@ -141,17 +160,21 @@ def load_waivers(path: Path, *, today: date) -> list[Waiver]:
             )
         if expires_on < today:
             raise RuntimeError(
-                f"expired security waiver: {scanner}/{finding_id}/{scope} expired {expires_on.isoformat()}"
+                f"expired security waiver: {scanner}/{finding_id}/{scope}/{occurrence} "
+                f"expired {expires_on.isoformat()}"
             )
-        key = (scanner, finding_id, scope)
+        key = (scanner, finding_id, scope, occurrence)
         if key in seen:
-            raise RuntimeError(f"duplicate security waiver: {scanner}/{finding_id}/{scope}")
+            raise RuntimeError(
+                f"duplicate security waiver: {scanner}/{finding_id}/{scope}/{occurrence}"
+            )
         seen.add(key)
         waivers.append(
             Waiver(
                 scanner=scanner,
                 finding_id=finding_id,
                 scope=scope,
+                occurrence=occurrence,
                 reason=reason,
                 owner=owner,
                 created_on=created_on,
@@ -161,45 +184,168 @@ def load_waivers(path: Path, *, today: date) -> list[Waiver]:
     return waivers
 
 
+def _expected_semgrep_paths(source_root: Path) -> set[str]:
+    expected: set[str] = set()
+    for root_name in SEMGREP_SOURCE_ROOTS:
+        root = source_root / root_name
+        if not root.is_dir():
+            raise RuntimeError(f"Semgrep source root missing: {root_name}")
+        for path in root.rglob("*"):
+            if not path.is_file() or path.suffix.lower() not in {".py", ".js"}:
+                continue
+            if any(part in {"__pycache__", "dist", "storage", ".git"} for part in path.parts):
+                continue
+            expected.add(path.relative_to(source_root).as_posix())
+    if not expected:
+        raise RuntimeError("Semgrep expected source inventory is empty")
+    return expected
+
+
+def validate_semgrep_identity_and_coverage(
+    payload: dict[str, Any],
+    *,
+    source_root: Path,
+    image_ref_path: Path,
+    version_path: Path,
+    rules_commit_path: Path,
+    rules_tree_path: Path,
+) -> dict[str, Any]:
+    image_ref = _read_text(image_ref_path)
+    if image_ref != SEMGREP_IMAGE_REF:
+        raise RuntimeError(
+            f"Semgrep image digest mismatch: expected {SEMGREP_IMAGE_REF!r}, got {image_ref!r}"
+        )
+    version = _read_text(version_path).splitlines()[0].strip()
+    if version != SEMGREP_VERSION:
+        raise RuntimeError(
+            f"Semgrep version mismatch: expected {SEMGREP_VERSION}, got {version!r}"
+        )
+    rules_commit = _read_text(rules_commit_path)
+    if rules_commit != SEMGREP_RULES_COMMIT:
+        raise RuntimeError(
+            f"Semgrep rules commit mismatch: expected {SEMGREP_RULES_COMMIT}, got {rules_commit!r}"
+        )
+    rules_tree = _read_text(rules_tree_path)
+    if not _GIT_SHA_RE.fullmatch(rules_tree) or rules_tree != SEMGREP_RULES_TREE:
+        raise RuntimeError(
+            f"Semgrep rules tree mismatch: expected {SEMGREP_RULES_TREE}, got {rules_tree!r}"
+        )
+    if payload.get("version") != SEMGREP_VERSION:
+        raise RuntimeError(
+            f"Semgrep report version mismatch: expected {SEMGREP_VERSION}, got {payload.get('version')!r}"
+        )
+    paths = payload.get("paths")
+    if not isinstance(paths, dict):
+        raise RuntimeError("Semgrep report paths must be an object")
+    scanned = paths.get("scanned")
+    if not isinstance(scanned, list) or not scanned:
+        raise RuntimeError("Semgrep report paths.scanned must be a non-empty array")
+    if not all(isinstance(item, str) and item.strip() for item in scanned):
+        raise RuntimeError("Semgrep report paths.scanned must contain non-empty strings")
+    if len(set(scanned)) != len(scanned):
+        raise RuntimeError("Semgrep report paths.scanned contains duplicate paths")
+    skipped_rules = payload.get("skipped_rules")
+    if not isinstance(skipped_rules, list):
+        raise RuntimeError("Semgrep report skipped_rules must be an array")
+    if skipped_rules:
+        raise RuntimeError("Semgrep skipped one or more configured rules")
+
+    expected = _expected_semgrep_paths(source_root)
+    scanned_set = {Path(item).as_posix() for item in scanned}
+    missing = sorted(expected.difference(scanned_set))
+    if missing:
+        preview = ", ".join(missing[:20])
+        suffix = "..." if len(missing) > 20 else ""
+        raise RuntimeError(
+            f"Semgrep scan coverage missing {len(missing)} Python/JavaScript files: {preview}{suffix}"
+        )
+    return {
+        "version": version,
+        "image_ref": image_ref,
+        "rules_commit": rules_commit,
+        "rules_tree": rules_tree,
+        "expected_source_count": len(expected),
+        "scanned_path_count": len(scanned_set),
+    }
+
+
+def _semgrep_occurrence(raw: dict[str, Any], *, index: int) -> str:
+    start = raw.get("start")
+    end = raw.get("end")
+    if not isinstance(start, dict) or not isinstance(end, dict):
+        raise RuntimeError(f"Semgrep blocking result #{index} missing start/end location")
+    values = []
+    for label, location in (("start", start), ("end", end)):
+        line = location.get("line")
+        col = location.get("col")
+        if not isinstance(line, int) or line <= 0 or not isinstance(col, int) or col <= 0:
+            raise RuntimeError(f"Semgrep blocking result #{index} has invalid {label} location")
+        values.extend([line, col])
+    return f"L{values[0]}:C{values[1]}-L{values[2]}:C{values[3]}"
+
+
 def semgrep_findings(payload: dict[str, Any]) -> list[Finding]:
     if "results" not in payload or not isinstance(payload["results"], list):
-        raise RuntimeError("semgrep report must contain a results array")
+        raise RuntimeError("Semgrep report must contain a results array")
     if "errors" not in payload or not isinstance(payload["errors"], list):
-        raise RuntimeError("semgrep report must contain an errors array")
+        raise RuntimeError("Semgrep report must contain an errors array")
     errors = payload["errors"]
     if errors:
         compact = json.dumps(errors[:5], ensure_ascii=False)
-        raise RuntimeError(f"semgrep reported scan errors: {compact}")
+        raise RuntimeError(f"Semgrep reported scan errors: {compact}")
 
     findings: list[Finding] = []
-    for index, raw in enumerate(payload["results"]):
+    for index, raw in enumerate(payload["results"], start=1):
         if not isinstance(raw, dict):
-            raise RuntimeError(f"semgrep result #{index + 1} must be an object")
+            raise RuntimeError(f"Semgrep result #{index} must be an object")
         check_id = raw.get("check_id")
         path = raw.get("path")
         extra = raw.get("extra")
         if not isinstance(check_id, str) or not check_id.strip():
-            raise RuntimeError(f"semgrep result #{index + 1} missing check_id")
+            raise RuntimeError(f"Semgrep result #{index} missing check_id")
         if not isinstance(path, str) or not path.strip():
-            raise RuntimeError(f"semgrep result #{index + 1} missing path")
+            raise RuntimeError(f"Semgrep result #{index} missing path")
         if not isinstance(extra, dict):
-            raise RuntimeError(f"semgrep result #{index + 1} missing extra object")
+            raise RuntimeError(f"Semgrep result #{index} missing extra object")
         severity_raw = extra.get("severity")
         if not isinstance(severity_raw, str) or not severity_raw.strip():
-            raise RuntimeError(f"semgrep result #{index + 1} missing severity")
+            raise RuntimeError(f"Semgrep result #{index} missing severity")
         severity = severity_raw.upper()
         if severity not in BLOCKING_SEMGREP_SEVERITIES:
             continue
         findings.append(
             Finding(
                 scanner="semgrep",
-                finding_id=check_id.strip(),
+                finding_id=check_id.strip().rsplit(".", 1)[-1],
+                raw_id=check_id.strip(),
                 severity=severity,
-                scope=path.strip(),
+                scope=Path(path.strip()).as_posix(),
+                occurrence=_semgrep_occurrence(raw, index=index),
                 message=str(extra.get("message") or "Semgrep security finding"),
             )
         )
     return findings
+
+
+def _validate_package_inventory(result: dict[str, Any], *, label: str) -> int:
+    packages = result.get("Packages")
+    if not isinstance(packages, list) or not packages:
+        raise RuntimeError(f"Trivy {label} Packages must be a non-empty array")
+    seen: set[tuple[str, str]] = set()
+    for index, package in enumerate(packages, start=1):
+        if not isinstance(package, dict):
+            raise RuntimeError(f"Trivy {label} package #{index} must be an object")
+        name = package.get("Name")
+        version = package.get("Version")
+        if not isinstance(name, str) or not name.strip():
+            raise RuntimeError(f"Trivy {label} package #{index} missing Name")
+        if not isinstance(version, str) or not version.strip():
+            raise RuntimeError(f"Trivy {label} package #{index} missing Version")
+        identity = (name.strip(), version.strip())
+        if identity in seen:
+            raise RuntimeError(f"Trivy {label} package inventory contains duplicate {identity!r}")
+        seen.add(identity)
+    return len(packages)
 
 
 def trivy_findings(
@@ -208,79 +354,120 @@ def trivy_findings(
     expected_artifact_name: str,
     expected_image_ref: str,
     expected_image_id: str,
-) -> list[Finding]:
+) -> tuple[list[Finding], dict[str, int]]:
     if payload.get("SchemaVersion") != 2:
-        raise RuntimeError("trivy report SchemaVersion must be 2")
+        raise RuntimeError("Trivy report SchemaVersion must be 2")
     artifact_name = payload.get("ArtifactName")
     if artifact_name != expected_artifact_name:
         raise RuntimeError(
-            f"trivy report artifact mismatch: expected {expected_artifact_name!r}, got {artifact_name!r}"
+            f"Trivy report artifact mismatch: expected {expected_artifact_name!r}, got {artifact_name!r}"
         )
     if payload.get("ArtifactType") != "container_image":
-        raise RuntimeError("trivy report ArtifactType must be container_image")
+        raise RuntimeError("Trivy report ArtifactType must be container_image")
     metadata = payload.get("Metadata")
     if not isinstance(metadata, dict):
-        raise RuntimeError("trivy report Metadata must be an object")
+        raise RuntimeError("Trivy report Metadata must be an object")
     if metadata.get("ImageID") != expected_image_id:
-        raise RuntimeError("trivy report Metadata.ImageID does not match scan subject")
+        raise RuntimeError("Trivy report Metadata.ImageID does not match scan subject")
     repo_tags = metadata.get("RepoTags")
     if not isinstance(repo_tags, list) or not all(isinstance(item, str) for item in repo_tags):
-        raise RuntimeError("trivy report Metadata.RepoTags must be a string array")
+        raise RuntimeError("Trivy report Metadata.RepoTags must be a string array")
     if expected_image_ref not in repo_tags:
-        raise RuntimeError("trivy report Metadata.RepoTags does not contain scan subject image_ref")
+        raise RuntimeError("Trivy report Metadata.RepoTags does not contain scan subject image_ref")
     results = payload.get("Results")
-    if not isinstance(results, list):
-        raise RuntimeError("trivy report must contain a Results array")
+    if not isinstance(results, list) or not results:
+        raise RuntimeError("Trivy report Results must be a non-empty array")
 
     findings: list[Finding] = []
-    for result_index, result in enumerate(results):
+    os_package_count: int | None = None
+    python_package_count: int | None = None
+    for result_index, result in enumerate(results, start=1):
         if not isinstance(result, dict):
-            raise RuntimeError(f"trivy result #{result_index + 1} must be an object")
+            raise RuntimeError(f"Trivy result #{result_index} must be an object")
         target = result.get("Target")
+        result_class = result.get("Class")
+        result_type = result.get("Type")
         if not isinstance(target, str) or not target.strip():
-            raise RuntimeError(f"trivy result #{result_index + 1} missing Target")
+            raise RuntimeError(f"Trivy result #{result_index} missing Target")
+        if not isinstance(result_class, str) or not result_class.strip():
+            raise RuntimeError(f"Trivy result #{result_index} missing Class")
+        if not isinstance(result_type, str) or not result_type.strip():
+            raise RuntimeError(f"Trivy result #{result_index} missing Type")
+
+        if result_class == "os-pkgs" and result_type == "debian":
+            if os_package_count is not None:
+                raise RuntimeError("Trivy report contains multiple Debian OS package inventories")
+            os_package_count = _validate_package_inventory(result, label="Debian OS")
+        if result_class == "lang-pkgs" and result_type == "python-pkg":
+            if python_package_count is not None:
+                raise RuntimeError("Trivy report contains multiple Python package inventories")
+            python_package_count = _validate_package_inventory(result, label="Python")
+
         vulnerabilities = result.get("Vulnerabilities")
         if vulnerabilities is None:
             continue
         if not isinstance(vulnerabilities, list):
             raise RuntimeError(
-                f"trivy result #{result_index + 1} Vulnerabilities must be null or an array"
+                f"Trivy result #{result_index} Vulnerabilities must be null or an array"
             )
-        for vuln_index, raw in enumerate(vulnerabilities):
+        for vuln_index, raw in enumerate(vulnerabilities, start=1):
             if not isinstance(raw, dict):
                 raise RuntimeError(
-                    f"trivy vulnerability #{result_index + 1}.{vuln_index + 1} must be an object"
+                    f"Trivy vulnerability #{result_index}.{vuln_index} must be an object"
                 )
             finding_id = raw.get("VulnerabilityID")
             severity_raw = raw.get("Severity")
             package = raw.get("PkgName")
+            installed_version = raw.get("InstalledVersion")
             if not isinstance(finding_id, str) or not finding_id.strip():
                 raise RuntimeError(
-                    f"trivy vulnerability #{result_index + 1}.{vuln_index + 1} missing VulnerabilityID"
+                    f"Trivy vulnerability #{result_index}.{vuln_index} missing VulnerabilityID"
                 )
             if not isinstance(severity_raw, str) or not severity_raw.strip():
                 raise RuntimeError(
-                    f"trivy vulnerability #{result_index + 1}.{vuln_index + 1} missing Severity"
+                    f"Trivy vulnerability #{result_index}.{vuln_index} missing Severity"
                 )
             if not isinstance(package, str) or not package.strip():
                 raise RuntimeError(
-                    f"trivy vulnerability #{result_index + 1}.{vuln_index + 1} missing PkgName"
+                    f"Trivy vulnerability #{result_index}.{vuln_index} missing PkgName"
                 )
             severity = severity_raw.upper()
             if severity not in BLOCKING_TRIVY_SEVERITIES:
                 continue
+            if not isinstance(installed_version, str) or not installed_version.strip():
+                raise RuntimeError(
+                    f"Trivy blocking vulnerability #{result_index}.{vuln_index} missing InstalledVersion"
+                )
             fixed = str(raw.get("FixedVersion") or "unfixed")
             title = str(raw.get("Title") or raw.get("Description") or "Trivy vulnerability")
+            occurrence = "|".join(
+                [
+                    target.strip(),
+                    result_class.strip(),
+                    result_type.strip(),
+                    installed_version.strip(),
+                ]
+            )
             findings.append(
                 Finding(
                     scanner="trivy",
                     finding_id=finding_id.strip(),
+                    raw_id=finding_id.strip(),
                     severity=severity,
                     scope=package.strip(),
-                    message=f"{title} (installed={raw.get('InstalledVersion')}, fixed={fixed})",
+                    occurrence=occurrence,
+                    message=f"{title} (installed={installed_version}, fixed={fixed})",
                 )
             )
-    return findings
+
+    if os_package_count is None:
+        raise RuntimeError("Trivy report missing Debian OS package inventory")
+    if python_package_count is None:
+        raise RuntimeError("Trivy report missing Python package inventory")
+    return findings, {
+        "debian_package_count": os_package_count,
+        "python_package_count": python_package_count,
+    }
 
 
 def _validate_docker_archive_identity(
@@ -303,15 +490,15 @@ def _validate_docker_archive_identity(
             if not isinstance(manifest, list) or not manifest:
                 raise RuntimeError("Docker archive manifest.json must be a non-empty array")
             matches = []
-            for index, item in enumerate(manifest):
+            for index, item in enumerate(manifest, start=1):
                 if not isinstance(item, dict):
-                    raise RuntimeError(f"Docker archive manifest entry #{index + 1} must be an object")
+                    raise RuntimeError(f"Docker archive manifest entry #{index} must be an object")
                 repo_tags = item.get("RepoTags")
                 if repo_tags is None:
                     continue
                 if not isinstance(repo_tags, list) or not all(isinstance(tag, str) for tag in repo_tags):
                     raise RuntimeError(
-                        f"Docker archive manifest entry #{index + 1} RepoTags must be a string array"
+                        f"Docker archive manifest entry #{index} RepoTags must be a string array"
                     )
                 if expected_image_ref in repo_tags:
                     matches.append(item)
@@ -361,13 +548,13 @@ def validate_scan_subject(payload: dict[str, Any], *, archive_path: Path) -> dic
 
 def _property_values(properties: list[Any]) -> dict[str, list[str]]:
     values: dict[str, list[str]] = {}
-    for index, item in enumerate(properties):
+    for index, item in enumerate(properties, start=1):
         if not isinstance(item, dict):
-            raise RuntimeError(f"SBOM component property #{index + 1} must be an object")
+            raise RuntimeError(f"SBOM component property #{index} must be an object")
         name = item.get("name")
         value = item.get("value")
         if not isinstance(name, str) or not isinstance(value, str):
-            raise RuntimeError(f"SBOM component property #{index + 1} must contain string name/value")
+            raise RuntimeError(f"SBOM component property #{index} must contain string name/value")
         values.setdefault(name, []).append(value)
     return values
 
@@ -423,19 +610,24 @@ def validate_sbom(
         raise RuntimeError("SBOM must identify exactly one Trivy generating tool")
     if trivy_tools[0].get("version") != TRIVY_SBOM_VERSION:
         raise RuntimeError(
-            f"SBOM Trivy version mismatch: expected {TRIVY_SBOM_VERSION}, got {trivy_tools[0].get('version')!r}"
+            f"SBOM Trivy version mismatch: expected {TRIVY_SBOM_VERSION}, "
+            f"got {trivy_tools[0].get('version')!r}"
         )
 
-    component = metadata.get("component")
-    if not isinstance(component, dict):
+    root_component = metadata.get("component")
+    if not isinstance(root_component, dict):
         raise RuntimeError("SBOM metadata.component must be an object")
-    if component.get("type") != "container":
+    root_ref = root_component.get("bom-ref")
+    if not isinstance(root_ref, str) or not root_ref.strip():
+        raise RuntimeError("SBOM metadata.component.bom-ref must be present")
+    if root_component.get("type") != "container":
         raise RuntimeError("SBOM metadata.component.type must be container")
-    if component.get("name") != expected_artifact_name:
+    if root_component.get("name") != expected_artifact_name:
         raise RuntimeError(
-            f"SBOM artifact name mismatch: expected {expected_artifact_name!r}, got {component.get('name')!r}"
+            f"SBOM artifact name mismatch: expected {expected_artifact_name!r}, "
+            f"got {root_component.get('name')!r}"
         )
-    properties = component.get("properties")
+    properties = root_component.get("properties")
     if not isinstance(properties, list):
         raise RuntimeError("SBOM metadata.component.properties must be an array")
     property_values = _property_values(properties)
@@ -454,10 +646,67 @@ def validate_sbom(
         name="aquasecurity:trivy:ImageID",
         expected=expected_image_id,
     )
+
+    component_refs: set[str] = set()
+    component_types: set[str] = set()
+    for index, component in enumerate(components, start=1):
+        if not isinstance(component, dict):
+            raise RuntimeError(f"SBOM component #{index} must be an object")
+        bom_ref = component.get("bom-ref")
+        component_type = component.get("type")
+        name = component.get("name")
+        version = component.get("version")
+        for field_name, value in (
+            ("bom-ref", bom_ref),
+            ("type", component_type),
+            ("name", name),
+            ("version", version),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise RuntimeError(f"SBOM component #{index} missing {field_name}")
+        if bom_ref in component_refs:
+            raise RuntimeError(f"SBOM contains duplicate component bom-ref {bom_ref!r}")
+        component_refs.add(bom_ref)
+        component_types.add(component_type)
+    if "operating-system" not in component_types:
+        raise RuntimeError("SBOM missing operating-system component")
+    if "library" not in component_types:
+        raise RuntimeError("SBOM missing library components")
+
+    dependencies = payload.get("dependencies")
+    if not isinstance(dependencies, list) or not dependencies:
+        raise RuntimeError("SBOM dependencies must be a non-empty array")
+    allowed_refs = component_refs | {root_ref}
+    dependency_refs: set[str] = set()
+    for index, dependency in enumerate(dependencies, start=1):
+        if not isinstance(dependency, dict):
+            raise RuntimeError(f"SBOM dependency #{index} must be an object")
+        ref = dependency.get("ref")
+        depends_on = dependency.get("dependsOn")
+        if not isinstance(ref, str) or not ref.strip():
+            raise RuntimeError(f"SBOM dependency #{index} missing ref")
+        if ref not in allowed_refs:
+            raise RuntimeError(f"SBOM dependency #{index} references unknown ref {ref!r}")
+        if ref in dependency_refs:
+            raise RuntimeError(f"SBOM contains duplicate dependency ref {ref!r}")
+        dependency_refs.add(ref)
+        if not isinstance(depends_on, list) or not all(
+            isinstance(item, str) and item.strip() for item in depends_on
+        ):
+            raise RuntimeError(f"SBOM dependency #{index} dependsOn must be a string array")
+        unknown = sorted(set(depends_on).difference(component_refs))
+        if unknown:
+            raise RuntimeError(
+                f"SBOM dependency #{index} dependsOn contains unknown refs: {', '.join(unknown[:10])}"
+            )
+    if root_ref not in dependency_refs:
+        raise RuntimeError("SBOM dependency graph missing root container dependency entry")
+
     return {
         "bom_format": "CycloneDX",
         "spec_version": spec_version,
         "component_count": len(components),
+        "dependency_count": len(dependencies),
         "generator": f"trivy/{TRIVY_SBOM_VERSION}",
         "artifact_name": expected_artifact_name,
     }
@@ -471,13 +720,14 @@ def evaluate(
     expected_artifact_name: str,
     expected_image_ref: str,
     expected_image_id: str,
-) -> dict[str, Any]:
-    findings = semgrep_findings(semgrep_payload) + trivy_findings(
+) -> tuple[dict[str, Any], dict[str, int]]:
+    trivy_items, trivy_inventory = trivy_findings(
         trivy_payload,
         expected_artifact_name=expected_artifact_name,
         expected_image_ref=expected_image_ref,
         expected_image_id=expected_image_id,
     )
+    findings = semgrep_findings(semgrep_payload) + trivy_items
     blockers: list[Finding] = []
     waived: list[tuple[Finding, Waiver]] = []
     for finding in findings:
@@ -487,15 +737,17 @@ def evaluate(
         else:
             waived.append((finding, waiver))
 
-    return {
+    report = {
         "blocking_count": len(blockers),
         "waived_count": len(waived),
         "blocking_findings": [
             {
                 "scanner": item.scanner,
                 "id": item.finding_id,
+                "raw_id": item.raw_id,
                 "severity": item.severity,
                 "scope": item.scope,
+                "occurrence": item.occurrence,
                 "message": item.message,
             }
             for item in blockers
@@ -504,8 +756,10 @@ def evaluate(
             {
                 "scanner": finding.scanner,
                 "id": finding.finding_id,
+                "raw_id": finding.raw_id,
                 "severity": finding.severity,
                 "scope": finding.scope,
+                "occurrence": finding.occurrence,
                 "owner": waiver.owner,
                 "reason": waiver.reason,
                 "created_on": waiver.created_on.isoformat(),
@@ -514,12 +768,18 @@ def evaluate(
             for finding, waiver in waived
         ],
     }
+    return report, trivy_inventory
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Enforce V1.2 SAST and image vulnerability gates")
     parser.add_argument("--semgrep", default="dist/security/semgrep.json")
     parser.add_argument("--semgrep-exit", default="dist/security/semgrep-exit-code.txt")
+    parser.add_argument("--semgrep-image-ref", default="dist/security/semgrep-image-ref.txt")
+    parser.add_argument("--semgrep-version", default="dist/security/semgrep-version.txt")
+    parser.add_argument("--semgrep-rules-commit", default="dist/security/semgrep-rules-commit.txt")
+    parser.add_argument("--semgrep-rules-tree", default="dist/security/semgrep-rules-tree.txt")
+    parser.add_argument("--source-root", default=".")
     parser.add_argument("--trivy", default="dist/security/trivy-image.json")
     parser.add_argument("--trivy-exit", default="dist/security/trivy-exit-code.txt")
     parser.add_argument("--sbom", default="dist/security/sbom.cdx.json")
@@ -538,10 +798,19 @@ def main() -> int:
         semgrep_exit = _read_exit_code(Path(args.semgrep_exit))
         trivy_exit = _read_exit_code(Path(args.trivy_exit))
         if semgrep_exit != 0:
-            raise RuntimeError(f"semgrep scanner failed with exit code {semgrep_exit}")
+            raise RuntimeError(f"Semgrep scanner failed with exit code {semgrep_exit}")
         if trivy_exit != 0:
-            raise RuntimeError(f"trivy scanner/SBOM failed with exit code {trivy_exit}")
+            raise RuntimeError(f"Trivy scanner/SBOM failed with exit code {trivy_exit}")
 
+        semgrep_payload = _read_json(Path(args.semgrep))
+        semgrep_summary = validate_semgrep_identity_and_coverage(
+            semgrep_payload,
+            source_root=Path(args.source_root).resolve(),
+            image_ref_path=Path(args.semgrep_image_ref),
+            version_path=Path(args.semgrep_version),
+            rules_commit_path=Path(args.semgrep_rules_commit),
+            rules_tree_path=Path(args.semgrep_rules_tree),
+        )
         subject = validate_scan_subject(
             _read_json(Path(args.subject)), archive_path=Path(args.image_archive)
         )
@@ -552,8 +821,8 @@ def main() -> int:
             expected_image_id=subject["image_id"],
         )
         waivers = load_waivers(Path(args.waivers), today=current)
-        report = evaluate(
-            semgrep_payload=_read_json(Path(args.semgrep)),
+        report, trivy_inventory = evaluate(
+            semgrep_payload=semgrep_payload,
             trivy_payload=_read_json(Path(args.trivy)),
             waivers=waivers,
             expected_artifact_name=subject["trivy_artifact_name"],
@@ -567,7 +836,9 @@ def main() -> int:
                 "semgrep_exit_code": semgrep_exit,
                 "trivy_exit_code": trivy_exit,
                 "active_waiver_count": len(waivers),
+                "semgrep": semgrep_summary,
                 "scan_subject": subject,
+                "trivy_inventory": trivy_inventory,
                 "sbom": sbom_summary,
             }
         )
