@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from .database import get_db
 from .errors import AppError
-from .models import Permission, Role, RolePermission, User, UserRole
+from .models import Company, Permission, Role, RolePermission, User, UserRole
 from .security import decode_access_token
 
 
@@ -38,6 +38,25 @@ def _extract_token(authorization: str | None, access_token: str | None) -> str:
     raise AppError("AUTH_REQUIRED", "请先登录", 401)
 
 
+def get_valid_session_user(
+    db: Session,
+    user_id: str | None,
+    session_version: int | None,
+) -> User | None:
+    """Return the user only when every global session invalidation rule passes."""
+
+    if not user_id or session_version is None:
+        return None
+    user = db.get(User, user_id)
+    if not user or user.status != "ACTIVE" or user.session_version != session_version:
+        return None
+    if user.company_id:
+        company = db.get(Company, user.company_id)
+        if not company or company.status != "ACTIVE":
+            return None
+    return user
+
+
 def get_current_principal(
     db: Annotated[Session, Depends(get_db)],
     authorization: Annotated[str | None, Header()] = None,
@@ -48,9 +67,9 @@ def get_current_principal(
         payload = decode_access_token(token)
     except InvalidTokenError as exc:
         raise AppError("AUTH_INVALID", "登录状态无效或已过期", 401) from exc
-    user = db.scalar(select(User).where(User.id == payload.get("sub")))
-    if not user or user.status != "ACTIVE" or user.session_version != payload.get("sv"):
-        raise AppError("AUTH_INVALID", "账号已停用或会话已失效", 401)
+    user = get_valid_session_user(db, payload.get("sub"), payload.get("sv"))
+    if user is None:
+        raise AppError("AUTH_INVALID", "账号、公司或会话已失效", 401)
 
     role_codes = set(
         db.scalars(

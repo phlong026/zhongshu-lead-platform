@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from ..core.config import get_settings
@@ -113,6 +113,46 @@ def resolve_price(db: Session, lead: Lead, company: Company) -> tuple[int, LeadP
     return 100, None
 
 
+def _points_idempotent_ledger(db: Session, company_id: str, idempotency_key: str) -> PointsLedger | None:
+    return db.scalar(
+        select(PointsLedger).where(
+            PointsLedger.company_id == company_id,
+            PointsLedger.idempotency_key == idempotency_key,
+        )
+    )
+
+
+def _serialize_points_account(db: Session, company_id: str) -> PointsAccount:
+    """Acquire the account write serialization boundary before changing balance."""
+
+    if db.get_bind().dialect.name == "sqlite":
+        # SQLite ignores FOR UPDATE. Start with a no-op write so concurrent writers
+        # serialize before either rechecks the idempotency ledger or reads balance.
+        result = db.execute(
+            update(PointsAccount)
+            .where(PointsAccount.company_id == company_id)
+            .values(version=PointsAccount.version)
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount == 0:
+            account = get_or_create_account(db, company_id)
+            db.flush()
+            return account
+        db.expire_all()
+        account = db.scalar(select(PointsAccount).where(PointsAccount.company_id == company_id))
+        assert account is not None
+        return account
+
+    account = db.scalar(
+        select(PointsAccount)
+        .where(PointsAccount.company_id == company_id)
+        .with_for_update()
+    )
+    if account is None:
+        account = get_or_create_account(db, company_id)
+    return account
+
+
 def change_points(
     db: Session,
     *,
@@ -129,17 +169,20 @@ def change_points(
 ) -> PointsLedger:
     if delta == 0:
         raise AppError("POINTS_DELTA_ZERO", "积分变动不能为0", 422)
-    existing = db.scalar(
-        select(PointsLedger).where(
-            PointsLedger.company_id == company_id,
-            PointsLedger.idempotency_key == idempotency_key,
-        )
-    )
+
+    # Fast path avoids unnecessary locking for normal retries.
+    existing = _points_idempotent_ledger(db, company_id, idempotency_key)
     if existing:
         return existing
-    account = db.scalar(select(PointsAccount).where(PointsAccount.company_id == company_id).with_for_update())
-    if not account:
-        account = get_or_create_account(db, company_id)
+
+    account = _serialize_points_account(db, company_id)
+
+    # Required concurrency recheck: another request may have completed the same
+    # idempotency key while this transaction waited for the account write lock.
+    existing = _points_idempotent_ledger(db, company_id, idempotency_key)
+    if existing:
+        return existing
+
     new_balance = int(account.balance) + int(delta)
     if new_balance < 0:
         raise AppError("POINTS_INSUFFICIENT", "积分不足", 409, {"balance": account.balance, "required": abs(delta)})
