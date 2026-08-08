@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import os
 from dataclasses import dataclass
 from urllib.parse import urlparse
@@ -8,7 +9,6 @@ from .config import Settings
 
 
 _PLACEHOLDER_MARKERS = ("replace-", "change-this", "dev-", "example", "changeme")
-_UNSAFE_TRUSTED_PROXY_VALUES = {"*", "0.0.0.0/0", "::/0"}
 
 
 @dataclass(frozen=True)
@@ -24,6 +24,21 @@ class ProductionValidation:
 def _unsafe_secret(value: str, *, minimum: int) -> bool:
     lowered = value.lower()
     return len(value) < minimum or any(marker in lowered for marker in _PLACEHOLDER_MARKERS)
+
+
+def _valid_trusted_proxy_cidr(value: str) -> bool:
+    """Accept exactly one explicit CIDR network and nothing else."""
+
+    candidate = value.strip()
+    if not candidate or "/" not in candidate or any(ch.isspace() for ch in candidate):
+        return False
+    try:
+        network = ipaddress.ip_network(candidate, strict=False)
+    except ValueError:
+        return False
+    if network.prefixlen == 0:
+        return False
+    return candidate == network.with_prefixlen
 
 
 def validate_production_settings(settings: Settings, environ: dict[str, str] | None = None) -> ProductionValidation:
@@ -86,8 +101,8 @@ def validate_production_settings(settings: Settings, environ: dict[str, str] | N
     if env.get("SEED_DEMO", "false").lower() == "true":
         errors.append("生产环境不得启用 SEED_DEMO")
     trusted_proxy_cidr = env.get("TRUSTED_PROXY_CIDR", "127.0.0.1/32").strip()
-    if not trusted_proxy_cidr or trusted_proxy_cidr in _UNSAFE_TRUSTED_PROXY_VALUES:
-        errors.append("TRUSTED_PROXY_CIDR 必须是明确可信代理网段，禁止通配符或全网段")
+    if not _valid_trusted_proxy_cidr(trusted_proxy_cidr):
+        errors.append("TRUSTED_PROXY_CIDR 必须是单一、规范、非全网段的有效 CIDR，禁止额外指令或尾随内容")
     database_password = env.get("POSTGRES_PASSWORD", "")
     if _unsafe_secret(database_password, minimum=16):
         errors.append("POSTGRES_PASSWORD 长度不足或仍为示例值")
