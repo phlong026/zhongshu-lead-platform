@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import json
+import tarfile
 from datetime import date
 from pathlib import Path
 
 import pytest
 
 from scripts.check_security_gate import (
+    TRIVY_INPUT_ARTIFACT_NAME,
     Finding,
     Waiver,
     evaluate,
@@ -19,6 +23,7 @@ from scripts.check_security_gate import (
 
 IMAGE_REF = "zhongshu-security:test"
 IMAGE_ID = "sha256:" + "1" * 64
+CONFIG_NAME = "1" * 64 + ".json"
 
 
 def _semgrep(*results: dict) -> dict:
@@ -28,8 +33,12 @@ def _semgrep(*results: dict) -> dict:
 def _trivy(*vulnerabilities: dict) -> dict:
     return {
         "SchemaVersion": 2,
-        "ArtifactName": IMAGE_REF,
+        "ArtifactName": TRIVY_INPUT_ARTIFACT_NAME,
         "ArtifactType": "container_image",
+        "Metadata": {
+            "ImageID": IMAGE_ID,
+            "RepoTags": [IMAGE_REF],
+        },
         "Results": [
             {
                 "Target": "debian",
@@ -77,9 +86,10 @@ def _sbom() -> dict:
             },
             "component": {
                 "type": "container",
-                "name": IMAGE_REF,
+                "name": TRIVY_INPUT_ARTIFACT_NAME,
                 "properties": [
                     {"name": "aquasecurity:trivy:Reference", "value": IMAGE_REF},
+                    {"name": "aquasecurity:trivy:RepoTag", "value": IMAGE_REF},
                     {"name": "aquasecurity:trivy:ImageID", "value": IMAGE_ID},
                 ],
             },
@@ -87,20 +97,51 @@ def _sbom() -> dict:
     }
 
 
-def test_clean_security_gate_passes() -> None:
-    report = evaluate(
-        semgrep_payload=_semgrep(),
-        trivy_payload=_trivy(),
-        waivers=[],
+def _evaluate(*, semgrep: dict | None = None, trivy: dict | None = None, waivers=None) -> dict:
+    return evaluate(
+        semgrep_payload=semgrep or _semgrep(),
+        trivy_payload=trivy or _trivy(),
+        waivers=list(waivers or []),
+        expected_artifact_name=TRIVY_INPUT_ARTIFACT_NAME,
         expected_image_ref=IMAGE_REF,
+        expected_image_id=IMAGE_ID,
     )
+
+
+def _add_tar_bytes(archive: tarfile.TarFile, name: str, payload: bytes) -> None:
+    info = tarfile.TarInfo(name=name)
+    info.size = len(payload)
+    archive.addfile(info, io.BytesIO(payload))
+
+
+def _write_image_archive(
+    path: Path,
+    *,
+    image_ref: str = IMAGE_REF,
+    config_name: str = CONFIG_NAME,
+) -> str:
+    manifest = [
+        {
+            "Config": config_name,
+            "RepoTags": [image_ref],
+            "Layers": [],
+        }
+    ]
+    with tarfile.open(path, "w") as archive:
+        _add_tar_bytes(archive, "manifest.json", json.dumps(manifest).encode("utf-8"))
+        _add_tar_bytes(archive, config_name, b"{}")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_clean_security_gate_passes() -> None:
+    report = _evaluate()
     assert report["blocking_count"] == 0
     assert report["waived_count"] == 0
 
 
 def test_semgrep_error_is_blocking_but_warning_is_not() -> None:
-    report = evaluate(
-        semgrep_payload=_semgrep(
+    report = _evaluate(
+        semgrep=_semgrep(
             {
                 "check_id": "python.security.eval",
                 "path": "apps/api/src/example.py",
@@ -111,19 +152,15 @@ def test_semgrep_error_is_blocking_but_warning_is_not() -> None:
                 "path": "apps/api/src/example.py",
                 "extra": {"severity": "WARNING", "message": "non-blocking review item"},
             },
-        ),
-        trivy_payload=_trivy(),
-        waivers=[],
-        expected_image_ref=IMAGE_REF,
+        )
     )
     assert report["blocking_count"] == 1
     assert report["blocking_findings"][0]["id"] == "python.security.eval"
 
 
 def test_trivy_high_and_critical_are_blocking() -> None:
-    report = evaluate(
-        semgrep_payload=_semgrep(),
-        trivy_payload=_trivy(
+    report = _evaluate(
+        trivy=_trivy(
             {
                 "VulnerabilityID": "CVE-2099-0001",
                 "Severity": "HIGH",
@@ -147,9 +184,7 @@ def test_trivy_high_and_critical_are_blocking() -> None:
                 "InstalledVersion": "1.0",
                 "FixedVersion": "1.1",
             },
-        ),
-        waivers=[],
-        expected_image_ref=IMAGE_REF,
+        )
     )
     assert report["blocking_count"] == 2
     assert {item["severity"] for item in report["blocking_findings"]} == {"HIGH", "CRITICAL"}
@@ -173,9 +208,8 @@ def test_waiver_requires_exact_scanner_id_and_scope_match() -> None:
 
 def test_matching_waiver_moves_finding_out_of_blockers() -> None:
     waiver = _waiver(finding_id="CVE-2099-0200")
-    report = evaluate(
-        semgrep_payload=_semgrep(),
-        trivy_payload=_trivy(
+    report = _evaluate(
+        trivy=_trivy(
             {
                 "VulnerabilityID": "CVE-2099-0200",
                 "Severity": "HIGH",
@@ -185,7 +219,6 @@ def test_matching_waiver_moves_finding_out_of_blockers() -> None:
             }
         ),
         waivers=[waiver],
-        expected_image_ref=IMAGE_REF,
     )
     assert report["blocking_count"] == 0
     assert report["waived_count"] == 1
@@ -258,9 +291,7 @@ def test_invalid_or_duplicate_waivers_fail_closed(tmp_path: Path) -> None:
 
 def test_semgrep_scan_errors_and_schema_damage_fail_closed() -> None:
     with pytest.raises(RuntimeError, match="semgrep reported scan errors"):
-        semgrep_findings(
-            {"results": [], "errors": [{"message": "registry unavailable"}]}
-        )
+        semgrep_findings({"results": [], "errors": [{"message": "registry unavailable"}]})
     with pytest.raises(RuntimeError, match="results array"):
         semgrep_findings({"errors": []})
     with pytest.raises(RuntimeError, match="errors array"):
@@ -281,24 +312,34 @@ def test_semgrep_scan_errors_and_schema_damage_fail_closed() -> None:
 
 
 def test_trivy_schema_damage_or_subject_mismatch_fail_closed() -> None:
+    kwargs = {
+        "expected_artifact_name": TRIVY_INPUT_ARTIFACT_NAME,
+        "expected_image_ref": IMAGE_REF,
+        "expected_image_id": IMAGE_ID,
+    }
     with pytest.raises(RuntimeError, match="SchemaVersion"):
-        trivy_findings({}, expected_image_ref=IMAGE_REF)
+        trivy_findings({}, **kwargs)
     with pytest.raises(RuntimeError, match="artifact mismatch"):
         payload = _trivy()
-        payload["ArtifactName"] = "other:image"
-        trivy_findings(payload, expected_image_ref=IMAGE_REF)
+        payload["ArtifactName"] = "other.tar"
+        trivy_findings(payload, **kwargs)
+    with pytest.raises(RuntimeError, match="ImageID"):
+        payload = _trivy()
+        payload["Metadata"]["ImageID"] = "sha256:" + "2" * 64
+        trivy_findings(payload, **kwargs)
+    with pytest.raises(RuntimeError, match="RepoTags"):
+        payload = _trivy()
+        payload["Metadata"]["RepoTags"] = ["other:image"]
+        trivy_findings(payload, **kwargs)
     with pytest.raises(RuntimeError, match="Vulnerabilities must be null or an array"):
         payload = _trivy()
         payload["Results"][0]["Vulnerabilities"] = {}
-        trivy_findings(payload, expected_image_ref=IMAGE_REF)
+        trivy_findings(payload, **kwargs)
 
 
-def test_scan_subject_binds_image_archive_hash(tmp_path: Path) -> None:
+def test_scan_subject_binds_hash_manifest_tag_and_config(tmp_path: Path) -> None:
     archive = tmp_path / "app-image.tar"
-    archive.write_bytes(b"docker-image-archive")
-    import hashlib
-
-    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    digest = _write_image_archive(archive)
     subject = validate_scan_subject(
         {
             "image_ref": IMAGE_REF,
@@ -308,6 +349,7 @@ def test_scan_subject_binds_image_archive_hash(tmp_path: Path) -> None:
         archive_path=archive,
     )
     assert subject["archive_sha256"] == digest
+    assert subject["trivy_artifact_name"] == TRIVY_INPUT_ARTIFACT_NAME
 
     archive.write_bytes(b"tampered")
     with pytest.raises(RuntimeError, match="archive SHA-256 mismatch"):
@@ -321,12 +363,38 @@ def test_scan_subject_binds_image_archive_hash(tmp_path: Path) -> None:
         )
 
 
+def test_scan_subject_rejects_wrong_archive_tag_or_config(tmp_path: Path) -> None:
+    wrong_tag = tmp_path / "wrong-tag.tar"
+    wrong_tag_digest = _write_image_archive(wrong_tag, image_ref="other:image")
+    with pytest.raises(RuntimeError, match="exactly one manifest entry"):
+        validate_scan_subject(
+            {
+                "image_ref": IMAGE_REF,
+                "image_id": IMAGE_ID,
+                "archive_sha256": wrong_tag_digest,
+            },
+            archive_path=wrong_tag,
+        )
+
+    wrong_config = tmp_path / "wrong-config.tar"
+    wrong_config_digest = _write_image_archive(
+        wrong_config,
+        config_name="2" * 64 + ".json",
+    )
+    with pytest.raises(RuntimeError, match="config mismatch"):
+        validate_scan_subject(
+            {
+                "image_ref": IMAGE_REF,
+                "image_id": IMAGE_ID,
+                "archive_sha256": wrong_config_digest,
+            },
+            archive_path=wrong_config,
+        )
+
+
 def test_scan_subject_requires_full_sha256_image_id(tmp_path: Path) -> None:
     archive = tmp_path / "app-image.tar"
-    archive.write_bytes(b"docker-image-archive")
-    import hashlib
-
-    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    digest = _write_image_archive(archive)
     for bad_image_id in ("sha256:short", "sha256:" + "G" * 64, "not-a-sha256"):
         with pytest.raises(RuntimeError, match="image_id must be sha256"):
             validate_scan_subject(
@@ -339,48 +407,54 @@ def test_scan_subject_requires_full_sha256_image_id(tmp_path: Path) -> None:
             )
 
 
-def test_sbom_must_be_substantive_cyclonedx_bound_to_same_image() -> None:
+def test_sbom_must_be_substantive_cyclonedx_bound_to_archive_and_image() -> None:
     sbom = _sbom()
-    summary = validate_sbom(
-        sbom, expected_image_ref=IMAGE_REF, expected_image_id=IMAGE_ID
-    )
+    kwargs = {
+        "expected_artifact_name": TRIVY_INPUT_ARTIFACT_NAME,
+        "expected_image_ref": IMAGE_REF,
+        "expected_image_id": IMAGE_ID,
+    }
+    summary = validate_sbom(sbom, **kwargs)
     assert summary["bom_format"] == "CycloneDX"
     assert summary["component_count"] == 1
     assert summary["generator"] == "trivy/0.70.0"
+    assert summary["artifact_name"] == TRIVY_INPUT_ARTIFACT_NAME
 
     damaged = json.loads(json.dumps(sbom))
     damaged["components"] = None
     with pytest.raises(RuntimeError, match="components must be an array"):
-        validate_sbom(
-            damaged, expected_image_ref=IMAGE_REF, expected_image_id=IMAGE_ID
-        )
+        validate_sbom(damaged, **kwargs)
 
     empty = json.loads(json.dumps(sbom))
     empty["components"] = []
     with pytest.raises(RuntimeError, match="components must not be empty"):
-        validate_sbom(
-            empty, expected_image_ref=IMAGE_REF, expected_image_id=IMAGE_ID
-        )
+        validate_sbom(empty, **kwargs)
 
     missing_tools = json.loads(json.dumps(sbom))
     del missing_tools["metadata"]["tools"]
     with pytest.raises(RuntimeError, match="metadata.tools must be an object"):
-        validate_sbom(
-            missing_tools, expected_image_ref=IMAGE_REF, expected_image_id=IMAGE_ID
-        )
+        validate_sbom(missing_tools, **kwargs)
 
     wrong_tool_version = json.loads(json.dumps(sbom))
     wrong_tool_version["metadata"]["tools"]["components"][0]["version"] = "0.69.0"
     with pytest.raises(RuntimeError, match="Trivy version mismatch"):
-        validate_sbom(
-            wrong_tool_version,
-            expected_image_ref=IMAGE_REF,
-            expected_image_id=IMAGE_ID,
-        )
+        validate_sbom(wrong_tool_version, **kwargs)
 
-    wrong_image = json.loads(json.dumps(sbom))
-    wrong_image["metadata"]["component"]["name"] = "other:image"
-    with pytest.raises(RuntimeError, match="image reference mismatch"):
-        validate_sbom(
-            wrong_image, expected_image_ref=IMAGE_REF, expected_image_id=IMAGE_ID
-        )
+    wrong_artifact = json.loads(json.dumps(sbom))
+    wrong_artifact["metadata"]["component"]["name"] = "other.tar"
+    with pytest.raises(RuntimeError, match="artifact name mismatch"):
+        validate_sbom(wrong_artifact, **kwargs)
+
+    duplicate_reference = json.loads(json.dumps(sbom))
+    duplicate_reference["metadata"]["component"]["properties"].append(
+        {"name": "aquasecurity:trivy:Reference", "value": IMAGE_REF}
+    )
+    with pytest.raises(RuntimeError, match="must contain exactly"):
+        validate_sbom(duplicate_reference, **kwargs)
+
+    wrong_repo_tag = json.loads(json.dumps(sbom))
+    for item in wrong_repo_tag["metadata"]["component"]["properties"]:
+        if item["name"] == "aquasecurity:trivy:RepoTag":
+            item["value"] = "other:image"
+    with pytest.raises(RuntimeError, match="RepoTag"):
+        validate_sbom(wrong_repo_tag, **kwargs)
