@@ -23,7 +23,9 @@ REQUIRED_WAIVER_FIELDS = {
 }
 ALLOWED_SCANNERS = {"semgrep", "trivy"}
 MAX_WAIVER_LIFETIME_DAYS = 30
+TRIVY_SBOM_VERSION = "0.70.0"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_IMAGE_ID_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True)
@@ -269,8 +271,8 @@ def validate_scan_subject(payload: dict[str, Any], *, archive_path: Path) -> dic
     archive_sha256 = payload.get("archive_sha256")
     if not isinstance(image_ref, str) or not image_ref.strip():
         raise RuntimeError("scan subject missing image_ref")
-    if not isinstance(image_id, str) or not image_id.startswith("sha256:"):
-        raise RuntimeError("scan subject image_id must be a sha256 Docker image ID")
+    if not isinstance(image_id, str) or not _IMAGE_ID_RE.fullmatch(image_id):
+        raise RuntimeError("scan subject image_id must be sha256:<64 lowercase hex>")
     if not isinstance(archive_sha256, str) or not _SHA256_RE.fullmatch(archive_sha256):
         raise RuntimeError("scan subject archive_sha256 must be a lowercase 64-char SHA-256")
     actual_archive_sha = _sha256_file(archive_path)
@@ -296,11 +298,38 @@ def validate_sbom(
     spec_version = payload.get("specVersion")
     if not isinstance(spec_version, str) or not spec_version.strip():
         raise RuntimeError("SBOM specVersion must be present")
-    if not isinstance(payload.get("components"), list):
+    components = payload.get("components")
+    if not isinstance(components, list):
         raise RuntimeError("SBOM components must be an array")
+    if not components:
+        raise RuntimeError("SBOM components must not be empty")
     metadata = payload.get("metadata")
     if not isinstance(metadata, dict):
         raise RuntimeError("SBOM metadata must be an object")
+
+    tools = metadata.get("tools")
+    if not isinstance(tools, dict):
+        raise RuntimeError("SBOM metadata.tools must be an object")
+    tool_components = tools.get("components")
+    if not isinstance(tool_components, list):
+        raise RuntimeError("SBOM metadata.tools.components must be an array")
+    trivy_tool = next(
+        (
+            item
+            for item in tool_components
+            if isinstance(item, dict)
+            and item.get("group") == "aquasecurity"
+            and item.get("name") == "trivy"
+        ),
+        None,
+    )
+    if not isinstance(trivy_tool, dict):
+        raise RuntimeError("SBOM must identify Trivy as the generating tool")
+    if trivy_tool.get("version") != TRIVY_SBOM_VERSION:
+        raise RuntimeError(
+            f"SBOM Trivy version mismatch: expected {TRIVY_SBOM_VERSION}, got {trivy_tool.get('version')!r}"
+        )
+
     component = metadata.get("component")
     if not isinstance(component, dict):
         raise RuntimeError("SBOM metadata.component must be an object")
@@ -328,7 +357,8 @@ def validate_sbom(
     return {
         "bom_format": "CycloneDX",
         "spec_version": spec_version,
-        "component_count": len(payload["components"]),
+        "component_count": len(components),
+        "generator": f"trivy/{TRIVY_SBOM_VERSION}",
     }
 
 
