@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.12-slim-bookworm
 ARG APP_VERSION=1.2.0
 LABEL org.opencontainers.image.title="zhongshu-lead-platform" \
       org.opencontainers.image.version="${APP_VERSION}" \
