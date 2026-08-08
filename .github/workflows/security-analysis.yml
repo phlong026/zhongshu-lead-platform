@@ -109,30 +109,35 @@ jobs:
             exit 0
           fi
 
+          # Pre-create exactly the two files the scanner may modify. The Trivy
+          # container never receives the evidence directory or Docker socket.
+          : > dist/security/trivy-image.json
+          : > dist/security/sbom.cdx.json
+
           set +e
           printf '%s\n' "$TRIVY_IMAGE" > dist/security/trivy-image-ref.txt
           docker pull "$TRIVY_IMAGE" > dist/security/trivy-pull.txt 2>&1
           pull_code=$?
           if [ "$pull_code" -eq 0 ]; then
             docker run --rm \
-              -v "$PWD/dist/security/app-image.tar:/input/app-image.tar:ro" \
-              -v "$PWD/dist/security:/out" \
+              -v "$PWD/dist/security/app-image.tar:/tmp/app-image.tar:ro" \
+              -v "$PWD/dist/security/trivy-image.json:/tmp/trivy-image.json:rw" \
               "$TRIVY_IMAGE" image \
-              --input /input/app-image.tar \
+              --input /tmp/app-image.tar \
               --scanners vuln \
               --severity HIGH,CRITICAL \
               --format json \
-              --output /out/trivy-image.json \
+              --output /tmp/trivy-image.json \
               > dist/security/trivy-console.txt 2>&1
             vuln_code=$?
 
             docker run --rm \
-              -v "$PWD/dist/security/app-image.tar:/input/app-image.tar:ro" \
-              -v "$PWD/dist/security:/out" \
+              -v "$PWD/dist/security/app-image.tar:/tmp/app-image.tar:ro" \
+              -v "$PWD/dist/security/sbom.cdx.json:/tmp/sbom.cdx.json:rw" \
               "$TRIVY_IMAGE" image \
-              --input /input/app-image.tar \
+              --input /tmp/app-image.tar \
               --format cyclonedx \
-              --output /out/sbom.cdx.json \
+              --output /tmp/sbom.cdx.json \
               >> dist/security/trivy-console.txt 2>&1
             sbom_code=$?
           else
