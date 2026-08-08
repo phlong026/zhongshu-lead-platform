@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import re
+import tarfile
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -24,6 +25,7 @@ REQUIRED_WAIVER_FIELDS = {
 ALLOWED_SCANNERS = {"semgrep", "trivy"}
 MAX_WAIVER_LIFETIME_DAYS = 30
 TRIVY_SBOM_VERSION = "0.70.0"
+TRIVY_INPUT_ARTIFACT_NAME = "/tmp/app-image.tar"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _IMAGE_ID_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
@@ -200,16 +202,32 @@ def semgrep_findings(payload: dict[str, Any]) -> list[Finding]:
     return findings
 
 
-def trivy_findings(payload: dict[str, Any], *, expected_image_ref: str) -> list[Finding]:
+def trivy_findings(
+    payload: dict[str, Any],
+    *,
+    expected_artifact_name: str,
+    expected_image_ref: str,
+    expected_image_id: str,
+) -> list[Finding]:
     if payload.get("SchemaVersion") != 2:
         raise RuntimeError("trivy report SchemaVersion must be 2")
     artifact_name = payload.get("ArtifactName")
-    if artifact_name != expected_image_ref:
+    if artifact_name != expected_artifact_name:
         raise RuntimeError(
-            f"trivy report artifact mismatch: expected {expected_image_ref!r}, got {artifact_name!r}"
+            f"trivy report artifact mismatch: expected {expected_artifact_name!r}, got {artifact_name!r}"
         )
     if payload.get("ArtifactType") != "container_image":
         raise RuntimeError("trivy report ArtifactType must be container_image")
+    metadata = payload.get("Metadata")
+    if not isinstance(metadata, dict):
+        raise RuntimeError("trivy report Metadata must be an object")
+    if metadata.get("ImageID") != expected_image_id:
+        raise RuntimeError("trivy report Metadata.ImageID does not match scan subject")
+    repo_tags = metadata.get("RepoTags")
+    if not isinstance(repo_tags, list) or not all(isinstance(item, str) for item in repo_tags):
+        raise RuntimeError("trivy report Metadata.RepoTags must be a string array")
+    if expected_image_ref not in repo_tags:
+        raise RuntimeError("trivy report Metadata.RepoTags does not contain scan subject image_ref")
     results = payload.get("Results")
     if not isinstance(results, list):
         raise RuntimeError("trivy report must contain a Results array")
@@ -265,6 +283,52 @@ def trivy_findings(payload: dict[str, Any], *, expected_image_ref: str) -> list[
     return findings
 
 
+def _validate_docker_archive_identity(
+    archive_path: Path,
+    *,
+    expected_image_ref: str,
+    expected_image_id: str,
+) -> None:
+    expected_config = expected_image_id.removeprefix("sha256:") + ".json"
+    try:
+        with tarfile.open(archive_path, mode="r:*") as archive:
+            manifest_member = archive.getmember("manifest.json")
+            stream = archive.extractfile(manifest_member)
+            if stream is None:
+                raise RuntimeError("Docker archive manifest.json is unreadable")
+            try:
+                manifest = json.load(stream)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(f"Docker archive manifest.json is invalid JSON: {exc}") from exc
+            if not isinstance(manifest, list) or not manifest:
+                raise RuntimeError("Docker archive manifest.json must be a non-empty array")
+            matches = []
+            for index, item in enumerate(manifest):
+                if not isinstance(item, dict):
+                    raise RuntimeError(f"Docker archive manifest entry #{index + 1} must be an object")
+                repo_tags = item.get("RepoTags")
+                if repo_tags is None:
+                    continue
+                if not isinstance(repo_tags, list) or not all(isinstance(tag, str) for tag in repo_tags):
+                    raise RuntimeError(
+                        f"Docker archive manifest entry #{index + 1} RepoTags must be a string array"
+                    )
+                if expected_image_ref in repo_tags:
+                    matches.append(item)
+            if len(matches) != 1:
+                raise RuntimeError(
+                    f"Docker archive must contain exactly one manifest entry for {expected_image_ref!r}"
+                )
+            config_name = matches[0].get("Config")
+            if config_name != expected_config:
+                raise RuntimeError(
+                    f"Docker archive config mismatch: expected {expected_config!r}, got {config_name!r}"
+                )
+            archive.getmember(expected_config)
+    except (tarfile.TarError, KeyError, OSError) as exc:
+        raise RuntimeError(f"invalid Docker image archive: {exc}") from exc
+
+
 def validate_scan_subject(payload: dict[str, Any], *, archive_path: Path) -> dict[str, str]:
     image_ref = payload.get("image_ref")
     image_id = payload.get("image_id")
@@ -280,16 +344,51 @@ def validate_scan_subject(payload: dict[str, Any], *, archive_path: Path) -> dic
         raise RuntimeError(
             f"scanned image archive SHA-256 mismatch: expected {archive_sha256}, got {actual_archive_sha}"
         )
+    resolved_ref = image_ref.strip()
+    resolved_id = image_id.strip()
+    _validate_docker_archive_identity(
+        archive_path,
+        expected_image_ref=resolved_ref,
+        expected_image_id=resolved_id,
+    )
     return {
-        "image_ref": image_ref.strip(),
-        "image_id": image_id.strip(),
+        "image_ref": resolved_ref,
+        "image_id": resolved_id,
         "archive_sha256": archive_sha256,
+        "trivy_artifact_name": TRIVY_INPUT_ARTIFACT_NAME,
     }
+
+
+def _property_values(properties: list[Any]) -> dict[str, list[str]]:
+    values: dict[str, list[str]] = {}
+    for index, item in enumerate(properties):
+        if not isinstance(item, dict):
+            raise RuntimeError(f"SBOM component property #{index + 1} must be an object")
+        name = item.get("name")
+        value = item.get("value")
+        if not isinstance(name, str) or not isinstance(value, str):
+            raise RuntimeError(f"SBOM component property #{index + 1} must contain string name/value")
+        values.setdefault(name, []).append(value)
+    return values
+
+
+def _require_single_property(
+    values: dict[str, list[str]],
+    *,
+    name: str,
+    expected: str,
+) -> None:
+    actual = values.get(name)
+    if actual != [expected]:
+        raise RuntimeError(
+            f"SBOM property {name} must contain exactly {expected!r}, got {actual!r}"
+        )
 
 
 def validate_sbom(
     payload: dict[str, Any],
     *,
+    expected_artifact_name: str,
     expected_image_ref: str,
     expected_image_id: str,
 ) -> dict[str, Any]:
@@ -313,21 +412,18 @@ def validate_sbom(
     tool_components = tools.get("components")
     if not isinstance(tool_components, list):
         raise RuntimeError("SBOM metadata.tools.components must be an array")
-    trivy_tool = next(
-        (
-            item
-            for item in tool_components
-            if isinstance(item, dict)
-            and item.get("group") == "aquasecurity"
-            and item.get("name") == "trivy"
-        ),
-        None,
-    )
-    if not isinstance(trivy_tool, dict):
-        raise RuntimeError("SBOM must identify Trivy as the generating tool")
-    if trivy_tool.get("version") != TRIVY_SBOM_VERSION:
+    trivy_tools = [
+        item
+        for item in tool_components
+        if isinstance(item, dict)
+        and item.get("group") == "aquasecurity"
+        and item.get("name") == "trivy"
+    ]
+    if len(trivy_tools) != 1:
+        raise RuntimeError("SBOM must identify exactly one Trivy generating tool")
+    if trivy_tools[0].get("version") != TRIVY_SBOM_VERSION:
         raise RuntimeError(
-            f"SBOM Trivy version mismatch: expected {TRIVY_SBOM_VERSION}, got {trivy_tool.get('version')!r}"
+            f"SBOM Trivy version mismatch: expected {TRIVY_SBOM_VERSION}, got {trivy_tools[0].get('version')!r}"
         )
 
     component = metadata.get("component")
@@ -335,30 +431,35 @@ def validate_sbom(
         raise RuntimeError("SBOM metadata.component must be an object")
     if component.get("type") != "container":
         raise RuntimeError("SBOM metadata.component.type must be container")
-    if component.get("name") != expected_image_ref:
+    if component.get("name") != expected_artifact_name:
         raise RuntimeError(
-            f"SBOM image reference mismatch: expected {expected_image_ref!r}, got {component.get('name')!r}"
+            f"SBOM artifact name mismatch: expected {expected_artifact_name!r}, got {component.get('name')!r}"
         )
     properties = component.get("properties")
     if not isinstance(properties, list):
         raise RuntimeError("SBOM metadata.component.properties must be an array")
-    property_map: dict[str, str] = {}
-    for index, item in enumerate(properties):
-        if not isinstance(item, dict):
-            raise RuntimeError(f"SBOM component property #{index + 1} must be an object")
-        name = item.get("name")
-        value = item.get("value")
-        if isinstance(name, str) and isinstance(value, str):
-            property_map[name] = value
-    if property_map.get("aquasecurity:trivy:Reference") != expected_image_ref:
-        raise RuntimeError("SBOM Trivy reference does not match scanned image")
-    if property_map.get("aquasecurity:trivy:ImageID") != expected_image_id:
-        raise RuntimeError("SBOM Trivy ImageID does not match scanned image")
+    property_values = _property_values(properties)
+    _require_single_property(
+        property_values,
+        name="aquasecurity:trivy:Reference",
+        expected=expected_image_ref,
+    )
+    _require_single_property(
+        property_values,
+        name="aquasecurity:trivy:RepoTag",
+        expected=expected_image_ref,
+    )
+    _require_single_property(
+        property_values,
+        name="aquasecurity:trivy:ImageID",
+        expected=expected_image_id,
+    )
     return {
         "bom_format": "CycloneDX",
         "spec_version": spec_version,
         "component_count": len(components),
         "generator": f"trivy/{TRIVY_SBOM_VERSION}",
+        "artifact_name": expected_artifact_name,
     }
 
 
@@ -367,10 +468,15 @@ def evaluate(
     semgrep_payload: dict[str, Any],
     trivy_payload: dict[str, Any],
     waivers: list[Waiver],
+    expected_artifact_name: str,
     expected_image_ref: str,
+    expected_image_id: str,
 ) -> dict[str, Any]:
     findings = semgrep_findings(semgrep_payload) + trivy_findings(
-        trivy_payload, expected_image_ref=expected_image_ref
+        trivy_payload,
+        expected_artifact_name=expected_artifact_name,
+        expected_image_ref=expected_image_ref,
+        expected_image_id=expected_image_id,
     )
     blockers: list[Finding] = []
     waived: list[tuple[Finding, Waiver]] = []
@@ -441,6 +547,7 @@ def main() -> int:
         )
         sbom_summary = validate_sbom(
             _read_json(Path(args.sbom)),
+            expected_artifact_name=subject["trivy_artifact_name"],
             expected_image_ref=subject["image_ref"],
             expected_image_id=subject["image_id"],
         )
@@ -449,7 +556,9 @@ def main() -> int:
             semgrep_payload=_read_json(Path(args.semgrep)),
             trivy_payload=_read_json(Path(args.trivy)),
             waivers=waivers,
+            expected_artifact_name=subject["trivy_artifact_name"],
             expected_image_ref=subject["image_ref"],
+            expected_image_id=subject["image_id"],
         )
         report.update(
             {
