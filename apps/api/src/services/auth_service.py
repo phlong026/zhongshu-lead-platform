@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import and_, case, or_, select
+from sqlalchemy import and_, case, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -33,11 +33,7 @@ class InternalAuthResult:
 
 
 class InternalAuthError(AppError):
-    """Authentication error carrying server-only audit context.
-
-    The audit fields intentionally do not use ``AppError.details`` because details
-    are returned to the client by the global error handler.
-    """
+    """Authentication error carrying server-only audit context."""
 
     def __init__(
         self,
@@ -84,12 +80,6 @@ def _generic_login_error(
     locked_until: datetime | None = None,
     lock_released: bool = False,
 ) -> InternalAuthError:
-    """Return one indistinguishable client contract for all credential failures.
-
-    Account existence, disabled state and lock state remain server-only audit facts.
-    Edge/IP rate limiting may still return HTTP 429 before the request reaches the API.
-    """
-
     return InternalAuthError(
         "AUTH_LOGIN_FAILED",
         "用户名或密码错误",
@@ -108,12 +98,6 @@ def _record_failed_attempt_sqlite(
     user_id: str,
     now: datetime,
 ) -> tuple[int, datetime | None]:
-    """Atomically increment durable failure state on SQLite.
-
-    SQLite ignores ``FOR UPDATE``. A single upsert avoids races both when the
-    state row is first created and when concurrent requests increment a row.
-    """
-
     table = AuthLoginState.__table__
     window_start = now - timedelta(minutes=settings.login_failure_window_minutes)
     new_lock_until = now + timedelta(minutes=settings.login_lock_minutes)
@@ -160,11 +144,8 @@ def _record_failed_attempt_sqlite(
 def authenticate_internal(db: Session, username: str, password: str) -> InternalAuthResult:
     now = utcnow()
     normalized_username = username.strip()
-    user = db.scalar(
-        select(User).where(User.username == normalized_username).with_for_update()
-    )
+    user = db.scalar(select(User).where(User.username == normalized_username).with_for_update())
     if user is None:
-        # Keep the unknown-user path computationally closer to a real password check.
         verify_password(password, _DUMMY_PASSWORD_HASH)
         raise _generic_login_error(audit_action="AUTH_LOGIN_FAILED")
 
@@ -224,9 +205,6 @@ def authenticate_internal(db: Session, username: str, password: str) -> Internal
         )
 
     if user.status != "ACTIVE":
-        # Expired locks/windows must be consumed exactly once even when the account
-        # is disabled; otherwise every later valid-password attempt emits another
-        # AUTH_LOGIN_UNLOCKED audit for the same historical lock.
         if state is not None and reset_state:
             _clear_login_state(state)
         raise _generic_login_error(
@@ -272,6 +250,46 @@ def _validate_invite(db: Session, raw_token: str) -> InviteToken:
     return invite
 
 
+def _consume_invite(
+    db: Session,
+    raw_token: str,
+    *,
+    expected_company_id: str | None = None,
+) -> InviteToken:
+    """Atomically consume a one-time invite.
+
+    The conditional UPDATE is the concurrency boundary for both PostgreSQL and
+    SQLite. Exactly one transaction can transition used_at from NULL.
+    """
+
+    now = utcnow()
+    filters = [
+        InviteToken.token_hash == hash_token(raw_token),
+        InviteToken.revoked_at.is_(None),
+        InviteToken.used_at.is_(None),
+        InviteToken.expires_at > now,
+    ]
+    if expected_company_id is not None:
+        filters.append(InviteToken.company_id == expected_company_id)
+    row = db.execute(
+        update(InviteToken)
+        .where(*filters)
+        .values(used_at=now)
+        .returning(InviteToken.id)
+        .execution_options(synchronize_session=False)
+    ).first()
+    if row is None:
+        raise AppError("AUTH_INVITE_INVALID", "邀请已失效，请联系平台", 400)
+    db.expire_all()
+    invite = db.get(InviteToken, row.id)
+    if invite is None:
+        raise AppError("AUTH_INVITE_INVALID", "邀请已失效，请联系平台", 400)
+    company = db.get(Company, invite.company_id)
+    if not company or company.status != "ACTIVE":
+        raise AppError("AUTH_COMPANY_DISABLED", "加盟商公司不可用", 403)
+    return invite
+
+
 def login_or_bind_wechat(
     db: Session,
     *,
@@ -292,7 +310,7 @@ def login_or_bind_wechat(
             invite = _validate_invite(db, invite_token)
             if invite.company_id != company.id:
                 raise AppError("AUTH_WECHAT_BOUND_OTHER_COMPANY", "该微信已绑定其他加盟商公司", 409)
-            invite.used_at = utcnow()
+            _consume_invite(db, invite_token, expected_company_id=company.id)
         identity.unionid = unionid or identity.unionid
         identity.nickname = nickname or identity.nickname
         user.last_login_at = utcnow()
@@ -301,7 +319,7 @@ def login_or_bind_wechat(
 
     if not invite_token:
         raise AppError("AUTH_WECHAT_NOT_BOUND", "该微信尚未绑定加盟商，请使用邀请链接进入", 403)
-    invite = _validate_invite(db, invite_token)
+    invite = _consume_invite(db, invite_token)
     company = db.get(Company, invite.company_id)
     assert company is not None
     user = User(
@@ -315,7 +333,6 @@ def login_or_bind_wechat(
     assign_role(db, user, "FRANCHISE_OWNER")
     db.add(WechatIdentity(openid=openid, unionid=unionid, nickname=nickname, user_id=user.id, subscribed=False))
     company.primary_user_id = user.id
-    invite.used_at = utcnow()
     db.flush()
     token = create_access_token(user.id, user.session_version, role_codes_for_user(user), company.id)
     return user, token
