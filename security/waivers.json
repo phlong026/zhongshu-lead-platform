@@ -5,9 +5,10 @@
       "scanner": "semgrep",
       "id": "python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args",
       "scope": "scripts/verify_production.py",
-      "reason": "Production verification invokes Docker with an argv list and shell=False; environment-derived values are passed as individual arguments, not evaluated by a shell. Keep under review until this operational helper is replaced by a typed Docker client or the rule is re-evaluated.",
+      "reason": "Production verification invokes Docker with an argv list and shell=False; environment-derived values are passed as individual arguments, not evaluated by a shell. Re-review this exact helper rather than suppressing the rule repository-wide.",
       "owner": "platform-security",
-      "expires_on": "2026-11-30"
+      "created_on": "2026-08-08",
+      "expires_on": "2026-09-07"
     },
     {
       "scanner": "trivy",
@@ -15,6 +16,7 @@
       "scope": "cryptography",
       "reason": "Temporary isolation waiver for Hardening H12 #61. The scanner reports cryptography 49.0.0 and fixed version 50.0.0; H12 must upgrade and remove this waiver before expiry.",
       "owner": "H12-#61",
+      "created_on": "2026-08-08",
       "expires_on": "2026-08-10"
     }
   ]
