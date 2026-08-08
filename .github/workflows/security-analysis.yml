@@ -1,0 +1,147 @@
+name: Security Analysis
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-analysis-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sast-supply-chain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      APP_IMAGE: zhongshu-security:${{ github.sha }}
+      TRIVY_IMAGE: aquasec/trivy:0.70.0
+      SEMGREP_SEND_METRICS: "off"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install pinned SAST tool
+        run: pip install -r requirements-security.txt
+
+      - name: Run Semgrep Python and JavaScript SAST
+        shell: bash
+        run: |
+          mkdir -p dist/security
+          set +e
+          semgrep scan \
+            --metrics off \
+            --config p/security-audit \
+            --config p/owasp-top-ten \
+            --include '*.py' \
+            --include '*.js' \
+            --exclude '.git' \
+            --exclude 'dist' \
+            --exclude 'storage' \
+            --json \
+            --output dist/security/semgrep.json \
+            . > dist/security/semgrep-console.txt 2>&1
+          code=$?
+          set -e
+          printf '%s\n' "$code" > dist/security/semgrep-exit-code.txt
+          cat dist/security/semgrep-console.txt
+          exit 0
+
+      - name: Build production Docker image for scanning
+        shell: bash
+        run: |
+          mkdir -p dist/security
+          set +e
+          docker build --pull --build-arg APP_VERSION=1.2.0 -t "$APP_IMAGE" . \
+            > dist/security/image-build.txt 2>&1
+          code=$?
+          set -e
+          printf '%s\n' "$code" > dist/security/image-build-exit-code.txt
+          cat dist/security/image-build.txt
+          exit 0
+
+      - name: Scan production image and generate CycloneDX SBOM
+        shell: bash
+        run: |
+          mkdir -p dist/security
+          build_code="$(cat dist/security/image-build-exit-code.txt 2>/dev/null || printf '125')"
+          if [ "$build_code" != "0" ]; then
+            printf '125\n' > dist/security/trivy-exit-code.txt
+            printf 'production image build failed; Trivy scan skipped\n' > dist/security/trivy-console.txt
+            cat dist/security/trivy-console.txt
+            exit 0
+          fi
+
+          set +e
+          docker pull "$TRIVY_IMAGE" > dist/security/trivy-pull.txt 2>&1
+          pull_code=$?
+          if [ "$pull_code" -eq 0 ]; then
+            docker run --rm \
+              -v /var/run/docker.sock:/var/run/docker.sock \
+              -v "$PWD/dist/security:/out" \
+              "$TRIVY_IMAGE" image \
+              --scanners vuln \
+              --severity HIGH,CRITICAL \
+              --format json \
+              --output /out/trivy-image.json \
+              "$APP_IMAGE" > dist/security/trivy-console.txt 2>&1
+            vuln_code=$?
+
+            docker run --rm \
+              -v /var/run/docker.sock:/var/run/docker.sock \
+              -v "$PWD/dist/security:/out" \
+              "$TRIVY_IMAGE" image \
+              --format cyclonedx \
+              --output /out/sbom.cdx.json \
+              "$APP_IMAGE" >> dist/security/trivy-console.txt 2>&1
+            sbom_code=$?
+          else
+            vuln_code="$pull_code"
+            sbom_code="$pull_code"
+            cp dist/security/trivy-pull.txt dist/security/trivy-console.txt
+          fi
+          set -e
+
+          if [ "$vuln_code" -ne 0 ]; then
+            code="$vuln_code"
+          elif [ "$sbom_code" -ne 0 ]; then
+            code="$sbom_code"
+          else
+            code=0
+          fi
+          printf '%s\n' "$code" > dist/security/trivy-exit-code.txt
+          cat dist/security/trivy-console.txt
+          exit 0
+
+      - name: Enforce SAST image vulnerability and waiver gate
+        if: always()
+        run: |
+          python scripts/check_security_gate.py \
+            --semgrep dist/security/semgrep.json \
+            --semgrep-exit dist/security/semgrep-exit-code.txt \
+            --trivy dist/security/trivy-image.json \
+            --trivy-exit dist/security/trivy-exit-code.txt \
+            --waivers security/waivers.json \
+            --output dist/security/security-gate.json
+
+      - name: Upload security evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-analysis-${{ github.run_id }}
+          path: dist/security
+          if-no-files-found: error
+          retention-days: 30
