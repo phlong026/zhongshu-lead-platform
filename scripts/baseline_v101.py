@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import MetaData, Table, create_engine, func, inspect, select
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -40,27 +40,38 @@ def collect_v101_baseline(database_url: str) -> dict[str, Any]:
                 "errors": [{"code": "V101_TABLE_MISSING", "tables": missing}],
                 "metrics": {},
             }
+
+        metadata = MetaData()
+        tables = {
+            name: Table(name, metadata, autoload_with=engine)
+            for name in _REQUIRED_TABLES
+        }
         metrics: dict[str, Any] = {"table_counts": {}, "status_counts": {}}
         with engine.connect() as connection:
-            for table in _REQUIRED_TABLES:
-                metrics["table_counts"][table] = int(
-                    connection.scalar(text(f'SELECT COUNT(*) FROM "{table}"')) or 0
+            for name, table in tables.items():
+                metrics["table_counts"][name] = int(
+                    connection.scalar(select(func.count()).select_from(table)) or 0
                 )
-            for table in _STATUS_TABLES:
+            for name in _STATUS_TABLES:
+                table = tables[name]
+                status = table.c.status
                 rows = connection.execute(
-                    text(
-                        f'SELECT status, COUNT(*) AS count FROM "{table}" '
-                        "GROUP BY status ORDER BY status"
-                    )
+                    select(status, func.count().label("count"))
+                    .select_from(table)
+                    .group_by(status)
+                    .order_by(status)
                 ).all()
-                metrics["status_counts"][table] = {
-                    str(status): int(count) for status, count in rows
+                metrics["status_counts"][name] = {
+                    str(value): int(count) for value, count in rows
                 }
+
+            ledger = tables["points_ledgers"]
+            accounts = tables["points_accounts"]
             metrics["points_ledger_delta_sum"] = int(
-                connection.scalar(text("SELECT COALESCE(SUM(delta), 0) FROM points_ledgers")) or 0
+                connection.scalar(select(func.coalesce(func.sum(ledger.c.delta), 0))) or 0
             )
             metrics["points_account_balance_sum"] = int(
-                connection.scalar(text("SELECT COALESCE(SUM(balance), 0) FROM points_accounts")) or 0
+                connection.scalar(select(func.coalesce(func.sum(accounts.c.balance), 0))) or 0
             )
         return {"valid": True, "errors": [], "metrics": metrics}
     finally:
