@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 40
     env:
       APP_IMAGE: zhongshu-security:${{ github.sha }}
-      TRIVY_IMAGE: aquasec/trivy:0.70.0
+      TRIVY_IMAGE: aquasec/trivy@sha256:85e87be1a96459c38a4eea47dc64eb2d342bb14cd4b4cef96adcf6ff03378b7c
       SEMGREP_SEND_METRICS: "off"
     steps:
       - name: Checkout
@@ -60,53 +60,80 @@ jobs:
           cat dist/security/semgrep-console.txt
           exit 0
 
-      - name: Build production Docker image for scanning
+      - name: Build and freeze production image subject
         shell: bash
         run: |
           mkdir -p dist/security
           set +e
-          docker build --pull --build-arg APP_VERSION=1.2.0 -t "$APP_IMAGE" . \
-            > dist/security/image-build.txt 2>&1
+          (
+            set -e
+            docker build --pull --build-arg APP_VERSION=1.2.0 -t "$APP_IMAGE" .
+            docker save "$APP_IMAGE" -o dist/security/app-image.tar
+            image_id="$(docker image inspect "$APP_IMAGE" --format '{{.Id}}')"
+            archive_sha256="$(sha256sum dist/security/app-image.tar | awk '{print $1}')"
+            python - "$APP_IMAGE" "$image_id" "$archive_sha256" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          image_ref, image_id, archive_sha256 = sys.argv[1:]
+          Path("dist/security/scan-subject.json").write_text(
+              json.dumps(
+                  {
+                      "image_ref": image_ref,
+                      "image_id": image_id,
+                      "archive_sha256": archive_sha256,
+                  },
+                  indent=2,
+              )
+              + "\n",
+              encoding="utf-8",
+          )
+          PY
+          ) > dist/security/image-build.txt 2>&1
           code=$?
           set -e
           printf '%s\n' "$code" > dist/security/image-build-exit-code.txt
           cat dist/security/image-build.txt
           exit 0
 
-      - name: Scan production image and generate CycloneDX SBOM
+      - name: Scan frozen image archive and generate CycloneDX SBOM
         shell: bash
         run: |
           mkdir -p dist/security
           build_code="$(cat dist/security/image-build-exit-code.txt 2>/dev/null || printf '125')"
           if [ "$build_code" != "0" ]; then
             printf '125\n' > dist/security/trivy-exit-code.txt
-            printf 'production image build failed; Trivy scan skipped\n' > dist/security/trivy-console.txt
+            printf 'production image build/freeze failed; Trivy scan skipped\n' > dist/security/trivy-console.txt
             cat dist/security/trivy-console.txt
             exit 0
           fi
 
           set +e
+          printf '%s\n' "$TRIVY_IMAGE" > dist/security/trivy-image-ref.txt
           docker pull "$TRIVY_IMAGE" > dist/security/trivy-pull.txt 2>&1
           pull_code=$?
           if [ "$pull_code" -eq 0 ]; then
             docker run --rm \
-              -v /var/run/docker.sock:/var/run/docker.sock \
+              -v "$PWD/dist/security/app-image.tar:/input/app-image.tar:ro" \
               -v "$PWD/dist/security:/out" \
               "$TRIVY_IMAGE" image \
+              --input /input/app-image.tar \
               --scanners vuln \
               --severity HIGH,CRITICAL \
               --format json \
               --output /out/trivy-image.json \
-              "$APP_IMAGE" > dist/security/trivy-console.txt 2>&1
+              > dist/security/trivy-console.txt 2>&1
             vuln_code=$?
 
             docker run --rm \
-              -v /var/run/docker.sock:/var/run/docker.sock \
+              -v "$PWD/dist/security/app-image.tar:/input/app-image.tar:ro" \
               -v "$PWD/dist/security:/out" \
               "$TRIVY_IMAGE" image \
+              --input /input/app-image.tar \
               --format cyclonedx \
               --output /out/sbom.cdx.json \
-              "$APP_IMAGE" >> dist/security/trivy-console.txt 2>&1
+              >> dist/security/trivy-console.txt 2>&1
             sbom_code=$?
           else
             vuln_code="$pull_code"
@@ -126,7 +153,7 @@ jobs:
           cat dist/security/trivy-console.txt
           exit 0
 
-      - name: Enforce SAST image vulnerability and waiver gate
+      - name: Enforce SAST image vulnerability SBOM and waiver gate
         if: always()
         run: |
           python scripts/check_security_gate.py \
@@ -134,8 +161,15 @@ jobs:
             --semgrep-exit dist/security/semgrep-exit-code.txt \
             --trivy dist/security/trivy-image.json \
             --trivy-exit dist/security/trivy-exit-code.txt \
+            --sbom dist/security/sbom.cdx.json \
+            --subject dist/security/scan-subject.json \
+            --image-archive dist/security/app-image.tar \
             --waivers security/waivers.json \
             --output dist/security/security-gate.json
+
+      - name: Remove transient image archive
+        if: always()
+        run: rm -f dist/security/app-image.tar
 
       - name: Upload security evidence
         if: always()
