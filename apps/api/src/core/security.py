@@ -31,6 +31,29 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
+def ensure_canonical_jwt(token: str) -> None:
+    """Reject alternate Base64URL spellings of an otherwise identical JWT.
+
+    JWT segments are unpadded Base64URL. Some decoders tolerate non-zero padding
+    bits, allowing a different token string to decode to the same bytes. System
+    tokens are always emitted canonically, so accepting alternate encodings adds
+    ambiguity without compatibility benefit.
+    """
+
+    parts = token.split(".")
+    if len(parts) != 3 or any(not part for part in parts):
+        raise jwt.InvalidTokenError("invalid jwt serialization")
+    for segment in parts:
+        try:
+            padded = segment + ("=" * (-len(segment) % 4))
+            decoded = base64.urlsafe_b64decode(padded.encode("ascii"))
+            canonical = base64.urlsafe_b64encode(decoded).rstrip(b"=").decode("ascii")
+        except Exception as exc:
+            raise jwt.InvalidTokenError("invalid jwt base64url encoding") from exc
+        if not hmac.compare_digest(segment, canonical):
+            raise jwt.InvalidTokenError("non-canonical jwt base64url encoding")
+
+
 def create_access_token(subject: str, session_version: int, roles: list[str], company_id: str | None = None) -> str:
     now = datetime.now(timezone.utc)
     payload: dict[str, Any] = {
@@ -46,6 +69,7 @@ def create_access_token(subject: str, session_version: int, roles: list[str], co
 
 
 def decode_access_token(token: str) -> dict[str, Any]:
+    ensure_canonical_jwt(token)
     return jwt.decode(token, settings.jwt_secret, algorithms=["HS256"])
 
 
@@ -115,6 +139,7 @@ def create_signed_state(payload: dict[str, Any], *, expires_minutes: int = 10, p
 
 
 def decode_signed_state(token: str, *, purpose: str = "state") -> dict[str, Any]:
+    ensure_canonical_jwt(token)
     data = jwt.decode(token, settings.jwt_secret, algorithms=["HS256"])
     if data.get("purpose") != purpose:
         raise jwt.InvalidTokenError("state purpose mismatch")
