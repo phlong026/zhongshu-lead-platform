@@ -60,7 +60,7 @@ async function renderPlatformLeads(){
 }
 
 function detailMarkup(item){
-  const fields={客户姓名:item.customer_name,联系电话:item.phone||item.phone_masked,服务地区:`${item.city||''} ${item.district||''}`,地区编码:item.region_code,来源渠道:item.source_channel,业务类目:item.category_code,品牌:item.brand_code,客户需求:item.need_summary,预算下限:item.budget_min,预算上限:item.budget_max,授权确认:item.consent_confirmed?'已确认':'未确认',客资状态:labels[item.status]||item.status,资料初审:labels[item.review_status]||item.review_status,去重结论:labels[item.duplicate_status]||item.duplicate_status,待处理原因:item.pending_reason,驳回/审核说明:item.review_note,提交时间:fmt(item.submitted_at),更新时间:fmt(item.updated_at)};
+  const fields={客户姓名:item.customer_name,联系电话:item.phone||item.phone_masked,服务地区:`${item.city||''} ${item.district||''}`,地区编码:item.region_code,来源渠道:item.source_channel,业务类目:item.category_code,品牌:item.brand_code,客户需求:item.need_summary,预算下限:item.budget_min,预算上限:item.budget_max,授权确认:item.consent_confirmed?'已确认':'未确认',客资状态:labels[item.status]||item.status,资料初审:labels[item.review_status]||item.review_status,去重结论:labels[item.duplicate_status]||item.duplicate_status,待处理原因:item.pending_reason,"驳回/审核说明":item.review_note,提交时间:fmt(item.submitted_at),更新时间:fmt(item.updated_at)};
   return `<dl class="v12-detail">${Object.entries(fields).map(([name,val])=>`<dt>${esc(name)}</dt><dd>${esc(val??'--')}</dd>`).join('')}</dl>`;
 }
 function showPlatformDetail(id){const item=state.platformItems.find(row=>row.id===id);if(item)openDrawer('平台客资详情',detailMarkup(item));}
