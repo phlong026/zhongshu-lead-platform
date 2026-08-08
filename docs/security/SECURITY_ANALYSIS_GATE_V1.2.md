@@ -13,16 +13,17 @@ H07 将现有 `pip-audit`、secret scan、pytest 安全负例之外的静态应�
 H07 当前采用：
 
 1. Semgrep 官方 scanner 镜像以 linux/amd64 immutable digest 固定，作为 Python + JavaScript SAST 执行主体；
-2. Semgrep 官方 `semgrep-rules` 仓库固定到已验证 commit `40b8c63f75dc7c22c8a77482d73bfb864b146f7e`，运行时不再使用可变 Registry `p/...` 配置；
+2. Semgrep 官方 `semgrep-rules` 仓库固定到 verified commit `40b8c63f75dc7c22c8a77482d73bfb864b146f7e`，运行时不再使用可变 Registry `p/...` 配置；
 3. SAST 仅加载当前技术栈相关安全规则目录：Python lang / SQLAlchemy / FastAPI / boto3 / cryptography / JWT，以及 JavaScript lang / browser / Express / audit；
 4. 项目源码与 Semgrep 规则目录均只读挂载，scanner 只获得预创建 `semgrep.json` 单文件写权限；
 5. Semgrep 后执行 Git worktree integrity gate，scanner 若修改 tracked 或非忽略文件则立即失败；
 6. 根目录 `Dockerfile` 构建真实生产候选镜像；
 7. `docker save` 将候选镜像冻结为 tar archive，并记录 Docker ImageID 与 archive SHA-256；
-8. Trivy 使用不可变 digest 固定的官方 scanner 镜像，对冻结 tar 执行漏洞扫描和 CycloneDX SBOM 生成；
-9. Trivy 不挂载 `/var/run/docker.sock`，输入 tar 只读，单次容器仅能写一个预创建输出文件；
-10. 仓库内 `check_security_gate.py` 统一校验 scanner schema、scan subject、SBOM、finding 与 waiver；
-11. 所有扫描原始输出和判定结果作为 GitHub Actions artifact 保留 30 天。
+8. gate 直接读取 Docker archive `manifest.json`，要求 RepoTags 包含目标 image_ref，Config 文件名与 ImageID digest 一致；
+9. Trivy 使用不可变 digest 固定的官方 scanner 镜像，对冻结 tar 执行漏洞扫描和 CycloneDX SBOM 生成；
+10. Trivy 不挂载 `/var/run/docker.sock`，输入 tar 只读，单次容器仅能写一个预创建输出文件；
+11. 仓库内 `check_security_gate.py` 统一校验 scanner schema、Docker archive identity、Trivy Metadata、SBOM、finding 与 waiver；
+12. 所有扫描原始输出和判定结果作为 GitHub Actions artifact 保留 30 天。
 
 当仓库未来启用 GitHub Code Security/Advanced Security 后，应在不移除现有门禁的前提下增加 CodeQL，并将 SARIF 结果纳入同一上线证据包。
 
@@ -48,7 +49,7 @@ Security Analysis 使用：
 - checkout detached HEAD；
 - `rev-parse HEAD` 必须精确等于固定 SHA；
 - 执行 `git fsck --strict`；
-- 将规则 commit 与 tree hash写入安全 evidence；
+- 将 rules commit 与 tree hash 写入安全 evidence；
 - 不使用 `p/security-audit`、`p/owasp-top-ten` 等运行时可变 Registry config。
 
 当前固定规则目录：
@@ -77,6 +78,21 @@ Security Analysis 使用：
 该 digest 对应 H07 评审时确认的 Trivy 0.70.0 linux/amd64 镜像。
 
 Trivy 扫描对象是当前提交构建后冻结的 `app-image.tar`，不从 registry 或 Docker socket 重新解析另一个同名镜像。
+
+### Archive 模式身份语义
+
+Trivy 官方 archive 实现中，`--input /tmp/app-image.tar` 的 artifact name 是 scanner 内部输入路径 `/tmp/app-image.tar`，不是原 Docker tag。因此 H07 不再错误要求 `ArtifactName == image_ref`。
+
+身份闭环改为：
+
+1. `scan-subject.json` 记录预扫描的 `image_ref`、完整 Docker `ImageID`、archive SHA-256；
+2. gate 自己打开 Docker tar 的 `manifest.json`，确认 RepoTags 精确包含 `image_ref`；
+3. manifest `Config` 必须等于 `ImageID` 去掉 `sha256:` 后加 `.json`，且该 config member 必须存在于 tar；
+4. Trivy JSON `ArtifactName` 必须等于固定 scanner archive path `/tmp/app-image.tar`；
+5. Trivy JSON `Metadata.ImageID` 必须等于 subject ImageID；
+6. Trivy JSON `Metadata.RepoTags` 必须包含 subject image_ref；
+7. CycloneDX `metadata.component.name` 必须等于 `/tmp/app-image.tar`；
+8. SBOM properties 中 `Reference`、`RepoTag` 必须各自精确且唯一地等于 subject image_ref，`ImageID` 必须精确且唯一地等于 subject ImageID。
 
 任何 scanner、rule commit、base digest、Trivy digest 升级必须走 PR、CI 和 Review，不允许在工作流中静默漂移。
 
@@ -110,13 +126,15 @@ WARNING/INFO 仍保留在原始 JSON 中供人工 Review，但不会单独使 CI
 - 生产 Docker 镜像构建或 `docker save` 失败；
 - image archive SHA-256 与 `scan-subject.json` 不一致；
 - Docker ImageID 不是完整 `sha256:<64 lowercase hex>`；
+- Docker archive `manifest.json` 缺失/损坏/存在目标 tag 歧义；
+- Docker archive RepoTags、Config digest 与 subject identity 不一致；
 - Trivy 工具拉取或 tar archive 扫描失败；
-- Trivy JSON 的 SchemaVersion / ArtifactName / ArtifactType / Results 结构异常；
+- Trivy JSON 的 SchemaVersion / archive ArtifactName / ArtifactType / Metadata.ImageID / Metadata.RepoTags / Results 结构异常；
 - SBOM 缺失、JSON 损坏或不是 CycloneDX；
 - SBOM `components` 为空；
-- SBOM 未声明 `aquasecurity/trivy` 0.70.0 为生成工具；
-- SBOM `metadata.component` 不是 container；
-- SBOM 的 Trivy `Reference` / `ImageID` 与同一次 scan subject 不一致；
+- SBOM 未声明 `aquasecurity/trivy` 0.70.0 为唯一生成工具；
+- SBOM `metadata.component` 不是 container 或 component name 不是固定 archive path；
+- SBOM 的 Trivy `Reference` / `RepoTag` / `ImageID` 不唯一或与同一次 scan subject 不一致；
 - scanner exit-code 证据缺失；
 - waiver registry 结构无效、存在过期/未来创建/超长期/重复 waiver。
 
@@ -185,7 +203,7 @@ Security Analysis artifact 至少包含：
 - `sbom.cdx.json`；
 - `security-gate.json`。
 
-`app-image.tar` 只作为 runner 内瞬时扫描对象。统一 gate 校验 tar SHA-256 后删除该大文件，不把镜像 tar 重复上传为 Actions artifact；正式发布镜像仍通过不可变 registry digest 管理。
+`app-image.tar` 只作为 runner 内瞬时扫描对象。统一 gate 校验 tar SHA-256 和 archive manifest identity 后删除该大文件，不把镜像 tar 重复上传为 Actions artifact；正式发布镜像仍通过不可变 registry digest 管理。
 
 即使扫描失败，工作流也要尽可能保留已生成的失败证据，然后由统一 gate 返回失败。
 
@@ -202,7 +220,7 @@ Security Analysis artifact 至少包含：
 - Security Analysis 未在真实 runner 上成功执行或失败；
 - 存在未豁免的 Semgrep ERROR；
 - 存在未豁免的 Trivy HIGH/CRITICAL；
-- scanner/rules/SBOM/scan subject 证据结构或绑定校验失败；
+- scanner/rules/Docker archive/SBOM/scan subject 证据结构或身份绑定校验失败；
 - 存在过期、超期或通配 scope waiver；
 - 当前生产候选镜像没有对应 CycloneDX SBOM；
 - PR 仍有未解决 P0/P1/P2 Review finding。
