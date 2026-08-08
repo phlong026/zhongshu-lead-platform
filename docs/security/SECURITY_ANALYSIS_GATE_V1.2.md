@@ -12,23 +12,73 @@ H07 将现有 `pip-audit`、secret scan、pytest 安全负例之外的静态应�
 
 H07 当前采用：
 
-1. Semgrep 作为 Python + JavaScript SAST；
-2. 根目录 `Dockerfile` 构建真实生产候选镜像；
-3. `docker save` 将该候选镜像冻结为 tar archive，并记录 Docker ImageID 与 archive SHA-256；
-4. Trivy 使用不可变 digest 固定的官方 scanner 镜像，对冻结 tar 执行漏洞扫描和 CycloneDX SBOM 生成；
-5. Trivy 不挂载 `/var/run/docker.sock`，scanner 不能控制宿主 Docker daemon；
-6. 仓库内 `check_security_gate.py` 统一校验 scanner schema、scan subject、SBOM、finding 与 waiver；
-7. 所有扫描原始输出和判定结果作为 GitHub Actions artifact 保留 30 天。
+1. Semgrep 官方 scanner 镜像以 linux/amd64 immutable digest 固定，作为 Python + JavaScript SAST 执行主体；
+2. Semgrep 官方 `semgrep-rules` 仓库固定到已验证 commit `40b8c63f75dc7c22c8a77482d73bfb864b146f7e`，运行时不再使用可变 Registry `p/...` 配置；
+3. SAST 仅加载当前技术栈相关安全规则目录：Python lang / SQLAlchemy / FastAPI / boto3 / cryptography / JWT，以及 JavaScript lang / browser / Express / audit；
+4. 项目源码与 Semgrep 规则目录均只读挂载，scanner 只获得预创建 `semgrep.json` 单文件写权限；
+5. Semgrep 后执行 Git worktree integrity gate，scanner 若修改 tracked 或非忽略文件则立即失败；
+6. 根目录 `Dockerfile` 构建真实生产候选镜像；
+7. `docker save` 将候选镜像冻结为 tar archive，并记录 Docker ImageID 与 archive SHA-256；
+8. Trivy 使用不可变 digest 固定的官方 scanner 镜像，对冻结 tar 执行漏洞扫描和 CycloneDX SBOM 生成；
+9. Trivy 不挂载 `/var/run/docker.sock`，输入 tar 只读，单次容器仅能写一个预创建输出文件；
+10. 仓库内 `check_security_gate.py` 统一校验 scanner schema、scan subject、SBOM、finding 与 waiver；
+11. 所有扫描原始输出和判定结果作为 GitHub Actions artifact 保留 30 天。
 
 当仓库未来启用 GitHub Code Security/Advanced Security 后，应在不移除现有门禁的前提下增加 CodeQL，并将 SARIF 结果纳入同一上线证据包。
 
-## 固定工具
+## 固定工具与规则
 
-- Semgrep：由 `requirements-security.txt` 固定版本；
-- Trivy：工作流使用 `aquasec/trivy@sha256:<digest>`，禁止 floating tag 作为执行主体；
-- Trivy 扫描对象：当前提交构建后冻结的 `app-image.tar`，不从 registry 或 Docker socket 重新解析另一个同名镜像。
+### Semgrep scanner
 
-固定版本/digest 升级必须走 PR、CI 和 Review，不允许在工作流中静默漂移。
+Security Analysis 使用：
+
+`semgrep/semgrep@sha256:a8298d1c09c84b9a0bbc75ec915e37023fc4657360b6dbfa645261d2353a366c`
+
+该 digest 对应 H07 评审时确认的 Semgrep 1.172.0 linux/amd64 发布镜像。禁止改回 floating tag 或动态 `pip install semgrep` 作为 CI scanner 来源。
+
+### Semgrep rules
+
+规则来源固定为官方仓库 commit：
+
+`40b8c63f75dc7c22c8a77482d73bfb864b146f7e`
+
+工作流：
+
+- 仅 fetch 该 commit；
+- checkout detached HEAD；
+- `rev-parse HEAD` 必须精确等于固定 SHA；
+- 执行 `git fsck --strict`；
+- 将规则 commit 与 tree hash写入安全 evidence；
+- 不使用 `p/security-audit`、`p/owasp-top-ten` 等运行时可变 Registry config。
+
+当前固定规则目录：
+
+- `python/lang/security`；
+- `python/sqlalchemy/security`；
+- `python/fastapi/security`；
+- `python/boto3/security`；
+- `python/cryptography/security`；
+- `python/jwt/security`；
+- `javascript/lang/security`；
+- `javascript/browser/security`；
+- `javascript/express/security`；
+- `javascript/audit`。
+
+### Production base
+
+生产 Dockerfile 使用 Python Bookworm base 的 linux/amd64 immutable digest，避免同一 tag 后续漂移改变扫描对象。
+
+### Trivy
+
+工作流使用：
+
+`aquasec/trivy@sha256:85e87be1a96459c38a4eea47dc64eb2d342bb14cd4b4cef96adcf6ff03378b7c`
+
+该 digest 对应 H07 评审时确认的 Trivy 0.70.0 linux/amd64 镜像。
+
+Trivy 扫描对象是当前提交构建后冻结的 `app-image.tar`，不从 registry 或 Docker socket 重新解析另一个同名镜像。
+
+任何 scanner、rule commit、base digest、Trivy digest 升级必须走 PR、CI 和 Review，不允许在工作流中静默漂移。
 
 ## 阻断等级
 
@@ -51,20 +101,26 @@ WARNING/INFO 仍保留在原始 JSON 中供人工 Review，但不会单独使 CI
 
 以下任一情况直接 fail-closed：
 
-- Semgrep 命令执行失败；
+- Semgrep scanner 镜像拉取或执行失败；
 - Semgrep JSON 缺少 `results` / `errors` 数组；
 - Semgrep result 结构不符合预期或 report 内含 scan errors；
+- 固定 Semgrep rule commit 无法精确 fetch / checkout / `fsck`；
+- 固定安全规则目录缺失；
+- Semgrep/SAST tooling 修改 checkout 的 tracked 或非忽略文件；
 - 生产 Docker 镜像构建或 `docker save` 失败；
 - image archive SHA-256 与 `scan-subject.json` 不一致；
+- Docker ImageID 不是完整 `sha256:<64 lowercase hex>`；
 - Trivy 工具拉取或 tar archive 扫描失败；
 - Trivy JSON 的 SchemaVersion / ArtifactName / ArtifactType / Results 结构异常；
 - SBOM 缺失、JSON 损坏或不是 CycloneDX；
+- SBOM `components` 为空；
+- SBOM 未声明 `aquasecurity/trivy` 0.70.0 为生成工具；
 - SBOM `metadata.component` 不是 container；
 - SBOM 的 Trivy `Reference` / `ImageID` 与同一次 scan subject 不一致；
 - scanner exit-code 证据缺失；
 - waiver registry 结构无效、存在过期/未来创建/超长期/重复 waiver。
 
-不能通过 `continue-on-error` 或“空 JSON”把扫描器异常当成安全通过。
+不能通过 `continue-on-error`、空 JSON、空 SBOM 或 scanner/tooling 异常把安全分析误判为通过。
 
 ## Waiver 规则
 
@@ -105,13 +161,24 @@ H07 首次基线中仅允许精确列出的短期例外：
 
 Security Analysis artifact 至少包含：
 
+### Semgrep
+
+- `semgrep-image-ref.txt`；
+- `semgrep-pull.txt`；
+- `semgrep-version.txt`；
+- `semgrep-rules-commit.txt`；
+- `semgrep-rules-tree.txt`；
 - `semgrep.json`；
 - `semgrep-console.txt`；
-- `semgrep-exit-code.txt`；
+- `semgrep-exit-code.txt`。
+
+### Production image / Trivy / SBOM
+
 - `image-build.txt`；
 - `image-build-exit-code.txt`；
 - `scan-subject.json`；
 - `trivy-image-ref.txt`；
+- `trivy-pull.txt`；
 - `trivy-image.json`；
 - `trivy-console.txt`；
 - `trivy-exit-code.txt`；
@@ -125,7 +192,7 @@ Security Analysis artifact 至少包含：
 ## 与现有 CI 的关系
 
 - Main Release Verification：pytest、coverage、pip-audit、secret scan、OpenAPI、JS check、PostgreSQL migration；
-- Security Analysis：Semgrep SAST、冻结生产镜像 Trivy、SBOM、结构化 security waiver；
+- Security Analysis：immutable Semgrep SAST + pinned rule snapshot、冻结生产镜像 Trivy、SBOM、结构化 security waiver；
 - 两者必须同时通过才能视为代码层灰度候选。
 
 ## 上线规则
@@ -135,7 +202,7 @@ Security Analysis artifact 至少包含：
 - Security Analysis 未在真实 runner 上成功执行或失败；
 - 存在未豁免的 Semgrep ERROR；
 - 存在未豁免的 Trivy HIGH/CRITICAL；
-- scanner/SBOM/scan subject 证据结构或绑定校验失败；
+- scanner/rules/SBOM/scan subject 证据结构或绑定校验失败；
 - 存在过期、超期或通配 scope waiver；
 - 当前生产候选镜像没有对应 CycloneDX SBOM；
 - PR 仍有未解决 P0/P1/P2 Review finding。
