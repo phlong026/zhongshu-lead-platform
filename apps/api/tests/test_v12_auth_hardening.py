@@ -64,8 +64,6 @@ def test_internal_login_failures_persist_lock_and_expire_with_audit(api_client) 
     locked = _login(client, "admin", wrong_password)
     assert _failure_contract(locked) == generic
 
-    # A correct password must not bypass an active account lock, but the client
-    # must not learn that this username exists or is locked.
     blocked_correct = _login(client, "admin", "Admin123!")
     assert _failure_contract(blocked_correct) == generic
     unknown = _login(client, "does-not-exist", "Arbitrary-Wrong-Password!")
@@ -78,9 +76,7 @@ def test_internal_login_failures_persist_lock_and_expire_with_audit(api_client) 
         assert state is not None
         assert state.failed_count == 5
         assert state.locked_until is not None
-        actions = db.scalars(
-            select(AuditLog.action).where(AuditLog.resource_id == user.id)
-        ).all()
+        actions = db.scalars(select(AuditLog.action).where(AuditLog.resource_id == user.id)).all()
         assert actions.count("AUTH_LOGIN_FAILED") == 4
         assert "AUTH_LOGIN_LOCKED" in actions
         assert "AUTH_LOGIN_BLOCKED" in actions
@@ -116,9 +112,7 @@ def test_internal_login_failures_persist_lock_and_expire_with_audit(api_client) 
         assert state.failed_count == 0
         assert state.last_failed_at is None
         assert state.locked_until is None
-        actions = db.scalars(
-            select(AuditLog.action).where(AuditLog.resource_id == user.id)
-        ).all()
+        actions = db.scalars(select(AuditLog.action).where(AuditLog.resource_id == user.id)).all()
         assert "AUTH_LOGIN_UNLOCKED" in actions
         assert "AUTH_LOGIN" in actions
         logs = db.scalars(select(AuditLog).where(AuditLog.resource_id == user.id)).all()
@@ -174,6 +168,39 @@ def test_disabled_user_invalidates_existing_cookie_and_cannot_relogin(api_client
     assert _failure_contract(relogin) == (401, "AUTH_LOGIN_FAILED", "用户名或密码错误")
 
 
+def test_disabled_user_consumes_expired_lock_only_once(api_client) -> None:
+    client, factory = api_client
+    generic = (401, "AUTH_LOGIN_FAILED", "用户名或密码错误")
+    with factory() as db:
+        user = db.scalar(select(User).where(User.username == "operation"))
+        assert user is not None
+        user.status = "DISABLED"
+        state = db.get(AuthLoginState, user.id)
+        if state is None:
+            state = AuthLoginState(user_id=user.id)
+            db.add(state)
+        state.failed_count = 5
+        state.last_failed_at = datetime.now(timezone.utc) - timedelta(minutes=20)
+        state.locked_until = datetime.now(timezone.utc) - timedelta(seconds=1)
+        db.commit()
+        user_id = user.id
+
+    first = _login(client, "operation", "Operation123!")
+    second = _login(client, "operation", "Operation123!")
+    assert _failure_contract(first) == generic
+    assert _failure_contract(second) == generic
+
+    with factory() as db:
+        state = db.get(AuthLoginState, user_id)
+        assert state is not None
+        assert state.failed_count == 0
+        assert state.last_failed_at is None
+        assert state.locked_until is None
+        actions = db.scalars(select(AuditLog.action).where(AuditLog.resource_id == user_id)).all()
+        assert actions.count("AUTH_LOGIN_UNLOCKED") == 1
+        assert actions.count("AUTH_LOGIN_BLOCKED") == 2
+
+
 def test_logout_invalidates_previous_bearer_token_via_session_version(api_client) -> None:
     client, _ = api_client
     login = _login(client, "owner", "Owner123!")
@@ -201,6 +228,7 @@ def test_unknown_username_keeps_generic_failure_contract(api_client) -> None:
 def test_production_nginx_has_dedicated_login_rate_limit_and_trusted_real_ip() -> None:
     nginx = Path("infra/nginx/production.conf.template").read_text(encoding="utf-8")
     compose = Path("docker-compose.prod.yml").read_text(encoding="utf-8")
+    proxy_env = "TRUSTED_PROXY_CIDR: ${TRUSTED_PROXY_CIDR:-127.0.0.1/32}"
     assert "set_real_ip_from ${TRUSTED_PROXY_CIDR};" in nginx
     assert "real_ip_header X-Forwarded-For;" in nginx
     assert "real_ip_recursive on;" in nginx
@@ -209,7 +237,7 @@ def test_production_nginx_has_dedicated_login_rate_limit_and_trusted_real_ip() -
     assert "limit_req zone=auth_login_limit burst=5 nodelay;" in nginx
     assert "limit_req_status 429;" in nginx
     assert nginx.index("location = /api/v1/auth/login") < nginx.index("location /api/")
-    assert "TRUSTED_PROXY_CIDR: ${TRUSTED_PROXY_CIDR:-127.0.0.1/32}" in compose
+    assert compose.count(proxy_env) == 2, "API validator and Nginx must receive identical Compose interpolation"
 
 
 def test_auth_login_state_migration_is_on_current_chain_and_registered_with_alembic() -> None:
