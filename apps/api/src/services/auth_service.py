@@ -224,6 +224,11 @@ def authenticate_internal(db: Session, username: str, password: str) -> Internal
         )
 
     if user.status != "ACTIVE":
+        # Expired locks/windows must be consumed exactly once even when the account
+        # is disabled; otherwise every later valid-password attempt emits another
+        # AUTH_LOGIN_UNLOCKED audit for the same historical lock.
+        if state is not None and reset_state:
+            _clear_login_state(state)
         raise _generic_login_error(
             audit_action="AUTH_LOGIN_BLOCKED",
             user_id=user.id,
