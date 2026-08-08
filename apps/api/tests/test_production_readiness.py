@@ -132,14 +132,34 @@ def test_production_validation_rejects_legacy_write_enablement():
     assert any("LEGACY_WRITE_ENABLED=false" in error for error in result.errors)
 
 
-def test_production_validation_rejects_globally_trusted_proxy_ranges():
-    for value in ("*", "0.0.0.0/0", "::/0", ""):
+def test_production_validation_rejects_untrusted_or_malformed_proxy_cidr():
+    bad_values = (
+        "*",
+        "0.0.0.0/0",
+        "::/0",
+        "",
+        "not-a-cidr",
+        "127.0.0.1",
+        "127.0.0.1/32; set_real_ip_from 0.0.0.0/0",
+        "127.0.0.1/32 trailing",
+        "127.0.0.2/24",
+    )
+    for value in bad_values:
         result = validate_production_settings(
             production_settings(),
             _production_env(TRUSTED_PROXY_CIDR=value),
         )
-        assert result.valid is False
-        assert any("TRUSTED_PROXY_CIDR" in error for error in result.errors)
+        assert result.valid is False, value
+        assert any("TRUSTED_PROXY_CIDR" in error for error in result.errors), value
+
+
+def test_production_validation_accepts_single_canonical_proxy_cidr():
+    for value in ("127.0.0.1/32", "10.20.30.0/24", "2001:db8::/64"):
+        result = validate_production_settings(
+            production_settings(),
+            _production_env(TRUSTED_PROXY_CIDR=value),
+        )
+        assert result.valid is True, (value, result.errors)
 
 
 def test_production_validation_rejects_placeholders_mocks_and_insecure_urls():
