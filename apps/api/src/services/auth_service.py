@@ -76,6 +76,32 @@ def _clear_login_state(state: AuthLoginState) -> None:
     state.locked_until = None
 
 
+def _generic_login_error(
+    *,
+    audit_action: str,
+    user_id: str | None = None,
+    failure_count: int | None = None,
+    locked_until: datetime | None = None,
+    lock_released: bool = False,
+) -> InternalAuthError:
+    """Return one indistinguishable client contract for all credential failures.
+
+    Account existence, disabled state and lock state remain server-only audit facts.
+    Edge/IP rate limiting may still return HTTP 429 before the request reaches the API.
+    """
+
+    return InternalAuthError(
+        "AUTH_LOGIN_FAILED",
+        "用户名或密码错误",
+        401,
+        audit_action=audit_action,
+        user_id=user_id,
+        failure_count=failure_count,
+        locked_until=locked_until,
+        lock_released=lock_released,
+    )
+
+
 def _record_failed_attempt_sqlite(
     db: Session,
     *,
@@ -140,21 +166,13 @@ def authenticate_internal(db: Session, username: str, password: str) -> Internal
     if user is None:
         # Keep the unknown-user path computationally closer to a real password check.
         verify_password(password, _DUMMY_PASSWORD_HASH)
-        raise InternalAuthError(
-            "AUTH_LOGIN_FAILED",
-            "用户名或密码错误",
-            401,
-            audit_action="AUTH_LOGIN_FAILED",
-        )
+        raise _generic_login_error(audit_action="AUTH_LOGIN_FAILED")
 
     state = db.get(AuthLoginState, user.id)
     locked_until = as_utc(state.locked_until) if state else None
     lock_released = bool(locked_until and locked_until <= now)
     if locked_until and locked_until > now:
-        raise InternalAuthError(
-            "AUTH_LOGIN_THROTTLED",
-            "登录尝试过多，请稍后重试",
-            429,
+        raise _generic_login_error(
             audit_action="AUTH_LOGIN_BLOCKED",
             user_id=user.id,
             failure_count=state.failed_count if state else 0,
@@ -191,20 +209,14 @@ def authenticate_internal(db: Session, username: str, password: str) -> Internal
             next_locked_until = as_utc(state.locked_until)
 
         if next_locked_until and next_locked_until > now and failure_count >= settings.login_max_failed_attempts:
-            raise InternalAuthError(
-                "AUTH_LOGIN_THROTTLED",
-                "登录尝试过多，请稍后重试",
-                429,
+            raise _generic_login_error(
                 audit_action="AUTH_LOGIN_LOCKED",
                 user_id=user.id,
                 failure_count=failure_count,
                 locked_until=next_locked_until,
                 lock_released=lock_released,
             )
-        raise InternalAuthError(
-            "AUTH_LOGIN_FAILED",
-            "用户名或密码错误",
-            401,
+        raise _generic_login_error(
             audit_action="AUTH_LOGIN_FAILED",
             user_id=user.id,
             failure_count=failure_count,
@@ -212,10 +224,7 @@ def authenticate_internal(db: Session, username: str, password: str) -> Internal
         )
 
     if user.status != "ACTIVE":
-        raise InternalAuthError(
-            "AUTH_ACCOUNT_DISABLED",
-            "账号已停用",
-            403,
+        raise _generic_login_error(
             audit_action="AUTH_LOGIN_BLOCKED",
             user_id=user.id,
             failure_count=state.failed_count if state else 0,
