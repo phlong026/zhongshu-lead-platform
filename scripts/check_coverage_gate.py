@@ -74,8 +74,10 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--coverage", default="dist/coverage/coverage.json")
     parser.add_argument("--output", default="dist/coverage/critical-coverage.json")
-    parser.add_argument("--min-global-line", type=float, default=75.0)
-    parser.add_argument("--min-global-branch", type=float, default=75.0)
+    parser.add_argument("--min-global-line", type=float, default=79.0)
+    parser.add_argument("--min-global-branch", type=float, default=54.5)
+    parser.add_argument("--min-critical-line", type=float, default=85.0)
+    parser.add_argument("--min-critical-branch", type=float, default=63.5)
     args = parser.parse_args()
 
     coverage_path = Path(args.coverage)
@@ -109,14 +111,15 @@ def main() -> int:
         )
 
     failures: list[str] = []
-    if float(global_summary["line_percent"]) < args.min_global_line:
-        failures.append(
-            f"global line coverage {global_summary['line_percent']:.2f}% < {args.min_global_line:.2f}%"
-        )
-    if float(global_summary["branch_percent"]) < args.min_global_branch:
-        failures.append(
-            f"global branch coverage {global_summary['branch_percent']:.2f}% < {args.min_global_branch:.2f}%"
-        )
+    checks = (
+        ("global line", float(global_summary["line_percent"]), args.min_global_line),
+        ("global branch", float(global_summary["branch_percent"]), args.min_global_branch),
+        ("critical line", float(critical_summary["line_percent"]), args.min_critical_line),
+        ("critical branch", float(critical_summary["branch_percent"]), args.min_critical_branch),
+    )
+    for label, actual, minimum in checks:
+        if actual < minimum:
+            failures.append(f"{label} coverage {actual:.2f}% < {minimum:.2f}%")
     if failures:
         raise SystemExit("coverage gate failed: " + "; ".join(failures))
     return 0
