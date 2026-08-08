@@ -31,6 +31,7 @@ def api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from apps.api.src.core.database import get_db
     from apps.api.src.main import app
     from apps.api.src.services.bootstrap import seed_demo
+    import apps.api.src.integrations.wechat as wechat_module
     import apps.api.src.services.storage as storage_module
 
     engine = create_engine(
@@ -50,6 +51,15 @@ def api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     app.dependency_overrides[get_db] = override_get_db
     monkeypatch.setattr(storage_module.settings, "object_storage_backend", "local")
     monkeypatch.setattr(storage_module.settings, "object_storage_dir", str(tmp_path / "private-storage"))
+    # HTTP OAuth security tests need the authorization URL to be constructible,
+    # but must never depend on a real WeChat credential or outbound exchange.
+    monkeypatch.setattr(wechat_module.settings, "wechat_app_id", "wx-test-only")
+    monkeypatch.setattr(
+        wechat_module.settings,
+        "wechat_oauth_redirect_uri",
+        "https://testserver/api/v1/auth/wechat/callback",
+    )
+    monkeypatch.setattr(wechat_module.settings, "wechat_oauth_scope", "snsapi_base")
     client = TestClient(app)
     try:
         yield client, factory
