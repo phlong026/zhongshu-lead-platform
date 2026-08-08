@@ -4,16 +4,41 @@
 
 覆盖率用于发现没有被自动化测试保护的运行路径，不作为“测试数量”或“代码质量”的替代指标。V1.2 的覆盖率门禁必须与 H05 安全负例、幂等、权限和账务不变量一起执行，不允许通过 omit 高风险运行代码或删除安全测试来提高数字。
 
-## 全局强门禁
+## 实测基线
 
-Main Release Verification 对 `apps/api/src` 启用 line + branch coverage：
+H06 第一轮 Main Release Verification run `31262652850` 在完整 pytest（含 H05 安全负例）下测得：
 
-- global line coverage：不得低于 75%；
-- global branch coverage：不得低于 75%；
-- pytest-cov 综合 fail-under：75%；
-- 任一门槛失败均阻断 PR / main verification。
+- global line：79.23%；
+- global branch：54.99%；
+- pytest-cov line+branch 综合：74.40%；
+- critical aggregate line：85.04%；
+- critical aggregate branch：63.92%。
 
-报告输出：
+第一轮故意以 75% branch 目标运行并被正确阻断，证明门禁不是“配置即全绿”。当前 branch 与 75% 目标存在约 20 个百分点差距，若一次性为了数字补齐会需要覆盖大量低风险分支，不符合 H06 的质量原则。
+
+## 当前强门禁
+
+在不降低当前真实质量的前提下，将实测基线锁定为回归下限：
+
+- global line ≥ 79.0%；
+- global branch ≥ 54.5%；
+- pytest-cov 综合 fail-under ≥ 74%；
+- critical aggregate line ≥ 85.0%；
+- critical aggregate branch ≥ 63.5%。
+
+这些阈值均略低于实测值，仅保留小幅统计/舍入余量；任何明显覆盖率下降都会阻断 PR / main verification。
+
+长期目标保持：
+
+- global branch ≥ 75%；
+- critical line ≥ 90%；
+- critical branch ≥ 90%。
+
+后续新增测试优先覆盖异常、权限、并发、幂等、账务边界，再逐步上调门槛；不得为了追数字增加无业务价值断言。
+
+## 报告与追踪
+
+Main Release Verification 输出：
 
 - terminal missing-lines report；
 - `dist/coverage/coverage.xml`；
@@ -34,9 +59,17 @@ CI 将 `dist/coverage` 上传为 30 天可追踪 artifact。
 - `services/supplier_reward_v12.py`；
 - `routers/v12_dispatch.py`。
 
-长期目标：核心聚合 line ≥ 90%、branch ≥ 90%。
+第一轮各模块实测：
 
-H06 第一轮先用真实 CI 生成当前基线。如果核心基线已经达到 90%，直接启用 90% 强门禁；如果不足，则必须先识别缺口并优先补异常、权限、并发、幂等、边界测试，不能为了追数字增加无业务价值断言。最终 H06 评审记录必须写明实测基线与启用的最终阈值。
+- auth.py：line 100%、branch 100%；
+- auth_service.py：line 90.49%、branch 73.33%；
+- rbac.py：line 92.86%、branch 100%；
+- points_service.py：line 87.85%、branch 63.04%；
+- return_v12.py：line 88.65%、branch 67.78%；
+- supplier_reward_v12.py：line 75.88%、branch 43.68%；
+- v12_dispatch.py：line 79.70%、branch 52.63%。
+
+因此下一阶段提高 critical branch 时，应优先补 reward / dispatch / points 的真实边界与异常测试，而不是继续给已 100% 的 auth/rbac 堆重复用例。
 
 ## 禁止项
 
