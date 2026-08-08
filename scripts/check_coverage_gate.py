@@ -12,6 +12,7 @@ CRITICAL_FILES = (
     "apps/api/src/services/points_service.py",
     "apps/api/src/services/return_v12.py",
     "apps/api/src/services/supplier_reward_v12.py",
+    "apps/api/src/services/dispatch_v12.py",
     "apps/api/src/routers/v12_dispatch.py",
 )
 
@@ -76,8 +77,8 @@ def main() -> int:
     parser.add_argument("--output", default="dist/coverage/critical-coverage.json")
     parser.add_argument("--min-global-line", type=float, default=79.0)
     parser.add_argument("--min-global-branch", type=float, default=54.5)
-    parser.add_argument("--min-critical-line", type=float, default=85.0)
-    parser.add_argument("--min-critical-branch", type=float, default=63.5)
+    parser.add_argument("--min-critical-line", type=float, default=85.5)
+    parser.add_argument("--min-critical-branch", type=float, default=64.5)
     args = parser.parse_args()
 
     coverage_path = Path(args.coverage)
