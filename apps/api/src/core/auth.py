@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from .database import get_db
 from .errors import AppError
-from .models import Permission, Role, RolePermission, User, UserRole
+from .models import Company, Permission, Role, RolePermission, User, UserRole
 from .security import decode_access_token
 
 
@@ -51,6 +51,10 @@ def get_current_principal(
     user = db.scalar(select(User).where(User.id == payload.get("sub")))
     if not user or user.status != "ACTIVE" or user.session_version != payload.get("sv"):
         raise AppError("AUTH_INVALID", "账号已停用或会话已失效", 401)
+    if user.company_id:
+        company = db.get(Company, user.company_id)
+        if not company or company.status != "ACTIVE":
+            raise AppError("AUTH_INVALID", "账号所属公司不可用或会话已失效", 401)
 
     role_codes = set(
         db.scalars(
