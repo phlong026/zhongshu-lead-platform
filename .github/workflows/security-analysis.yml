@@ -60,6 +60,16 @@ jobs:
           cat dist/security/semgrep-console.txt
           exit 0
 
+      - name: Verify SAST tooling did not mutate checkout
+        shell: bash
+        run: |
+          status="$(git status --porcelain --untracked-files=all)"
+          if [ -n "$status" ]; then
+            printf '%s\n' "$status"
+            echo "security tooling modified tracked or non-ignored checkout content"
+            exit 1
+          fi
+
       - name: Build and freeze production image subject
         shell: bash
         run: |
