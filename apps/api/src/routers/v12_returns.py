@@ -98,6 +98,8 @@ async def upload_return_evidence(
     item = db.get(ReturnRequest, return_id)
     if item is None:
         raise AppError("RETURN_NOT_FOUND", "退回申请不存在", 404)
+    if not principal.company_id or item.company_id != principal.company_id:
+        raise AppError("FORBIDDEN", "无权上传该退回申请的证据", 403)
     content = await file.read()
     mime = file.content_type or mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
     normalized_type = evidence_type.strip().upper()
