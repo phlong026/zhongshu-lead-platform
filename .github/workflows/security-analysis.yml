@@ -21,6 +21,8 @@ jobs:
     env:
       APP_IMAGE: zhongshu-security:${{ github.sha }}
       TRIVY_IMAGE: aquasec/trivy@sha256:85e87be1a96459c38a4eea47dc64eb2d342bb14cd4b4cef96adcf6ff03378b7c
+      SEMGREP_RULES_COMMIT: 40b8c63f75dc7c22c8a77482d73bfb864b146f7e
+      SEMGREP_RULES_DIR: /tmp/semgrep-rules
       SEMGREP_SEND_METRICS: "off"
     steps:
       - name: Checkout
@@ -37,6 +39,36 @@ jobs:
       - name: Install pinned SAST tool
         run: pip install -r requirements-security.txt
 
+      - name: Fetch pinned Semgrep security rules
+        shell: bash
+        run: |
+          mkdir -p dist/security
+          rm -rf "$SEMGREP_RULES_DIR"
+          git init -q "$SEMGREP_RULES_DIR"
+          git -C "$SEMGREP_RULES_DIR" remote add origin https://github.com/semgrep/semgrep-rules.git
+          git -C "$SEMGREP_RULES_DIR" fetch --depth=1 origin "$SEMGREP_RULES_COMMIT"
+          git -C "$SEMGREP_RULES_DIR" checkout -q --detach FETCH_HEAD
+          actual_commit="$(git -C "$SEMGREP_RULES_DIR" rev-parse HEAD)"
+          test "$actual_commit" = "$SEMGREP_RULES_COMMIT"
+          git -C "$SEMGREP_RULES_DIR" fsck --strict
+          rules_tree="$(git -C "$SEMGREP_RULES_DIR" rev-parse 'HEAD^{tree}')"
+          printf '%s\n' "$actual_commit" > dist/security/semgrep-rules-commit.txt
+          printf '%s\n' "$rules_tree" > dist/security/semgrep-rules-tree.txt
+          for path in \
+            python/lang/security \
+            python/sqlalchemy/security \
+            python/fastapi/security \
+            python/boto3/security \
+            python/cryptography/security \
+            python/jwt/security \
+            javascript/lang/security \
+            javascript/browser/security \
+            javascript/express/security \
+            javascript/audit
+          do
+            test -d "$SEMGREP_RULES_DIR/$path"
+          done
+
       - name: Run Semgrep Python and JavaScript SAST
         shell: bash
         run: |
@@ -44,8 +76,16 @@ jobs:
           set +e
           semgrep scan \
             --metrics off \
-            --config p/security-audit \
-            --config p/owasp-top-ten \
+            --config "$SEMGREP_RULES_DIR/python/lang/security" \
+            --config "$SEMGREP_RULES_DIR/python/sqlalchemy/security" \
+            --config "$SEMGREP_RULES_DIR/python/fastapi/security" \
+            --config "$SEMGREP_RULES_DIR/python/boto3/security" \
+            --config "$SEMGREP_RULES_DIR/python/cryptography/security" \
+            --config "$SEMGREP_RULES_DIR/python/jwt/security" \
+            --config "$SEMGREP_RULES_DIR/javascript/lang/security" \
+            --config "$SEMGREP_RULES_DIR/javascript/browser/security" \
+            --config "$SEMGREP_RULES_DIR/javascript/express/security" \
+            --config "$SEMGREP_RULES_DIR/javascript/audit" \
             --include '*.py' \
             --include '*.js' \
             --exclude '.git' \
