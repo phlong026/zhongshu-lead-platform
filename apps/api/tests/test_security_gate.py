@@ -53,6 +53,40 @@ def _waiver(**overrides) -> Waiver:
     return Waiver(**values)
 
 
+def _sbom() -> dict:
+    return {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.6",
+        "components": [
+            {
+                "type": "library",
+                "name": "example-runtime-package",
+                "version": "1.0.0",
+            }
+        ],
+        "metadata": {
+            "tools": {
+                "components": [
+                    {
+                        "type": "application",
+                        "group": "aquasecurity",
+                        "name": "trivy",
+                        "version": "0.70.0",
+                    }
+                ]
+            },
+            "component": {
+                "type": "container",
+                "name": IMAGE_REF,
+                "properties": [
+                    {"name": "aquasecurity:trivy:Reference", "value": IMAGE_REF},
+                    {"name": "aquasecurity:trivy:ImageID", "value": IMAGE_ID},
+                ],
+            },
+        },
+    }
+
+
 def test_clean_security_gate_passes() -> None:
     report = evaluate(
         semgrep_payload=_semgrep(),
@@ -287,32 +321,61 @@ def test_scan_subject_binds_image_archive_hash(tmp_path: Path) -> None:
         )
 
 
-def test_sbom_must_be_cyclonedx_and_bound_to_same_image() -> None:
-    sbom = {
-        "bomFormat": "CycloneDX",
-        "specVersion": "1.6",
-        "components": [],
-        "metadata": {
-            "component": {
-                "type": "container",
-                "name": IMAGE_REF,
-                "properties": [
-                    {"name": "aquasecurity:trivy:Reference", "value": IMAGE_REF},
-                    {"name": "aquasecurity:trivy:ImageID", "value": IMAGE_ID},
-                ],
-            }
-        },
-    }
+def test_scan_subject_requires_full_sha256_image_id(tmp_path: Path) -> None:
+    archive = tmp_path / "app-image.tar"
+    archive.write_bytes(b"docker-image-archive")
+    import hashlib
+
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    for bad_image_id in ("sha256:short", "sha256:" + "G" * 64, "not-a-sha256"):
+        with pytest.raises(RuntimeError, match="image_id must be sha256"):
+            validate_scan_subject(
+                {
+                    "image_ref": IMAGE_REF,
+                    "image_id": bad_image_id,
+                    "archive_sha256": digest,
+                },
+                archive_path=archive,
+            )
+
+
+def test_sbom_must_be_substantive_cyclonedx_bound_to_same_image() -> None:
+    sbom = _sbom()
     summary = validate_sbom(
         sbom, expected_image_ref=IMAGE_REF, expected_image_id=IMAGE_ID
     )
     assert summary["bom_format"] == "CycloneDX"
+    assert summary["component_count"] == 1
+    assert summary["generator"] == "trivy/0.70.0"
 
-    damaged = dict(sbom)
+    damaged = json.loads(json.dumps(sbom))
     damaged["components"] = None
     with pytest.raises(RuntimeError, match="components must be an array"):
         validate_sbom(
             damaged, expected_image_ref=IMAGE_REF, expected_image_id=IMAGE_ID
+        )
+
+    empty = json.loads(json.dumps(sbom))
+    empty["components"] = []
+    with pytest.raises(RuntimeError, match="components must not be empty"):
+        validate_sbom(
+            empty, expected_image_ref=IMAGE_REF, expected_image_id=IMAGE_ID
+        )
+
+    missing_tools = json.loads(json.dumps(sbom))
+    del missing_tools["metadata"]["tools"]
+    with pytest.raises(RuntimeError, match="metadata.tools must be an object"):
+        validate_sbom(
+            missing_tools, expected_image_ref=IMAGE_REF, expected_image_id=IMAGE_ID
+        )
+
+    wrong_tool_version = json.loads(json.dumps(sbom))
+    wrong_tool_version["metadata"]["tools"]["components"][0]["version"] = "0.69.0"
+    with pytest.raises(RuntimeError, match="Trivy version mismatch"):
+        validate_sbom(
+            wrong_tool_version,
+            expected_image_ref=IMAGE_REF,
+            expected_image_id=IMAGE_ID,
         )
 
     wrong_image = json.loads(json.dumps(sbom))
