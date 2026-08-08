@@ -101,3 +101,57 @@ jobs:
 
           print(f"main release metadata verified: {release} from {expected_branch}")
           PY
+
+  postgres-migration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: zhongshu_ci
+          POSTGRES_USER: zhongshu
+          POSTGRES_PASSWORD: ci-postgres-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U zhongshu -d zhongshu_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql+psycopg://zhongshu:ci-postgres-password@127.0.0.1:5432/zhongshu_ci
+      FIELD_ENCRYPTION_KEY: ci-field-encryption-key-at-least-32-characters
+      PHONE_HASH_SECRET: ci-phone-hash-secret-at-least-24
+      PHONE_FINGERPRINT_SECRET: ci-phone-fingerprint-secret-at-least-32-characters
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install migration dependencies
+        run: pip install -r requirements.txt -r requirements-postgres.txt
+
+      - name: Create V1.0.1 PostgreSQL baseline
+        run: |
+          mkdir -p dist
+          python -m alembic -c alembic.ini upgrade 0001_initial
+          python scripts/seed_v101_migration_fixture.py
+
+      - name: Upgrade PostgreSQL to current head and verify V1.2 data migration
+        run: |
+          python -m alembic -c alembic.ini upgrade head
+          python scripts/migrate_v12_data.py --dry-run --batch-size 50 --max-batches 10 --fail-on-row-error
+          python scripts/migrate_v12_data.py --batch-size 50 --max-batches 10 --fail-on-row-error
+          python scripts/verify_v12_postgres_migration.py > dist/v12-postgres-verification.json
+          python -m json.tool dist/v12-postgres-verification.json >/dev/null
+
+      - name: Verify PostgreSQL downgrade and clean re-upgrade
+        run: |
+          python -m alembic -c alembic.ini downgrade 0001_initial
+          python -m alembic -c alembic.ini upgrade head

@@ -28,6 +28,7 @@ services:
       AUTO_CREATE_SCHEMA: "false"
       RUN_DB_MIGRATIONS: "false"
       LEGACY_WRITE_ENABLED: "false"
+      TRUSTED_PROXY_CIDR: ${TRUSTED_PROXY_CIDR:-127.0.0.1/32}
     logging: *json-logging
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]
@@ -64,6 +65,7 @@ services:
       - "${HTTPS_PORT:-443}:443"
     environment:
       APP_DOMAIN: ${APP_DOMAIN:?APP_DOMAIN is required}
+      TRUSTED_PROXY_CIDR: ${TRUSTED_PROXY_CIDR:-127.0.0.1/32}
     volumes:
       - ./infra/nginx/production.conf.template:/etc/nginx/templates/default.conf.template:ro
       - ./infra/nginx/security-headers.conf:/etc/nginx/snippets/security-headers.conf:ro

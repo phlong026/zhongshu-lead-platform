@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./zhongshu.db"
     jwt_secret: str = "dev-change-me-at-least-32-characters-long"
     jwt_expire_minutes: int = 1440
+    login_max_failed_attempts: int = 5
+    login_failure_window_minutes: int = 15
+    login_lock_minutes: int = 15
     field_encryption_key: str = "dev-only-key-change-in-production"
     phone_hash_secret: str = "dev-phone-hash-secret"
     phone_fingerprint_secret: str = ""
@@ -69,11 +72,14 @@ class Settings(BaseSettings):
         "lead_hard_duplicate_days",
         "lead_reward_duplicate_days",
         "lead_historical_suspect_days",
+        "login_max_failed_attempts",
+        "login_failure_window_minutes",
+        "login_lock_minutes",
     )
     @classmethod
     def validate_positive_window(cls, value: int) -> int:
         if value <= 0:
-            raise ValueError("去重窗口必须大于 0")
+            raise ValueError("窗口/阈值配置必须大于 0")
         return value
 
     @property

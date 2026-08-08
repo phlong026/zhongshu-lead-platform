@@ -123,7 +123,10 @@ def test_points_reconciliation_detects_balanced_ledger(db):
 def _login(client, username: str, password: str) -> dict[str, str]:
     response = client.post("/api/v1/auth/login", json={"username": username, "password": password})
     assert response.status_code == 200, response.text
-    return {"Authorization": f"Bearer {response.json()['data']['token']}"}
+    token = response.cookies.get("access_token")
+    assert token
+    assert "token" not in response.json()["data"]
+    return {"Authorization": f"Bearer {token}"}
 
 
 def test_manual_recharge_requires_explicit_confirmation_and_enqueues_notice(api_client):
