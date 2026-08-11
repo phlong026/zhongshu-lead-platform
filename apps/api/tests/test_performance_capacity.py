@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 from pathlib import Path
 
 import pytest
 
+from apps.api.src.routers.v12_returns import upload_return_evidence
 from scripts.check_performance_gate import GateError, evaluate_report, render_markdown as render_gate_markdown
 from scripts.finalize_performance_report import finalize_report
 from scripts.performance_v12 import build_scenarios, percentile, safe_origin, validate_dataset
@@ -26,6 +28,10 @@ SCENARIOS = {
 EXPORT_SHA256 = "a" * 64
 PREVIEW_SHA256 = "b" * 64
 SOURCE_COMMIT_SHA = "c" * 40
+
+
+def test_evidence_upload_runs_blocking_work_off_event_loop() -> None:
+    assert not inspect.iscoroutinefunction(upload_return_evidence)
 
 
 def _preview_report(report: dict) -> dict:

@@ -113,8 +113,8 @@ class Settings(BaseSettings):
     @field_validator("web_concurrency")
     @classmethod
     def validate_web_concurrency(cls, value: int) -> int:
-        if not 1 <= value <= 4:
-            raise ValueError("WEB_CONCURRENCY must be between 1 and 4")
+        if not 1 <= value <= 5:
+            raise ValueError("WEB_CONCURRENCY must be between 1 and 5")
         return value
 
     @field_validator("sync_threadpool_tokens")

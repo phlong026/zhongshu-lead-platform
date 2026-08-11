@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from functools import lru_cache
+
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -34,8 +36,18 @@ def _principal_company_id(principal) -> str:
     return principal.company_id
 
 
+@lru_cache(maxsize=4096)
+def _masked_encrypted_phone(phone_encrypted: str) -> str:
+    return mask_phone(decrypt_text(phone_encrypted))
+
+
 def _assignment_dict(assignment: Assignment, lead: Lead, *, reveal_phone: bool = False) -> dict:
-    phone = decrypt_text(lead.phone_encrypted)
+    phone = decrypt_text(lead.phone_encrypted) if reveal_phone else None
+    phone_masked = (
+        mask_phone(phone)
+        if phone is not None
+        else _masked_encrypted_phone(lead.phone_encrypted)
+    )
     return {
         "id": assignment.id,
         "lead_id": assignment.lead_id,
@@ -48,8 +60,8 @@ def _assignment_dict(assignment: Assignment, lead: Lead, *, reveal_phone: bool =
         "price_rule_id": assignment.price_rule_id,
         "price_version": assignment.price_version,
         "customer_name": lead.customer_name,
-        "phone": phone if reveal_phone else None,
-        "phone_masked": mask_phone(phone),
+        "phone": phone,
+        "phone_masked": phone_masked,
         "city": lead.city,
         "district": lead.district,
         "region_code": lead.region_code,
@@ -60,6 +72,73 @@ def _assignment_dict(assignment: Assignment, lead: Lead, *, reveal_phone: bool =
         "appeal_deadline_at": assignment.appeal_deadline_at.isoformat() if assignment.appeal_deadline_at else None,
         "reward_due_at": assignment.reward_due_at.isoformat() if assignment.reward_due_at else None,
         "first_followup_due_at": assignment.first_followup_due_at.isoformat() if assignment.first_followup_due_at else None,
+    }
+
+
+def _assignment_detail_projection(assignment_id: str, company_id: str):
+    return (
+        select(
+            Assignment.id,
+            Assignment.lead_id,
+            Assignment.company_id,
+            Assignment.supplier_company_id,
+            Assignment.receiver_company_id,
+            Assignment.status,
+            Assignment.points_price,
+            Assignment.claim_points,
+            Assignment.price_rule_id,
+            Assignment.price_version,
+            Assignment.assigned_at,
+            Assignment.expires_at,
+            Assignment.claimed_at,
+            Assignment.appeal_deadline_at,
+            Assignment.reward_due_at,
+            Assignment.first_followup_due_at,
+            Lead.customer_name,
+            Lead.phone_encrypted,
+            Lead.city,
+            Lead.district,
+            Lead.region_code,
+            Lead.need_summary,
+        )
+        .join(Lead, Lead.id == Assignment.lead_id)
+        .where(Assignment.id == assignment_id, Assignment.company_id == company_id)
+    )
+
+
+def _projected_assignment_dict(row, *, reveal_phone: bool = False) -> dict:
+    phone = decrypt_text(row.phone_encrypted) if reveal_phone else None
+    phone_masked = (
+        mask_phone(phone) if phone is not None else _masked_encrypted_phone(row.phone_encrypted)
+    )
+    return {
+        "id": row.id,
+        "lead_id": row.lead_id,
+        "company_id": row.company_id,
+        "supplier_company_id": row.supplier_company_id,
+        "receiver_company_id": row.receiver_company_id,
+        "status": row.status,
+        "points_price": row.points_price,
+        "claim_points": row.claim_points,
+        "price_rule_id": row.price_rule_id,
+        "price_version": row.price_version,
+        "customer_name": row.customer_name,
+        "phone": phone,
+        "phone_masked": phone_masked,
+        "city": row.city,
+        "district": row.district,
+        "region_code": row.region_code,
+        "need_summary": row.need_summary,
+        "assigned_at": row.assigned_at.isoformat(),
+        "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+        "claimed_at": row.claimed_at.isoformat() if row.claimed_at else None,
+        "appeal_deadline_at": row.appeal_deadline_at.isoformat()
+        if row.appeal_deadline_at
+        else None,
+        "reward_due_at": row.reward_due_at.isoformat() if row.reward_due_at else None,
+        "first_followup_due_at": row.first_followup_due_at.isoformat()
+        if row.first_followup_due_at
+        else None,
     }
 
 
@@ -194,20 +273,14 @@ def own_assignment_detail(
     db: Session = Depends(get_db),
 ):
     company_id = _principal_company_id(principal)
-    row = db.execute(
-        select(Assignment, Lead)
-        .join(Lead, Lead.id == Assignment.lead_id)
-        .where(Assignment.id == assignment_id, Assignment.company_id == company_id)
-    ).one_or_none()
+    row = db.execute(_assignment_detail_projection(assignment_id, company_id)).one_or_none()
     if row is None:
         raise AppError("ASSIGNMENT_NOT_FOUND", "派发单不存在", 404)
-    assignment, lead = row
     return ok(
         request,
-        _assignment_dict(
-            assignment,
-            lead,
-            reveal_phone=assignment.status in CLAIMED_CONTACT_STATUSES,
+        _projected_assignment_dict(
+            row,
+            reveal_phone=row.status in CLAIMED_CONTACT_STATUSES,
         ),
     )
 

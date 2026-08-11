@@ -19,6 +19,7 @@ from apps.api.src.core.models import (
 from apps.api.src.core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12
 from apps.api.src.core.security import encrypt_text, fingerprint_phone, hash_phone
 from apps.api.src.core.v12_enums import LeadSourceKind, LeadV12Status
+from apps.api.src.routers import v12_dispatch as v12_dispatch_router
 
 
 def _v12_lead(*, user_id: str, phone: str, status: str) -> Lead:
@@ -49,6 +50,35 @@ def _v12_lead(*, user_id: str, phone: str, status: str) -> Lead:
 def _login(client, username: str, password: str) -> None:
     response = client.post("/api/v1/auth/login", json={"username": username, "password": password})
     assert response.status_code == 200
+
+
+def test_masked_assignment_phone_reuses_only_masked_decryption(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_decrypt(value: str) -> str:
+        calls.append(value)
+        return "13800138000"
+
+    monkeypatch.setattr(v12_dispatch_router, "decrypt_text", fake_decrypt)
+    v12_dispatch_router._masked_encrypted_phone.cache_clear()
+    try:
+        assert v12_dispatch_router._masked_encrypted_phone("encrypted-phone") == "138****8000"
+        assert v12_dispatch_router._masked_encrypted_phone("encrypted-phone") == "138****8000"
+        assert calls == ["encrypted-phone"]
+    finally:
+        v12_dispatch_router._masked_encrypted_phone.cache_clear()
+
+
+def test_assignment_detail_query_omits_unused_large_columns() -> None:
+    statement = str(
+        v12_dispatch_router._assignment_detail_projection("assignment-id", "company-id")
+    )
+
+    assert "assignments.lead_snapshot" not in statement
+    assert "leads.raw_payload" not in statement
+    assert "leads.phone_hash" not in statement
+    assert "leads.phone_encrypted" in statement
+    assert "assignments.company_id" in statement
 
 
 def _prepare_dispatch_lead(factory, *, phone: str) -> tuple[str, str]:
