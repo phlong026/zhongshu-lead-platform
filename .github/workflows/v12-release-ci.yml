@@ -178,6 +178,11 @@ jobs:
           python -m alembic -c alembic.ini downgrade 0001_initial
           python -m alembic -c alembic.ini upgrade head
 
+      - name: Verify H04 dataset creation on PostgreSQL
+        env:
+          H04_POSTGRES_DATASET_TEST_URL: ${{ env.DATABASE_URL }}
+        run: python -m pytest apps/api/tests/test_prepare_performance_dataset.py::test_prepare_dataset_flush_order_on_postgresql -q
+
       - name: Upload PostgreSQL migration evidence
         if: always()
         uses: actions/upload-artifact@v4
