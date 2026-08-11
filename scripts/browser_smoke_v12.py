@@ -35,6 +35,62 @@ def _assert_no_visible_error(page: Page, selectors: tuple[str, ...]) -> None:
             raise AssertionError(f"visible error {selector}: {text}")
 
 
+def _assert_safe_html_boundary(page: Page) -> dict[str, bool]:
+    result = page.evaluate(
+        """() => {
+            if (typeof window.zsSetSafeHtml !== 'function') {
+                throw new Error('safe HTML boundary is not installed');
+            }
+            const target = document.createElement('div');
+            document.body.appendChild(target);
+            window.zsSetSafeHtml(target, `
+              <form id="kept-form" action="javascript:alert(1)" onsubmit="alert(1)">
+                <input name="reason" value="ok">
+                <button formaction="data:text/html,bad">Submit</button>
+              </form>
+              <table><tbody><tr><td id="kept-cell">cell</td></tr></tbody></table>
+              <select><option id="kept-option">choice</option></select>
+              <svg id="kept-svg"><path id="kept-path" d="M0 0h1"></path>
+                <animate id="blocked-animate" attributeName="href" values="javascript:alert(1)"></animate>
+                <foreignObject id="blocked-foreign"><div>foreign</div></foreignObject>
+                <use id="blocked-use" href="https://example.invalid/icon.svg#x"></use>
+              </svg>
+              <template id="blocked-template"><img onerror="alert(1)"></template>
+              <math id="blocked-math"><mtext>math</mtext></math>
+              <a id="safe-link" href="/relative" target="_blank">safe</a>
+              <a id="unsafe-link" href="javascript:alert(1)">unsafe</a>
+              <div id="unsafe-style" style="background:url(javascript:alert(1))">styled</div>
+              <script id="blocked-script">alert(1)<\\/script>
+              <iframe id="blocked-frame"></iframe>
+            `);
+            const checks = {
+                formPreserved: Boolean(target.querySelector('#kept-form')),
+                tablePreserved: Boolean(target.querySelector('#kept-cell')),
+                selectPreserved: Boolean(target.querySelector('#kept-option')),
+                svgPathPreserved: Boolean(target.querySelector('#kept-path')),
+                unsafeActionRemoved: !target.querySelector('#kept-form').hasAttribute('action'),
+                eventHandlerRemoved: !target.querySelector('#kept-form').hasAttribute('onsubmit'),
+                unsafeFormactionRemoved: !target.querySelector('button').hasAttribute('formaction'),
+                unsafeHrefRemoved: !target.querySelector('#unsafe-link').hasAttribute('href'),
+                unsafeStyleRemoved: !target.querySelector('#unsafe-style').hasAttribute('style'),
+                activeSvgRemoved: !target.querySelector('#blocked-animate, #blocked-foreign, #blocked-use'),
+                templateRemoved: !target.querySelector('#blocked-template'),
+                mathRemoved: !target.querySelector('#blocked-math'),
+                scriptRemoved: !target.querySelector('#blocked-script'),
+                iframeRemoved: !target.querySelector('#blocked-frame'),
+                blankRelHardened:
+                    target.querySelector('#safe-link').getAttribute('rel') === 'noopener noreferrer',
+            };
+            target.remove();
+            return checks;
+        }"""
+    )
+    failed = sorted(name for name, passed in result.items() if not passed)
+    if failed:
+        raise AssertionError(f"safe HTML boundary failed: {', '.join(failed)}")
+    return result
+
+
 def _admin_smoke(browser: Browser, base_url: str, output: Path, errors: list[str]) -> dict[str, object]:
     context = browser.new_context(viewport={"width": 1440, "height": 900}, locale="zh-CN")
     try:
@@ -92,6 +148,7 @@ def _h5_smoke(browser: Browser, base_url: str, output: Path, errors: list[str]) 
         page.wait_for_selector(".wb-header", timeout=15000)
         page.wait_for_selector(".wb-hero", timeout=15000)
         _assert_no_visible_error(page, (".wb-error",))
+        safe_html_boundary = _assert_safe_html_boundary(page)
         title = page.title()
         if "全链路工作台" not in title:
             raise AssertionError(f"unexpected H5 title: {title}")
@@ -101,6 +158,7 @@ def _h5_smoke(browser: Browser, base_url: str, output: Path, errors: list[str]) 
             "valid": True,
             "title": title,
             "nav_count": page.locator(".wb-nav").count(),
+            "safe_html_boundary": safe_html_boundary,
             "screenshot": str(screenshot),
         }
     finally:

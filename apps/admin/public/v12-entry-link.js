@@ -13,7 +13,7 @@ async function refreshPermissions(){
 function can(code){return permissions.includes('*')||permissions.includes(code);}
 function canLeadEntry(){return can('lead.manual.manage')||can('lead.supplier.review');}
 function canOperations(){return ['lead.dispatch','return.read','return.review','verification.read','reward.read','reward.manage','reward.reverse','report.v12.read','audit.read'].some(can);}
-function makeLink(id,href,icon,label){const link=document.createElement('a');link.className='menu-item';link.id=id;link.href=href;link.innerHTML=`<i>${icon}</i>${label}`;return link;}
+function makeLink(id,href,icon,label){const link=document.createElement('a');link.className='menu-item';link.id=id;link.href=href;zsSetSafeHtml(link, `<i>${icon}</i>${label}`);return link;}
 function injectEntries(){
   const sidebar=document.querySelector('#sidebar');
   if(!sidebar){refreshPermissions();return;}

@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import re
+import sys
 import tarfile
 from datetime import date
 from pathlib import Path
@@ -19,6 +21,7 @@ from scripts.check_security_gate import (
     Waiver,
     evaluate,
     load_waivers,
+    main,
     semgrep_findings,
     trivy_findings,
     validate_sbom,
@@ -27,8 +30,9 @@ from scripts.check_security_gate import (
 )
 
 IMAGE_REF = "zhongshu-security:test"
-IMAGE_ID = "sha256:" + "1" * 64
-CONFIG_NAME = "1" * 64 + ".json"
+CONFIG_BYTES = b"{}"
+IMAGE_ID = "sha256:" + hashlib.sha256(CONFIG_BYTES).hexdigest()
+CONFIG_NAME = IMAGE_ID.removeprefix("sha256:") + ".json"
 SEMGREP_OCCURRENCE = "L164:C33-L164:C40"
 TRIVY_OCCURRENCE = "Python|lang-pkgs|python-pkg|49.0.0"
 
@@ -76,8 +80,16 @@ def _trivy(*vulnerabilities: dict) -> dict:
                 "Class": "os-pkgs",
                 "Type": "debian",
                 "Packages": [
-                    {"Name": "base-files", "Version": "12.4"},
-                    {"Name": "libc6", "Version": "2.36"},
+                    {
+                        "Name": "base-files",
+                        "Version": "12.4",
+                        "Identifier": {"PURL": "pkg:deb/debian/base-files@12.4"},
+                    },
+                    {
+                        "Name": "libc6",
+                        "Version": "2.36",
+                        "Identifier": {"PURL": "pkg:deb/debian/libc6@2.36"},
+                    },
                 ],
                 "Vulnerabilities": [],
             },
@@ -86,8 +98,16 @@ def _trivy(*vulnerabilities: dict) -> dict:
                 "Class": "lang-pkgs",
                 "Type": "python-pkg",
                 "Packages": [
-                    {"Name": "cryptography", "Version": "49.0.0"},
-                    {"Name": "fastapi", "Version": "0.141.1"},
+                    {
+                        "Name": "cryptography",
+                        "Version": "49.0.0",
+                        "Identifier": {"PURL": "pkg:pypi/cryptography@49.0.0"},
+                    },
+                    {
+                        "Name": "fastapi",
+                        "Version": "0.141.1",
+                        "Identifier": {"PURL": "pkg:pypi/fastapi@0.141.1"},
+                    },
                 ],
                 "Vulnerabilities": list(vulnerabilities),
             },
@@ -122,16 +142,50 @@ def _sbom() -> dict:
                 "version": "12",
             },
             {
-                "bom-ref": "lib-ref",
+                "bom-ref": "base-files-ref",
+                "type": "library",
+                "name": "base-files",
+                "version": "12.4",
+                "purl": "pkg:deb/debian/base-files@12.4",
+            },
+            {
+                "bom-ref": "libc6-ref",
+                "type": "library",
+                "name": "libc6",
+                "version": "2.36",
+                "purl": "pkg:deb/debian/libc6@2.36",
+            },
+            {
+                "bom-ref": "cryptography-ref",
+                "type": "library",
+                "name": "cryptography",
+                "version": "49.0.0",
+                "purl": "pkg:pypi/cryptography@49.0.0",
+            },
+            {
+                "bom-ref": "fastapi-ref",
                 "type": "library",
                 "name": "fastapi",
                 "version": "0.141.1",
+                "purl": "pkg:pypi/fastapi@0.141.1",
             },
         ],
         "dependencies": [
-            {"ref": "root-ref", "dependsOn": ["os-ref", "lib-ref"]},
+            {
+                "ref": "root-ref",
+                "dependsOn": [
+                    "os-ref",
+                    "base-files-ref",
+                    "libc6-ref",
+                    "cryptography-ref",
+                    "fastapi-ref",
+                ],
+            },
             {"ref": "os-ref", "dependsOn": []},
-            {"ref": "lib-ref", "dependsOn": []},
+            {"ref": "base-files-ref", "dependsOn": []},
+            {"ref": "libc6-ref", "dependsOn": []},
+            {"ref": "cryptography-ref", "dependsOn": []},
+            {"ref": "fastapi-ref", "dependsOn": []},
         ],
         "metadata": {
             "tools": {
@@ -184,8 +238,91 @@ def _write_image_archive(
     manifest = [{"Config": config_name, "RepoTags": [image_ref], "Layers": []}]
     with tarfile.open(path, "w") as archive:
         _add_tar_bytes(archive, "manifest.json", json.dumps(manifest).encode("utf-8"))
-        _add_tar_bytes(archive, config_name, b"{}")
+        _add_tar_bytes(archive, config_name, CONFIG_BYTES)
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _json_bytes(payload: object) -> bytes:
+    return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+
+
+def _write_oci_image_archive(
+    path: Path,
+    *,
+    link_manifest_config: bool = True,
+    index_depth: int = 1,
+    root_size_delta: int = 0,
+    root_media_type: str | None = None,
+    tamper_root_blob: bool = False,
+) -> tuple[str, str]:
+    config = CONFIG_BYTES
+    config_digest = "sha256:" + hashlib.sha256(config).hexdigest()
+    unlinked_config = b'{"unlinked":true}'
+    manifest_config = config if link_manifest_config else unlinked_config
+    manifest_config_digest = "sha256:" + hashlib.sha256(manifest_config).hexdigest()
+
+    image_manifest = _json_bytes(
+        {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "config": {
+                "mediaType": "application/vnd.oci.image.config.v1+json",
+                "digest": config_digest,
+                "size": len(config),
+            },
+            "layers": [],
+        }
+    )
+    child_payload = image_manifest
+    child_digest = "sha256:" + hashlib.sha256(child_payload).hexdigest()
+    child_media_type = "application/vnd.oci.image.manifest.v1+json"
+    blobs = {
+        "blobs/sha256/" + config_digest.removeprefix("sha256:"): config,
+        "blobs/sha256/" + manifest_config_digest.removeprefix("sha256:"): manifest_config,
+        "blobs/sha256/" + child_digest.removeprefix("sha256:"): child_payload,
+    }
+    for _ in range(index_depth):
+        child_payload = _json_bytes(
+            {
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.index.v1+json",
+                "manifests": [
+                    {
+                        "mediaType": child_media_type,
+                        "digest": child_digest,
+                        "size": len(child_payload),
+                    }
+                ],
+            }
+        )
+        child_digest = "sha256:" + hashlib.sha256(child_payload).hexdigest()
+        child_media_type = "application/vnd.oci.image.index.v1+json"
+        blobs["blobs/sha256/" + child_digest.removeprefix("sha256:")] = child_payload
+    image_id = child_digest
+    root_blob = blobs["blobs/sha256/" + image_id.removeprefix("sha256:")]
+    if tamper_root_blob:
+        blobs["blobs/sha256/" + image_id.removeprefix("sha256:")] = root_blob + b" "
+    index = _json_bytes(
+        {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "manifests": [
+                {
+                    "mediaType": root_media_type or child_media_type,
+                    "digest": image_id,
+                    "size": len(root_blob) + root_size_delta,
+                }
+            ],
+        }
+    )
+    config_name = "blobs/sha256/" + manifest_config_digest.removeprefix("sha256:")
+    manifest = [{"Config": config_name, "RepoTags": [IMAGE_REF], "Layers": []}]
+    with tarfile.open(path, "w") as archive:
+        _add_tar_bytes(archive, "manifest.json", _json_bytes(manifest))
+        _add_tar_bytes(archive, "index.json", index)
+        for name, payload in blobs.items():
+            _add_tar_bytes(archive, name, payload)
+    return hashlib.sha256(path.read_bytes()).hexdigest(), image_id
 
 
 def _write_semgrep_identity(root: Path) -> dict[str, Path]:
@@ -521,12 +658,61 @@ def test_scan_subject_binds_hash_manifest_tag_and_config(tmp_path: Path) -> None
         archive_path=archive,
     )
     assert subject["archive_sha256"] == digest
+    assert subject["trivy_image_id"] == IMAGE_ID
     assert subject["trivy_artifact_name"] == TRIVY_INPUT_ARTIFACT_NAME
 
     archive.write_bytes(b"tampered")
     with pytest.raises(RuntimeError, match="archive SHA-256 mismatch"):
         validate_scan_subject(
             {"image_ref": IMAGE_REF, "image_id": IMAGE_ID, "archive_sha256": digest},
+            archive_path=archive,
+        )
+
+
+def test_scan_subject_accepts_digest_linked_oci_archive(tmp_path: Path) -> None:
+    archive = tmp_path / "app-image-oci.tar"
+    digest, image_id = _write_oci_image_archive(archive)
+
+    subject = validate_scan_subject(
+        {"image_ref": IMAGE_REF, "image_id": image_id, "archive_sha256": digest},
+        archive_path=archive,
+    )
+
+    assert subject["image_id"] == image_id
+    assert subject["trivy_image_id"] == IMAGE_ID
+
+
+def test_scan_subject_rejects_oci_config_not_linked_from_image_id(tmp_path: Path) -> None:
+    archive = tmp_path / "app-image-oci-unlinked.tar"
+    digest, image_id = _write_oci_image_archive(archive, link_manifest_config=False)
+
+    with pytest.raises(RuntimeError, match="is not linked from ImageID"):
+        validate_scan_subject(
+            {"image_ref": IMAGE_REF, "image_id": image_id, "archive_sha256": digest},
+            archive_path=archive,
+        )
+
+
+@pytest.mark.parametrize(
+    ("archive_kwargs", "message"),
+    [
+        ({"tamper_root_blob": True}, "blob digest mismatch"),
+        ({"root_size_delta": 1}, "blob size mismatch"),
+        ({"root_media_type": "application/vnd.example.unsupported"}, "unsupported OCI mediaType"),
+        ({"index_depth": 6}, "nesting exceeds four levels"),
+    ],
+)
+def test_scan_subject_rejects_malformed_oci_descriptor_chains(
+    tmp_path: Path,
+    archive_kwargs: dict[str, object],
+    message: str,
+) -> None:
+    archive = tmp_path / "app-image-oci-malformed.tar"
+    digest, image_id = _write_oci_image_archive(archive, **archive_kwargs)
+
+    with pytest.raises(RuntimeError, match=message):
+        validate_scan_subject(
+            {"image_ref": IMAGE_REF, "image_id": image_id, "archive_sha256": digest},
             archive_path=archive,
         )
 
@@ -560,16 +746,204 @@ def test_scan_subject_requires_full_sha256_image_id(tmp_path: Path) -> None:
             )
 
 
+def test_security_workflow_scans_files_ignored_by_semgrep_defaults() -> None:
+    workflow = Path(__file__).parents[3] / ".github" / "workflows" / "security-analysis.yml"
+    source = workflow.read_text(encoding="utf-8")
+
+    assert source.count("--x-ignore-semgrepignore-files") == 1
+
+
+def test_security_workflow_pins_third_party_actions_to_full_commits() -> None:
+    workflow = Path(__file__).parents[3] / ".github" / "workflows" / "security-analysis.yml"
+    source = workflow.read_text(encoding="utf-8")
+    action_refs = re.findall(r"^\s+uses:\s+([^\s#]+)", source, flags=re.MULTILINE)
+
+    assert action_refs == [
+        "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+        "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+        "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+    ]
+
+
+def test_security_workflow_executes_policy_from_protected_base() -> None:
+    workflow = Path(__file__).parents[3] / ".github" / "workflows" / "security-analysis.yml"
+    source = workflow.read_text(encoding="utf-8")
+
+    assert "pull_request_target:" in source
+    assert re.search(r"^\s+pull_request:\s*$", source, flags=re.MULTILINE) is None
+    assert "ref: ${{ github.event.pull_request.base.sha || github.sha }}" in source
+    assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in source
+    assert "persist-credentials: false" in source
+    assert "python ../policy/scripts/check_security_gate.py" in source
+    assert "--waivers ../policy/security/waivers.json" in source
+
+
+def test_browser_entrypoints_load_safe_html_boundary_first() -> None:
+    root = Path(__file__).parents[3]
+    entrypoints = {
+        "apps/admin/public/index.html": "/h5/safe-html.js",
+        "apps/admin/public/v12-leads.html": "/h5/safe-html.js",
+        "apps/admin/public/v12-operations.html": "/h5/safe-html.js",
+        "apps/call-h5/public/index.html": "/h5/safe-html.js",
+        "apps/h5/public/index.html": "./safe-html.js",
+        "apps/h5/public/supplier.html": "./safe-html.js",
+        "apps/h5/public/v12-workbench.html": "./safe-html.js",
+    }
+
+    for relative, sanitizer in entrypoints.items():
+        source = (root / relative).read_text(encoding="utf-8")
+        assert source.count(sanitizer) == 1
+        script_sources = re.findall(r'<script\b[^>]*\bsrc="([^"]+)"', source)
+        assert script_sources[0] == sanitizer
+
+
+def _write_cli_evidence(root: Path) -> tuple[list[str], Path]:
+    for directory in ("apps", "scripts", "migrations"):
+        (root / directory).mkdir()
+    (root / "apps" / "example.py").write_text("value = 1\n", encoding="utf-8")
+    identity = _write_semgrep_identity(root)
+
+    semgrep_path = root / "semgrep.json"
+    semgrep_path.write_text(
+        json.dumps(_semgrep(scanned=["apps/example.py"])),
+        encoding="utf-8",
+    )
+    trivy_path = root / "trivy.json"
+    trivy_path.write_text(json.dumps(_trivy()), encoding="utf-8")
+    sbom_path = root / "sbom.json"
+    sbom_path.write_text(json.dumps(_sbom()), encoding="utf-8")
+    archive_path = root / "app-image.tar"
+    archive_digest = _write_image_archive(archive_path)
+    subject_path = root / "subject.json"
+    subject_path.write_text(
+        json.dumps(
+            {
+                "image_ref": IMAGE_REF,
+                "image_id": IMAGE_ID,
+                "archive_sha256": archive_digest,
+            }
+        ),
+        encoding="utf-8",
+    )
+    waivers_path = root / "waivers.json"
+    _write_waivers(waivers_path, [])
+    semgrep_exit = root / "semgrep-exit.txt"
+    semgrep_exit.write_text("0\n", encoding="utf-8")
+    trivy_exit = root / "trivy-exit.txt"
+    trivy_exit.write_text("0\n", encoding="utf-8")
+    output = root / "gate.json"
+    args = [
+        "check_security_gate.py",
+        "--semgrep",
+        str(semgrep_path),
+        "--semgrep-exit",
+        str(semgrep_exit),
+        "--semgrep-image-ref",
+        str(identity["image_ref"]),
+        "--semgrep-version",
+        str(identity["version"]),
+        "--semgrep-rules-commit",
+        str(identity["rules_commit"]),
+        "--semgrep-rules-tree",
+        str(identity["rules_tree"]),
+        "--source-root",
+        str(root),
+        "--trivy",
+        str(trivy_path),
+        "--trivy-exit",
+        str(trivy_exit),
+        "--sbom",
+        str(sbom_path),
+        "--subject",
+        str(subject_path),
+        "--image-archive",
+        str(archive_path),
+        "--waivers",
+        str(waivers_path),
+        "--output",
+        str(output),
+        "--today",
+        "2026-08-10",
+    ]
+    return args, output
+
+
+def test_security_gate_cli_accepts_complete_valid_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args, output = _write_cli_evidence(tmp_path)
+    monkeypatch.setattr(sys, "argv", args)
+
+    assert main() == 0
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["valid"] is True
+    assert report["blocking_count"] == 0
+    assert report["semgrep"]["expected_source_count"] == 1
+
+
+@pytest.mark.parametrize(
+    ("argument", "value", "message"),
+    [
+        ("--semgrep-exit", "3\n", "Semgrep scanner failed with exit code 3"),
+        ("--trivy-exit", "125\n", "Trivy scanner/SBOM failed with exit code 125"),
+        ("--semgrep-exit", "not-an-exit-code\n", "invalid scanner exit code"),
+    ],
+)
+def test_security_gate_cli_fails_closed_on_scanner_exit_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    argument: str,
+    value: str,
+    message: str,
+) -> None:
+    semgrep_exit = tmp_path / "semgrep-exit.txt"
+    trivy_exit = tmp_path / "trivy-exit.txt"
+    semgrep_exit.write_text("0\n", encoding="utf-8")
+    trivy_exit.write_text("0\n", encoding="utf-8")
+    target = semgrep_exit if argument == "--semgrep-exit" else trivy_exit
+    target.write_text(value, encoding="utf-8")
+    output = tmp_path / "gate.json"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check_security_gate.py",
+            "--semgrep-exit",
+            str(semgrep_exit),
+            "--trivy-exit",
+            str(trivy_exit),
+            "--output",
+            str(output),
+            "--today",
+            "2026-08-10",
+        ],
+    )
+
+    assert main() == 2
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["valid"] is False
+    assert message in report["error"]
+
+
 def test_sbom_must_be_substantive_cyclonedx_with_valid_dependency_graph() -> None:
     sbom = _sbom()
     kwargs = {
         "expected_artifact_name": TRIVY_INPUT_ARTIFACT_NAME,
         "expected_image_ref": IMAGE_REF,
         "expected_image_id": IMAGE_ID,
+        "expected_package_purls": {
+            "pkg:deb/debian/base-files@12.4",
+            "pkg:deb/debian/libc6@2.36",
+            "pkg:pypi/cryptography@49.0.0",
+            "pkg:pypi/fastapi@0.141.1",
+        },
     }
     summary = validate_sbom(sbom, **kwargs)
-    assert summary["component_count"] == 2
-    assert summary["dependency_count"] == 3
+    assert summary["component_count"] == 5
+    assert summary["dependency_count"] == 6
     assert summary["generator"] == "trivy/0.70.0"
 
     for bad_component in (None, {}):
@@ -584,13 +958,22 @@ def test_sbom_must_be_substantive_cyclonedx_with_valid_dependency_graph() -> Non
         validate_sbom(duplicate, **kwargs)
 
     no_os = json.loads(json.dumps(sbom))
-    no_os["components"] = [no_os["components"][1]]
-    no_os["dependencies"] = [
-        {"ref": "root-ref", "dependsOn": ["lib-ref"]},
-        {"ref": "lib-ref", "dependsOn": []},
-    ]
+    no_os["components"] = no_os["components"][1:]
+    no_os["dependencies"][0]["dependsOn"].remove("os-ref")
+    no_os["dependencies"] = [item for item in no_os["dependencies"] if item["ref"] != "os-ref"]
     with pytest.raises(RuntimeError, match="missing operating-system"):
         validate_sbom(no_os, **kwargs)
+
+    truncated = json.loads(json.dumps(sbom))
+    truncated["components"] = [
+        item for item in truncated["components"] if item["bom-ref"] != "cryptography-ref"
+    ]
+    truncated["dependencies"][0]["dependsOn"].remove("cryptography-ref")
+    truncated["dependencies"] = [
+        item for item in truncated["dependencies"] if item["ref"] != "cryptography-ref"
+    ]
+    with pytest.raises(RuntimeError, match="SBOM package inventory mismatch"):
+        validate_sbom(truncated, **kwargs)
 
     unknown_dependency = json.loads(json.dumps(sbom))
     unknown_dependency["dependencies"][0]["dependsOn"].append("unknown-ref")
@@ -604,6 +987,12 @@ def test_sbom_identity_and_generator_damage_fail_closed() -> None:
         "expected_artifact_name": TRIVY_INPUT_ARTIFACT_NAME,
         "expected_image_ref": IMAGE_REF,
         "expected_image_id": IMAGE_ID,
+        "expected_package_purls": {
+            "pkg:deb/debian/base-files@12.4",
+            "pkg:deb/debian/libc6@2.36",
+            "pkg:pypi/cryptography@49.0.0",
+            "pkg:pypi/fastapi@0.141.1",
+        },
     }
     wrong_tool_version = json.loads(json.dumps(sbom))
     wrong_tool_version["metadata"]["tools"]["components"][0]["version"] = "0.69.0"

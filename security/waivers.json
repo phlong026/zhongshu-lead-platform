@@ -12,6 +12,56 @@
       "expires_on": "2026-09-07"
     },
     {
+      "scanner": "semgrep",
+      "id": "dangerous-subprocess-use-audit",
+      "scope": "apps/api/tests/test_v12_migration.py",
+      "occurrence": "L19:C5-L26:C6",
+      "reason": "The migration test invokes the current Python interpreter with a fixed Alembic module/config prefix and test-owned migration arguments. It never enables a shell and runs only in the isolated test database workflow.",
+      "owner": "platform-security",
+      "created_on": "2026-08-10",
+      "expires_on": "2026-09-07"
+    },
+    {
+      "scanner": "semgrep",
+      "id": "dangerous-subprocess-use-audit",
+      "scope": "scripts/preflight_v12.py",
+      "occurrence": "L92:C18-L92:C92",
+      "reason": "The production preflight runner accepts only command arrays assembled by this script from fixed Docker Compose and Python entrypoints. subprocess receives an argv list with shell disabled; sensitive values are separately redacted from evidence.",
+      "owner": "platform-security",
+      "created_on": "2026-08-10",
+      "expires_on": "2026-09-07"
+    },
+    {
+      "scanner": "semgrep",
+      "id": "dangerous-subprocess-use-audit",
+      "scope": "scripts/task_review.py",
+      "occurrence": "L15:C12-L15:C77",
+      "reason": "The review helper executes only the four fixed compile, pytest, JavaScript, and secret-scan argv lists declared in the same file. It does not accept a command from CLI input and never enables a shell.",
+      "owner": "platform-security",
+      "created_on": "2026-08-10",
+      "expires_on": "2026-09-07"
+    },
+    {
+      "scanner": "semgrep",
+      "id": "dangerous-subprocess-use-audit",
+      "scope": "scripts/verify_production.py",
+      "occurrence": "L52:C14-L64:C6",
+      "reason": "Image inspection uses the Docker executable resolved by shutil.which and a fixed argv structure. The image reference is one argument, shell execution is disabled, and validation requires an immutable production reference.",
+      "owner": "platform-security",
+      "created_on": "2026-08-10",
+      "expires_on": "2026-09-07"
+    },
+    {
+      "scanner": "semgrep",
+      "id": "dangerous-subprocess-use-audit",
+      "scope": "scripts/verify_production.py",
+      "occurrence": "L164:C18-L164:C83",
+      "reason": "Compose validation uses a fixed Docker Compose argv prefix; environment-derived paths are passed as distinct arguments, never evaluated by a shell. This occurrence is paired with the existing taint-rule review at the same call site.",
+      "owner": "platform-security",
+      "created_on": "2026-08-10",
+      "expires_on": "2026-09-07"
+    },
+    {
       "scanner": "trivy",
       "id": "CVE-2026-69247",
       "scope": "cryptography",
@@ -19,6 +69,246 @@
       "reason": "Temporary isolation waiver for Hardening H12 #61. The scanner reports cryptography 49.0.0 and fixed version 50.0.0. This exact occurrence remains temporarily isolated only until the existing dependency-waiver deadline; H12 must upgrade and delete it before expiry.",
       "owner": "H12-#61",
       "created_on": "2026-08-08",
+      "expires_on": "2026-08-21"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-53615",
+      "scope": "bsdutils",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|1:2.38.1-5+deb12u3",
+      "reason": "Trivy reports no fixed Debian Bookworm version. The application does not parse block-device partition tables and production drops capabilities, runs non-root, and uses a read-only root filesystem. Rebuild or replace the base and delete this exact waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-10",
+      "expires_on": "2026-08-21"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-41992",
+      "scope": "gzip",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|1.12-1",
+      "reason": "Trivy reports no fixed Debian Bookworm version. The API does not invoke the gzip CLI or accept LZH archives, and production runs non-root with a read-only root filesystem. Rebuild or replace the base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-10",
+      "expires_on": "2026-08-21"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-54369",
+      "scope": "libacl1",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.3.1-3",
+      "reason": "Trivy reports no fixed Debian Bookworm version. The service does not expose ACL mutation and runs as uid 10001 without capabilities on a read-only root filesystem. Rebuild or replace the base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-10",
+      "expires_on": "2026-08-21"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-53615",
+      "scope": "libblkid1",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Trivy reports no fixed Debian Bookworm version. The application has no block-device access and production drops all capabilities, runs non-root, and mounts the root filesystem read-only. Rebuild or replace the base before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-10",
+      "expires_on": "2026-08-21"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-53615",
+      "scope": "libmount1",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Trivy reports no fixed Debian Bookworm version. The application performs no mount or partition operations and production drops all capabilities and runs non-root. Rebuild or replace the base before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-10",
+      "expires_on": "2026-08-21"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2025-69720",
+      "scope": "libncursesw6",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|6.4-4",
+      "reason": "Trivy reports no fixed Debian Bookworm version. The headless ASGI service exposes no terminal input path and runs non-root with a read-only root filesystem. Rebuild or replace the base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-10",
+      "expires_on": "2026-08-21"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-53615",
+      "scope": "libsmartcols1",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Trivy reports no fixed Debian Bookworm version. The application does not parse block-device metadata and production drops capabilities, runs non-root, and uses a read-only root filesystem. Rebuild or replace the base before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-10",
+      "expires_on": "2026-08-21"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2025-7458",
+      "scope": "libsqlite3-0",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|3.40.1-2+deb12u2",
+      "reason": "Trivy reports no fixed Debian Bookworm version. Production is PostgreSQL-only and does not process attacker-supplied SQLite databases; the container also runs non-root with a read-only root filesystem. Replace the base before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-10",
+      "expires_on": "2026-08-21"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2025-69720",
+      "scope": "libtinfo6",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|6.4-4",
+      "reason": "Trivy reports no fixed Debian Bookworm version. The headless ASGI service exposes no terminal input path and runs non-root with a read-only root filesystem. Rebuild or replace the base before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-10",
+      "expires_on": "2026-08-21"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-53615",
+      "scope": "libuuid1",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Trivy reports no fixed Debian Bookworm version. The vulnerable partition-parser path is not used by the application; production drops capabilities and runs non-root on a read-only root filesystem. Replace the base before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-10",
+      "expires_on": "2026-08-21"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-53615",
+      "scope": "mount",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Trivy reports no fixed Debian Bookworm version. The application performs no mount or partition operations and production drops all capabilities and runs non-root. Replace the base before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-10",
+      "expires_on": "2026-08-21"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2025-69720",
+      "scope": "ncurses-base",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|6.4-4",
+      "reason": "Trivy reports no fixed Debian Bookworm version. The headless ASGI service does not consume terminal databases from users and runs non-root with a read-only root filesystem. Replace the base before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-10",
+      "expires_on": "2026-08-21"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2025-69720",
+      "scope": "ncurses-bin",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|6.4-4",
+      "reason": "Trivy reports no fixed Debian Bookworm version. The headless ASGI service does not invoke ncurses utilities and runs non-root with a read-only root filesystem. Replace the base before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-10",
+      "expires_on": "2026-08-21"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-13221",
+      "scope": "perl-base",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|5.36.0-7+deb12u3",
+      "reason": "Trivy reports no fixed Debian Bookworm version. The Python ASGI service never invokes Perl or compiles attacker-controlled Perl regexes; production runs non-root with a read-only root filesystem. Replace the base before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-10",
+      "expires_on": "2026-08-21"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-42496",
+      "scope": "perl-base",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|5.36.0-7+deb12u3",
+      "reason": "Trivy reports no fixed Debian Bookworm version. The service never invokes Perl Archive::Tar or extracts user archives; production runs non-root with a read-only root filesystem. Replace the base before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-10",
+      "expires_on": "2026-08-21"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-57433",
+      "scope": "perl-base",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|5.36.0-7+deb12u3",
+      "reason": "Trivy reports no fixed Debian Bookworm version. The Python ASGI service never invokes Perl Storable or deserializes Perl data; production runs non-root with a read-only root filesystem. Replace the base before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-10",
+      "expires_on": "2026-08-21"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-8376",
+      "scope": "perl-base",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|5.36.0-7+deb12u3",
+      "reason": "The reported Perl heap overflow is limited to 32-bit builds, while the frozen production image is linux/amd64 and never invokes Perl. Trivy reports no fixed Bookworm version; delete this exact waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-10",
+      "expires_on": "2026-08-21"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-42497",
+      "scope": "perl-base",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|5.36.0-7+deb12u3",
+      "reason": "Trivy reports no fixed Debian Bookworm version. The service never invokes Perl Archive::Tar or extracts user archives; production runs non-root with a read-only root filesystem. Replace the base before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-10",
+      "expires_on": "2026-08-21"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-48962",
+      "scope": "perl-base",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|5.36.0-7+deb12u3",
+      "reason": "Trivy reports no fixed Debian Bookworm version. The Python ASGI service never invokes Perl IO::Compress or accepts Perl output globs; production runs non-root and read-only. Replace the base before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-10",
+      "expires_on": "2026-08-21"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-57432",
+      "scope": "perl-base",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|5.36.0-7+deb12u3",
+      "reason": "Trivy reports no fixed Debian Bookworm version. The Python ASGI service never invokes Perl pack/unpack on user data; production runs non-root with a read-only root filesystem. Replace the base before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-10",
+      "expires_on": "2026-08-21"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-9538",
+      "scope": "perl-base",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|5.36.0-7+deb12u3",
+      "reason": "Trivy reports no fixed Debian Bookworm version. The service never invokes Perl Archive::Tar or processes user tar headers; production runs non-root with a read-only root filesystem. Replace the base before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-10",
+      "expires_on": "2026-08-21"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-53615",
+      "scope": "util-linux",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Trivy reports no fixed Debian Bookworm version. The application has no block-device access and production drops all capabilities, runs non-root, and mounts the root filesystem read-only. Replace the base before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-10",
+      "expires_on": "2026-08-21"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-53615",
+      "scope": "util-linux-extra",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Trivy reports no fixed Debian Bookworm version. The application has no block-device access and production drops all capabilities, runs non-root, and mounts the root filesystem read-only. Replace the base before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-10",
+      "expires_on": "2026-08-21"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2023-45853",
+      "scope": "zlib1g",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|1:1.2.13.dfsg-1",
+      "reason": "Trivy reports no fixed Debian Bookworm version. The vulnerable minizip API is not used by the application, which does not accept ZIP archives and runs non-root on a read-only root filesystem. Replace the base before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-10",
       "expires_on": "2026-08-21"
     }
   ]

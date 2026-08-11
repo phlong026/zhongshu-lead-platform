@@ -35,6 +35,15 @@ TRIVY_INPUT_ARTIFACT_NAME = "/tmp/app-image.tar"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _IMAGE_ID_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_OCI_CONFIG_PATH_RE = re.compile(r"^blobs/sha256/([0-9a-f]{64})$")
+_OCI_INDEX_MEDIA_TYPES = {
+    "application/vnd.docker.distribution.manifest.list.v2+json",
+    "application/vnd.oci.image.index.v1+json",
+}
+_OCI_MANIFEST_MEDIA_TYPES = {
+    "application/vnd.docker.distribution.manifest.v2+json",
+    "application/vnd.oci.image.manifest.v1+json",
+}
 
 
 @dataclass(frozen=True)
@@ -348,6 +357,53 @@ def _validate_package_inventory(result: dict[str, Any], *, label: str) -> int:
     return len(packages)
 
 
+def _trivy_package_purls(payload: dict[str, Any]) -> set[str]:
+    results = payload.get("Results")
+    if not isinstance(results, list) or not results:
+        raise RuntimeError("Trivy report Results must be a non-empty array")
+
+    inventories: dict[tuple[str, str], set[str]] = {}
+    expected_inventories = {
+        ("os-pkgs", "debian"): "Debian OS",
+        ("lang-pkgs", "python-pkg"): "Python",
+    }
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        identity = (result.get("Class"), result.get("Type"))
+        label = expected_inventories.get(identity)
+        if label is None:
+            continue
+        if identity in inventories:
+            raise RuntimeError(f"Trivy report contains multiple {label} package inventories")
+        packages = result.get("Packages")
+        if not isinstance(packages, list) or not packages:
+            raise RuntimeError(f"Trivy {label} Packages must be a non-empty array")
+        purls: set[str] = set()
+        for index, package in enumerate(packages, start=1):
+            if not isinstance(package, dict):
+                raise RuntimeError(f"Trivy {label} package #{index} must be an object")
+            identifier = package.get("Identifier")
+            if not isinstance(identifier, dict):
+                raise RuntimeError(f"Trivy {label} package #{index} missing Identifier")
+            purl = identifier.get("PURL")
+            if not isinstance(purl, str) or not purl.strip():
+                raise RuntimeError(f"Trivy {label} package #{index} missing Identifier.PURL")
+            normalized = purl.strip()
+            if normalized in purls:
+                raise RuntimeError(f"Trivy {label} package inventory contains duplicate PURL {normalized!r}")
+            purls.add(normalized)
+        inventories[identity] = purls
+
+    missing = [label for identity, label in expected_inventories.items() if identity not in inventories]
+    if missing:
+        raise RuntimeError(f"Trivy report missing package PURL inventory: {', '.join(missing)}")
+    combined = set().union(*inventories.values())
+    if sum(len(items) for items in inventories.values()) != len(combined):
+        raise RuntimeError("Trivy Debian and Python package inventories contain duplicate PURLs")
+    return combined
+
+
 def trivy_findings(
     payload: dict[str, Any],
     *,
@@ -470,23 +526,146 @@ def trivy_findings(
     }
 
 
+def _read_archive_member(archive: tarfile.TarFile, name: str) -> bytes:
+    try:
+        member = archive.getmember(name)
+    except KeyError as exc:
+        raise RuntimeError(f"Docker archive member missing: {name}") from exc
+    if not member.isfile():
+        raise RuntimeError(f"Docker archive member is not a regular file: {name}")
+    stream = archive.extractfile(member)
+    if stream is None:
+        raise RuntimeError(f"Docker archive member is unreadable: {name}")
+    return stream.read()
+
+
+def _read_archive_json(archive: tarfile.TarFile, name: str) -> Any:
+    try:
+        return json.loads(_read_archive_member(archive, name))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Docker archive {name} is invalid JSON: {exc}") from exc
+
+
+def _read_verified_oci_blob(
+    archive: tarfile.TarFile,
+    descriptor: Any,
+    *,
+    label: str,
+) -> tuple[str, bytes]:
+    if not isinstance(descriptor, dict):
+        raise RuntimeError(f"{label} descriptor must be an object")
+    digest = descriptor.get("digest")
+    if not isinstance(digest, str) or not _IMAGE_ID_RE.fullmatch(digest):
+        raise RuntimeError(f"{label} descriptor digest must be sha256:<64 lowercase hex>")
+    size = descriptor.get("size")
+    if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+        raise RuntimeError(f"{label} descriptor size must be a non-negative integer")
+    raw = _read_archive_member(archive, f"blobs/sha256/{digest.removeprefix('sha256:')}")
+    actual_digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+    if actual_digest != digest:
+        raise RuntimeError(f"{label} blob digest mismatch: expected {digest}, got {actual_digest}")
+    if len(raw) != size:
+        raise RuntimeError(f"{label} blob size mismatch: expected {size}, got {len(raw)}")
+    return digest, raw
+
+
+def _reachable_oci_config_digests(
+    archive: tarfile.TarFile,
+    descriptor: Any,
+    *,
+    label: str,
+    depth: int = 0,
+) -> set[str]:
+    if depth > 4:
+        raise RuntimeError("Docker OCI descriptor nesting exceeds four levels")
+    if not isinstance(descriptor, dict):
+        raise RuntimeError(f"{label} descriptor must be an object")
+    media_type = descriptor.get("mediaType")
+    if not isinstance(media_type, str):
+        raise RuntimeError(f"{label} descriptor mediaType must be a string")
+    _, raw = _read_verified_oci_blob(archive, descriptor, label=label)
+    try:
+        payload = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"{label} blob is invalid JSON: {exc}") from exc
+    if not isinstance(payload, dict) or payload.get("schemaVersion") != 2:
+        raise RuntimeError(f"{label} blob must be a schemaVersion 2 object")
+
+    if media_type in _OCI_INDEX_MEDIA_TYPES:
+        manifests = payload.get("manifests")
+        if not isinstance(manifests, list) or not manifests:
+            raise RuntimeError(f"{label} index manifests must be a non-empty array")
+        configs: set[str] = set()
+        for index, child in enumerate(manifests, start=1):
+            configs.update(
+                _reachable_oci_config_digests(
+                    archive,
+                    child,
+                    label=f"{label} manifest #{index}",
+                    depth=depth + 1,
+                )
+            )
+        return configs
+
+    if media_type in _OCI_MANIFEST_MEDIA_TYPES:
+        config = payload.get("config")
+        digest, _ = _read_verified_oci_blob(archive, config, label=f"{label} config")
+        return {digest}
+
+    raise RuntimeError(f"{label} uses unsupported OCI mediaType {media_type!r}")
+
+
+def _validate_oci_archive_identity(
+    archive: tarfile.TarFile,
+    *,
+    config_name: str,
+    expected_image_id: str,
+) -> str:
+    config_match = _OCI_CONFIG_PATH_RE.fullmatch(config_name)
+    if config_match is None:
+        raise RuntimeError(f"Docker archive Config path is not a valid OCI SHA-256 blob: {config_name!r}")
+    config_digest = "sha256:" + config_match.group(1)
+    config_raw = _read_archive_member(archive, config_name)
+    actual_config_digest = "sha256:" + hashlib.sha256(config_raw).hexdigest()
+    if actual_config_digest != config_digest:
+        raise RuntimeError(
+            f"Docker archive OCI config digest mismatch: expected {config_digest}, "
+            f"got {actual_config_digest}"
+        )
+
+    index = _read_archive_json(archive, "index.json")
+    if not isinstance(index, dict) or index.get("schemaVersion") != 2:
+        raise RuntimeError("Docker archive index.json must be a schemaVersion 2 object")
+    manifests = index.get("manifests")
+    if not isinstance(manifests, list) or not manifests:
+        raise RuntimeError("Docker archive index.json manifests must be a non-empty array")
+    matches = [item for item in manifests if isinstance(item, dict) and item.get("digest") == expected_image_id]
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"Docker OCI index must contain exactly one descriptor for ImageID {expected_image_id!r}"
+        )
+    reachable_configs = _reachable_oci_config_digests(
+        archive,
+        matches[0],
+        label="Docker OCI image",
+    )
+    if config_digest not in reachable_configs:
+        raise RuntimeError(
+            f"Docker archive Config {config_digest!r} is not linked from ImageID {expected_image_id!r}"
+        )
+    return config_digest
+
+
 def _validate_docker_archive_identity(
     archive_path: Path,
     *,
     expected_image_ref: str,
     expected_image_id: str,
-) -> None:
+) -> str:
     expected_config = expected_image_id.removeprefix("sha256:") + ".json"
     try:
         with tarfile.open(archive_path, mode="r:*") as archive:
-            manifest_member = archive.getmember("manifest.json")
-            stream = archive.extractfile(manifest_member)
-            if stream is None:
-                raise RuntimeError("Docker archive manifest.json is unreadable")
-            try:
-                manifest = json.load(stream)
-            except json.JSONDecodeError as exc:
-                raise RuntimeError(f"Docker archive manifest.json is invalid JSON: {exc}") from exc
+            manifest = _read_archive_json(archive, "manifest.json")
             if not isinstance(manifest, list) or not manifest:
                 raise RuntimeError("Docker archive manifest.json must be a non-empty array")
             matches = []
@@ -507,11 +686,26 @@ def _validate_docker_archive_identity(
                     f"Docker archive must contain exactly one manifest entry for {expected_image_ref!r}"
                 )
             config_name = matches[0].get("Config")
-            if config_name != expected_config:
-                raise RuntimeError(
-                    f"Docker archive config mismatch: expected {expected_config!r}, got {config_name!r}"
+            if config_name == expected_config:
+                config_raw = _read_archive_member(archive, expected_config)
+                actual_config = hashlib.sha256(config_raw).hexdigest() + ".json"
+                if actual_config != expected_config:
+                    raise RuntimeError(
+                        f"Docker archive config content mismatch: expected {expected_config!r}, "
+                        f"got {actual_config!r}"
+                    )
+                return expected_image_id
+            elif isinstance(config_name, str) and _OCI_CONFIG_PATH_RE.fullmatch(config_name):
+                return _validate_oci_archive_identity(
+                    archive,
+                    config_name=config_name,
+                    expected_image_id=expected_image_id,
                 )
-            archive.getmember(expected_config)
+            else:
+                raise RuntimeError(
+                    f"Docker archive config mismatch: expected legacy {expected_config!r} "
+                    f"or an OCI config blob, got {config_name!r}"
+                )
     except (tarfile.TarError, KeyError, OSError) as exc:
         raise RuntimeError(f"invalid Docker image archive: {exc}") from exc
 
@@ -533,7 +727,7 @@ def validate_scan_subject(payload: dict[str, Any], *, archive_path: Path) -> dic
         )
     resolved_ref = image_ref.strip()
     resolved_id = image_id.strip()
-    _validate_docker_archive_identity(
+    trivy_image_id = _validate_docker_archive_identity(
         archive_path,
         expected_image_ref=resolved_ref,
         expected_image_id=resolved_id,
@@ -541,6 +735,7 @@ def validate_scan_subject(payload: dict[str, Any], *, archive_path: Path) -> dic
     return {
         "image_ref": resolved_ref,
         "image_id": resolved_id,
+        "trivy_image_id": trivy_image_id,
         "archive_sha256": archive_sha256,
         "trivy_artifact_name": TRIVY_INPUT_ARTIFACT_NAME,
     }
@@ -578,6 +773,7 @@ def validate_sbom(
     expected_artifact_name: str,
     expected_image_ref: str,
     expected_image_id: str,
+    expected_package_purls: set[str],
 ) -> dict[str, Any]:
     if payload.get("bomFormat") != "CycloneDX":
         raise RuntimeError("SBOM bomFormat must be CycloneDX")
@@ -649,6 +845,7 @@ def validate_sbom(
 
     component_refs: set[str] = set()
     component_types: set[str] = set()
+    component_purls: set[str] = set()
     for index, component in enumerate(components, start=1):
         if not isinstance(component, dict):
             raise RuntimeError(f"SBOM component #{index} must be an object")
@@ -668,10 +865,27 @@ def validate_sbom(
             raise RuntimeError(f"SBOM contains duplicate component bom-ref {bom_ref!r}")
         component_refs.add(bom_ref)
         component_types.add(component_type)
+        purl = component.get("purl")
+        if component_type == "library":
+            if not isinstance(purl, str) or not purl.strip():
+                raise RuntimeError(f"SBOM library component #{index} missing purl")
+            normalized_purl = purl.strip()
+            if normalized_purl in component_purls:
+                raise RuntimeError(f"SBOM contains duplicate component purl {normalized_purl!r}")
+            component_purls.add(normalized_purl)
     if "operating-system" not in component_types:
         raise RuntimeError("SBOM missing operating-system component")
     if "library" not in component_types:
         raise RuntimeError("SBOM missing library components")
+    missing_packages = sorted(expected_package_purls.difference(component_purls))
+    unexpected_packages = sorted(component_purls.difference(expected_package_purls))
+    if missing_packages or unexpected_packages:
+        details = []
+        if missing_packages:
+            details.append(f"missing={missing_packages[:10]!r}")
+        if unexpected_packages:
+            details.append(f"unexpected={unexpected_packages[:10]!r}")
+        raise RuntimeError("SBOM package inventory mismatch: " + "; ".join(details))
 
     dependencies = payload.get("dependencies")
     if not isinstance(dependencies, list) or not dependencies:
@@ -814,20 +1028,23 @@ def main() -> int:
         subject = validate_scan_subject(
             _read_json(Path(args.subject)), archive_path=Path(args.image_archive)
         )
+        trivy_payload = _read_json(Path(args.trivy))
+        expected_package_purls = _trivy_package_purls(trivy_payload)
         sbom_summary = validate_sbom(
             _read_json(Path(args.sbom)),
             expected_artifact_name=subject["trivy_artifact_name"],
             expected_image_ref=subject["image_ref"],
-            expected_image_id=subject["image_id"],
+            expected_image_id=subject["trivy_image_id"],
+            expected_package_purls=expected_package_purls,
         )
         waivers = load_waivers(Path(args.waivers), today=current)
         report, trivy_inventory = evaluate(
             semgrep_payload=semgrep_payload,
-            trivy_payload=_read_json(Path(args.trivy)),
+            trivy_payload=trivy_payload,
             waivers=waivers,
             expected_artifact_name=subject["trivy_artifact_name"],
             expected_image_ref=subject["image_ref"],
-            expected_image_id=subject["image_id"],
+            expected_image_id=subject["trivy_image_id"],
         )
         report.update(
             {
