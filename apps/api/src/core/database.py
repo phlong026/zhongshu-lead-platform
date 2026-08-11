@@ -5,16 +5,25 @@ from collections.abc import Generator
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
-from .config import get_settings
+from .config import Settings, get_settings
+
+
+def database_engine_options(settings: Settings) -> dict[str, object]:
+    options: dict[str, object] = {
+        "future": True,
+        "pool_pre_ping": True,
+        "connect_args": {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {},
+    }
+    if not settings.database_url.startswith("sqlite"):
+        options.update(
+            pool_size=settings.database_pool_size,
+            max_overflow=settings.database_max_overflow,
+            pool_timeout=settings.database_pool_timeout_seconds,
+        )
+    return options
 
 settings = get_settings()
-connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
-engine = create_engine(
-    settings.database_url,
-    future=True,
-    pool_pre_ping=True,
-    connect_args=connect_args,
-)
+engine = create_engine(settings.database_url, **database_engine_options(settings))
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False, class_=Session)
 
 

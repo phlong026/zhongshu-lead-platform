@@ -142,6 +142,27 @@ def test_prepare_dataset_creates_an_isolated_reconciled_tenant(db) -> None:
     assert reconciliation.valid, reconciliation.to_dict()
 
 
+def test_prepare_dataset_embeds_only_an_explicit_approved_claim_baseline(db) -> None:
+    baseline = {
+        "approved": True,
+        "p95_limit_ms": 5000.0,
+        "approval_reference": "https://github.com/phlong026/zhongshu-lead-platform/issues/71",
+    }
+    dataset = prepare_dataset(
+        db,
+        dataset_id="capacity-baseline",
+        base_url_origin="http://127.0.0.1:18080",
+        environment="staging-equivalent",
+        profiles=PROFILES,
+        credentials=_credentials(),
+        initial_points=10_000,
+        claim_baseline=baseline,
+    )
+
+    assert dataset["claim_baseline"] == baseline
+    validate_dataset(dataset, profiles=PROFILES, runtime=True)
+
+
 def test_prepare_dataset_refuses_to_reuse_an_existing_dataset(db) -> None:
     kwargs = {
         "dataset_id": "capacity-test",

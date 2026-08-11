@@ -27,7 +27,7 @@ from apps.api.src.core.models_v12 import CompanyLeadCapability, CompanyServiceAr
 from apps.api.src.core.security import encrypt_text, fingerprint_phone, hash_password, hash_phone
 from apps.api.src.core.v12_enums import LeadSourceKind, LeadV12Status, ReturnV12Status
 from apps.api.src.services.rbac import assign_role
-from scripts.performance_v12 import DEFAULT_PROFILES, safe_origin, validate_dataset
+from scripts.performance_v12 import DEFAULT_PROFILES, safe_origin, validate_claim_baseline, validate_dataset
 
 
 DATASET_ID_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{2,27}")
@@ -243,8 +243,10 @@ def prepare_dataset(
     profiles: tuple[int, ...],
     credentials: DatasetCredentials,
     initial_points: int = DEFAULT_INITIAL_POINTS,
+    claim_baseline: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     _validate_inputs(dataset_id, profiles, initial_points)
+    validate_claim_baseline(claim_baseline)
     origin = safe_origin(base_url_origin)
     if environment not in {"staging", "staging-equivalent"}:
         raise ValueError("environment must be staging or staging-equivalent")
@@ -490,7 +492,7 @@ def prepare_dataset(
         "dispatch_cases": dispatch_cases,
         "claim_cases": claim_cases,
         "evidence_cases": evidence_cases,
-        "claim_baseline": None,
+        "claim_baseline": dict(claim_baseline) if claim_baseline is not None else None,
     }
     validate_dataset(document, profiles=profiles, runtime=True)
     db.flush()
@@ -564,6 +566,8 @@ def main() -> int:
     parser.add_argument("--environment", choices=("staging", "staging-equivalent"), default="staging-equivalent")
     parser.add_argument("--profiles", default=",".join(str(item) for item in DEFAULT_PROFILES))
     parser.add_argument("--initial-points", type=int, default=DEFAULT_INITIAL_POINTS)
+    parser.add_argument("--claim-p95-limit-ms", type=float)
+    parser.add_argument("--claim-approval-reference")
     parser.add_argument("--dataset-output", type=Path, default=Path("dist/performance/dataset.json"))
     parser.add_argument("--credentials-output", type=Path, default=Path("/tmp/h04-credentials.env"))
     args = parser.parse_args()
@@ -573,6 +577,15 @@ def main() -> int:
         profiles = tuple(int(item.strip()) for item in args.profiles.split(",") if item.strip())
     except ValueError:
         parser.error("--profiles must contain comma-separated integers")
+    if (args.claim_p95_limit_ms is None) != (args.claim_approval_reference is None):
+        parser.error("--claim-p95-limit-ms and --claim-approval-reference must be supplied together")
+    claim_baseline = None
+    if args.claim_p95_limit_ms is not None:
+        claim_baseline = {
+            "approved": True,
+            "p95_limit_ms": args.claim_p95_limit_ms,
+            "approval_reference": args.claim_approval_reference,
+        }
 
     try:
         validate_credentials_storage(
@@ -614,6 +627,7 @@ def main() -> int:
                 profiles=profiles,
                 credentials=credentials,
                 initial_points=args.initial_points,
+                claim_baseline=claim_baseline,
             )
             persist_dataset(
                 db,

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 from pathlib import Path
 
 import pytest
 
+from apps.api.src.routers.v12_returns import upload_return_evidence
 from scripts.check_performance_gate import GateError, evaluate_report, render_markdown as render_gate_markdown
 from scripts.finalize_performance_report import finalize_report
 from scripts.performance_v12 import build_scenarios, percentile, safe_origin, validate_dataset
@@ -26,6 +28,10 @@ SCENARIOS = {
 EXPORT_SHA256 = "a" * 64
 PREVIEW_SHA256 = "b" * 64
 SOURCE_COMMIT_SHA = "c" * 40
+
+
+def test_evidence_upload_runs_blocking_work_off_event_loop() -> None:
+    assert not inspect.iscoroutinefunction(upload_return_evidence)
 
 
 def _preview_report(report: dict) -> dict:
@@ -194,6 +200,29 @@ def test_dataset_contract_requires_synthetic_runtime_resources():
         validate_dataset(document, runtime=True)
 
 
+def test_dataset_contract_requires_an_explicit_github_approved_claim_baseline():
+    document = _dataset()
+    document["claim_baseline"] = {
+        "approved": True,
+        "p95_limit_ms": 5000.0,
+        "approval_reference": "https://github.com/phlong026/zhongshu-lead-platform/issues/71",
+    }
+    validate_dataset(document, runtime=True)
+
+    for invalid in (
+        {"approved": False, "p95_limit_ms": 5000.0, "approval_reference": "https://github.com/example/1"},
+        {"approved": True, "p95_limit_ms": 499.0, "approval_reference": "https://github.com/example/1"},
+        {"approved": True, "p95_limit_ms": float("nan"), "approval_reference": "https://github.com/example/1"},
+        {"approved": True, "p95_limit_ms": 5000.0, "approval_reference": "https://example.com/issues/1"},
+        {"approved": True, "p95_limit_ms": 5000.0, "approval_reference": "https://github.com/other/repo/issues/71"},
+        {"approved": True, "p95_limit_ms": 5000.0, "approval_reference": "https://github.com/phlong026/zhongshu-lead-platform/issues/not-a-number"},
+    ):
+        document = _dataset()
+        document["claim_baseline"] = invalid
+        with pytest.raises(ValueError, match="claim_baseline"):
+            validate_dataset(document, runtime=True)
+
+
 def test_dataset_runtime_rejects_placeholders_but_contract_validation_allows_them():
     document = _dataset()
     document["dataset_id"] = "REPLACE_WITH_DATASET"
@@ -300,6 +329,13 @@ def test_final_gate_requires_signoff_but_engineering_preview_can_be_pending():
     with pytest.raises(GateError, match="requires signoff"):
         _evaluate(report)
     assert _evaluate(report, require_signoff=False)["status"] == "EVIDENCE_PENDING"
+
+
+def test_final_signoff_rejects_another_repository_reference():
+    report = _report()
+    report["signoff"]["approval_reference"] = "https://github.com/other/repository/issues/53"
+    with pytest.raises(GateError, match="this repository"):
+        _evaluate(report)
 
 
 def test_engineering_preview_labels_missing_monitoring_evidence_as_pending():
@@ -420,10 +456,28 @@ def test_approved_claim_baseline_requires_reference_and_changes_only_claim_limit
     assert result["claim_p95_limit_ms"] == 750.0
 
 
+def test_claim_baseline_gate_rejects_another_repository_reference():
+    report = _report()
+    report["claim_baseline"] = {
+        "approved": True,
+        "p95_limit_ms": 5000.0,
+        "approval_reference": "https://github.com/other/repository/issues/71",
+    }
+    with pytest.raises(GateError, match="this repository"):
+        _evaluate(report)
+
+
 def test_sensitive_fields_are_rejected_from_evidence():
     report = copy.deepcopy(_report())
     report["profiles"]["100"]["access_token"] = "secret"
     with pytest.raises(GateError, match="sensitive field"):
+        _evaluate(report)
+
+
+def test_non_finite_performance_numbers_are_rejected():
+    report = _report()
+    report["profiles"]["100"]["scenarios"]["lead_list"]["p95_ms"] = float("nan")
+    with pytest.raises(GateError, match="must be a number"):
         _evaluate(report)
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import inspect, select
+from sqlalchemy import event, inspect, select
 
 from apps.api.src.core.enums import AssignmentStatus
 from apps.api.src.core.errors import AppError
@@ -16,6 +16,7 @@ from apps.api.src.services.dispatch_v12 import (
     claim_assignment,
     dispatch_manually,
     evaluate_candidate,
+    list_candidates,
     list_dispatch_pool,
 )
 from apps.api.src.services.workday_calendar import WorkdayCalendarService
@@ -140,6 +141,29 @@ def test_candidate_filter_blocks_self_supply_and_accepts_eligible_receiver(db, d
     assert receiver_result.eligible is True
     assert receiver_result.points_price == 100
     assert receiver_result.points_available == 1000
+
+
+def test_candidate_list_matches_individual_evaluation_with_bounded_queries(db, dispatch_setup) -> None:
+    supplier, _, receiver, _, lead = dispatch_setup
+    expected = {
+        supplier.id: evaluate_candidate(db, lead=lead, company=supplier),
+        receiver.id: evaluate_candidate(db, lead=lead, company=receiver),
+    }
+    statements: list[str] = []
+
+    def record_statement(*args) -> None:
+        if args[2].lstrip().upper().startswith("SELECT"):
+            statements.append(args[2])
+
+    engine = db.get_bind()
+    event.listen(engine, "before_cursor_execute", record_statement)
+    try:
+        actual = {item.company_id: item for item in list_candidates(db, lead=lead)}
+    finally:
+        event.remove(engine, "before_cursor_execute", record_statement)
+
+    assert actual == expected
+    assert len(statements) <= 4
 
 
 def test_candidate_serialization_hides_exact_balance_by_default(db, dispatch_setup) -> None:

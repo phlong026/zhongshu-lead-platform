@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 import os
 from pathlib import Path
 
+from anyio.to_thread import current_default_thread_limiter
 from fastapi import Cookie, Depends, FastAPI
 from fastapi.responses import RedirectResponse
 from jwt import InvalidTokenError
@@ -17,6 +18,7 @@ from .core.auth import get_valid_session_user
 from .core.config import get_settings
 from .core.database import SessionLocal, get_db, init_database
 from .core.errors import register_error_handlers
+from .core.in_flight import InFlightLimitMiddleware
 from .core.legacy_guard import LegacyWriteGuardMiddleware
 from .core.logging import configure_logging
 from .core.production import validate_production_settings
@@ -55,6 +57,7 @@ ROOT = Path(__file__).resolve().parents[3]
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    current_default_thread_limiter().total_tokens = settings.sync_threadpool_tokens
     if settings.app_env.lower() == "production":
         validation = validate_production_settings(settings)
         if not validation.valid:
@@ -72,6 +75,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.add_middleware(LegacyWriteGuardMiddleware)
+app.add_middleware(
+    InFlightLimitMiddleware,
+    limit=settings.max_in_flight_requests,
+    queue_timeout_seconds=settings.in_flight_queue_timeout_seconds,
+)
 app.add_middleware(RequestContextMiddleware)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_host_list)
 app.add_middleware(

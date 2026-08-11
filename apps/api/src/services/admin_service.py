@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, literal, select, union_all
 from sqlalchemy.orm import Session
 
 from ..core.auth import Principal
@@ -108,47 +108,77 @@ def dashboard_summary(db: Session, principal: Principal) -> dict[str, Any]:
 def dashboard_performance(db: Session, principal: Principal, *, days: int = 30) -> dict[str, Any]:
     """Return period funnel, regional performance and finance without leaking money fields."""
     start = datetime.now(timezone.utc) - timedelta(days=days)
-    leads_created = _count(db, Lead, Lead.created_at >= start)
-    qualified = _count(db, Lead, Lead.created_at >= start, Lead.status == LeadStatus.QUALIFIED)
-    assignments = _count(db, Assignment, Assignment.created_at >= start)
-    claimed = _count(db, Assignment, Assignment.created_at >= start, Assignment.claimed_at.is_not(None))
-    followed = int(
-        db.scalar(
+    funnel = db.execute(
+        select(
+            select(func.count(Lead.id)).where(Lead.created_at >= start).scalar_subquery(),
+            select(func.count(Lead.id))
+            .where(Lead.created_at >= start, Lead.status == LeadStatus.QUALIFIED)
+            .scalar_subquery(),
+            select(func.count(Assignment.id)).where(Assignment.created_at >= start).scalar_subquery(),
+            select(func.count(Assignment.id))
+            .where(Assignment.created_at >= start, Assignment.claimed_at.is_not(None))
+            .scalar_subquery(),
             select(func.count(func.distinct(FollowUp.assignment_id)))
             .join(Assignment, Assignment.id == FollowUp.assignment_id)
             .where(Assignment.created_at >= start)
+            .scalar_subquery(),
+            select(func.count(Assignment.id))
+            .where(Assignment.created_at >= start, Assignment.status == AssignmentStatus.COMPLETED)
+            .scalar_subquery(),
+            select(func.count(ReturnRequest.id))
+            .where(ReturnRequest.created_at >= start)
+            .scalar_subquery(),
         )
-        or 0
+    ).one()
+    leads_created, qualified, assignments, claimed, followed, completed, returns = (
+        int(value or 0) for value in funnel
     )
-    completed = _count(db, Assignment, Assignment.created_at >= start, Assignment.status == AssignmentStatus.COMPLETED)
-    returns = _count(db, ReturnRequest, ReturnRequest.created_at >= start)
 
-    lead_regions = db.execute(
-        select(Lead.city, func.count(Lead.id))
+    regional_counts = union_all(
+        select(
+            Lead.city.label("region"),
+            func.count(Lead.id).label("leads"),
+            literal(0).label("assignments"),
+            literal(0).label("completed"),
+        )
         .where(Lead.created_at >= start)
-        .group_by(Lead.city)
-    ).all()
-    assignment_regions = db.execute(
-        select(Lead.city, func.count(Assignment.id))
+        .group_by(Lead.city),
+        select(
+            Lead.city.label("region"),
+            literal(0).label("leads"),
+            func.count(Assignment.id).label("assignments"),
+            literal(0).label("completed"),
+        )
         .join(Lead, Lead.id == Assignment.lead_id)
         .where(Assignment.created_at >= start)
-        .group_by(Lead.city)
-    ).all()
-    completed_regions = db.execute(
-        select(Lead.city, func.count(Assignment.id))
+        .group_by(Lead.city),
+        select(
+            Lead.city.label("region"),
+            literal(0).label("leads"),
+            literal(0).label("assignments"),
+            func.count(Assignment.id).label("completed"),
+        )
         .join(Lead, Lead.id == Assignment.lead_id)
         .where(Assignment.created_at >= start, Assignment.status == AssignmentStatus.COMPLETED)
-        .group_by(Lead.city)
+        .group_by(Lead.city),
+    ).subquery()
+    regional_rows = db.execute(
+        select(
+            regional_counts.c.region,
+            func.sum(regional_counts.c.leads),
+            func.sum(regional_counts.c.assignments),
+            func.sum(regional_counts.c.completed),
+        ).group_by(regional_counts.c.region)
     ).all()
     region_data: dict[str, dict[str, Any]] = {}
-    for city, count in lead_regions:
-        region_data[city or "未标注"] = {"region": city or "未标注", "leads": int(count), "assignments": 0, "completed": 0}
-    for city, count in assignment_regions:
-        item = region_data.setdefault(city or "未标注", {"region": city or "未标注", "leads": 0, "assignments": 0, "completed": 0})
-        item["assignments"] = int(count)
-    for city, count in completed_regions:
-        item = region_data.setdefault(city or "未标注", {"region": city or "未标注", "leads": 0, "assignments": 0, "completed": 0})
-        item["completed"] = int(count)
+    for city, lead_count, assignment_count, completed_count in regional_rows:
+        region = city or "未标注"
+        region_data[region] = {
+            "region": region,
+            "leads": int(lead_count or 0),
+            "assignments": int(assignment_count or 0),
+            "completed": int(completed_count or 0),
+        }
     regions = sorted(region_data.values(), key=lambda item: (item["leads"], item["assignments"]), reverse=True)
     for item in regions:
         item["dispatch_rate"] = _rate(item["assignments"], item["leads"])
@@ -175,9 +205,49 @@ def dashboard_performance(db: Session, principal: Principal, *, days: int = 30) 
     }
 
     if principal.can("dashboard.finance.read") or principal.can("points.read") or principal.can("*"):
-        recharged = int(db.scalar(select(func.coalesce(func.sum(PointsLedger.delta), 0)).where(PointsLedger.created_at >= start, PointsLedger.ledger_type == "RECHARGE", PointsLedger.delta > 0)) or 0)
-        consumed = abs(int(db.scalar(select(func.coalesce(func.sum(PointsLedger.delta), 0)).where(PointsLedger.created_at >= start, PointsLedger.ledger_type == "CLAIM", PointsLedger.delta < 0)) or 0))
-        refunded = int(db.scalar(select(func.coalesce(func.sum(PointsLedger.delta), 0)).where(PointsLedger.created_at >= start, PointsLedger.ledger_type == "RETURN", PointsLedger.delta > 0)) or 0)
+        finance = db.execute(
+            select(
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (
+                                (PointsLedger.ledger_type == "RECHARGE") & (PointsLedger.delta > 0),
+                                PointsLedger.delta,
+                            ),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (
+                                (PointsLedger.ledger_type == "CLAIM") & (PointsLedger.delta < 0),
+                                PointsLedger.delta,
+                            ),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (
+                                (PointsLedger.ledger_type == "RETURN") & (PointsLedger.delta > 0),
+                                PointsLedger.delta,
+                            ),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ),
+            ).where(PointsLedger.created_at >= start)
+        ).one()
+        recharged = int(finance[0] or 0)
+        consumed = abs(int(finance[1] or 0))
+        refunded = int(finance[2] or 0)
         response["finance"] = {
             "points_recharged": recharged,
             "points_consumed": consumed,

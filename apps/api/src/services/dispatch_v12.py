@@ -1,18 +1,21 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from math import floor
+from threading import Lock
 from typing import Any
 
-from sqlalchemy import Index, func, or_, select
+from sqlalchemy import Index, func, literal, or_, select
 from sqlalchemy.orm import Session
 
 from ..core.config import get_settings
 from ..core.enums import ACTIVE_ASSIGNMENT_STATUSES, AssignmentStatus, PointsLedgerType
 from ..core.errors import AppError
-from ..core.models import Assignment, AssignmentEvent, Company, Lead, PointsAccount, PointsLedger
-from ..core.models_v12 import CompanyServiceAreaV12, SupplierLeadReward
+from ..core.models import Assignment, AssignmentEvent, Company, Lead, LeadPriceRule, PointsAccount, PointsLedger
+from ..core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12, SupplierLeadReward
 from ..core.security import decrypt_text, mask_phone
 from ..core.time import as_utc
 from ..core.v12_enums import DuplicateDecision, LeadV12Status, RewardStatus
@@ -31,6 +34,43 @@ CLAIMED_CONTACT_STATUSES = {
     AssignmentStatus.COMPLETED.value,
 }
 RECEIVER_HISTORY_STATUSES = CLAIMED_CONTACT_STATUSES
+
+
+@dataclass
+class _DispatchLockEntry:
+    lock: Any
+    users: int = 0
+
+
+@dataclass(frozen=True)
+class ManualDispatchOutcome:
+    assignment: Assignment
+    created: bool
+
+
+_dispatch_locks_guard = Lock()
+_dispatch_locks: dict[str, _DispatchLockEntry] = {}
+
+
+@contextmanager
+def manual_dispatch_idempotency_guard(idempotency_key: str) -> Iterator[None]:
+    """Collapse same-key replays inside one worker while PostgreSQL remains authoritative."""
+
+    with _dispatch_locks_guard:
+        entry = _dispatch_locks.get(idempotency_key)
+        if entry is None:
+            entry = _DispatchLockEntry(lock=Lock())
+            _dispatch_locks[idempotency_key] = entry
+        entry.users += 1
+    entry.lock.acquire()
+    try:
+        yield
+    finally:
+        entry.lock.release()
+        with _dispatch_locks_guard:
+            entry.users -= 1
+            if entry.users == 0:
+                _dispatch_locks.pop(idempotency_key, None)
 
 # Base.metadata.create_all is still used in development and tests. Register the
 # same partial unique index that migration 0003 creates for PostgreSQL/SQLite.
@@ -204,17 +244,143 @@ def evaluate_candidate(
 
 
 def list_candidates(db: Session, *, lead: Lead) -> list[CandidateResult]:
-    companies = db.scalars(select(Company).order_by(Company.name.asc(), Company.id.asc())).all()
-    reward_rule = resolve_supplier_reward_rule(db)
-    return [
-        evaluate_candidate(
-            db,
-            lead=lead,
-            company=company,
-            reward_rule=reward_rule,
+    capable_companies = (
+        select(CompanyLeadCapability.company_id)
+        .where(
+            CompanyLeadCapability.capability_code == "LEAD_RECEIVER",
+            CompanyLeadCapability.active.is_(True),
+            CompanyLeadCapability.review_status == "APPROVED",
         )
-        for company in companies
-    ]
+        .distinct()
+        .subquery()
+    )
+    reserved_by_company = (
+        select(
+            Assignment.company_id,
+            func.coalesce(func.sum(Assignment.points_price), 0).label("points_reserved"),
+        )
+        .where(Assignment.status == AssignmentStatus.PENDING_CLAIM.value)
+        .group_by(Assignment.company_id)
+        .subquery()
+    )
+    company_stmt = (
+        select(
+            Company,
+            capable_companies.c.company_id.label("capable_company_id"),
+            PointsAccount.balance.label("points_balance"),
+            func.coalesce(reserved_by_company.c.points_reserved, 0).label("points_reserved"),
+        )
+        .outerjoin(capable_companies, capable_companies.c.company_id == Company.id)
+        .outerjoin(PointsAccount, PointsAccount.company_id == Company.id)
+        .outerjoin(reserved_by_company, reserved_by_company.c.company_id == Company.id)
+    )
+    if lead.region_code:
+        region_companies = (
+            select(CompanyServiceAreaV12.company_id)
+            .where(
+                CompanyServiceAreaV12.region_code == lead.region_code,
+                CompanyServiceAreaV12.active.is_(True),
+                CompanyServiceAreaV12.review_status == "APPROVED",
+            )
+            .distinct()
+            .subquery()
+        )
+        company_stmt = company_stmt.add_columns(
+            region_companies.c.company_id.label("region_company_id")
+        ).outerjoin(region_companies, region_companies.c.company_id == Company.id)
+    else:
+        company_stmt = company_stmt.add_columns(literal(None).label("region_company_id"))
+    company_rows = db.execute(company_stmt.order_by(Company.name.asc(), Company.id.asc())).all()
+    companies = [row[0] for row in company_rows]
+    if not companies:
+        return []
+    company_ids = [company.id for company in companies]
+    reward_rule = resolve_supplier_reward_rule(db)
+    capable_company_ids = {row.capable_company_id for row in company_rows if row.capable_company_id}
+    region_company_ids = {row.region_company_id for row in company_rows if row.region_company_id}
+    cutoff = datetime.now(timezone.utc) - timedelta(days=reward_rule.historical_suspect_days)
+    match_clauses = [Lead.phone_hash == lead.phone_hash]
+    if lead.phone_fingerprint:
+        match_clauses.insert(0, Lead.phone_fingerprint == lead.phone_fingerprint)
+    duplicate_company_ids = set(
+        db.scalars(
+            select(Assignment.company_id)
+            .join(Lead, Lead.id == Assignment.lead_id)
+            .where(
+                Assignment.company_id.in_(company_ids),
+                Assignment.status.in_(RECEIVER_HISTORY_STATUSES),
+                Assignment.claimed_at.is_not(None),
+                Assignment.claimed_at >= cutoff,
+                Assignment.lead_id != lead.id,
+                or_(*match_clauses),
+            )
+            .distinct()
+        ).all()
+    )
+    now = datetime.now(timezone.utc)
+    price_rules = db.scalars(
+        select(LeadPriceRule)
+        .where(
+            LeadPriceRule.status == "PUBLISHED",
+            or_(LeadPriceRule.effective_at.is_(None), LeadPriceRule.effective_at <= now),
+            or_(LeadPriceRule.expires_at.is_(None), LeadPriceRule.expires_at > now),
+            or_(LeadPriceRule.region_code.is_(None), LeadPriceRule.region_code == lead.region_code),
+            or_(LeadPriceRule.category_code.is_(None), LeadPriceRule.category_code == lead.category_code),
+            or_(LeadPriceRule.brand_code.is_(None), LeadPriceRule.brand_code == lead.brand_code),
+        )
+        .order_by(
+            LeadPriceRule.priority.asc(),
+            LeadPriceRule.region_code.is_(None).asc(),
+            LeadPriceRule.category_code.is_(None).asc(),
+            LeadPriceRule.brand_code.is_(None).asc(),
+            LeadPriceRule.level_code.is_(None).asc(),
+            LeadPriceRule.version.desc(),
+        )
+    ).all()
+    balances = {row[0].id: int(row.points_balance or 0) for row in company_rows}
+    reserved = {row[0].id: int(row.points_reserved or 0) for row in company_rows}
+    results: list[CandidateResult] = []
+    for company in companies:
+        reasons: list[str] = []
+        if company.status != "ACTIVE":
+            reasons.append("COMPANY_INACTIVE")
+        if company.id not in capable_company_ids:
+            reasons.append("RECEIVER_CAPABILITY_REQUIRED")
+        if lead.supplier_company_id and lead.supplier_company_id == company.id:
+            reasons.append("SELF_SUPPLY_FORBIDDEN")
+        region_match = company.id in region_company_ids
+        if not region_match:
+            reasons.append("SERVICE_REGION_MISMATCH")
+        duplicate_to_receiver = company.id in duplicate_company_ids
+        if duplicate_to_receiver:
+            reasons.append("DUPLICATE_TO_RECEIVER")
+        price_rule = next(
+            (rule for rule in price_rules if rule.level_code is None or rule.level_code == company.level_code),
+            None,
+        )
+        points_price = int(price_rule.points_cost) if price_rule else 100
+        points_balance = int(balances.get(company.id, 0))
+        points_reserved = int(reserved.get(company.id, 0))
+        points_available = points_balance - points_reserved
+        if points_available < points_price:
+            reasons.append("POINTS_INSUFFICIENT")
+        results.append(
+            CandidateResult(
+                company_id=company.id,
+                company_name=company.name,
+                eligible=not reasons,
+                exclusion_reasons=tuple(reasons),
+                points_price=points_price,
+                price_rule_id=price_rule.id if price_rule else None,
+                price_version=price_rule.version if price_rule else 1,
+                points_balance=points_balance,
+                points_reserved=points_reserved,
+                points_available=points_available,
+                region_match=region_match,
+                duplicate_to_receiver=duplicate_to_receiver,
+            )
+        )
+    return results
 
 
 def list_dispatch_pool(
@@ -244,7 +410,7 @@ def list_dispatch_pool(
     return list(items), int(total)
 
 
-def dispatch_manually(
+def dispatch_manually_with_outcome(
     db: Session,
     *,
     lead_id: str,
@@ -252,12 +418,12 @@ def dispatch_manually(
     assigned_by: str,
     idempotency_key: str,
     note: str | None = None,
-) -> Assignment:
+) -> ManualDispatchOutcome:
     existing = db.scalar(select(Assignment).where(Assignment.idempotency_key == idempotency_key))
     if existing:
         if existing.lead_id != lead_id or existing.company_id != company_id:
             raise AppError("IDEMPOTENCY_CONFLICT", "幂等键已被其他派发请求使用", 409)
-        return existing
+        return ManualDispatchOutcome(assignment=existing, created=False)
 
     lead = get_dispatch_lead(db, lead_id, lock=True)
 
@@ -267,7 +433,7 @@ def dispatch_manually(
     if existing:
         if existing.lead_id != lead_id or existing.company_id != company_id:
             raise AppError("IDEMPOTENCY_CONFLICT", "幂等键已被其他派发请求使用", 409)
-        return existing
+        return ManualDispatchOutcome(assignment=existing, created=False)
 
     if lead.status != LeadV12Status.READY_DISPATCH.value or lead.current_assignment_id:
         raise AppError(
@@ -349,7 +515,26 @@ def dispatch_manually(
         )
     )
     db.flush()
-    return assignment
+    return ManualDispatchOutcome(assignment=assignment, created=True)
+
+
+def dispatch_manually(
+    db: Session,
+    *,
+    lead_id: str,
+    company_id: str,
+    assigned_by: str,
+    idempotency_key: str,
+    note: str | None = None,
+) -> Assignment:
+    return dispatch_manually_with_outcome(
+        db,
+        lead_id=lead_id,
+        company_id=company_id,
+        assigned_by=assigned_by,
+        idempotency_key=idempotency_key,
+        note=note,
+    ).assignment
 
 
 def _reward_for_claim(

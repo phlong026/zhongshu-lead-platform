@@ -22,6 +22,9 @@ from sqlalchemy import create_engine, text
 SCHEMA_VERSION = 1
 DEFAULT_PROFILES = (100, 300, 500)
 PNG_FIXTURE = b"\x89PNG\r\n\x1a\nH04 synthetic performance evidence\n"
+CLAIM_APPROVAL_REFERENCE_PATTERN = re.compile(
+    r"https://github\.com/phlong026/zhongshu-lead-platform/(?:issues|pull)/[1-9]\d*"
+)
 
 
 @dataclass(frozen=True)
@@ -67,6 +70,24 @@ def scenario_metrics(latencies_ms: list[float], failures: int, duration_seconds:
     }
 
 
+def validate_claim_baseline(claim_baseline: Any) -> None:
+    if claim_baseline is None:
+        return
+    if not isinstance(claim_baseline, dict) or claim_baseline.get("approved") is not True:
+        raise ValueError("dataset claim_baseline must be absent or explicitly approved")
+    limit = claim_baseline.get("p95_limit_ms")
+    if (
+        isinstance(limit, bool)
+        or not isinstance(limit, (int, float))
+        or not math.isfinite(float(limit))
+        or limit < 500
+    ):
+        raise ValueError("dataset claim_baseline.p95_limit_ms must be at least 500")
+    reference = claim_baseline.get("approval_reference")
+    if not isinstance(reference, str) or not CLAIM_APPROVAL_REFERENCE_PATTERN.fullmatch(reference):
+        raise ValueError("dataset claim_baseline requires this repository's numeric Issue/PR approval_reference")
+
+
 def validate_dataset(document: dict[str, Any], *, profiles: tuple[int, ...] = DEFAULT_PROFILES, runtime: bool = False) -> None:
     required_strings = (
         "dataset_id",
@@ -79,6 +100,7 @@ def validate_dataset(document: dict[str, Any], *, profiles: tuple[int, ...] = DE
         raise ValueError(f"dataset schema_version must be {SCHEMA_VERSION}")
     if document.get("synthetic_data") is not True:
         raise ValueError("dataset must declare synthetic_data=true")
+    validate_claim_baseline(document.get("claim_baseline"))
     for key in required_strings:
         if not isinstance(document.get(key), str) or not document[key].strip():
             raise ValueError(f"dataset field {key!r} must be a non-empty string")

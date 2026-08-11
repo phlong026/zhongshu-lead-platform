@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 import uuid
 
@@ -51,6 +52,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
                 "path": request.url.path,
                 "status_code": status_code,
                 "duration_ms": duration_ms,
+                "worker_pid": os.getpid(),
             },
         )
         return response

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from functools import lru_cache
+
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..core.auth import require_permissions
 from ..core.database import get_db
-from ..core.enums import AssignmentStatus
 from ..core.errors import AppError
 from ..core.models import Assignment, Lead
 from ..core.responses import ok, page
@@ -14,23 +15,39 @@ from ..core.security import decrypt_text, mask_phone
 from ..core.v12_enums import LeadV12Status
 from ..schemas.v12_dispatch import ManualDispatchBody
 from ..services.audit import write_audit
-from ..services.company_profile_v12 import require_active_company
 from ..services.dispatch_v12 import (
     CLAIMED_CONTACT_STATUSES,
     candidate_to_dict,
     claim_assignment,
-    dispatch_manually,
+    dispatch_manually_with_outcome,
     get_dispatch_lead,
     lead_pool_item,
     list_candidates,
     list_dispatch_pool,
+    manual_dispatch_idempotency_guard,
 )
 
 router = APIRouter(prefix="/v1.2", tags=["v1.2-dispatch-claim"])
 
 
+def _principal_company_id(principal) -> str:
+    if not principal.company_id:
+        raise AppError("COMPANY_REQUIRED", "当前账号未绑定公司", 403)
+    return principal.company_id
+
+
+@lru_cache(maxsize=4096)
+def _masked_encrypted_phone(phone_encrypted: str) -> str:
+    return mask_phone(decrypt_text(phone_encrypted))
+
+
 def _assignment_dict(assignment: Assignment, lead: Lead, *, reveal_phone: bool = False) -> dict:
-    phone = decrypt_text(lead.phone_encrypted)
+    phone = decrypt_text(lead.phone_encrypted) if reveal_phone else None
+    phone_masked = (
+        mask_phone(phone)
+        if phone is not None
+        else _masked_encrypted_phone(lead.phone_encrypted)
+    )
     return {
         "id": assignment.id,
         "lead_id": assignment.lead_id,
@@ -43,8 +60,8 @@ def _assignment_dict(assignment: Assignment, lead: Lead, *, reveal_phone: bool =
         "price_rule_id": assignment.price_rule_id,
         "price_version": assignment.price_version,
         "customer_name": lead.customer_name,
-        "phone": phone if reveal_phone else None,
-        "phone_masked": mask_phone(phone),
+        "phone": phone,
+        "phone_masked": phone_masked,
         "city": lead.city,
         "district": lead.district,
         "region_code": lead.region_code,
@@ -55,6 +72,73 @@ def _assignment_dict(assignment: Assignment, lead: Lead, *, reveal_phone: bool =
         "appeal_deadline_at": assignment.appeal_deadline_at.isoformat() if assignment.appeal_deadline_at else None,
         "reward_due_at": assignment.reward_due_at.isoformat() if assignment.reward_due_at else None,
         "first_followup_due_at": assignment.first_followup_due_at.isoformat() if assignment.first_followup_due_at else None,
+    }
+
+
+def _assignment_detail_projection(assignment_id: str, company_id: str):
+    return (
+        select(
+            Assignment.id,
+            Assignment.lead_id,
+            Assignment.company_id,
+            Assignment.supplier_company_id,
+            Assignment.receiver_company_id,
+            Assignment.status,
+            Assignment.points_price,
+            Assignment.claim_points,
+            Assignment.price_rule_id,
+            Assignment.price_version,
+            Assignment.assigned_at,
+            Assignment.expires_at,
+            Assignment.claimed_at,
+            Assignment.appeal_deadline_at,
+            Assignment.reward_due_at,
+            Assignment.first_followup_due_at,
+            Lead.customer_name,
+            Lead.phone_encrypted,
+            Lead.city,
+            Lead.district,
+            Lead.region_code,
+            Lead.need_summary,
+        )
+        .join(Lead, Lead.id == Assignment.lead_id)
+        .where(Assignment.id == assignment_id, Assignment.company_id == company_id)
+    )
+
+
+def _projected_assignment_dict(row, *, reveal_phone: bool = False) -> dict:
+    phone = decrypt_text(row.phone_encrypted) if reveal_phone else None
+    phone_masked = (
+        mask_phone(phone) if phone is not None else _masked_encrypted_phone(row.phone_encrypted)
+    )
+    return {
+        "id": row.id,
+        "lead_id": row.lead_id,
+        "company_id": row.company_id,
+        "supplier_company_id": row.supplier_company_id,
+        "receiver_company_id": row.receiver_company_id,
+        "status": row.status,
+        "points_price": row.points_price,
+        "claim_points": row.claim_points,
+        "price_rule_id": row.price_rule_id,
+        "price_version": row.price_version,
+        "customer_name": row.customer_name,
+        "phone": phone,
+        "phone_masked": phone_masked,
+        "city": row.city,
+        "district": row.district,
+        "region_code": row.region_code,
+        "need_summary": row.need_summary,
+        "assigned_at": row.assigned_at.isoformat(),
+        "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+        "claimed_at": row.claimed_at.isoformat() if row.claimed_at else None,
+        "appeal_deadline_at": row.appeal_deadline_at.isoformat()
+        if row.appeal_deadline_at
+        else None,
+        "reward_due_at": row.reward_due_at.isoformat() if row.reward_due_at else None,
+        "first_followup_due_at": row.first_followup_due_at.isoformat()
+        if row.first_followup_due_at
+        else None,
     }
 
 
@@ -115,33 +199,36 @@ def manual_dispatch(
     principal=Depends(require_permissions("lead.dispatch")),
     db: Session = Depends(get_db),
 ):
-    assignment = dispatch_manually(
-        db,
-        lead_id=lead_id,
-        company_id=body.company_id,
-        assigned_by=principal.user_id,
-        idempotency_key=body.idempotency_key,
-        note=body.note,
-    )
-    lead = get_dispatch_lead(db, lead_id)
-    write_audit(
-        db,
-        principal=principal,
-        action="V12_MANUAL_DISPATCH",
-        resource_type="assignment",
-        resource_id=assignment.id,
-        company_id=assignment.company_id,
-        after={
-            "lead_id": lead_id,
-            "company_id": assignment.company_id,
-            "status": assignment.status,
-            "points_price": assignment.points_price,
-            "manual": True,
-        },
-        reason=body.note,
-        request_id=request.state.request_id,
-    )
-    db.commit()
+    with manual_dispatch_idempotency_guard(body.idempotency_key):
+        outcome = dispatch_manually_with_outcome(
+            db,
+            lead_id=lead_id,
+            company_id=body.company_id,
+            assigned_by=principal.user_id,
+            idempotency_key=body.idempotency_key,
+            note=body.note,
+        )
+        assignment = outcome.assignment
+        lead = get_dispatch_lead(db, lead_id)
+        if outcome.created:
+            write_audit(
+                db,
+                principal=principal,
+                action="V12_MANUAL_DISPATCH",
+                resource_type="assignment",
+                resource_id=assignment.id,
+                company_id=assignment.company_id,
+                after={
+                    "lead_id": lead_id,
+                    "company_id": assignment.company_id,
+                    "status": assignment.status,
+                    "points_price": assignment.points_price,
+                    "manual": True,
+                },
+                reason=body.note,
+                request_id=request.state.request_id,
+            )
+        db.commit()
     return ok(request, _assignment_dict(assignment, lead), "客资已人工派发")
 
 
@@ -154,8 +241,8 @@ def own_assignments(
     page_no: int = Query(default=1, alias="page", ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
 ):
-    company = require_active_company(db, principal.company_id)
-    filters = [Assignment.company_id == company.id]
+    company_id = _principal_company_id(principal)
+    filters = [Assignment.company_id == company_id]
     if status:
         filters.append(Assignment.status == status.strip().upper())
     total = db.scalar(select(func.count(Assignment.id)).where(*filters)) or 0
@@ -185,21 +272,15 @@ def own_assignment_detail(
     principal=Depends(require_permissions("assignment.own.read")),
     db: Session = Depends(get_db),
 ):
-    company = require_active_company(db, principal.company_id)
-    row = db.execute(
-        select(Assignment, Lead)
-        .join(Lead, Lead.id == Assignment.lead_id)
-        .where(Assignment.id == assignment_id, Assignment.company_id == company.id)
-    ).one_or_none()
+    company_id = _principal_company_id(principal)
+    row = db.execute(_assignment_detail_projection(assignment_id, company_id)).one_or_none()
     if row is None:
         raise AppError("ASSIGNMENT_NOT_FOUND", "派发单不存在", 404)
-    assignment, lead = row
     return ok(
         request,
-        _assignment_dict(
-            assignment,
-            lead,
-            reveal_phone=assignment.status in CLAIMED_CONTACT_STATUSES,
+        _projected_assignment_dict(
+            row,
+            reveal_phone=row.status in CLAIMED_CONTACT_STATUSES,
         ),
     )
 
@@ -211,11 +292,11 @@ def claim_own_assignment(
     principal=Depends(require_permissions("assignment.own.claim")),
     db: Session = Depends(get_db),
 ):
-    company = require_active_company(db, principal.company_id)
+    company_id = _principal_company_id(principal)
     result = claim_assignment(
         db,
         assignment_id=assignment_id,
-        company_id=company.id,
+        company_id=company_id,
         claimed_by=principal.user_id,
     )
     lead = get_dispatch_lead(db, result.assignment.lead_id)
@@ -225,7 +306,7 @@ def claim_own_assignment(
         action="V12_ASSIGNMENT_CLAIM",
         resource_type="assignment",
         resource_id=result.assignment.id,
-        company_id=company.id,
+        company_id=company_id,
         after={
             "lead_id": lead.id,
             "status": result.assignment.status,
