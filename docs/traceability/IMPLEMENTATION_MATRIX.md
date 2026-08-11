@@ -26,7 +26,7 @@
 | 任务 | 代码/文档证据 | 自动门禁 | 现场证据 |
 |---|---|---|---|
 | T30 | `migration_v12.py`、`migrate_v12_data.py`、`reconcile_v12.py`、迁移Runbook | PostgreSQL历史夹具、错误脱敏、幂等与对账测试 | 生产副本预演、迁移日志、财务抽样 |
-| T31 | 全量测试、生产配置测试、依赖审计、PostgreSQL CI | PR/Release三组任务 | 容量压测、目标环境故障注入、安全验收 |
+| T31 | 全量测试、生产配置测试、依赖审计、PostgreSQL CI、`performance_v12.py`、性能容量 Runbook | PR/Release 门禁验证压测合同可运行且禁止 PR 访问 staging | staging 合成租户 100/300/500 并发报告、目标 CPU/内存/I/O、签字门禁；目标环境故障注入 |
 | T32 | Playwright脚本、截图Artifact、UAT文档 | 桌面与移动Chromium | iOS/Android微信、Chrome/Edge、Figma对照、业务签字 |
 | T33 | preflight、显式迁移、部署/回滚/灰度/复盘文档 | 配置、Alembic、对账门禁 | 真实服务号、备份恢复、3–5家灰度、Go/No-Go签字 |
 

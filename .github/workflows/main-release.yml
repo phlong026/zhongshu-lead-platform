@@ -6,13 +6,27 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      performance_action:
+        description: Protected staging performance action
+        required: true
+        default: none
+        type: choice
+        options:
+          - none
+          - run
+          - finalize
+      performance_run_id:
+        description: Preview workflow run ID required by finalize
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: main-release-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.performance_action != 'none' && format('staging-performance-{0}', github.ref) || format('main-release-{0}-{1}', github.workflow, github.ref) }}
+  cancel-in-progress: ${{ !(github.event_name == 'workflow_dispatch' && inputs.performance_action != 'none') }}
 
 jobs:
   verify-main:
@@ -100,6 +114,12 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall -q apps scripts migrations
 
+      - name: Validate performance and capacity contract
+        run: |
+          python scripts/performance_v12.py --dataset performance/v12-staging-dataset.example.json --validate-config
+          python scripts/check_performance_gate.py --help >/dev/null
+          python scripts/finalize_performance_report.py --help >/dev/null
+
       - name: Check patch whitespace
         run: git diff --check
 
@@ -183,3 +203,159 @@ jobs:
         run: |
           python -m alembic -c alembic.ini downgrade 0001_initial
           python -m alembic -c alembic.ini upgrade head
+
+  staging-performance:
+    if: github.event_name == 'workflow_dispatch' && inputs.performance_action == 'run' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: staging-performance
+    env:
+      DATABASE_URL: ${{ secrets.V12_PERF_DATABASE_URL }}
+      V12_PERF_OPERATOR_USERNAME: ${{ secrets.V12_PERF_OPERATOR_USERNAME }}
+      V12_PERF_OPERATOR_PASSWORD: ${{ secrets.V12_PERF_OPERATOR_PASSWORD }}
+      V12_PERF_RECEIVER_USERNAME: ${{ secrets.V12_PERF_RECEIVER_USERNAME }}
+      V12_PERF_RECEIVER_PASSWORD: ${{ secrets.V12_PERF_RECEIVER_PASSWORD }}
+      V12_PERF_OWNER_USERNAME: ${{ secrets.V12_PERF_OWNER_USERNAME }}
+      V12_PERF_OWNER_PASSWORD: ${{ secrets.V12_PERF_OWNER_PASSWORD }}
+      V12_PERF_DATASET_JSON: ${{ secrets.V12_PERF_DATASET_JSON }}
+      V12_PERF_STAGING_BASE_URL: ${{ secrets.V12_PERF_BASE_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install performance dependencies
+        run: pip install -r requirements.txt -r requirements-postgres.txt
+
+      - name: Materialize protected synthetic inputs
+        shell: bash
+        run: |
+          mkdir -p dist/performance
+          printf '%s' "$V12_PERF_DATASET_JSON" > "$RUNNER_TEMP/v12-performance-dataset.json"
+
+      - name: Run staging performance and capacity suite
+        run: |
+          python scripts/performance_v12.py \
+            --dataset "$RUNNER_TEMP/v12-performance-dataset.json" \
+            --base-url "$V12_PERF_STAGING_BASE_URL" \
+            --profiles 100,300,500 \
+            --source-commit "$GITHUB_SHA" \
+            --output dist/performance/v12-performance-report.json
+
+      - name: Enforce unsigned engineering performance gate
+        run: |
+          python scripts/check_performance_gate.py \
+            --report dist/performance/v12-performance-report.json \
+            --allow-pending-signoff \
+            --allow-pending-infrastructure \
+            --output dist/performance/v12-performance-gate.json
+
+      - name: Upload staging performance evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: staging-performance-${{ github.run_id }}
+          path: dist/performance
+          if-no-files-found: error
+          retention-days: 30
+
+  staging-performance-finalize:
+    if: github.event_name == 'workflow_dispatch' && inputs.performance_action == 'finalize' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: staging-performance
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      V12_PERF_PREVIEW_RUN_ID: ${{ inputs.performance_run_id }}
+      V12_PERF_SIGNOFF_JSON: ${{ secrets.V12_PERF_SIGNOFF_JSON }}
+      V12_PERF_TARGET_METRICS_JSON: ${{ secrets.V12_PERF_TARGET_METRICS_JSON }}
+      V12_PERF_METRICS_EXPORT_BASE64: ${{ secrets.V12_PERF_METRICS_EXPORT_BASE64 }}
+    steps:
+      - name: Checkout trusted final gate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Validate and download immutable preview performance artifact
+        shell: bash
+        run: |
+          case "$V12_PERF_PREVIEW_RUN_ID" in
+            ''|*[!0-9]*) echo "performance_run_id must be numeric"; exit 1 ;;
+          esac
+          gh run view "$V12_PERF_PREVIEW_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json conclusion,event,headBranch,headSha \
+            > "$RUNNER_TEMP/v12-performance-preview-run.json"
+          python - "$RUNNER_TEMP/v12-performance-preview-run.json" "$GITHUB_SHA" <<'PY'
+          import json
+          import sys
+
+          metadata = json.loads(open(sys.argv[1], encoding="utf-8").read())
+          expected = {
+              "conclusion": "success",
+              "event": "workflow_dispatch",
+              "headBranch": "main",
+              "headSha": sys.argv[2],
+          }
+          if metadata != expected:
+              raise SystemExit(f"preview workflow run is not bound to this trusted main commit: {metadata!r}")
+          PY
+          mkdir -p dist/performance/preview
+          gh run download "$V12_PERF_PREVIEW_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "staging-performance-$V12_PERF_PREVIEW_RUN_ID" \
+            --dir dist/performance/preview
+
+      - name: Materialize signoff and monitoring evidence
+        shell: bash
+        run: |
+          mkdir -p dist/performance
+          printf '%s' "$V12_PERF_SIGNOFF_JSON" > "$RUNNER_TEMP/v12-performance-signoff.json"
+          printf '%s' "$V12_PERF_TARGET_METRICS_JSON" > "$RUNNER_TEMP/v12-performance-target-metrics.json"
+          printf '%s' "$V12_PERF_METRICS_EXPORT_BASE64" \
+            | base64 --decode > dist/performance/v12-target-monitoring-export.bin
+
+      - name: Bind signed evidence to downloaded preview report
+        run: |
+          python scripts/finalize_performance_report.py \
+            --preview-report dist/performance/preview/v12-performance-report.json \
+            --target-metrics "$RUNNER_TEMP/v12-performance-target-metrics.json" \
+            --signoff "$RUNNER_TEMP/v12-performance-signoff.json" \
+            --github-run-id "$V12_PERF_PREVIEW_RUN_ID" \
+            --expected-source-commit "$GITHUB_SHA" \
+            --output dist/performance/v12-performance-report.signed.json
+
+      - name: Enforce signed final performance gate
+        run: |
+          python scripts/check_performance_gate.py \
+            --report dist/performance/v12-performance-report.signed.json \
+            --metrics-export dist/performance/v12-target-monitoring-export.bin \
+            --preview-report dist/performance/preview/v12-performance-report.json \
+            --expected-source-commit "$GITHUB_SHA" \
+            --output dist/performance/v12-performance-gate.final.json
+
+      - name: Upload signed final performance evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: staging-performance-final-${{ github.run_id }}
+          path: dist/performance
+          if-no-files-found: error
+          retention-days: 30
