@@ -46,7 +46,7 @@ function zsApplyLeadFilters(wrapper) {
 function zsPopulateSelect(select, values) {
   if (!select) return;
   const label = select.dataset.defaultLabel || '全部';
-  select.innerHTML = `<option value="">${zsEscape(label)}</option>${values.map(value => `<option value="${zsEscape(value)}">${zsEscape(value)}</option>`).join('')}`;
+  zsSetSafeHtml(select, `<option value="">${zsEscape(label)}</option>${values.map(value => `<option value="${zsEscape(value)}">${zsEscape(value)}</option>`).join('')}`);
 }
 
 function zsDecorateLeadCards(wrapper, assignments) {
@@ -103,7 +103,7 @@ async function zsPatchLeadList() {
   wrapper.className = 'zs-v13-leads-page';
   const heading = document.createElement('div');
   heading.className = 'zs-v13-leads-heading';
-  heading.innerHTML = `<div><h1>${zsEscape(title.textContent || '我的客资')}</h1><p>仅显示派发给当前加盟商公司的客资</p></div><button type="button" class="zs-v13-filter-trigger" aria-label="筛选">⌕ 筛选</button>`;
+  zsSetSafeHtml(heading, `<div><h1>${zsEscape(title.textContent || '我的客资')}</h1><p>仅显示派发给当前加盟商公司的客资</p></div><button type="button" class="zs-v13-filter-trigger" aria-label="筛选">⌕ 筛选</button>`);
   const search = document.createElement('label');
   search.className = 'zs-v13-search';
   search.innerHTML = '<span>⌕</span><input type="search" data-zs-search placeholder="搜索客户姓名 / 地区 / 来源">';

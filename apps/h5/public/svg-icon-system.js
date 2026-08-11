@@ -84,21 +84,21 @@
     const raw = (el.textContent || '').trim();
     if (!raw) return;
     if (raw === '‹ 返回') {
-      el.innerHTML = `${svg('chevron-left')}<span>返回</span>`;
+      zsSetSafeHtml(el, `${svg('chevron-left')}<span>返回</span>`);
       el.dataset.zsSvgIcon = '1';
       el.classList.add('zs-icon-label');
       return;
     }
     if (/^.+\s›$/.test(raw) && raw.length < 24) {
       const label = raw.replace(/\s›$/, '');
-      el.innerHTML = `<span>${label}</span>${svg('chevron-right')}`;
+      zsSetSafeHtml(el, `<span>${label}</span>${svg('chevron-right')}`);
       el.dataset.zsSvgIcon = '1';
       el.classList.add('zs-icon-label');
       return;
     }
     const name = GLYPH_MAP[raw];
     if (!name) return;
-    el.innerHTML = svg(contextName(el, raw));
+    zsSetSafeHtml(el, svg(contextName(el, raw)));
     el.dataset.zsSvgIcon = '1';
     el.classList.add('zs-svg-icon-wrap');
   }

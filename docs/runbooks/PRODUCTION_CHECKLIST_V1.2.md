@@ -11,6 +11,10 @@
 - [ ] `APP_IMAGE` 采用 `repo:APP_VERSION@sha256:digest`，显式 tag 与 `APP_VERSION` 完全一致；
 - [ ] `docker image inspect` 的 OCI `org.opencontainers.image.version` 与 `APP_VERSION` 完全一致；
 - [ ] README、部署、迁移、回滚、UAT、测试、安全审计和发布说明均为 V1.2；
+- [ ] Main Release Verification 的 global/critical line+branch coverage 门禁通过并保留 coverage artifact；
+- [ ] Security Analysis 对当前提交的 Semgrep Python/JavaScript SAST、生产 Docker 镜像 Trivy HIGH/CRITICAL 扫描全部通过；
+- [ ] 当前生产候选镜像存在可追踪 CycloneDX SBOM；
+- [ ] `security/waivers.json` 不存在过期 waiver；任何 Critical/High/ERROR 例外均有 finding ID、scope、owner、reason 和明确到期日；
 - [ ] 依赖、镜像和仓库密钥扫描无未接受的 Critical/High 风险。
 
 ## B. 基础设施
@@ -26,8 +30,8 @@
 ## C. 生产配置
 
 - [ ] `python scripts/validate_production_env.py --env-file .env` 返回 valid；
-- [ ] `python scripts/verify_production.py --env-file .env --require-certificates --require-image-digest --require-image-inspect` 返回 valid；
-- [ ] `python scripts/preflight_v12.py --env-file .env --require-certificates --compose-database --output dist/v12-preflight.json` 返回 valid；
+- [ ] `python scripts/verify_production.py --env-file .env --require-certificates --require-image-digest --require-image-inspect --scan-subject scan-subject.json` 返回 valid，且回拉镜像 ImageID 与 Security Analysis 候选镜像一致；
+- [ ] `python scripts/preflight_v12.py --env-file .env --require-certificates --compose-database --scan-subject scan-subject.json --output dist/v12-preflight.json` 返回 valid；
 - [ ] 标准 Docker 部署的数据库 revision 和 V1.2 reconciliation 均在 Compose 网络内执行，未回退到本地 SQLite；
 - [ ] API/Scheduler 使用 `docker/prepare-env.sh` URL 编码后的 `DATABASE_URL`，特殊字符凭据已验证；
 - [ ] `JWT_SECRET`、`FIELD_ENCRYPTION_KEY`、`PHONE_HASH_SECRET`、`PHONE_FINGERPRINT_SECRET` 独立且已托管；

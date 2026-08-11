@@ -35,7 +35,7 @@ function zsPatchNotifications(){
   const heading=document.createElement('div'); heading.className='zs-v13-notifications-heading';
   heading.innerHTML='<button type="button" data-zs-message-home>‹ 返回</button><h1>消息中心</h1><button type="button" data-zs-read-all>全部已读</button>';
   heading.querySelector('[data-zs-message-home]').onclick=()=>{location.hash='#/home';};
-  const summary=document.createElement('section'); summary.className='zs-v13-notifications-summary'; summary.innerHTML=`<div><span>待处理消息</span><b>${unread} 条未读</b></div><small>及时处理可避免客资超时与积分停用</small>`;
+  const summary=document.createElement('section'); summary.className='zs-v13-notifications-summary'; zsSetSafeHtml(summary, `<div><span>待处理消息</span><b>${unread} 条未读</b></div><small>及时处理可避免客资超时与积分停用</small>`);
   const tabs=document.createElement('div'); tabs.className='zs-v13-notification-tabs';
   [['all','全部'],['leads','客资'],['points','积分'],['review','审核'],['system','系统']].forEach(([type,label])=>{const b=document.createElement('button');b.type='button';b.className='zs-v13-notification-tab'+(type==='all'?' active':'');b.dataset.type=type;b.textContent=label;b.onclick=()=>zsFilterNotifications(wrapper,type);tabs.appendChild(b);});
   wrapper=document.createElement('div'); wrapper.className='zs-v13-notifications-page'; wrapper.append(heading,title,subtitle,summary,tabs,list); main.appendChild(wrapper); main.dataset.zsV13Notifications='1';

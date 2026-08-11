@@ -40,7 +40,7 @@ function capabilityBlock(){
   return `<div><b>尚未开通供应商能力</b><div style="font-size:12px;opacity:.8;margin-top:3px">提交申请后由平台审核</div></div><button class="supplier-btn gold small" id="request-capability">申请开通</button>`;
 }
 function header(){return `<header class="supplier-header"><div class="supplier-brand"><img src="./logo.png" alt="众墅之家"><div><strong>供应商客资</strong><small>上传 · 初审 · 奖励观察</small></div></div><button class="supplier-back" id="back-h5">返回客资助手</button></header>`;}
-function shell(content){app.innerHTML=`${header()}<main class="supplier-main"><section class="supplier-hero"><h1>优质客资供给</h1><p>上传前请确认客户授权。资料通过平台初审后进入待人工派发池，其他公司领取后按规则进入 3 个工作日奖励观察期。</p><div class="supplier-capability">${capabilityBlock()}</div></section><nav class="supplier-tabs"><button class="supplier-tab ${state.tab==='list'?'active':''}" data-tab="list">我的客资</button><button class="supplier-tab ${state.tab==='upload'?'active':''}" data-tab="upload" ${capabilityApproved()?'':'disabled'}>上传客资</button></nav>${content}</main>`;bindCommon();}
+function shell(content){zsSetSafeHtml(app, `${header()}<main class="supplier-main"><section class="supplier-hero"><h1>优质客资供给</h1><p>上传前请确认客户授权。资料通过平台初审后进入待人工派发池，其他公司领取后按规则进入 3 个工作日奖励观察期。</p><div class="supplier-capability">${capabilityBlock()}</div></section><nav class="supplier-tabs"><button class="supplier-tab ${state.tab==='list'?'active':''}" data-tab="list">我的客资</button><button class="supplier-tab ${state.tab==='upload'?'active':''}" data-tab="upload" ${capabilityApproved()?'':'disabled'}>上传客资</button></nav>${content}</main>`);bindCommon();}
 function bindCommon(){
   document.querySelector('#back-h5').onclick=()=>{location.href='./#/profile';};
   document.querySelectorAll('[data-tab]').forEach(button=>button.onclick=()=>{if(button.disabled)return;state.tab=button.dataset.tab;state.editing=null;render();});
@@ -49,7 +49,7 @@ function bindCommon(){
 function loading(){shell('<div class="supplier-card supplier-loading">正在加载…</div>');}
 function empty(text){return `<div class="supplier-empty"><b>⌕</b>${esc(text)}</div>`;}
 function closeSheet(){overlay.innerHTML='';}
-function openSheet(title,body){overlay.innerHTML=`<div class="supplier-overlay"><section class="supplier-sheet"><div class="supplier-sheet-head"><h2>${esc(title)}</h2><button class="supplier-btn small" id="close-sheet">关闭</button></div>${body}</section></div>`;document.querySelector('#close-sheet').onclick=closeSheet;}
+function openSheet(title,body){zsSetSafeHtml(overlay, `<div class="supplier-overlay"><section class="supplier-sheet"><div class="supplier-sheet-head"><h2>${esc(title)}</h2><button class="supplier-btn small" id="close-sheet">关闭</button></div>${body}</section></div>`);document.querySelector('#close-sheet').onclick=closeSheet;}
 
 async function boot(){
   try{
@@ -59,7 +59,7 @@ async function boot(){
     await render();
   }catch(error){
     if(error.code==='AUTH_REQUIRED'||error.code==='AUTH_INVALID'){location.href='./#/login';return;}
-    app.innerHTML=`${header()}<main class="supplier-main"><div class="supplier-error">${esc(error.message||'页面加载失败')}</div></main>`;
+    zsSetSafeHtml(app, `${header()}<main class="supplier-main"><div class="supplier-error">${esc(error.message||'页面加载失败')}</div></main>`);
     document.querySelector('#back-h5').onclick=()=>{location.href='./#/profile';};
   }
 }
@@ -95,7 +95,7 @@ async function renderUpload(item=null){
   if(!capabilityApproved()){state.tab='list';await renderList();return;}
   await ensureCities();const city=state.cities.find(row=>row.name===item?.city)||state.cities.find(row=>row.code===item?.region_code)||null;await loadDistricts(city?.code||'');const district=state.districts.find(row=>row.name===item?.district)||state.districts.find(row=>row.code===item?.region_code)||null;
   shell(`<section class="supplier-card"><div class="supplier-card-head"><div><h2>${item?'编辑客资草稿':'上传新客资'}</h2><div class="supplier-muted">带 * 字段提交初审时必须完整</div></div>${item?badge(item.status):''}</div><form class="supplier-form" id="lead-form"><div class="supplier-grid"><div class="supplier-field"><label>客户姓名 *</label><input class="supplier-input" id="lead-name" maxlength="64" value="${esc(item?.customer_name==='未填写'?'':item?.customer_name||'')}"></div><div class="supplier-field"><label>手机号 *</label><input class="supplier-input" id="lead-phone" inputmode="tel" maxlength="32" value="${esc(item?.phone||'')}"></div></div><div class="supplier-grid"><div class="supplier-field"><label>城市 *</label><select class="supplier-select" id="lead-city"><option value="">请选择</option>${state.cities.map(row=>`<option value="${row.code}" ${city?.code===row.code?'selected':''}>${esc(row.name)}</option>`).join('')}</select></div><div class="supplier-field"><label>区县</label><select class="supplier-select" id="lead-district"><option value="">全市范围</option>${state.districts.map(row=>`<option value="${row.code}" ${district?.code===row.code?'selected':''}>${esc(row.name)}</option>`).join('')}</select></div></div><div class="supplier-grid"><div class="supplier-field"><label>来源渠道</label><input class="supplier-input" id="lead-source" value="${esc(item?.source_channel||'供应商推荐')}"></div><div class="supplier-field"><label>业务类目</label><input class="supplier-input" id="lead-category" value="${esc(item?.category_code||'')}"></div></div><div class="supplier-grid"><div class="supplier-field"><label>预算下限（元）</label><input class="supplier-input" id="lead-budget-min" type="number" min="0" value="${esc(item?.budget_min??'')}"></div><div class="supplier-field"><label>预算上限（元）</label><input class="supplier-input" id="lead-budget-max" type="number" min="0" value="${esc(item?.budget_max??'')}"></div></div><div class="supplier-field"><label>客户需求 *</label><textarea class="supplier-textarea" id="lead-need" maxlength="2000">${esc(item?.need_summary||'')}</textarea></div><label class="supplier-check"><input type="checkbox" id="lead-consent" ${item?.consent_confirmed?'checked':''}><span><b>已获得客户授权 *</b><br>我确认客户知晓其联系方式和建房/装修需求将提交给众墅之家平台，用于业务对接。</span></label><div class="supplier-notice">手机号将加密存储并以不可逆 HMAC 指纹进行 90/180/365 天去重。资料初审不会进行前置电话核验。</div><div class="supplier-actions"><button type="button" class="supplier-btn" id="save-draft">保存草稿</button><button type="button" class="supplier-btn primary" id="save-submit">保存并提交初审</button></div></form></section>`);
-  document.querySelector('#lead-city').onchange=async event=>{await loadDistricts(event.target.value);document.querySelector('#lead-district').innerHTML='<option value="">全市范围</option>'+state.districts.map(row=>`<option value="${row.code}">${esc(row.name)}</option>`).join('');};
+  document.querySelector('#lead-city').onchange=async event=>{await loadDistricts(event.target.value);zsSetSafeHtml(document.querySelector('#lead-district'), '<option value="">全市范围</option>'+state.districts.map(row=>`<option value="${row.code}">${esc(row.name)}</option>`).join(''));};
   document.querySelector('#save-draft').onclick=()=>saveForm(item,false);
   document.querySelector('#save-submit').onclick=()=>saveForm(item,true);
 }

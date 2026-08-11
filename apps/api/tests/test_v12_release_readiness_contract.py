@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+
+import pytest
 
 from scripts.preflight_v12 import (
     _compose_python_command,
@@ -9,7 +12,7 @@ from scripts.preflight_v12 import (
     _sensitive_values,
 )
 from scripts.validate_production_env import derive_compose_database_url
-from scripts.verify_production import image_tag
+from scripts.verify_production import image_tag, inspect_image_metadata, load_scan_subject_image_id
 
 
 def test_production_compose_requires_reviewed_image_and_disables_implicit_migration() -> None:
@@ -83,8 +86,55 @@ def test_image_reference_parser_requires_exact_version_tag() -> None:
     assert image_tag("registry.example.com:5000/team/app@sha256:" + "a" * 64) is None
 
 
+def test_scan_subject_image_id_is_strict_and_inspect_uses_docker_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    expected = "sha256:" + "a" * 64
+    subject = tmp_path / "scan-subject.json"
+    subject.write_text(json.dumps({"image_id": expected}), encoding="utf-8")
+    assert load_scan_subject_image_id(subject) == expected
+
+    subject.write_text(json.dumps({"image_id": "sha256:not-a-digest"}), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="image_id"):
+        load_scan_subject_image_id(subject)
+
+    class Result:
+        returncode = 0
+        stdout = json.dumps(
+            {
+                "Id": expected,
+                "Config": {"Labels": {"org.opencontainers.image.version": "1.2.0"}},
+            }
+        )
+        stderr = ""
+
+    seen: list[str] = []
+
+    def fake_run(command: list[str], **_: object) -> Result:
+        seen.extend(command)
+        return Result()
+
+    monkeypatch.setattr("scripts.verify_production.subprocess.run", fake_run)
+    version, actual, error = inspect_image_metadata(
+        "docker", "registry.example.com/app:1.2.0@sha256:digest"
+    )
+    assert error is None
+    assert version == "1.2.0"
+    assert actual == expected
+    assert seen[-1] == "{{json .}}"
+
+    def invalid_utf8(*_: object, **__: object) -> Result:
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    monkeypatch.setattr("scripts.verify_production.subprocess.run", invalid_utf8)
+    version, actual, error = inspect_image_metadata("docker", "registry.example.com/app:1.2.0")
+    assert version is None and actual is None
+    assert error and "invalid UTF-8" in error
+
+
 def test_deployment_persists_reconciliation_and_uses_compose_database_preflight() -> None:
     deployment = Path("docs/runbooks/DEPLOYMENT.md").read_text(encoding="utf-8")
+    go_no_go = Path("docs/runbooks/V1.2_GO_NO_GO.md").read_text(encoding="utf-8")
     migration = Path("docs/runbooks/V1.2_MIGRATION_RUNBOOK.md").read_text(encoding="utf-8")
     preflight = Path("scripts/preflight_v12.py").read_text(encoding="utf-8")
     assert "> dist/v12-reconciliation.json" in deployment
@@ -96,6 +146,10 @@ def test_deployment_persists_reconciliation_and_uses_compose_database_preflight(
     assert "reconciliation-before-backfill.json || true" not in migration
     assert "--require-image-digest" in preflight
     assert "--require-image-inspect" in preflight
+    assert "--compose-database requires --scan-subject" in preflight
+    assert '["--scan-subject", str(args.scan_subject.resolve())]' in preflight
+    assert "--scan-subject scan-subject.json" in deployment
+    assert "--scan-subject scan-subject.json" in go_no_go
 
 
 def test_sprint6_runbooks_and_release_documents_exist() -> None:

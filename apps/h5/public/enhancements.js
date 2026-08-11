@@ -78,9 +78,9 @@ function patchWechatLogin() {
 function renderFileSummary(input, selector) {
   const target = document.querySelector(selector);
   if (!target) return;
-  target.innerHTML = [...input.files].map(file =>
+  zsSetSafeHtml(target, [...input.files].map(file =>
     `<div class="h5-file-chip"><span>${file.name.replace(/[<>&"']/g, '')}</span><small>${(file.size / 1024 / 1024).toFixed(2)}MB</small></div>`
-  ).join('');
+  ).join(''));
 }
 
 function validateEvidencePage(event) {

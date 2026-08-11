@@ -21,9 +21,9 @@
     const notice = document.createElement('section');
     notice.className = 'p1-low-points-notice';
     notice.setAttribute('role', 'status');
-    notice.innerHTML = `
+    zsSetSafeHtml(notice, `
       <div><b>积分余额偏低</b><span>当前 ${Number(account.balance || 0).toLocaleString('zh-CN')} 分，低于预警值 ${Number(account.low_points_threshold || 1000).toLocaleString('zh-CN')} 分。</span></div>
-      <small>积分不足一条客资价格时将无法领取，请联系平台完成线下充值。</small>`;
+      <small>积分不足一条客资价格时将无法领取，请联系平台完成线下充值。</small>`);
     hero.insertAdjacentElement('afterend', notice);
   }
 
@@ -36,10 +36,10 @@
     const entries = Object.entries(account.level_entitlements || {});
     const card = document.createElement('section');
     card.className = 'card p1-entitlements-card';
-    card.innerHTML = `
+    zsSetSafeHtml(card, `
       <div class="card-title"><h3>${escapeHtml(account.level_code || 'V1')} 会员权益</h3><span class="badge badge-warning">档位 v${escapeHtml(account.level_package?.version || 1)}</span></div>
       ${entries.length ? `<div class="p1-entitlements-grid">${entries.map(([name, value]) => `<div><span>${escapeHtml(name)}</span><b>${escapeHtml(value)}</b></div>`).join('')}</div>` : '<p class="subtitle">当前等级暂无额外权益，具体权益由平台线下合作方案确定。</p>'}
-      <p class="help">充值档位、赠送积分与会员权益均以平台已发布版本为准。</p>`;
+      <p class="help">充值档位、赠送积分与会员权益均以平台已发布版本为准。</p>`);
     hero.insertAdjacentElement('afterend', card);
   }
 

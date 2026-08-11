@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -37,6 +38,8 @@ REQUIRED_FILES = (
     "docs/runbooks/V1.2_ROLLBACK.md",
 )
 
+_IMAGE_ID_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
 
 def image_tag(reference: str) -> str | None:
     """Return an explicit image tag without confusing a registry port for a tag."""
@@ -48,24 +51,48 @@ def image_tag(reference: str) -> str | None:
     return last_segment.rsplit(":", 1)[1] or None
 
 
-def inspect_image_version(docker: str, reference: str) -> tuple[str | None, str | None]:
-    result = subprocess.run(
-        [
-            docker,
-            "image",
-            "inspect",
-            reference,
-            "--format",
-            '{{ index .Config.Labels "org.opencontainers.image.version" }}',
-        ],
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-    )
+def inspect_image_metadata(
+    docker: str, reference: str
+) -> tuple[str | None, str | None, str | None]:
+    try:
+        result = subprocess.run(
+            [docker, "image", "inspect", reference, "--format", "{{json .}}"],
+            cwd=ROOT,
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+        )
+    except UnicodeDecodeError as exc:
+        return None, None, f"docker image inspect returned invalid UTF-8: {exc}"
     if result.returncode:
-        return None, result.stderr.strip() or result.stdout.strip() or "docker image inspect failed"
-    value = result.stdout.strip()
-    return (value or None), None
+        error = result.stderr.strip() or result.stdout.strip() or "docker image inspect failed"
+        return None, None, error
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        return None, None, f"docker image inspect returned invalid JSON: {exc}"
+    if not isinstance(payload, dict):
+        return None, None, "docker image inspect result must be an object"
+    image_id = payload.get("Id")
+    if not isinstance(image_id, str) or not _IMAGE_ID_RE.fullmatch(image_id):
+        return None, None, f"docker image inspect returned invalid ImageID {image_id!r}"
+    config = payload.get("Config")
+    labels = config.get("Labels") if isinstance(config, dict) else None
+    version = labels.get("org.opencontainers.image.version") if isinstance(labels, dict) else None
+    return (version if isinstance(version, str) and version else None), image_id, None
+
+
+def load_scan_subject_image_id(path: Path) -> str:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"invalid scan subject {path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("scan subject must be a JSON object")
+    image_id = payload.get("image_id")
+    if not isinstance(image_id, str) or not _IMAGE_ID_RE.fullmatch(image_id):
+        raise RuntimeError("scan subject image_id must be sha256:<64 lowercase hex>")
+    return image_id
 
 
 def main() -> int:
@@ -74,9 +101,24 @@ def main() -> int:
     parser.add_argument("--require-certificates", action="store_true")
     parser.add_argument("--require-image-digest", action="store_true")
     parser.add_argument("--require-image-inspect", action="store_true")
+    parser.add_argument(
+        "--scan-subject",
+        type=Path,
+        help="Security Analysis scan-subject.json used to bind the pulled image to the scanned ImageID",
+    )
     args = parser.parse_args()
     errors: list[str] = []
     warnings: list[str] = []
+    expected_image_id: str | None = None
+    if args.scan_subject is not None:
+        try:
+            expected_image_id = load_scan_subject_image_id(args.scan_subject)
+        except RuntimeError as exc:
+            errors.append(str(exc))
+        if not args.require_image_digest:
+            errors.append("--scan-subject requires --require-image-digest")
+        if not args.require_image_inspect:
+            errors.append("--scan-subject requires --require-image-inspect")
     for relative in REQUIRED_FILES:
         if not (ROOT / relative).is_file():
             errors.append(f"缺少文件：{relative}")
@@ -109,14 +151,22 @@ def main() -> int:
             if not docker:
                 errors.append("无法执行 docker image inspect，不能核验镜像 OCI 版本标签")
             else:
-                image_version, inspect_error = inspect_image_version(docker, app_image)
+                image_version, actual_image_id, inspect_error = inspect_image_metadata(
+                    docker, app_image
+                )
                 if inspect_error:
-                    errors.append("无法检查 APP_IMAGE OCI 标签：" + inspect_error)
-                elif image_version != settings.app_version:
-                    errors.append(
-                        f"APP_IMAGE OCI org.opencontainers.image.version 与 APP_VERSION 不一致："
-                        f"期望 {settings.app_version}，实际 {image_version or '未设置'}"
-                    )
+                    errors.append("无法检查 APP_IMAGE OCI 标签/ImageID：" + inspect_error)
+                else:
+                    if image_version != settings.app_version:
+                        errors.append(
+                            f"APP_IMAGE OCI org.opencontainers.image.version 与 APP_VERSION 不一致："
+                            f"期望 {settings.app_version}，实际 {image_version or '未设置'}"
+                        )
+                    if expected_image_id is not None and actual_image_id != expected_image_id:
+                        errors.append(
+                            "APP_IMAGE Docker ImageID 与 Security Analysis 候选镜像不一致："
+                            f"期望 {expected_image_id}，实际 {actual_image_id}"
+                        )
 
     if args.require_certificates:
         for relative in ("infra/certs/fullchain.pem", "infra/certs/privkey.pem"):

@@ -130,8 +130,15 @@ def main() -> int:
         action="store_true",
         help="Run Alembic/reconciliation inside the production Compose network and require immutable image verification",
     )
+    parser.add_argument(
+        "--scan-subject",
+        type=Path,
+        help="Security Analysis scan-subject.json used to bind the pulled image to the scanned ImageID",
+    )
     parser.add_argument("--output", type=Path, default=ROOT / "dist" / "v12-preflight.json")
     args = parser.parse_args()
+    if args.compose_database and args.scan_subject is None:
+        parser.error("--compose-database requires --scan-subject")
 
     env_file = args.env_file.resolve()
     values = load_dotenv(env_file)
@@ -150,7 +157,16 @@ def main() -> int:
         "--env-file",
         str(env_file),
         *(["--require-certificates"] if args.require_certificates else []),
-        *(["--require-image-digest", "--require-image-inspect"] if args.compose_database else []),
+        *(
+            ["--require-image-digest", "--require-image-inspect"]
+            if args.compose_database or args.scan_subject is not None
+            else []
+        ),
+        *(
+            ["--scan-subject", str(args.scan_subject.resolve())]
+            if args.scan_subject is not None
+            else []
+        ),
     ]
     commands: list[tuple[str, list[str]]] = [
         (
