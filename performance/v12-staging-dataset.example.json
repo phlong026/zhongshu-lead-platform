@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "dataset_id": "REPLACE_WITH_ISOLATED_SYNTHETIC_DATASET_ID",
+  "environment": "staging",
+  "base_url_origin": "REPLACE_WITH_HTTPS_STAGING_ORIGIN",
+  "synthetic_data": true,
+  "assignment_detail_id": "REPLACE_WITH_RECEIVER_ASSIGNMENT_ID",
+  "dispatch_company_id": "REPLACE_WITH_SYNTHETIC_RECEIVER_COMPANY_ID",
+  "dispatch_cases": {
+    "100": {
+      "lead_id": "REPLACE_WITH_READY_DISPATCH_LEAD_ID_FOR_100",
+      "idempotency_key": "h04-synthetic-dispatch-100-fixed-key"
+    },
+    "300": {
+      "lead_id": "REPLACE_WITH_READY_DISPATCH_LEAD_ID_FOR_300",
+      "idempotency_key": "h04-synthetic-dispatch-300-fixed-key"
+    },
+    "500": {
+      "lead_id": "REPLACE_WITH_READY_DISPATCH_LEAD_ID_FOR_500",
+      "idempotency_key": "h04-synthetic-dispatch-500-fixed-key"
+    }
+  },
+  "claim_cases": {
+    "100": "REPLACE_WITH_PENDING_CLAIM_ASSIGNMENT_ID_FOR_100",
+    "300": "REPLACE_WITH_PENDING_CLAIM_ASSIGNMENT_ID_FOR_300",
+    "500": "REPLACE_WITH_PENDING_CLAIM_ASSIGNMENT_ID_FOR_500"
+  },
+  "evidence_cases": {
+    "100": [
+      "REPLACE_WITH_100_DISJOINT_SYNTHETIC_RETURN_IDS"
+    ],
+    "300": [
+      "REPLACE_WITH_300_DISJOINT_SYNTHETIC_RETURN_IDS"
+    ],
+    "500": [
+      "REPLACE_WITH_500_DISJOINT_SYNTHETIC_RETURN_IDS"
+    ]
+  },
+  "claim_baseline": null
+}

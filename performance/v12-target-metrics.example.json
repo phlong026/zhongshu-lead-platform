@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "source": "REPLACE_WITH_TARGET_INFRASTRUCTURE_MONITOR",
+  "environment": "staging",
+  "base_url_origin": "REPLACE_WITH_HTTPS_STAGING_ORIGIN",
+  "exported_at": "REPLACE_WITH_ISO_8601_EXPORT_TIME",
+  "export_reference": "REPLACE_WITH_HTTPS_IMMUTABLE_EXPORT_REFERENCE",
+  "export_sha256": "REPLACE_WITH_64_HEX_SHA256_OF_RAW_EXPORT",
+  "profiles": {
+    "100": {
+      "window_started_at": "REPLACE_WITH_ISO_8601_WINDOW_START",
+      "window_ended_at": "REPLACE_WITH_ISO_8601_WINDOW_END",
+      "cpu_percent_max": 0,
+      "memory_percent_max": 0,
+      "io_read_bytes": 0,
+      "io_write_bytes": 0
+    },
+    "300": {
+      "window_started_at": "REPLACE_WITH_ISO_8601_WINDOW_START",
+      "window_ended_at": "REPLACE_WITH_ISO_8601_WINDOW_END",
+      "cpu_percent_max": 0,
+      "memory_percent_max": 0,
+      "io_read_bytes": 0,
+      "io_write_bytes": 0
+    },
+    "500": {
+      "window_started_at": "REPLACE_WITH_ISO_8601_WINDOW_START",
+      "window_ended_at": "REPLACE_WITH_ISO_8601_WINDOW_END",
+      "cpu_percent_max": 0,
+      "memory_percent_max": 0,
+      "io_read_bytes": 0,
+      "io_write_bytes": 0
+    }
+  }
+}
