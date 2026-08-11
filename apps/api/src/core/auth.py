@@ -57,6 +57,44 @@ def get_valid_session_user(
     return user
 
 
+def load_current_principal(
+    db: Session,
+    user_id: str | None,
+    session_version: int | None,
+) -> Principal | None:
+    if not user_id or session_version is None:
+        return None
+    rows = db.execute(
+        select(
+            User,
+            Company.status.label("company_status"),
+            Role.code.label("role_code"),
+            Permission.code.label("permission_code"),
+        )
+        .outerjoin(Company, Company.id == User.company_id)
+        .outerjoin(UserRole, UserRole.user_id == User.id)
+        .outerjoin(Role, Role.id == UserRole.role_id)
+        .outerjoin(RolePermission, RolePermission.role_id == Role.id)
+        .outerjoin(Permission, Permission.id == RolePermission.permission_id)
+        .where(User.id == user_id)
+    ).all()
+    if not rows:
+        return None
+    user = rows[0][0]
+    if user.status != "ACTIVE" or user.session_version != session_version:
+        return None
+    if user.company_id and rows[0].company_status != "ACTIVE":
+        return None
+    return Principal(
+        user_id=user.id,
+        display_name=user.display_name,
+        company_id=user.company_id,
+        role_codes=frozenset(row.role_code for row in rows if row.role_code),
+        permission_codes=frozenset(row.permission_code for row in rows if row.permission_code),
+        session_version=user.session_version,
+    )
+
+
 def get_current_principal(
     db: Annotated[Session, Depends(get_db)],
     authorization: Annotated[str | None, Header()] = None,
@@ -67,33 +105,11 @@ def get_current_principal(
         payload = decode_access_token(token)
     except InvalidTokenError as exc:
         raise AppError("AUTH_INVALID", "登录状态无效或已过期", 401) from exc
-    user = get_valid_session_user(db, payload.get("sub"), payload.get("sv"))
-    if user is None:
+    principal = load_current_principal(db, payload.get("sub"), payload.get("sv"))
+    if principal is None:
         raise AppError("AUTH_INVALID", "账号、公司或会话已失效", 401)
 
-    role_codes = set(
-        db.scalars(
-            select(Role.code)
-            .join(UserRole, UserRole.role_id == Role.id)
-            .where(UserRole.user_id == user.id)
-        ).all()
-    )
-    permission_codes = set(
-        db.scalars(
-            select(Permission.code)
-            .join(RolePermission, RolePermission.permission_id == Permission.id)
-            .join(UserRole, UserRole.role_id == RolePermission.role_id)
-            .where(UserRole.user_id == user.id)
-        ).all()
-    )
-    return Principal(
-        user_id=user.id,
-        display_name=user.display_name,
-        company_id=user.company_id,
-        role_codes=frozenset(role_codes),
-        permission_codes=frozenset(permission_codes),
-        session_version=user.session_version,
-    )
+    return principal
 
 
 CurrentPrincipal = Annotated[Principal, Depends(get_current_principal)]

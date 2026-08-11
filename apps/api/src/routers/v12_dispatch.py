@@ -6,7 +6,6 @@ from sqlalchemy.orm import Session
 
 from ..core.auth import require_permissions
 from ..core.database import get_db
-from ..core.enums import AssignmentStatus
 from ..core.errors import AppError
 from ..core.models import Assignment, Lead
 from ..core.responses import ok, page
@@ -14,19 +13,25 @@ from ..core.security import decrypt_text, mask_phone
 from ..core.v12_enums import LeadV12Status
 from ..schemas.v12_dispatch import ManualDispatchBody
 from ..services.audit import write_audit
-from ..services.company_profile_v12 import require_active_company
 from ..services.dispatch_v12 import (
     CLAIMED_CONTACT_STATUSES,
     candidate_to_dict,
     claim_assignment,
-    dispatch_manually,
+    dispatch_manually_with_outcome,
     get_dispatch_lead,
     lead_pool_item,
     list_candidates,
     list_dispatch_pool,
+    manual_dispatch_idempotency_guard,
 )
 
 router = APIRouter(prefix="/v1.2", tags=["v1.2-dispatch-claim"])
+
+
+def _principal_company_id(principal) -> str:
+    if not principal.company_id:
+        raise AppError("COMPANY_REQUIRED", "当前账号未绑定公司", 403)
+    return principal.company_id
 
 
 def _assignment_dict(assignment: Assignment, lead: Lead, *, reveal_phone: bool = False) -> dict:
@@ -115,33 +120,36 @@ def manual_dispatch(
     principal=Depends(require_permissions("lead.dispatch")),
     db: Session = Depends(get_db),
 ):
-    assignment = dispatch_manually(
-        db,
-        lead_id=lead_id,
-        company_id=body.company_id,
-        assigned_by=principal.user_id,
-        idempotency_key=body.idempotency_key,
-        note=body.note,
-    )
-    lead = get_dispatch_lead(db, lead_id)
-    write_audit(
-        db,
-        principal=principal,
-        action="V12_MANUAL_DISPATCH",
-        resource_type="assignment",
-        resource_id=assignment.id,
-        company_id=assignment.company_id,
-        after={
-            "lead_id": lead_id,
-            "company_id": assignment.company_id,
-            "status": assignment.status,
-            "points_price": assignment.points_price,
-            "manual": True,
-        },
-        reason=body.note,
-        request_id=request.state.request_id,
-    )
-    db.commit()
+    with manual_dispatch_idempotency_guard(body.idempotency_key):
+        outcome = dispatch_manually_with_outcome(
+            db,
+            lead_id=lead_id,
+            company_id=body.company_id,
+            assigned_by=principal.user_id,
+            idempotency_key=body.idempotency_key,
+            note=body.note,
+        )
+        assignment = outcome.assignment
+        lead = get_dispatch_lead(db, lead_id)
+        if outcome.created:
+            write_audit(
+                db,
+                principal=principal,
+                action="V12_MANUAL_DISPATCH",
+                resource_type="assignment",
+                resource_id=assignment.id,
+                company_id=assignment.company_id,
+                after={
+                    "lead_id": lead_id,
+                    "company_id": assignment.company_id,
+                    "status": assignment.status,
+                    "points_price": assignment.points_price,
+                    "manual": True,
+                },
+                reason=body.note,
+                request_id=request.state.request_id,
+            )
+        db.commit()
     return ok(request, _assignment_dict(assignment, lead), "客资已人工派发")
 
 
@@ -154,8 +162,8 @@ def own_assignments(
     page_no: int = Query(default=1, alias="page", ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
 ):
-    company = require_active_company(db, principal.company_id)
-    filters = [Assignment.company_id == company.id]
+    company_id = _principal_company_id(principal)
+    filters = [Assignment.company_id == company_id]
     if status:
         filters.append(Assignment.status == status.strip().upper())
     total = db.scalar(select(func.count(Assignment.id)).where(*filters)) or 0
@@ -185,11 +193,11 @@ def own_assignment_detail(
     principal=Depends(require_permissions("assignment.own.read")),
     db: Session = Depends(get_db),
 ):
-    company = require_active_company(db, principal.company_id)
+    company_id = _principal_company_id(principal)
     row = db.execute(
         select(Assignment, Lead)
         .join(Lead, Lead.id == Assignment.lead_id)
-        .where(Assignment.id == assignment_id, Assignment.company_id == company.id)
+        .where(Assignment.id == assignment_id, Assignment.company_id == company_id)
     ).one_or_none()
     if row is None:
         raise AppError("ASSIGNMENT_NOT_FOUND", "派发单不存在", 404)
@@ -211,11 +219,11 @@ def claim_own_assignment(
     principal=Depends(require_permissions("assignment.own.claim")),
     db: Session = Depends(get_db),
 ):
-    company = require_active_company(db, principal.company_id)
+    company_id = _principal_company_id(principal)
     result = claim_assignment(
         db,
         assignment_id=assignment_id,
-        company_id=company.id,
+        company_id=company_id,
         claimed_by=principal.user_id,
     )
     lead = get_dispatch_lead(db, result.assignment.lead_id)
@@ -225,7 +233,7 @@ def claim_own_assignment(
         action="V12_ASSIGNMENT_CLAIM",
         resource_type="assignment",
         resource_id=result.assignment.id,
-        company_id=company.id,
+        company_id=company_id,
         after={
             "lead_id": lead.id,
             "status": result.assignment.status,

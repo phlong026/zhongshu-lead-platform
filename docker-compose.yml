@@ -1,6 +1,7 @@
 services:
   db:
     image: postgres:16-alpine
+    command: ["postgres", "-c", "max_connections=${POSTGRES_MAX_CONNECTIONS:-100}"]
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-zhongshu}
@@ -16,6 +17,17 @@ services:
 
   api:
     build: .
+    command:
+      - uvicorn
+      - apps.api.src.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --proxy-headers
+      - --no-access-log
+      - --workers
+      - "${WEB_CONCURRENCY:-1}"
     restart: unless-stopped
     depends_on:
       db:
@@ -25,6 +37,13 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-zhongshu}
       POSTGRES_USER: ${POSTGRES_USER:-zhongshu}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-this-database-password}
+      DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-20}
+      DATABASE_MAX_OVERFLOW: ${DATABASE_MAX_OVERFLOW:-20}
+      DATABASE_POOL_TIMEOUT_SECONDS: ${DATABASE_POOL_TIMEOUT_SECONDS:-30}
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-1}
+      SYNC_THREADPOOL_TOKENS: ${SYNC_THREADPOOL_TOKENS:-40}
+      MAX_IN_FLIGHT_REQUESTS: ${MAX_IN_FLIGHT_REQUESTS:-32}
+      IN_FLIGHT_QUEUE_TIMEOUT_SECONDS: ${IN_FLIGHT_QUEUE_TIMEOUT_SECONDS:-10}
       OBJECT_STORAGE_DIR: /app/storage
     volumes:
       - private_storage:/app/storage
@@ -41,6 +60,13 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-zhongshu}
       POSTGRES_USER: ${POSTGRES_USER:-zhongshu}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-this-database-password}
+      DATABASE_POOL_SIZE: ${SCHEDULER_DATABASE_POOL_SIZE:-2}
+      DATABASE_MAX_OVERFLOW: ${SCHEDULER_DATABASE_MAX_OVERFLOW:-2}
+      DATABASE_POOL_TIMEOUT_SECONDS: ${SCHEDULER_DATABASE_POOL_TIMEOUT_SECONDS:-30}
+      WEB_CONCURRENCY: "1"
+      SYNC_THREADPOOL_TOKENS: ${SCHEDULER_SYNC_THREADPOOL_TOKENS:-4}
+      MAX_IN_FLIGHT_REQUESTS: "4"
+      IN_FLIGHT_QUEUE_TIMEOUT_SECONDS: "10"
       OBJECT_STORAGE_DIR: /app/storage
       SCHEDULER_HEARTBEAT_FILE: /tmp/zhongshu-scheduler-heartbeat
       SCHEDULER_HEARTBEAT_MAX_AGE_SECONDS: "90"

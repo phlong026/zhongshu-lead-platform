@@ -30,6 +30,15 @@ def test_deployment_files_exist():
         assert Path(name).exists(), name
 
 
+def test_nginx_reuses_upstream_connections_for_capacity() -> None:
+    for config_path in ("infra/nginx/default.conf", "infra/nginx/production.conf.template"):
+        config = Path(config_path).read_text(encoding="utf-8")
+        assert "upstream zhongshu_api" in config
+        assert "keepalive 256;" in config
+        assert "proxy_pass http://zhongshu_api" in config
+        assert 'proxy_set_header Connection "";' in config or "proxy_set_header Connection $connection_upgrade;" in config
+
+
 def test_container_shell_scripts_are_checked_out_with_linux_line_endings():
     attributes = Path('.gitattributes').read_text(encoding='utf-8')
     assert '*.sh text eol=lf' in attributes

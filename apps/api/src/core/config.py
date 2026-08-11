@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,6 +17,13 @@ class Settings(BaseSettings):
     log_json: bool = True
     app_base_url: str = "http://localhost:8000"
     database_url: str = "sqlite:///./zhongshu.db"
+    database_pool_size: int = 20
+    database_max_overflow: int = 20
+    database_pool_timeout_seconds: int = 30
+    web_concurrency: int = 1
+    sync_threadpool_tokens: int = 40
+    max_in_flight_requests: int = 32
+    in_flight_queue_timeout_seconds: int = 10
     jwt_secret: str = "dev-change-me-at-least-32-characters-long"
     jwt_expire_minutes: int = 1440
     login_max_failed_attempts: int = 5
@@ -81,6 +88,68 @@ class Settings(BaseSettings):
         if value <= 0:
             raise ValueError("窗口/阈值配置必须大于 0")
         return value
+
+    @field_validator("database_pool_size")
+    @classmethod
+    def validate_database_pool_size(cls, value: int) -> int:
+        if not 1 <= value <= 40:
+            raise ValueError("DATABASE_POOL_SIZE must be between 1 and 40")
+        return value
+
+    @field_validator("database_max_overflow")
+    @classmethod
+    def validate_database_max_overflow(cls, value: int) -> int:
+        if not 0 <= value <= 40:
+            raise ValueError("DATABASE_MAX_OVERFLOW must be between 0 and 40")
+        return value
+
+    @field_validator("database_pool_timeout_seconds")
+    @classmethod
+    def validate_database_pool_timeout_seconds(cls, value: int) -> int:
+        if not 1 <= value <= 60:
+            raise ValueError("DATABASE_POOL_TIMEOUT_SECONDS must be between 1 and 60")
+        return value
+
+    @field_validator("web_concurrency")
+    @classmethod
+    def validate_web_concurrency(cls, value: int) -> int:
+        if not 1 <= value <= 4:
+            raise ValueError("WEB_CONCURRENCY must be between 1 and 4")
+        return value
+
+    @field_validator("sync_threadpool_tokens")
+    @classmethod
+    def validate_sync_threadpool_tokens(cls, value: int) -> int:
+        if not 1 <= value <= 40:
+            raise ValueError("SYNC_THREADPOOL_TOKENS must be between 1 and 40")
+        return value
+
+    @field_validator("max_in_flight_requests")
+    @classmethod
+    def validate_max_in_flight_requests(cls, value: int) -> int:
+        if not 1 <= value <= 40:
+            raise ValueError("MAX_IN_FLIGHT_REQUESTS must be between 1 and 40")
+        return value
+
+    @field_validator("in_flight_queue_timeout_seconds")
+    @classmethod
+    def validate_in_flight_queue_timeout_seconds(cls, value: int) -> int:
+        if not 1 <= value <= 30:
+            raise ValueError("IN_FLIGHT_QUEUE_TIMEOUT_SECONDS must be between 1 and 30")
+        return value
+
+    @model_validator(mode="after")
+    def validate_database_connection_budget(self) -> "Settings":
+        per_process_budget = self.database_pool_size + self.database_max_overflow
+        if per_process_budget > 40:
+            raise ValueError("DATABASE_POOL_SIZE + DATABASE_MAX_OVERFLOW must not exceed 40 per process")
+        if self.sync_threadpool_tokens > per_process_budget:
+            raise ValueError("SYNC_THREADPOOL_TOKENS must not exceed the per-process database connection budget")
+        if self.max_in_flight_requests > per_process_budget:
+            raise ValueError("MAX_IN_FLIGHT_REQUESTS must not exceed the per-process database connection budget")
+        if self.web_concurrency * per_process_budget > 90:
+            raise ValueError("WEB_CONCURRENCY times the per-process database connection budget must not exceed 90")
+        return self
 
     @property
     def effective_phone_fingerprint_secret(self) -> str:

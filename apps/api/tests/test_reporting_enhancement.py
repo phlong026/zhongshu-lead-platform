@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from sqlalchemy import event
+
 from apps.api.src.core.auth import Principal
 from apps.api.src.core.models import Assignment, Company, FollowUp, Lead, PointsAccount, PointsLedger
 from apps.api.src.services.admin_service import dashboard_performance, dashboard_summary
@@ -90,3 +92,26 @@ def test_dashboard_summary_adds_claim_followup_and_conversion_rates_without_fina
     assert operation["business"]["followup_rate"] == 100.0
     assert operation["business"]["conversion_rate"] == 100.0
     assert "finance" not in operation
+
+
+def test_performance_report_uses_three_bounded_aggregate_queries(db):
+    _seed_reporting_data(db)
+    statements: list[str] = []
+
+    def record_statement(*args) -> None:
+        statements.append(args[2])
+
+    engine = db.get_bind()
+    event.listen(engine, "before_cursor_execute", record_statement)
+    try:
+        report = dashboard_performance(
+            db,
+            principal("dashboard.finance.read", "points.read"),
+            days=30,
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", record_statement)
+
+    assert report["funnel"]["leads_created"] == 1
+    assert report["finance"]["net_points_change"] == 1200
+    assert len(statements) == 3

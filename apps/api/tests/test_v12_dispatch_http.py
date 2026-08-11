@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from apps.api.src.core.enums import AssignmentStatus
-from apps.api.src.core.models import Assignment, Company, Lead, PointsAccount, User
+from apps.api.src.core.models import (
+    Assignment,
+    AssignmentEvent,
+    AuditLog,
+    Company,
+    Lead,
+    NotificationOutbox,
+    PointsAccount,
+    User,
+)
 from apps.api.src.core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12
 from apps.api.src.core.security import encrypt_text, fingerprint_phone, hash_phone
 from apps.api.src.core.v12_enums import LeadSourceKind, LeadV12Status
@@ -41,8 +51,7 @@ def _login(client, username: str, password: str) -> None:
     assert response.status_code == 200
 
 
-def test_candidate_api_hides_exact_points_from_operation(api_client) -> None:
-    client, factory = api_client
+def _prepare_dispatch_lead(factory, *, phone: str) -> tuple[str, str]:
     with factory() as db:
         company = db.scalar(select(Company).where(Company.code == "SH-DEMO"))
         operation = db.scalar(select(User).where(User.username == "operation"))
@@ -80,11 +89,19 @@ def test_candidate_api_hides_exact_points_from_operation(api_client) -> None:
         account = db.scalar(select(PointsAccount).where(PointsAccount.company_id == company.id))
         assert account is not None
         account.balance = 5000
-        lead = _v12_lead(user_id=operation.id, phone="13900139201", status=LeadV12Status.READY_DISPATCH.value)
+        lead = _v12_lead(
+            user_id=operation.id,
+            phone=phone,
+            status=LeadV12Status.READY_DISPATCH.value,
+        )
         db.add(lead)
         db.commit()
-        lead_id = lead.id
-        company_id = company.id
+        return lead.id, company.id
+
+
+def test_candidate_api_hides_exact_points_from_operation(api_client) -> None:
+    client, factory = api_client
+    lead_id, company_id = _prepare_dispatch_lead(factory, phone="13900139201")
 
     _login(client, "operation", "Operation123!")
     response = client.get(f"/api/v1/v1.2/dispatch-pool/{lead_id}/candidates")
@@ -108,6 +125,56 @@ def test_candidate_api_hides_exact_points_from_operation(api_client) -> None:
     assert candidate["points_available"] == (
         candidate["points_balance"] - candidate["points_reserved"]
     )
+
+
+def test_concurrent_manual_dispatch_replay_has_one_business_side_effect(api_client) -> None:
+    client, factory = api_client
+    lead_id, company_id = _prepare_dispatch_lead(factory, phone="13900139203")
+    _login(client, "operation", "Operation123!")
+    payload = {
+        "company_id": company_id,
+        "idempotency_key": "concurrent-v12-manual-dispatch",
+        "note": "concurrent idempotency regression",
+    }
+
+    def dispatch_once(_: int):
+        return client.post(
+            f"/api/v1/v1.2/dispatch-pool/{lead_id}/dispatch",
+            json=payload,
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        responses = list(pool.map(dispatch_once, range(8)))
+
+    assert all(response.status_code == 200 for response in responses), [
+        response.text for response in responses
+    ]
+    assignment_ids = {response.json()["data"]["id"] for response in responses}
+    assert len(assignment_ids) == 1
+    assignment_id = assignment_ids.pop()
+    with factory() as db:
+        assert db.scalar(
+            select(func.count(Assignment.id)).where(
+                Assignment.idempotency_key == payload["idempotency_key"]
+            )
+        ) == 1
+        assert db.scalar(
+            select(func.count(AssignmentEvent.id)).where(
+                AssignmentEvent.assignment_id == assignment_id,
+                AssignmentEvent.event_type == "V12_MANUAL_DISPATCH",
+            )
+        ) == 1
+        assert db.scalar(
+            select(func.count(AuditLog.id)).where(
+                AuditLog.resource_id == assignment_id,
+                AuditLog.action == "V12_MANUAL_DISPATCH",
+            )
+        ) == 1
+        assert db.scalar(
+            select(func.count(NotificationOutbox.id)).where(
+                NotificationOutbox.event_key == f"v12:assignment:{assignment_id}:dispatched"
+            )
+        ) == 1
 
 
 def test_unclaimed_released_assignment_does_not_unlock_phone(api_client) -> None:

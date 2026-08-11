@@ -4,6 +4,7 @@ import argparse
 import copy
 import hashlib
 import json
+import math
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,6 +46,9 @@ TARGET_METRIC_KEYS = {
     "io_write_bytes",
 }
 SENSITIVE_KEY_PARTS = ("password", "cookie", "authorization", "access_token", "refresh_token", "phone")
+CLAIM_APPROVAL_REFERENCE_PATTERN = re.compile(
+    r"https://github\.com/phlong026/zhongshu-lead-platform/(?:issues|pull)/[1-9]\d*"
+)
 
 
 class GateError(ValueError):
@@ -52,7 +56,12 @@ class GateError(ValueError):
 
 
 def _number(value: Any, field: str, *, minimum: float = 0.0) -> float:
-    if not isinstance(value, (int, float)) or isinstance(value, bool) or value < minimum:
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(float(value))
+        or value < minimum
+    ):
         raise GateError(f"{field} must be a number >= {minimum}")
     return float(value)
 
@@ -116,8 +125,8 @@ def _claim_limit(report: dict[str, Any]) -> tuple[float, str | None]:
     if not isinstance(baseline, dict) or baseline.get("approved") is not True:
         raise GateError("claim_baseline must be absent or explicitly approved")
     reference = baseline.get("approval_reference")
-    if not isinstance(reference, str) or not reference.startswith("https://github.com/"):
-        raise GateError("approved claim_baseline needs a GitHub approval_reference")
+    if not isinstance(reference, str) or not CLAIM_APPROVAL_REFERENCE_PATTERN.fullmatch(reference):
+        raise GateError("approved claim_baseline needs this repository's numeric Issue/PR approval_reference")
     maximum = _number(baseline.get("p95_limit_ms"), "claim_baseline.p95_limit_ms", minimum=500.0)
     return maximum, reference
 
@@ -164,8 +173,8 @@ def evaluate_report(
         for field in ("approved_by", "approved_at", "approval_reference"):
             if not isinstance(signoff.get(field), str) or not signoff[field]:
                 raise GateError(f"final staging evidence requires signoff.{field}")
-        if not signoff["approval_reference"].startswith("https://github.com/"):
-            raise GateError("final staging signoff approval_reference must be a GitHub URL")
+        if not CLAIM_APPROVAL_REFERENCE_PATTERN.fullmatch(signoff["approval_reference"]):
+            raise GateError("final staging signoff requires this repository's numeric Issue/PR approval_reference")
         signoff_approved_at = _timestamp(signoff["approved_at"], "signoff.approved_at")
         if signoff_approved_at < report_generated_at:
             raise GateError("final staging signoff must occur after report generation")
