@@ -124,7 +124,16 @@ docker pull 'registry.example.com/zhongshu-lead-platform:1.2.0@sha256:<digest>'
 
 - OCI `org.opencontainers.image.version == APP_VERSION`；
 - 镜像可正常 inspect；
-- `scripts/verify_production.py --require-image-digest --require-image-inspect` 通过。
+- 回拉镜像的 `docker image inspect ... '{{.Id}}'` 必须与候选 artifact 中 `scan-subject.image_id` 完全一致；
+- 以下命令必须通过：
+
+```bash
+python scripts/verify_production.py \
+  --env-file .env \
+  --require-image-digest \
+  --require-image-inspect \
+  --scan-subject scan-subject.json
+```
 
 如果 registry 回拉后的镜像内容/配置异常，停止发布并回到 candidate artifact，不允许“现场重建修一下”。
 

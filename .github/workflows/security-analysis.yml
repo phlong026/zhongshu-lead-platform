@@ -218,6 +218,7 @@ jobs:
               --input /tmp/app-image.tar \
               --scanners vuln \
               --severity HIGH,CRITICAL \
+              --list-all-pkgs \
               --format json \
               --output /tmp/trivy-image.json \
               > dist/security/trivy-console.txt 2>&1

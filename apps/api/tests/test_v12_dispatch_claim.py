@@ -329,7 +329,7 @@ def test_claim_rejects_expired_assignment_with_naive_database_datetime(db, dispa
         assigned_by=receiver_user.id,
         idempotency_key="dispatch-expired-0001",
     )
-    assignment.expires_at = datetime.now() - timedelta(minutes=1)
+    assignment.expires_at = (datetime.now(timezone.utc) - timedelta(minutes=1)).replace(tzinfo=None)
     db.commit()
     db.expire_all()
 

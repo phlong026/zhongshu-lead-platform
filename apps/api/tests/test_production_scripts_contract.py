@@ -6,6 +6,10 @@ def test_production_verifier_covers_environment_compose_nginx_and_certificates()
     assert "validate_production_settings" in script
     assert "docker-compose.prod.yml" in script
     assert "--require-certificates" in script
+    assert "--scan-subject" in script
+    assert "--scan-subject requires --require-image-digest" in script
+    assert "--scan-subject requires --require-image-inspect" in script
+    assert "actual_image_id != expected_image_id" in script
     assert "docker" in script and "compose" in script and "config" in script
 
 
