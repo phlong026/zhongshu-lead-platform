@@ -76,8 +76,8 @@ def test_in_flight_limit_must_leave_requests_inside_the_connection_budget() -> N
 def test_worker_connection_budget_leaves_postgres_headroom() -> None:
     settings = Settings(
         _env_file=None,
-        database_pool_size=9,
-        database_max_overflow=9,
+        database_pool_size=12,
+        database_max_overflow=6,
         sync_threadpool_tokens=18,
         max_in_flight_requests=18,
         web_concurrency=5,
@@ -88,8 +88,8 @@ def test_worker_connection_budget_leaves_postgres_headroom() -> None:
     with pytest.raises(ValidationError, match="must not exceed 90"):
         Settings(
             _env_file=None,
-            database_pool_size=10,
-            database_max_overflow=9,
+            database_pool_size=13,
+            database_max_overflow=6,
             sync_threadpool_tokens=18,
             max_in_flight_requests=18,
             web_concurrency=5,
