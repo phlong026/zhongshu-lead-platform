@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import signal
 import sys
 import time
@@ -21,6 +22,7 @@ from apps.api.src.services.points_service import run_low_points_warnings
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("scheduler")
 running = True
+DEFAULT_HEARTBEAT_FILE = "/tmp/zhongshu-scheduler-heartbeat"
 
 
 def stop(*_: object) -> None:
@@ -28,7 +30,23 @@ def stop(*_: object) -> None:
     running = False
 
 
-def run_cycle(run_slow_jobs: bool, run_hourly_jobs: bool) -> None:
+def heartbeat_path() -> Path:
+    return Path(os.environ.get("SCHEDULER_HEARTBEAT_FILE", DEFAULT_HEARTBEAT_FILE))
+
+
+def clear_heartbeat(path: Path | None = None) -> None:
+    (path or heartbeat_path()).unlink(missing_ok=True)
+
+
+def publish_heartbeat(path: Path | None = None) -> None:
+    target = path or heartbeat_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.tmp")
+    temporary.write_text(f"{time.time()}\n", encoding="ascii")
+    temporary.replace(target)
+
+
+def run_cycle(run_slow_jobs: bool, run_hourly_jobs: bool) -> bool:
     with SessionLocal() as db:
         try:
             outbox = process_outbox(db, limit=200)
@@ -51,21 +69,26 @@ def run_cycle(run_slow_jobs: bool, run_hourly_jobs: bool) -> None:
             if run_slow_jobs or run_hourly_jobs or outbox.get("sent") or outbox.get("failed"):
                 logger.info("cycle metrics=%s", metrics)
             db.commit()
+            return True
         except Exception:
             db.rollback()
             logger.exception("scheduler cycle failed")
+            return False
 
 
 def main() -> int:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    clear_heartbeat()
     init_database()
     tick = 0
     while running:
-        run_cycle(
+        cycle_succeeded = run_cycle(
             run_slow_jobs=tick % 10 == 0,
             run_hourly_jobs=tick % 120 == 0,
         )
+        if cycle_succeeded:
+            publish_heartbeat()
         tick += 1
         for _ in range(30):
             if not running:
