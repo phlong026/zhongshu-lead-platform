@@ -28,3 +28,15 @@ def test_deployment_files_exist():
     ]
     for name in required:
         assert Path(name).exists(), name
+
+
+def test_container_shell_scripts_are_checked_out_with_linux_line_endings():
+    attributes = Path('.gitattributes').read_text(encoding='utf-8')
+    assert '*.sh text eol=lf' in attributes
+
+    scripts = sorted(Path('docker').glob('*.sh')) + sorted(Path('scripts').glob('*.sh'))
+    assert scripts
+    for script in scripts:
+        content = script.read_bytes()
+        assert content.startswith(b'#!/'), script
+        assert b'\r\n' not in content, script
