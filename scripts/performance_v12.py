@@ -85,6 +85,8 @@ def validate_dataset(document: dict[str, Any], *, profiles: tuple[int, ...] = DE
     dispatch_cases = document.get("dispatch_cases")
     if not isinstance(dispatch_cases, dict):
         raise ValueError("dataset dispatch_cases must be an object keyed by concurrency profile")
+    dispatch_lead_ids: set[str] = set()
+    dispatch_idempotency_keys: set[str] = set()
     for profile in profiles:
         case = dispatch_cases.get(str(profile))
         if not isinstance(case, dict):
@@ -92,13 +94,21 @@ def validate_dataset(document: dict[str, Any], *, profiles: tuple[int, ...] = DE
         for key in ("lead_id", "idempotency_key"):
             if not isinstance(case.get(key), str) or not case[key].strip():
                 raise ValueError(f"dataset dispatch_cases.{profile}.{key} must be a non-empty string")
+        if case["lead_id"] in dispatch_lead_ids or case["idempotency_key"] in dispatch_idempotency_keys:
+            raise ValueError("dataset dispatch_cases must use distinct leads and idempotency keys for every profile")
+        dispatch_lead_ids.add(case["lead_id"])
+        dispatch_idempotency_keys.add(case["idempotency_key"])
     claim_cases = document.get("claim_cases")
     if not isinstance(claim_cases, dict):
         raise ValueError("dataset claim_cases must be an object keyed by concurrency profile")
+    used_claim_ids: set[str] = set()
     for profile in profiles:
         assignment_id = claim_cases.get(str(profile))
         if not isinstance(assignment_id, str) or not assignment_id.strip():
             raise ValueError(f"dataset claim_cases must contain a non-empty assignment id for profile {profile}")
+        if assignment_id in used_claim_ids:
+            raise ValueError("dataset claim_cases must use distinct assignments for every profile")
+        used_claim_ids.add(assignment_id)
     evidence_cases = document.get("evidence_cases")
     if not isinstance(evidence_cases, dict) or set(evidence_cases) != {str(profile) for profile in profiles}:
         raise ValueError("dataset evidence_cases must contain exactly the requested concurrency profiles")

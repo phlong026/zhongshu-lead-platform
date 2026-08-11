@@ -211,6 +211,18 @@ def test_each_profile_uses_a_distinct_pending_claim_fixture():
     assert len(claim_paths) == 3
 
 
+def test_dataset_contract_rejects_reused_dispatch_or_claim_fixtures():
+    document = _dataset()
+    document["dispatch_cases"]["300"] = dict(document["dispatch_cases"]["100"])
+    with pytest.raises(ValueError, match="distinct leads"):
+        validate_dataset(document, runtime=True)
+
+    document = _dataset()
+    document["claim_cases"]["300"] = document["claim_cases"]["100"]
+    with pytest.raises(ValueError, match="distinct assignments"):
+        validate_dataset(document, runtime=True)
+
+
 def test_each_profile_uses_disjoint_evidence_upload_fixtures():
     dataset = _dataset()
     evidence_sets = [

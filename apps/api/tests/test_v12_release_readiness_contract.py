@@ -203,3 +203,17 @@ def test_ci_contains_postgres_browser_dependency_evidence_and_packaging_gates() 
         assert "> migration-output.txt" not in workflow
     assert "--version V1.2.0-rc" in pr_workflow
     assert "--version V1.2.0" in release_workflow
+
+
+def test_postgres_ci_contract_runs_h04_dataset_integration() -> None:
+    for workflow_path in (
+        Path(".github/workflows/v12-pr-ci.yml"),
+        Path(".github/workflows/v12-release-ci.yml"),
+        Path(".github/workflows/main-release.yml"),
+    ):
+        workflow = workflow_path.read_text(encoding="utf-8")
+        assert "H04_POSTGRES_DATASET_TEST_URL: ${{ env.DATABASE_URL }}" in workflow
+        assert (
+            "apps/api/tests/test_prepare_performance_dataset.py::"
+            "test_prepare_dataset_flush_order_on_postgresql"
+        ) in workflow
