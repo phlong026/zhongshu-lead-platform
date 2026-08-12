@@ -6,6 +6,7 @@ import json
 import pytest
 
 from scripts.claim_performance_v12 import (
+    ClaimDatabaseSampler,
     latency_gate,
     load_dataset,
     metrics,
@@ -37,6 +38,48 @@ def test_claim_latency_gate_is_hard_for_300_but_capacity_only_for_500() -> None:
     hot = latency_gate("hot_account", 300, 900.0)
     assert hot["hard_gate"] is False
     assert hot["status"] == "OBSERVE_HOT_ACCOUNT_CAPACITY"
+
+
+def test_claim_database_sampler_signals_baseline_readiness_before_load() -> None:
+    async def run() -> None:
+        sampler = ClaimDatabaseSampler.__new__(ClaimDatabaseSampler)
+        sampler.samples = []
+        sampler._stop = asyncio.Event()
+        sampler._deadlocks_start = 0
+        sampler._ready = asyncio.Event()
+        sampler._startup_error = None
+        sampler._snapshot = lambda: {"deadlocks_total": 7}
+
+        task = asyncio.create_task(sampler.sample())
+        await sampler.wait_until_ready()
+        assert sampler.samples == [{"deadlocks_total": 7}]
+        assert sampler._deadlocks_start == 7
+        sampler._stop.set()
+        await task
+
+    asyncio.run(run())
+
+
+def test_claim_database_sampler_surfaces_startup_failure_before_load() -> None:
+    async def run() -> None:
+        sampler = ClaimDatabaseSampler.__new__(ClaimDatabaseSampler)
+        sampler.samples = []
+        sampler._stop = asyncio.Event()
+        sampler._deadlocks_start = 0
+        sampler._ready = asyncio.Event()
+        sampler._startup_error = None
+
+        def fail_snapshot():
+            raise RuntimeError("sampler unavailable")
+
+        sampler._snapshot = fail_snapshot
+        task = asyncio.create_task(sampler.sample())
+        with pytest.raises(RuntimeError, match="failed before load baseline"):
+            await sampler.wait_until_ready()
+        with pytest.raises(RuntimeError, match="sampler unavailable"):
+            await task
+
+    asyncio.run(run())
 
 
 def test_resolve_checked_out_commit_supports_detached_head(tmp_path) -> None:
