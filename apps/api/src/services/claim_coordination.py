@@ -15,7 +15,7 @@ from .claim_fast_v12 import ClaimExecution, claim_assignment_fast
 from .dispatch_v12 import CLAIMED_CONTACT_STATUSES, ClaimResult, get_dispatch_lead
 
 
-_CROSS_WORKER_FOLLOWER_WAIT_SECONDS = 0.75
+_CROSS_WORKER_FOLLOWER_WAIT_SECONDS = 0.45
 _POLL_DELAYS_SECONDS = (0.015, 0.025, 0.04, 0.06, 0.08, 0.10, 0.12)
 
 
@@ -133,6 +133,9 @@ def claim_assignment_coordinated(
         if existing is not None:
             return existing
 
+    # The exact database transaction remains authoritative. If the leader takes
+    # longer than the follower budget, queue only one leader per worker on the
+    # advisory lock rather than every replay request on the assignment row lock.
     _wait_for_postgres_advisory_lock(db, advisory_key)
     db.expire_all()
     return claim_assignment_fast(
