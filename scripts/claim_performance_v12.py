@@ -18,11 +18,25 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.performance_v12 import safe_origin
+from scripts.performance_v12 import DatabaseSampler, consistency_snapshot, safe_origin
 
 
 DEFAULT_PROFILES = (100, 300, 500)
 VALID_SCENARIOS = {"replay", "distributed", "hot_account"}
+
+
+class ClaimDatabaseSampler(DatabaseSampler):
+    """Use a short sampling interval so sub-second claim lock spikes are visible."""
+
+    async def sample(self) -> None:
+        initial = await asyncio.to_thread(self._snapshot)
+        self._deadlocks_start = int(initial["deadlocks_total"])
+        self.samples.append(initial)
+        while not self._stop.is_set():
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=0.05)
+            except TimeoutError:
+                self.samples.append(await asyncio.to_thread(self._snapshot))
 
 
 def percentile(values: list[float], percent: float) -> float:
@@ -143,6 +157,7 @@ async def run_profile(
     scenario: str,
     profile: int,
     cases: list[dict[str, str]],
+    database_url: str,
 ) -> dict[str, Any]:
     request_cases = _validate_profile_cases(scenario, profile, cases)
     prefixes = sorted({case["credential_env_prefix"] for case in request_cases})
@@ -153,6 +168,9 @@ async def run_profile(
     first_claims = 0
     idempotent_replays = 0
     company_mismatches = 0
+    consistency_before = await asyncio.to_thread(consistency_snapshot, database_url)
+    sampler = ClaimDatabaseSampler(database_url)
+    sampler_task = asyncio.create_task(sampler.sample())
 
     async def request_once(case: dict[str, str]) -> tuple[float, bool, bool | None, bool]:
         client = clients[case["credential_env_prefix"]]
@@ -170,9 +188,17 @@ async def run_profile(
         except (httpx.HTTPError, ValueError, TypeError):
             return (time.perf_counter() - started) * 1000, False, None, False
 
-    started = time.perf_counter()
-    results = await asyncio.gather(*(request_once(case) for case in request_cases))
-    duration = time.perf_counter() - started
+    try:
+        started = time.perf_counter()
+        results = await asyncio.gather(*(request_once(case) for case in request_cases))
+        duration = time.perf_counter() - started
+    finally:
+        for client in clients.values():
+            await client.aclose()
+        database_metrics = await sampler.finish()
+        await sampler_task
+    consistency_after = await asyncio.to_thread(consistency_snapshot, database_url)
+
     for latency, ok, idempotent, company_matches in results:
         latencies.append(latency)
         if not ok:
@@ -185,9 +211,6 @@ async def run_profile(
         else:
             first_claims += 1
 
-    for client in clients.values():
-        await client.aclose()
-
     expected_first_claims = 1 if scenario == "replay" else profile
     expected_replays = profile - 1 if scenario == "replay" else 0
     scenario_errors: list[str] = []
@@ -196,13 +219,18 @@ async def run_profile(
     if company_mismatches:
         scenario_errors.append(f"company_mismatches={company_mismatches}")
     if first_claims != expected_first_claims:
-        scenario_errors.append(
-            f"first_claims={first_claims}, expected={expected_first_claims}"
-        )
+        scenario_errors.append(f"first_claims={first_claims}, expected={expected_first_claims}")
     if idempotent_replays != expected_replays:
-        scenario_errors.append(
-            f"idempotent_replays={idempotent_replays}, expected={expected_replays}"
-        )
+        scenario_errors.append(f"idempotent_replays={idempotent_replays}, expected={expected_replays}")
+    if database_metrics["deadlocks_delta"] != 0:
+        scenario_errors.append(f"deadlocks_delta={database_metrics['deadlocks_delta']}")
+    for key in (
+        "duplicate_claim_ledgers",
+        "points_balance_mismatches",
+        "duplicate_active_assignments",
+    ):
+        if int(consistency_after[key]) != 0:
+            scenario_errors.append(f"{key}={consistency_after[key]}")
 
     result = metrics(latencies, failures, duration)
     result.update(
@@ -216,6 +244,9 @@ async def run_profile(
             "idempotent_replays": idempotent_replays,
             "expected_idempotent_replays": expected_replays,
             "company_mismatches": company_mismatches,
+            "database": database_metrics,
+            "consistency_before": consistency_before,
+            "consistency_after": consistency_after,
             "scenario_valid": not scenario_errors,
             "scenario_errors": scenario_errors,
         }
@@ -226,6 +257,7 @@ async def run_profile(
 async def async_main(args) -> dict[str, Any]:
     dataset = load_dataset(Path(args.dataset))
     base_url = safe_origin(args.base_url or dataset.get("base_url_origin", ""))
+    database_url = args.database_url or _required_env("DATABASE_URL")
     profiles = tuple(args.profiles or DEFAULT_PROFILES)
     scenario_names = args.scenarios or sorted(dataset["scenarios"])
     output: dict[str, Any] = {
@@ -251,6 +283,7 @@ async def async_main(args) -> dict[str, Any]:
                     scenario=scenario,
                     profile=profile,
                     cases=cases,
+                    database_url=database_url,
                 )
             )
     output["valid"] = all(item.get("scenario_valid") is True for item in output["results"])
@@ -261,6 +294,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Issue #71 claim-only capacity benchmark")
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--base-url", default="")
+    parser.add_argument("--database-url", default="")
     parser.add_argument("--profiles", nargs="*", type=int, choices=DEFAULT_PROFILES)
     parser.add_argument("--scenarios", nargs="*", choices=sorted(VALID_SCENARIOS))
     parser.add_argument("--output", default="dist/performance/claim-performance-v12.json")
