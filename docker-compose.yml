@@ -1,94 +1,87 @@
 services:
   db:
     image: postgres:16-alpine
-    command: ["postgres", "-c", "max_connections=${POSTGRES_MAX_CONNECTIONS:-100}"]
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-zhongshu}
       POSTGRES_USER: ${POSTGRES_USER:-zhongshu}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-this-database-password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    command:
+      - postgres
+      - -c
+      - max_connections=${POSTGRES_MAX_CONNECTIONS:-100}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-zhongshu} -d ${POSTGRES_DB:-zhongshu}"]
       interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 5
 
   api:
-    build: .
-    command:
-      - uvicorn
-      - apps.api.src.main:app
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8000"
-      - --proxy-headers
-      - --no-access-log
-      - --workers
-      - "${WEB_CONCURRENCY:-1}"
+    build:
+      context: .
+      args:
+        APP_VERSION: ${APP_VERSION:-1.2.0}
+        APP_BUILD_SHA: ${APP_BUILD_SHA:-unknown}
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
-    env_file: .env
+    env_file:
+      - .env
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-zhongshu}
-      POSTGRES_USER: ${POSTGRES_USER:-zhongshu}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-this-database-password}
-      DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-20}
-      DATABASE_MAX_OVERFLOW: ${DATABASE_MAX_OVERFLOW:-20}
-      DATABASE_POOL_TIMEOUT_SECONDS: ${DATABASE_POOL_TIMEOUT_SECONDS:-30}
-      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-1}
-      SYNC_THREADPOOL_TOKENS: ${SYNC_THREADPOOL_TOKENS:-40}
-      MAX_IN_FLIGHT_REQUESTS: ${MAX_IN_FLIGHT_REQUESTS:-32}
-      IN_FLIGHT_QUEUE_TIMEOUT_SECONDS: ${IN_FLIGHT_QUEUE_TIMEOUT_SECONDS:-10}
-      OBJECT_STORAGE_DIR: /app/storage
-    volumes:
-      - private_storage:/app/storage
-
-  scheduler:
-    build: .
-    restart: unless-stopped
-    entrypoint: ["/app/docker/scheduler-entrypoint.sh"]
-    depends_on:
-      db:
-        condition: service_healthy
-    env_file: .env
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-zhongshu}
-      POSTGRES_USER: ${POSTGRES_USER:-zhongshu}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-this-database-password}
-      DATABASE_POOL_SIZE: ${SCHEDULER_DATABASE_POOL_SIZE:-2}
-      DATABASE_MAX_OVERFLOW: ${SCHEDULER_DATABASE_MAX_OVERFLOW:-2}
-      DATABASE_POOL_TIMEOUT_SECONDS: ${SCHEDULER_DATABASE_POOL_TIMEOUT_SECONDS:-30}
-      WEB_CONCURRENCY: "1"
-      SYNC_THREADPOOL_TOKENS: ${SCHEDULER_SYNC_THREADPOOL_TOKENS:-4}
-      MAX_IN_FLIGHT_REQUESTS: "4"
-      IN_FLIGHT_QUEUE_TIMEOUT_SECONDS: "10"
-      OBJECT_STORAGE_DIR: /app/storage
-      SCHEDULER_HEARTBEAT_FILE: /tmp/zhongshu-scheduler-heartbeat
-      SCHEDULER_HEARTBEAT_MAX_AGE_SECONDS: "90"
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-zhongshu}:${POSTGRES_PASSWORD:-change-me}@db:5432/${POSTGRES_DB:-zhongshu}
     volumes:
       - private_storage:/app/storage
     healthcheck:
-      test: ["CMD", "python", "-c", "import os,time; from pathlib import Path; p=Path(os.environ['SCHEDULER_HEARTBEAT_FILE']); age=time.time()-p.stat().st_mtime if p.is_file() else -1; raise SystemExit(0 if 0 <= age <= float(os.environ['SCHEDULER_HEARTBEAT_MAX_AGE_SECONDS']) else 1)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3).read()"]
       interval: 15s
-      timeout: 3s
-      retries: 5
-      start_period: 60s
+      timeout: 5s
+      retries: 8
+
+  scheduler:
+    build:
+      context: .
+      args:
+        APP_VERSION: ${APP_VERSION:-1.2.0}
+        APP_BUILD_SHA: ${APP_BUILD_SHA:-unknown}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-zhongshu}:${POSTGRES_PASSWORD:-change-me}@db:5432/${POSTGRES_DB:-zhongshu}
+      SCHEDULER_HEARTBEAT_FILE: /tmp/zhongshu-scheduler/heartbeat
+    entrypoint: ["/app/docker/scheduler-entrypoint.sh"]
+    volumes:
+      - private_storage:/app/storage
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import os,sys,time; p=os.environ.get('SCHEDULER_HEARTBEAT_FILE','/tmp/zhongshu-scheduler/heartbeat'); sys.exit(0 if os.path.isfile(p) and time.time()-os.path.getmtime(p) < 180 else 1)\"",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 4
+      start_period: 20s
 
   nginx:
     image: nginx:1.27-alpine
     restart: unless-stopped
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     ports:
-      - "${HTTP_PORT:-8080}:80"
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
     volumes:
       - ./infra/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./infra/certs:/etc/nginx/certs:ro
 
 volumes:
-  postgres_data:
+  pgdata:
   private_storage:
