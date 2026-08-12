@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import mimetypes
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
@@ -22,6 +21,7 @@ from ..schemas.v12_returns import (
     ReturnVerificationSubmitBody,
 )
 from ..services.audit import write_audit
+from ..services.evidence_file_validation import validate_evidence_file
 from ..services.return_v12 import (
     add_return_evidence,
     assign_return_verification_task,
@@ -101,16 +101,22 @@ def upload_return_evidence(
     if not principal.company_id or item.company_id != principal.company_id:
         raise AppError("FORBIDDEN", "无权上传该退回申请的证据", 403)
     content = file.file.read()
-    mime = file.content_type or mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
     normalized_type = evidence_type.strip().upper()
     if normalized_type == EvidenceType.CHAT_SCREENSHOT.value:
-        if mime not in IMAGE_MIME or len(content) > 5 * 1024 * 1024:
+        if len(content) > 5 * 1024 * 1024:
             raise AppError("EVIDENCE_IMAGE_INVALID", "截图仅支持 JPG/PNG/WEBP，单张不超过 5MB", 422)
     elif normalized_type == EvidenceType.CALL_RECORDING.value:
-        if mime not in AUDIO_MIME or len(content) > 20 * 1024 * 1024:
+        if len(content) > 20 * 1024 * 1024:
             raise AppError("EVIDENCE_AUDIO_INVALID", "录音格式或大小不符合要求，最大 20MB", 422)
     else:
         raise AppError("EVIDENCE_TYPE_INVALID", "证据类型无效", 422)
+
+    mime = validate_evidence_file(
+        evidence_type=normalized_type,
+        filename=file.filename,
+        mime_type=file.content_type,
+        content=content,
+    )
 
     stored = get_storage().save(
         content,

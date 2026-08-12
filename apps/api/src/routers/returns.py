@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import mimetypes
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
@@ -16,6 +15,7 @@ from ..core.models import Assignment, ReturnEvidence, ReturnRequest
 from ..core.responses import ok, page
 from ..schemas.returns import ReturnDraftBody, ReturnReviewBody
 from ..services.audit import write_audit
+from ..services.evidence_file_validation import validate_evidence_file
 from ..services.return_service import add_evidence, create_or_update_return, return_to_dict, review_return, submit_return
 from ..services.storage import create_file_access_token, decode_file_access_token, get_storage
 
@@ -52,13 +52,18 @@ async def upload_evidence(
     if evidence_type not in {EvidenceType.CHAT_SCREENSHOT, EvidenceType.CALL_RECORDING}:
         raise AppError("EVIDENCE_TYPE_INVALID", "证据类型无效", 422)
     content = await file.read()
-    mime = file.content_type or mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
     if evidence_type == EvidenceType.CHAT_SCREENSHOT:
-        if mime not in IMAGE_MIME or len(content) > 5 * 1024 * 1024:
+        if len(content) > 5 * 1024 * 1024:
             raise AppError("EVIDENCE_IMAGE_INVALID", "截图仅支持 JPG/PNG/WEBP，单张不超过5MB", 422)
     else:
-        if mime not in AUDIO_MIME or len(content) > 20 * 1024 * 1024:
+        if len(content) > 20 * 1024 * 1024:
             raise AppError("EVIDENCE_AUDIO_INVALID", "录音格式或大小不符合要求（最大20MB）", 422)
+    mime = validate_evidence_file(
+        evidence_type=evidence_type,
+        filename=file.filename,
+        mime_type=file.content_type,
+        content=content,
+    )
     storage = get_storage()
     now = datetime.utcnow()
     stored = storage.save(content, prefix=f"evidence/{now:%Y/%m}/{item.id}", filename=file.filename or "evidence.bin", mime_type=mime)

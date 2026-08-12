@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import jwt
@@ -304,6 +303,32 @@ def test_cross_tenant_evidence_upload_has_no_storage_or_database_side_effect(api
     )
     assert response.status_code == 403
     assert response.json()["code"] == "FORBIDDEN"
+
+    after_files = {path for path in storage.root.rglob("*") if path.is_file()}
+    with factory() as db:
+        after_rows = db.scalar(select(func.count(ReturnEvidence.id))) or 0
+    assert after_files == before_files
+    assert after_rows == before_rows
+
+
+def test_forged_evidence_upload_has_no_storage_or_database_side_effect(api_client) -> None:
+    client, factory = api_client
+    graph = _seed_cross_tenant_graph(factory)
+    target = _login_headers(client, "franchise_demo", "Franchise123!")
+    storage = get_storage()
+    assert isinstance(storage, LocalObjectStorage)
+    before_files = {path for path in storage.root.rglob("*") if path.is_file()}
+    with factory() as db:
+        before_rows = db.scalar(select(func.count(ReturnEvidence.id))) or 0
+
+    response = client.post(
+        f"/api/v1/v1.2/returns/{graph['return_id']}/evidence",
+        headers=target,
+        data={"evidence_type": EvidenceType.CHAT_SCREENSHOT.value},
+        files={"file": ("proof.jpg", b"not-an-image", "image/jpeg")},
+    )
+    assert response.status_code == 422
+    assert response.json()["code"] == "EVIDENCE_FILE_SIGNATURE_INVALID"
 
     after_files = {path for path in storage.root.rglob("*") if path.is_file()}
     with factory() as db:
