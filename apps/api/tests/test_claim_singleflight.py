@@ -90,7 +90,7 @@ def test_singleflight_does_not_mix_different_assignments() -> None:
     assert all(coalesced is False for _, coalesced in results)
 
 
-def test_singleflight_failed_leader_is_not_reused_as_success() -> None:
+def test_failed_flight_is_retained_across_queued_waves_then_expires() -> None:
     calls = 0
 
     def execute():
@@ -100,14 +100,36 @@ def test_singleflight_failed_leader_is_not_reused_as_success() -> None:
             raise RuntimeError("leader failed")
         return {"ok": True}
 
-    try:
-        run_claim_singleflight("assignment-fail", execute)
-    except RuntimeError:
-        pass
+    with pytest_raises(RuntimeError):
+        run_claim_singleflight(
+            "assignment-fail",
+            execute,
+            failure_retention_seconds=0.05,
+        )
 
-    payload, coalesced = run_claim_singleflight("assignment-fail", execute)
+    for _ in range(10):
+        try:
+            run_claim_singleflight(
+                "assignment-fail",
+                execute,
+                failure_retention_seconds=0.05,
+            )
+        except AppError as exc:
+            assert exc.code == "CLAIM_TRANSIENT_FAILURE"
+            assert exc.status_code == 503
+        else:
+            raise AssertionError("retained failed flight must not elect a queued-wave leader")
+    assert calls == 1
+
+    time.sleep(0.07)
+    payload, coalesced = run_claim_singleflight(
+        "assignment-fail",
+        execute,
+        failure_retention_seconds=0.05,
+    )
     assert payload == {"ok": True}
     assert coalesced is False
+    assert calls == 2
 
 
 def test_transient_failure_is_shared_without_replacement_leader() -> None:
@@ -213,3 +235,18 @@ def test_timed_out_follower_returns_retryable_error_without_new_leader() -> None
     assert len(errors) == 1
     assert errors[0].code == "CLAIM_IN_PROGRESS_TIMEOUT"
     assert errors[0].status_code == 503
+
+
+class pytest_raises:
+    """Tiny local context manager to keep this concurrency test independent of pytest internals."""
+
+    def __init__(self, exception_type):
+        self.exception_type = exception_type
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        if exc_type is None:
+            raise AssertionError(f"expected {self.exception_type.__name__}")
+        return issubclass(exc_type, self.exception_type)
