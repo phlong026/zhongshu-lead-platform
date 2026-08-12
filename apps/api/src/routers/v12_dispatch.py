@@ -15,11 +15,11 @@ from ..core.security import decrypt_text, mask_phone
 from ..core.v12_enums import LeadV12Status
 from ..schemas.v12_dispatch import ManualDispatchBody
 from ..services.audit import write_audit
+from ..services.claim_coordination import claim_assignment_coordinated
 from ..services.claim_singleflight import run_claim_singleflight
 from ..services.dispatch_v12 import (
     CLAIMED_CONTACT_STATUSES,
     candidate_to_dict,
-    claim_assignment,
     dispatch_manually_with_outcome,
     get_dispatch_lead,
     lead_pool_item,
@@ -44,11 +44,7 @@ def _masked_encrypted_phone(phone_encrypted: str) -> str:
 
 def _assignment_dict(assignment: Assignment, lead: Lead, *, reveal_phone: bool = False) -> dict:
     phone = decrypt_text(lead.phone_encrypted) if reveal_phone else None
-    phone_masked = (
-        mask_phone(phone)
-        if phone is not None
-        else _masked_encrypted_phone(lead.phone_encrypted)
-    )
+    phone_masked = mask_phone(phone) if phone is not None else _masked_encrypted_phone(lead.phone_encrypted)
     return {
         "id": assignment.id,
         "lead_id": assignment.lead_id,
@@ -109,9 +105,7 @@ def _assignment_detail_projection(assignment_id: str, company_id: str):
 
 def _projected_assignment_dict(row, *, reveal_phone: bool = False) -> dict:
     phone = decrypt_text(row.phone_encrypted) if reveal_phone else None
-    phone_masked = (
-        mask_phone(phone) if phone is not None else _masked_encrypted_phone(row.phone_encrypted)
-    )
+    phone_masked = mask_phone(phone) if phone is not None else _masked_encrypted_phone(row.phone_encrypted)
     return {
         "id": row.id,
         "lead_id": row.lead_id,
@@ -133,13 +127,9 @@ def _projected_assignment_dict(row, *, reveal_phone: bool = False) -> dict:
         "assigned_at": row.assigned_at.isoformat(),
         "expires_at": row.expires_at.isoformat() if row.expires_at else None,
         "claimed_at": row.claimed_at.isoformat() if row.claimed_at else None,
-        "appeal_deadline_at": row.appeal_deadline_at.isoformat()
-        if row.appeal_deadline_at
-        else None,
+        "appeal_deadline_at": row.appeal_deadline_at.isoformat() if row.appeal_deadline_at else None,
         "reward_due_at": row.reward_due_at.isoformat() if row.reward_due_at else None,
-        "first_followup_due_at": row.first_followup_due_at.isoformat()
-        if row.first_followup_due_at
-        else None,
+        "first_followup_due_at": row.first_followup_due_at.isoformat() if row.first_followup_due_at else None,
     }
 
 
@@ -155,9 +145,7 @@ def _claim_response_payload(result, lead: Lead) -> dict:
             "id": result.reward.id,
             "status": result.reward.status,
             "reward_points": result.reward.reward_points,
-            "reward_due_at": result.reward.reward_due_at.isoformat()
-            if result.reward.reward_due_at
-            else None,
+            "reward_due_at": result.reward.reward_due_at.isoformat() if result.reward.reward_due_at else None,
         }
         if result.reward
         else None,
@@ -207,9 +195,7 @@ def dispatch_candidates(
         {
             "lead": lead_pool_item(lead),
             "eligible_count": sum(1 for item in items if item.eligible),
-            "candidates": [
-                candidate_to_dict(item, include_financials=include_financials) for item in items
-            ],
+            "candidates": [candidate_to_dict(item, include_financials=include_financials) for item in items],
         },
     )
 
@@ -278,11 +264,7 @@ def own_assignments(
         .limit(page_size)
     ).all()
     items = [
-        _assignment_dict(
-            assignment,
-            lead,
-            reveal_phone=assignment.status in CLAIMED_CONTACT_STATUSES,
-        )
+        _assignment_dict(assignment, lead, reveal_phone=assignment.status in CLAIMED_CONTACT_STATUSES)
         for assignment, lead in rows
     ]
     return ok(request, page(items, int(total), page_no, page_size))
@@ -299,13 +281,7 @@ def own_assignment_detail(
     row = db.execute(_assignment_detail_projection(assignment_id, company_id)).one_or_none()
     if row is None:
         raise AppError("ASSIGNMENT_NOT_FOUND", "派发单不存在", 404)
-    return ok(
-        request,
-        _projected_assignment_dict(
-            row,
-            reveal_phone=row.status in CLAIMED_CONTACT_STATUSES,
-        ),
-    )
+    return ok(request, _projected_assignment_dict(row, reveal_phone=row.status in CLAIMED_CONTACT_STATUSES))
 
 
 @router.post("/assignments/{assignment_id}/claim")
@@ -318,7 +294,7 @@ def claim_own_assignment(
     company_id = _principal_company_id(principal)
 
     def execute_claim() -> dict:
-        result = claim_assignment(
+        result = claim_assignment_coordinated(
             db,
             assignment_id=assignment_id,
             company_id=company_id,
@@ -349,13 +325,7 @@ def claim_own_assignment(
         db.commit()
         return _claim_response_payload(result, lead)
 
-    # Include the company in the key so a cross-tenant request can never reuse a
-    # successful response snapshot from another tenant.
     payload, coalesced = run_claim_singleflight(f"{company_id}:{assignment_id}", execute_claim)
     if coalesced:
         payload["idempotent"] = True
-    return ok(
-        request,
-        payload,
-        "派发单已领取" if payload["idempotent"] else "领取成功",
-    )
+    return ok(request, payload, "派发单已领取" if payload["idempotent"] else "领取成功")
