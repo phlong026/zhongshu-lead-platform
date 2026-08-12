@@ -173,7 +173,7 @@ def test_reward_formula_applies_ratio_minimum_and_maximum() -> None:
     assert calculate_reward_points(100, maximum) == 50
 
 
-def test_published_rule_is_snapshotted_on_new_claim_reward(db) -> None:
+def test_direct_reward_insertion_does_not_implicitly_replace_supplied_snapshot(db) -> None:
     publisher = User(display_name="规则发布人", status="ACTIVE")
     db.add(publisher)
     db.flush()
@@ -205,6 +205,7 @@ def test_published_rule_is_snapshotted_on_new_claim_reward(db) -> None:
         reward_ratio_bps=3000,
         reward_points=30,
         rule_version=1,
+        rule_snapshot_json={"version": 1, "ratio_bps": 3000},
         observed_at=datetime.now(timezone.utc),
         reward_due_at=datetime.now(timezone.utc) + timedelta(days=3),
     )
@@ -229,11 +230,11 @@ def test_published_rule_is_snapshotted_on_new_claim_reward(db) -> None:
     db.add(reward)
     db.flush()
 
-    assert reward.reward_ratio_bps == 2500
-    assert reward.reward_points == 40
-    assert reward.rule_version == config.version
-    assert reward.rule_snapshot_json["config_id"] == config.id
-    assert reward.rule_snapshot_json["hard_duplicate_days"] == 30
+    assert config.status == "PUBLISHED"
+    assert reward.reward_ratio_bps == 3000
+    assert reward.reward_points == 30
+    assert reward.rule_version == 1
+    assert reward.rule_snapshot_json == {"version": 1, "ratio_bps": 3000}
 
 
 def test_published_rule_changes_dedup_windows(db) -> None:
