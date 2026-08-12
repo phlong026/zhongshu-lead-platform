@@ -4,7 +4,6 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from math import floor
 from threading import Lock
 from typing import Any
 
@@ -21,7 +20,11 @@ from ..core.time import as_utc
 from ..core.v12_enums import DuplicateDecision, LeadV12Status, RewardStatus
 from .company_profile_v12 import has_lead_capability, require_lead_capability
 from .points_service import change_points, resolve_price
-from .reward_rule_v12 import SupplierRewardRule, resolve_supplier_reward_rule
+from .reward_rule_v12 import (
+    SupplierRewardRule,
+    calculate_reward_points,
+    resolve_supplier_reward_rule,
+)
 from .workday_calendar import WorkdayCalendarService
 
 settings = get_settings()
@@ -556,22 +559,32 @@ def _reward_for_claim(
         DuplicateDecision.HARD_DUPLICATE.value,
         DuplicateDecision.REWARD_DUPLICATE.value,
     }
-    ratio_bps = 3000
-    reward_points = floor(int(assignment.points_price) * ratio_bps / 10000) if eligible else 0
+    rule = resolve_supplier_reward_rule(db, as_of=now)
+    reward_points = calculate_reward_points(int(assignment.points_price), rule) if eligible else 0
+    reward_status = (
+        RewardStatus.OBSERVING.value
+        if eligible and reward_points > 0
+        else RewardStatus.NOT_ELIGIBLE.value
+    )
     reward = SupplierLeadReward(
         lead_id=lead.id,
         assignment_id=assignment.id,
         supplier_company_id=lead.supplier_company_id,
         receiver_company_id=assignment.company_id,
-        status=RewardStatus.OBSERVING.value if eligible else RewardStatus.NOT_ELIGIBLE.value,
+        status=reward_status,
         claim_points=int(assignment.points_price),
-        reward_ratio_bps=ratio_bps,
+        reward_ratio_bps=rule.ratio_bps,
         reward_points=reward_points,
-        rule_version=1,
-        observed_at=now if eligible else None,
+        rule_version=rule.version,
+        rule_snapshot_json=rule.snapshot(),
+        observed_at=now if reward_status == RewardStatus.OBSERVING.value else None,
         appeal_deadline_at=deadline,
         reward_due_at=deadline,
-        exception_reason=None if eligible else "REWARD_DUPLICATE",
+        exception_reason=(
+            None
+            if reward_status == RewardStatus.OBSERVING.value
+            else "REWARD_DUPLICATE" if not eligible else "ZERO_REWARD_POINTS"
+        ),
     )
     db.add(reward)
     db.flush()

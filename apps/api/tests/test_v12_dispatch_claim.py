@@ -19,6 +19,7 @@ from apps.api.src.services.dispatch_v12 import (
     list_candidates,
     list_dispatch_pool,
 )
+from apps.api.src.services.reward_rule_v12 import create_supplier_reward_rule
 from apps.api.src.services.workday_calendar import WorkdayCalendarService
 
 
@@ -238,6 +239,58 @@ def test_manual_dispatch_does_not_deduct_points_and_claim_is_atomic_and_idempote
         )
     ).all()
     assert len(ledgers) == 1
+
+
+def test_claim_explicitly_snapshots_published_reward_rule(db, dispatch_setup) -> None:
+    supplier, _, receiver, receiver_user, lead = dispatch_setup
+    config = create_supplier_reward_rule(
+        db,
+        values={
+            "ratio_bps": 2500,
+            "min_points": 40,
+            "max_points": 50,
+            "hard_duplicate_days": 30,
+            "reward_duplicate_days": 60,
+            "historical_suspect_days": 120,
+        },
+        created_by=receiver_user.id,
+        publish_immediately=True,
+    )
+    assignment = dispatch_manually(
+        db,
+        lead_id=lead.id,
+        company_id=receiver.id,
+        assigned_by=receiver_user.id,
+        idempotency_key="dispatch-reward-snapshot-0001",
+    )
+
+    result = claim_assignment(
+        db,
+        assignment_id=assignment.id,
+        company_id=receiver.id,
+        claimed_by=receiver_user.id,
+    )
+    db.commit()
+
+    assert result.reward is not None
+    assert result.reward.reward_ratio_bps == 2500
+    assert result.reward.reward_points == 40
+    assert result.reward.rule_version == config.version
+    snapshot = result.reward.rule_snapshot_json
+    assert snapshot == {
+        "domain": "supplier_reward",
+        "key": "default",
+        "config_id": config.id,
+        "version": config.version,
+        "effective_at": snapshot["effective_at"],
+        "ratio_bps": 2500,
+        "min_points": 40,
+        "max_points": 50,
+        "hard_duplicate_days": 30,
+        "reward_duplicate_days": 60,
+        "historical_suspect_days": 120,
+    }
+    assert snapshot["effective_at"]
 
 
 def test_platform_lead_claim_does_not_create_supplier_reward(db, dispatch_setup) -> None:
