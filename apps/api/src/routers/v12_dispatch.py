@@ -294,13 +294,14 @@ def claim_own_assignment(
     company_id = _principal_company_id(principal)
 
     def execute_claim() -> dict:
-        result = claim_assignment_coordinated(
+        execution = claim_assignment_coordinated(
             db,
             assignment_id=assignment_id,
             company_id=company_id,
             claimed_by=principal.user_id,
         )
-        lead = get_dispatch_lead(db, result.assignment.lead_id)
+        result = execution.result
+        lead = execution.lead
         if not result.idempotent:
             write_audit(
                 db,
