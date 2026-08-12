@@ -33,20 +33,39 @@ DEFAULT_PROFILES = (100, 300, 500)
 VALID_SCENARIOS = {"replay", "distributed", "hot_account"}
 SOURCE_COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 CLAIM_P95_TARGET_MS = 500.0
+CLAIM_BUSINESS_TYPE = "V12_ASSIGNMENT_CLAIM"
+CLAIM_AUDIT_ACTION = "V12_ASSIGNMENT_CLAIM"
+CLAIM_AUDIT_RESOURCE_TYPE = "assignment"
 
 
 class ClaimDatabaseSampler(DatabaseSampler):
-    """Use a short sampling interval so sub-second claim lock spikes are visible."""
+    """Use a short sampling interval and publish a baseline-ready handshake."""
+
+    def __init__(self, database_url: str) -> None:
+        super().__init__(database_url)
+        self._ready = asyncio.Event()
+        self._startup_error: Exception | None = None
 
     async def sample(self) -> None:
-        initial = await asyncio.to_thread(self._snapshot)
-        self._deadlocks_start = int(initial["deadlocks_total"])
-        self.samples.append(initial)
+        try:
+            initial = await asyncio.to_thread(self._snapshot)
+            self._deadlocks_start = int(initial["deadlocks_total"])
+            self.samples.append(initial)
+        except Exception as exc:
+            self._startup_error = exc
+            self._ready.set()
+            raise
+        self._ready.set()
         while not self._stop.is_set():
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=0.05)
             except TimeoutError:
                 self.samples.append(await asyncio.to_thread(self._snapshot))
+
+    async def wait_until_ready(self) -> None:
+        await self._ready.wait()
+        if self._startup_error is not None:
+            raise RuntimeError("claim database sampler failed before load baseline") from self._startup_error
 
 
 def percentile(values: list[float], percent: float) -> float:
@@ -246,11 +265,11 @@ def _validate_profile_cases(scenario: str, profile: int, cases: list[dict[str, s
 
 
 def claim_fact_snapshot(database_url: str, request_cases: list[dict[str, str]]) -> dict[str, Any]:
-    """Verify the exact business facts that a successful Claim profile must persist."""
+    """Verify exact Claim state, accounting and audit bindings for the scenario assignments."""
 
-    expected_company_by_assignment: dict[str, str] = {}
-    for case in request_cases:
-        expected_company_by_assignment[case["assignment_id"]] = case["company_id"]
+    expected_company_by_assignment = {
+        case["assignment_id"]: case["company_id"] for case in request_cases
+    }
     assignment_ids = list(expected_company_by_assignment)
     expected = len(assignment_ids)
 
@@ -261,22 +280,27 @@ def claim_fact_snapshot(database_url: str, request_cases: list[dict[str, str]]) 
     try:
         with Session(engine) as db:
             assignment_rows = db.execute(
-                select(Assignment.id, Assignment.status, Assignment.lead_id, Assignment.company_id).where(
-                    Assignment.id.in_(assignment_ids)
-                )
+                select(
+                    Assignment.id,
+                    Assignment.status,
+                    Assignment.lead_id,
+                    Assignment.company_id,
+                    Assignment.receiver_company_id,
+                ).where(Assignment.id.in_(assignment_ids))
             ).all()
             lead_ids = [row.lead_id for row in assignment_rows]
             lead_rows = db.execute(
                 select(Lead.id, Lead.status, Lead.current_assignment_id).where(Lead.id.in_(lead_ids))
             ).all()
-            ledger_business_ids = list(
-                db.scalars(
-                    select(PointsLedger.business_id).where(
-                        PointsLedger.ledger_type == PointsLedgerType.CLAIM.value,
-                        PointsLedger.business_id.in_(assignment_ids),
-                    )
-                ).all()
-            )
+            ledger_rows = db.execute(
+                select(
+                    PointsLedger.business_id,
+                    PointsLedger.company_id,
+                    PointsLedger.ledger_type,
+                    PointsLedger.business_type,
+                    PointsLedger.idempotency_key,
+                ).where(PointsLedger.business_id.in_(assignment_ids))
+            ).all()
             event_assignment_ids = list(
                 db.scalars(
                     select(AssignmentEvent.assignment_id).where(
@@ -285,27 +309,36 @@ def claim_fact_snapshot(database_url: str, request_cases: list[dict[str, str]]) 
                     )
                 ).all()
             )
-            audit_resource_ids = list(
-                db.scalars(
-                    select(AuditLog.resource_id).where(
-                        AuditLog.resource_id.in_(assignment_ids),
-                        AuditLog.action == "V12_ASSIGNMENT_CLAIM",
-                    )
-                ).all()
-            )
+            audit_rows = db.execute(
+                select(
+                    AuditLog.resource_id,
+                    AuditLog.company_id,
+                    AuditLog.resource_type,
+                    AuditLog.action,
+                ).where(
+                    AuditLog.resource_id.in_(assignment_ids),
+                    AuditLog.action == CLAIM_AUDIT_ACTION,
+                )
+            ).all()
     finally:
         engine.dispose()
 
     assignment_by_id = {row.id: row for row in assignment_rows}
     assignment_by_lead = {row.lead_id: row for row in assignment_rows}
-    ledger_counts = Counter(ledger_business_ids)
+    ledger_counts = Counter(row.business_id for row in ledger_rows)
     event_counts = Counter(event_assignment_ids)
-    audit_counts = Counter(item for item in audit_resource_ids if item is not None)
+    audit_counts = Counter(row.resource_id for row in audit_rows if row.resource_id is not None)
 
     assignment_company_matches = sum(
         1
         for assignment_id, company_id in expected_company_by_assignment.items()
         if assignment_id in assignment_by_id and assignment_by_id[assignment_id].company_id == company_id
+    )
+    assignment_receiver_matches = sum(
+        1
+        for assignment_id, company_id in expected_company_by_assignment.items()
+        if assignment_id in assignment_by_id
+        and assignment_by_id[assignment_id].receiver_company_id == company_id
     )
     assignments_pending = sum(
         1 for row in assignment_rows if row.status == AssignmentStatus.PENDING_CLAIM.value
@@ -319,43 +352,77 @@ def claim_fact_snapshot(database_url: str, request_cases: list[dict[str, str]]) 
         and lead.current_assignment_id == assignment_by_lead[lead.id].id
     )
     ledger_exact_one = sum(1 for assignment_id in assignment_ids if ledger_counts[assignment_id] == 1)
+    ledger_bound_exact_one = sum(
+        1
+        for assignment_id, company_id in expected_company_by_assignment.items()
+        if sum(
+            1
+            for row in ledger_rows
+            if row.business_id == assignment_id
+            and row.company_id == company_id
+            and row.ledger_type == PointsLedgerType.CLAIM.value
+            and row.business_type == CLAIM_BUSINESS_TYPE
+            and row.idempotency_key == f"v12-claim:{assignment_id}"
+        )
+        == 1
+    )
     event_exact_one = sum(1 for assignment_id in assignment_ids if event_counts[assignment_id] == 1)
     audit_exact_one = sum(1 for assignment_id in assignment_ids if audit_counts[assignment_id] == 1)
+    audit_bound_exact_one = sum(
+        1
+        for assignment_id, company_id in expected_company_by_assignment.items()
+        if sum(
+            1
+            for row in audit_rows
+            if row.resource_id == assignment_id
+            and row.company_id == company_id
+            and row.resource_type == CLAIM_AUDIT_RESOURCE_TYPE
+            and row.action == CLAIM_AUDIT_ACTION
+        )
+        == 1
+    )
 
     return {
         "expected_assignments": expected,
         "assignment_rows": len(assignment_rows),
         "assignment_company_matches": assignment_company_matches,
+        "assignment_receiver_matches": assignment_receiver_matches,
         "assignments_pending": assignments_pending,
         "assignments_claimed": assignments_claimed,
         "lead_rows": len(lead_rows),
         "leads_claimed_and_linked": leads_claimed_and_linked,
-        "claim_ledgers_total": len(ledger_business_ids),
+        "claim_ledgers_total": len(ledger_rows),
         "claim_ledgers_exact_one": ledger_exact_one,
+        "claim_ledgers_bound_exact_one": ledger_bound_exact_one,
         "claim_events_total": len(event_assignment_ids),
         "claim_events_exact_one": event_exact_one,
-        "claim_audits_total": len(audit_resource_ids),
+        "claim_audits_total": len(audit_rows),
         "claim_audits_exact_one": audit_exact_one,
+        "claim_audits_bound_exact_one": audit_bound_exact_one,
         "preflight_valid": (
             len(assignment_rows) == expected
             and assignment_company_matches == expected
+            and assignment_receiver_matches == expected
             and assignments_pending == expected
-            and len(ledger_business_ids) == 0
+            and len(ledger_rows) == 0
             and len(event_assignment_ids) == 0
-            and len(audit_resource_ids) == 0
+            and len(audit_rows) == 0
         ),
         "postclaim_valid": (
             len(assignment_rows) == expected
             and assignment_company_matches == expected
+            and assignment_receiver_matches == expected
             and assignments_claimed == expected
             and len(lead_rows) == expected
             and leads_claimed_and_linked == expected
             and ledger_exact_one == expected
-            and len(ledger_business_ids) == expected
+            and ledger_bound_exact_one == expected
+            and len(ledger_rows) == expected
             and event_exact_one == expected
             and len(event_assignment_ids) == expected
             and audit_exact_one == expected
-            and len(audit_resource_ids) == expected
+            and audit_bound_exact_one == expected
+            and len(audit_rows) == expected
         ),
     }
 
@@ -409,6 +476,7 @@ async def run_profile(
             return (time.perf_counter() - started) * 1000, False, None, False
 
     try:
+        await sampler.wait_until_ready()
         started = time.perf_counter()
         results = await asyncio.gather(*(request_once(case) for case in request_cases))
         duration = time.perf_counter() - started
@@ -416,7 +484,11 @@ async def run_profile(
         for client in clients.values():
             await client.aclose()
         database_metrics = await sampler.finish()
-        await sampler_task
+        try:
+            await sampler_task
+        except Exception:
+            if sampler._startup_error is None:
+                raise
     consistency_after = await asyncio.to_thread(consistency_snapshot, database_url)
     claim_facts_after = await asyncio.to_thread(claim_fact_snapshot, database_url, request_cases)
 
@@ -455,7 +527,7 @@ async def run_profile(
         if int(consistency_after[key]) != 0:
             scenario_errors.append(f"{key}={consistency_after[key]}")
     if claim_facts_after["postclaim_valid"] is not True:
-        scenario_errors.append("required claim business facts are missing or duplicated")
+        scenario_errors.append("required claim business facts are missing, duplicated or misbound")
     if latency["hard_gate"] and not latency["passed"]:
         scenario_errors.append(f"p95_ms={result['p95_ms']} exceeds {CLAIM_P95_TARGET_MS}ms target")
 
