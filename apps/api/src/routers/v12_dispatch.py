@@ -326,7 +326,11 @@ def claim_own_assignment(
         db.commit()
         return _claim_response_payload(result, lead)
 
-    payload, coalesced = run_claim_singleflight(f"{company_id}:{assignment_id}", execute_claim)
+    payload, coalesced = run_claim_singleflight(
+        f"{company_id}:{assignment_id}",
+        execute_claim,
+        before_wait=db.rollback,
+    )
     if coalesced:
         payload["idempotent"] = True
     return ok(request, payload, "派发单已领取" if payload["idempotent"] else "领取成功")
