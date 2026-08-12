@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, field
-from threading import Event, Lock
+from threading import Event, Lock, Timer
+from time import monotonic
 from typing import Any, Callable
 
 from ..core.errors import AppError
@@ -56,22 +57,46 @@ class _FlightEntry:
     users: int = 0
     result: Any = None
     failure: _FailureSnapshot | None = None
+    failure_expires_at: float | None = None
 
 
 _guard = Lock()
 _flights: dict[str, _FlightEntry] = {}
 
 
+def _failure_is_retained(entry: _FlightEntry, now: float | None = None) -> bool:
+    expires_at = entry.failure_expires_at
+    return (
+        entry.failure is not None
+        and expires_at is not None
+        and (now if now is not None else monotonic()) < expires_at
+    )
+
+
+def _expire_failed_entry(key: str, entry: _FlightEntry) -> None:
+    with _guard:
+        if (
+            _flights.get(key) is entry
+            and entry.users <= 0
+            and entry.failure is not None
+            and not _failure_is_retained(entry)
+        ):
+            _flights.pop(key, None)
+
+
 def _release(key: str, entry: _FlightEntry) -> None:
     with _guard:
         entry.users -= 1
-        if entry.users <= 0 and _flights.get(key) is entry:
+        if entry.users <= 0 and _flights.get(key) is entry and not _failure_is_retained(entry):
             _flights.pop(key, None)
 
 
 def _join_or_create(key: str) -> tuple[_FlightEntry, bool]:
     with _guard:
         entry = _flights.get(key)
+        if entry is not None and entry.users <= 0 and entry.failure is not None and not _failure_is_retained(entry):
+            _flights.pop(key, None)
+            entry = None
         if entry is None:
             entry = _FlightEntry(users=1)
             _flights[key] = entry
@@ -85,16 +110,17 @@ def run_claim_singleflight(
     execute: Callable[[], Any],
     *,
     wait_timeout_seconds: float = 2.0,
+    failure_retention_seconds: float = 5.0,
     before_wait: Callable[[], None] | None = None,
 ) -> tuple[Any, bool]:
     """Collapse concurrent claims for one assignment inside an API worker.
 
     One leader executes the authoritative transaction and followers reuse its
-    successful result. Deterministic business failures are shared with followers.
-    A transient leader failure is also shared as retryable 503 and the failed
-    generation stays registered until every caller in that burst has observed it;
-    no follower independently re-enters the database. A later, separate request may
-    start a fresh flight after the failed generation has drained.
+    successful result. Business/transient failures are shared without new database
+    work. Failed flights remain addressable for a short grace window after joined
+    callers drain, so executor/in-flight waves from the same HTTP burst do not each
+    elect a new leader. A daemon timer removes the retained failure even if no later
+    request touches the key.
 
     `before_wait` is invoked for followers only. The HTTP path uses it to roll back
     the read-only authentication transaction so coalesced waiters return their
@@ -113,12 +139,18 @@ def run_claim_singleflight(
             with _guard:
                 entry.result = deepcopy(result)
                 entry.failure = None
+                entry.failure_expires_at = None
                 entry.event.set()
             return result, False
         except Exception as exc:
+            retention = max(0.05, float(failure_retention_seconds))
             with _guard:
                 entry.failure = _FailureSnapshot.from_exception(exc)
+                entry.failure_expires_at = monotonic() + retention
                 entry.event.set()
+            timer = Timer(retention, _expire_failed_entry, args=(key, entry))
+            timer.daemon = True
+            timer.start()
             raise
         finally:
             _release(key, entry)
