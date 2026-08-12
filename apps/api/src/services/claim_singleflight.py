@@ -85,6 +85,7 @@ def run_claim_singleflight(
     execute: Callable[[], Any],
     *,
     wait_timeout_seconds: float = 2.0,
+    before_wait: Callable[[], None] | None = None,
 ) -> tuple[Any, bool]:
     """Collapse concurrent claims for one assignment inside an API worker.
 
@@ -94,6 +95,11 @@ def run_claim_singleflight(
     generation stays registered until every caller in that burst has observed it;
     no follower independently re-enters the database. A later, separate request may
     start a fresh flight after the failed generation has drained.
+
+    `before_wait` is invoked for followers only. The HTTP path uses it to roll back
+    the read-only authentication transaction so coalesced waiters return their
+    PostgreSQL connection to the pool instead of consuming the release connection
+    budget while the leader performs the business transaction.
     """
 
     key = assignment_id.strip()
@@ -116,6 +122,13 @@ def run_claim_singleflight(
             raise
         finally:
             _release(key, entry)
+
+    if before_wait is not None:
+        try:
+            before_wait()
+        except Exception:
+            _release(key, entry)
+            raise
 
     completed = entry.event.wait(timeout=max(0.01, float(wait_timeout_seconds)))
     if not completed:
