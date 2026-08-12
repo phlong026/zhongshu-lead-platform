@@ -4,6 +4,8 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Lock
 import time
 
+import pytest
+
 from apps.api.src.core.errors import AppError
 from apps.api.src.services.claim_singleflight import run_claim_singleflight
 
@@ -100,7 +102,7 @@ def test_failed_flight_is_retained_across_queued_waves_then_expires() -> None:
             raise RuntimeError("leader failed")
         return {"ok": True}
 
-    with pytest_raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="leader failed"):
         run_claim_singleflight(
             "assignment-fail",
             execute,
@@ -108,17 +110,14 @@ def test_failed_flight_is_retained_across_queued_waves_then_expires() -> None:
         )
 
     for _ in range(10):
-        try:
+        with pytest.raises(AppError) as captured:
             run_claim_singleflight(
                 "assignment-fail",
                 execute,
                 failure_retention_seconds=0.05,
             )
-        except AppError as exc:
-            assert exc.code == "CLAIM_TRANSIENT_FAILURE"
-            assert exc.status_code == 503
-        else:
-            raise AssertionError("retained failed flight must not elect a queued-wave leader")
+        assert captured.value.code == "CLAIM_TRANSIENT_FAILURE"
+        assert captured.value.status_code == 503
     assert calls == 1
 
     time.sleep(0.07)
@@ -235,18 +234,3 @@ def test_timed_out_follower_returns_retryable_error_without_new_leader() -> None
     assert len(errors) == 1
     assert errors[0].code == "CLAIM_IN_PROGRESS_TIMEOUT"
     assert errors[0].status_code == 503
-
-
-class pytest_raises:
-    """Tiny local context manager to keep this concurrency test independent of pytest internals."""
-
-    def __init__(self, exception_type):
-        self.exception_type = exception_type
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, traceback):
-        if exc_type is None:
-            raise AssertionError(f"expected {self.exception_type.__name__}")
-        return issubclass(exc_type, self.exception_type)
