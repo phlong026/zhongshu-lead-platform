@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -45,16 +46,19 @@ def test_claim_performance_dataset_requires_synthetic_staging(tmp_path) -> None:
         load_dataset(path)
 
 
-@pytest.mark.asyncio
-async def test_distributed_claim_requires_distinct_assignments() -> None:
+def test_distributed_claim_requires_distinct_assignments() -> None:
     cases = [
         {"assignment_id": "same", "credential_env_prefix": "TENANT_A"},
         {"assignment_id": "same", "credential_env_prefix": "TENANT_B"},
     ]
-    with pytest.raises(ValueError, match="assignments must be distinct"):
-        await run_profile(
-            base_url="http://127.0.0.1:18080",
-            scenario="distributed",
-            profile=2,
-            cases=cases,
-        )
+
+    async def run() -> None:
+        with pytest.raises(ValueError, match="assignments must be distinct"):
+            await run_profile(
+                base_url="http://127.0.0.1:18080",
+                scenario="distributed",
+                profile=2,
+                cases=cases,
+            )
+
+    asyncio.run(run())
