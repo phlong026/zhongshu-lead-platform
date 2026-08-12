@@ -36,7 +36,7 @@ class ClaimExecution:
 
 
 def _claim_deadline(db: Session, moment: datetime, workdays: int = 3) -> datetime:
-    """Resolve a short workday deadline with one calendar query, not N db.get calls."""
+    """Resolve the normal 3-workday deadline with one query and exact fallback."""
 
     if workdays <= 0:
         return moment
@@ -51,10 +51,18 @@ def _claim_deadline(db: Session, moment: datetime, workdays: int = 3) -> datetim
     overrides = {row.day: bool(row.is_workday) for row in rows}
     cursor = moment
     remaining = workdays
+    while remaining and cursor.date() < end_day:
+        cursor += timedelta(days=1)
+        if overrides.get(cursor.date(), cursor.weekday() < 5):
+            remaining -= 1
+
+    # Three workdays should normally resolve in the batched window. If an
+    # operator configured an unusually long holiday/non-workday period, retain
+    # the exact CalendarDay semantics instead of silently falling back to Monday-Friday.
     while remaining:
         cursor += timedelta(days=1)
-        is_workday = overrides.get(cursor.date(), cursor.weekday() < 5)
-        if is_workday:
+        item = db.get(CalendarDay, cursor.date())
+        if bool(item.is_workday) if item is not None else cursor.weekday() < 5:
             remaining -= 1
     return cursor
 
@@ -188,6 +196,9 @@ def claim_assignment_fast(
             {"assignment_id": duplicate.id},
         )
 
+    # change_points owns the single PointsAccount serialization boundary. The
+    # previous HTTP claim path acquired the same account row lock before calling
+    # change_points, which then acquired it again.
     ledger = change_points(
         db,
         company_id=company_id,
