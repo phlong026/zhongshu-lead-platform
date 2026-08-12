@@ -205,10 +205,16 @@ async def run_profile(
             if not 200 <= response.status_code < 300:
                 return elapsed, False, None, False
             body = response.json().get("data", {})
+            if not isinstance(body, dict):
+                return elapsed, False, None, False
             assignment = body.get("assignment", {})
+            if not isinstance(assignment, dict):
+                return elapsed, False, None, False
+            raw_idempotent = body.get("idempotent")
+            if not isinstance(raw_idempotent, bool):
+                return elapsed, False, None, False
             company_matches = assignment.get("company_id") == case["company_id"]
-            idempotent = bool(body.get("idempotent"))
-            return elapsed, True, idempotent, company_matches
+            return elapsed, True, raw_idempotent, company_matches
         except (httpx.HTTPError, ValueError, TypeError):
             return (time.perf_counter() - started) * 1000, False, None, False
 
@@ -230,7 +236,7 @@ async def run_profile(
             continue
         if not company_matches:
             company_mismatches += 1
-        if idempotent:
+        if idempotent is True:
             idempotent_replays += 1
         else:
             first_claims += 1
@@ -258,9 +264,7 @@ async def run_profile(
         if int(consistency_after[key]) != 0:
             scenario_errors.append(f"{key}={consistency_after[key]}")
     if latency["hard_gate"] and not latency["passed"]:
-        scenario_errors.append(
-            f"p95_ms={result['p95_ms']} exceeds {CLAIM_P95_TARGET_MS}ms target"
-        )
+        scenario_errors.append(f"p95_ms={result['p95_ms']} exceeds {CLAIM_P95_TARGET_MS}ms target")
 
     result.update(
         {
@@ -292,7 +296,9 @@ async def async_main(args) -> dict[str, Any]:
     if not SOURCE_COMMIT_PATTERN.fullmatch(source_commit):
         raise ValueError("--source-commit must be the exact 40-character lowercase candidate SHA")
     profiles = tuple(args.profiles or DEFAULT_PROFILES)
-    scenario_names = args.scenarios or [name for name in ("replay", "distributed", "hot_account") if name in dataset["scenarios"]]
+    scenario_names = args.scenarios or [
+        name for name in ("replay", "distributed", "hot_account") if name in dataset["scenarios"]
+    ]
     output: dict[str, Any] = {
         "schema_version": 1,
         "synthetic_data": True,
