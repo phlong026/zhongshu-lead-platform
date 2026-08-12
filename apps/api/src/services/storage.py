@@ -34,6 +34,13 @@ class ObjectStorage:
     def read(self, object_key: str) -> bytes:
         raise NotImplementedError
 
+    def check_readiness(self) -> None:
+        """Verify the backend is reachable without writing an object."""
+
+    def run_canary(self) -> str:
+        """Exercise a disposable private object and return its non-sensitive key."""
+        raise NotImplementedError
+
 
 class LocalObjectStorage(ObjectStorage):
     def __init__(self) -> None:
@@ -56,6 +63,10 @@ class LocalObjectStorage(ObjectStorage):
             raise AppError("FILE_NOT_FOUND", "文件不存在", 404)
         return target.read_bytes()
 
+    def check_readiness(self) -> None:
+        if not self.root.is_dir() or not os.access(self.root, os.W_OK):
+            raise AppError("STORAGE_NOT_READY", "对象存储目录不可写", 503)
+
 
 class S3ObjectStorage(ObjectStorage):
     def __init__(self) -> None:
@@ -77,6 +88,41 @@ class S3ObjectStorage(ObjectStorage):
     def read(self, object_key: str) -> bytes:
         response = self.client.get_object(Bucket=settings.s3_bucket, Key=object_key)
         return response["Body"].read()
+
+    def check_readiness(self) -> None:
+        try:
+            self.client.head_bucket(Bucket=settings.s3_bucket)
+        except Exception as exc:
+            raise AppError("S3_NOT_READY", "对象存储 Bucket 不可达或权限不足", 503) from exc
+
+    def run_canary(self) -> str:
+        key = f".canary/zhongshu-readiness/{uuid.uuid4().hex}"
+        content = b"zhongshu-storage-canary-v1"
+        created = False
+        try:
+            self.client.put_object(
+                Bucket=settings.s3_bucket,
+                Key=key,
+                Body=content,
+                ContentType="application/octet-stream",
+                Metadata={"purpose": "readiness-canary"},
+            )
+            created = True
+            self.client.head_object(Bucket=settings.s3_bucket, Key=key)
+            response = self.client.get_object(Bucket=settings.s3_bucket, Key=key)
+            if response["Body"].read() != content:
+                raise AppError("S3_CANARY_INVALID", "对象存储 canary 内容校验失败", 503)
+            return key
+        except AppError:
+            raise
+        except Exception as exc:
+            raise AppError("S3_CANARY_FAILED", "对象存储 canary 失败", 503) from exc
+        finally:
+            if created:
+                try:
+                    self.client.delete_object(Bucket=settings.s3_bucket, Key=key)
+                except Exception as exc:
+                    raise AppError("S3_CANARY_CLEANUP_FAILED", "对象存储 canary 清理失败", 503) from exc
 
 
 def get_storage() -> ObjectStorage:

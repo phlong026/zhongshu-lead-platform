@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.validate_production_env import load_dotenv
+from scripts.validate_production_env import load_dotenv  # noqa: E402
 
 _SENSITIVE_KEY_MARKERS = ("SECRET", "PASSWORD", "TOKEN", "PRIVATE_KEY", "ACCESS_KEY")
 _SENSITIVE_EXACT_KEYS = {"DATABASE_URL"}
@@ -126,6 +126,11 @@ def main() -> int:
     parser.add_argument("--require-certificates", action="store_true")
     parser.add_argument("--allow-incomplete-backfill", action="store_true")
     parser.add_argument(
+        "--storage-canary",
+        action="store_true",
+        help="require a disposable S3 put/head/get/delete canary after production validation",
+    )
+    parser.add_argument(
         "--compose-database",
         action="store_true",
         help="Run Alembic/reconciliation inside the production Compose network and require immutable image verification",
@@ -182,6 +187,15 @@ def main() -> int:
     ]
 
     checks = [_run(name, command, env=env, sensitive_values=sensitive_values) for name, command in commands]
+    if args.storage_canary:
+        checks.append(
+            _run(
+                "object-storage-canary",
+                [python, "scripts/check_object_storage.py", "--canary"],
+                env=env,
+                sensitive_values=sensitive_values,
+            )
+        )
     if args.compose_database:
         if not shutil.which("docker"):
             checks.extend(
