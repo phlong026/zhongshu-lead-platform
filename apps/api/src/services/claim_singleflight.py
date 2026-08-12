@@ -34,7 +34,7 @@ class _FailureSnapshot:
             message=str(exc) or type(exc).__name__,
         )
 
-    def raise_copy(self) -> None:
+    def raise_follower_copy(self) -> None:
         if self.is_app_error:
             raise AppError(
                 self.code or "CLAIM_FAILED",
@@ -42,7 +42,12 @@ class _FailureSnapshot:
                 int(self.status_code or 400),
                 deepcopy(self.details),
             )
-        raise RuntimeError(f"coalesced claim leader failed: {self.error_type}: {self.message}")
+        raise AppError(
+            "CLAIM_TRANSIENT_FAILURE",
+            "领取请求暂时失败，请稍后重试",
+            503,
+            {"failure_type": self.error_type},
+        )
 
 
 @dataclass
@@ -80,67 +85,53 @@ def run_claim_singleflight(
     execute: Callable[[], Any],
     *,
     wait_timeout_seconds: float = 2.0,
-    transient_re_elections: int = 1,
 ) -> tuple[Any, bool]:
     """Collapse concurrent claims for one assignment inside an API worker.
 
-    One leader executes the authoritative transaction. Followers reuse the leader
-    result. Deterministic AppError failures are replayed to followers without new
-    database work. For a non-business transient exception, at most one replacement
-    leader is elected; the rest remain coalesced. A stuck leader causes followers to
-    return a retryable 503 instead of creating a database thundering herd.
+    One leader executes the authoritative transaction and followers reuse its
+    successful result. Deterministic business failures are shared with followers.
+    A transient leader failure is also shared as retryable 503 and the failed
+    generation stays registered until every caller in that burst has observed it;
+    no follower independently re-enters the database. A later, separate request may
+    start a fresh flight after the failed generation has drained.
     """
 
     key = assignment_id.strip()
     if not key:
         return execute(), False
 
-    remaining_re_elections = max(0, int(transient_re_elections))
-    while True:
-        entry, leader = _join_or_create(key)
-        if leader:
-            try:
-                result = execute()
-                with _guard:
-                    entry.result = deepcopy(result)
-                    entry.failure = None
-                    entry.event.set()
-                return result, False
-            except Exception as exc:
-                failure = _FailureSnapshot.from_exception(exc)
-                with _guard:
-                    entry.failure = failure
-                    entry.event.set()
-                    # Close this failed generation immediately. Existing followers
-                    # still hold `entry`; a transient retry can elect exactly one
-                    # replacement leader in a fresh generation.
-                    if _flights.get(key) is entry:
-                        _flights.pop(key, None)
-                raise
-            finally:
-                _release(key, entry)
-
-        completed = entry.event.wait(timeout=max(0.01, float(wait_timeout_seconds)))
-        if not completed:
+    entry, leader = _join_or_create(key)
+    if leader:
+        try:
+            result = execute()
+            with _guard:
+                entry.result = deepcopy(result)
+                entry.failure = None
+                entry.event.set()
+            return result, False
+        except Exception as exc:
+            with _guard:
+                entry.failure = _FailureSnapshot.from_exception(exc)
+                entry.event.set()
+            raise
+        finally:
             _release(key, entry)
-            raise AppError(
-                "CLAIM_IN_PROGRESS_TIMEOUT",
-                "领取请求正在处理中，请稍后重试",
-                503,
-            )
 
-        with _guard:
-            result = deepcopy(entry.result)
-            failure = entry.failure
+    completed = entry.event.wait(timeout=max(0.01, float(wait_timeout_seconds)))
+    if not completed:
         _release(key, entry)
-        if failure is None and result is not None:
-            return result, True
-        if failure is None:
-            raise RuntimeError("claim singleflight completed without a result or failure")
-        if failure.is_app_error:
-            failure.raise_copy()
-        if remaining_re_elections <= 0:
-            failure.raise_copy()
-        remaining_re_elections -= 1
-        # Rejoin a fresh generation. The first follower becomes replacement leader;
-        # all remaining followers join it instead of calling execute independently.
+        raise AppError(
+            "CLAIM_IN_PROGRESS_TIMEOUT",
+            "领取请求正在处理中，请稍后重试",
+            503,
+        )
+
+    with _guard:
+        result = deepcopy(entry.result)
+        failure = entry.failure
+    _release(key, entry)
+    if failure is None and result is not None:
+        return result, True
+    if failure is None:
+        raise RuntimeError("claim singleflight completed without a result or failure")
+    failure.raise_follower_copy()
