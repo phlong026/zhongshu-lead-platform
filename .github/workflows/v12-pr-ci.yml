@@ -24,18 +24,18 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout full history
-        uses: actions/checkout@v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
           cache: pip
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: "22"
 
@@ -115,7 +115,7 @@ jobs:
 
       - name: Upload generated OpenAPI contract
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: v12-openapi-${{ github.run_id }}
           path: dist/openapi/openapi.json
@@ -123,7 +123,7 @@ jobs:
 
       - name: Upload V1.2 release candidate package
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: v12-release-package-${{ github.run_id }}
           path: dist/release
@@ -154,10 +154,10 @@ jobs:
       PHONE_FINGERPRINT_SECRET: ci-phone-fingerprint-secret-at-least-32-characters
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
           cache: pip
@@ -192,7 +192,7 @@ jobs:
 
       - name: Upload PostgreSQL migration evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: v12-postgres-migration-${{ github.run_id }}
           path: |
@@ -209,10 +209,10 @@ jobs:
       APP_ENV: development
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
           cache: pip
@@ -245,7 +245,7 @@ jobs:
 
       - name: Upload browser review evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: v12-browser-smoke-${{ github.run_id }}
           path: dist/browser-smoke

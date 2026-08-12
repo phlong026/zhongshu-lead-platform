@@ -36,9 +36,9 @@ H07 当前采用：
 
 Security Analysis 的第三方 Actions 固定为：
 
-- `actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683`（v4.2.2）；
-- `actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065`（v5.6.0）；
-- `actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02`（v4.6.2）。
+- `actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09`（v5.1.0，Node 24）；
+- `actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1`（v6.3.0，Node 24）；
+- `actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4`（v5.0.0，Node 24）。
 
 禁止改回 moving tag；升级必须同时复核官方 release、完整 SHA 和工作流权限。
 
