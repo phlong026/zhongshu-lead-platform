@@ -5,7 +5,13 @@ import json
 
 import pytest
 
-from scripts.claim_performance_v12 import latency_gate, load_dataset, metrics, run_profile
+from scripts.claim_performance_v12 import (
+    latency_gate,
+    load_dataset,
+    metrics,
+    resolve_checked_out_commit,
+    run_profile,
+)
 
 
 def test_claim_performance_metrics_report_tail_latency() -> None:
@@ -31,6 +37,26 @@ def test_claim_latency_gate_is_hard_for_300_but_capacity_only_for_500() -> None:
     hot = latency_gate("hot_account", 300, 900.0)
     assert hot["hard_gate"] is False
     assert hot["status"] == "OBSERVE_HOT_ACCOUNT_CAPACITY"
+
+
+def test_resolve_checked_out_commit_supports_detached_head(tmp_path) -> None:
+    expected = "1" * 40
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+    (git_dir / "HEAD").write_text(expected + "\n", encoding="utf-8")
+    assert resolve_checked_out_commit(tmp_path) == expected
+
+
+def test_resolve_checked_out_commit_supports_symbolic_and_packed_refs(tmp_path) -> None:
+    expected = "2" * 40
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+    (git_dir / "HEAD").write_text("ref: refs/heads/perf/test\n", encoding="utf-8")
+    (git_dir / "packed-refs").write_text(
+        f"# pack-refs with: peeled fully-peeled\n{expected} refs/heads/perf/test\n",
+        encoding="utf-8",
+    )
+    assert resolve_checked_out_commit(tmp_path) == expected
 
 
 def test_claim_performance_dataset_requires_synthetic_staging(tmp_path) -> None:
