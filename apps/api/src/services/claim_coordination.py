@@ -11,7 +11,7 @@ from ..core.errors import AppError
 from ..core.models import Assignment, PointsLedger
 from ..core.models_v12 import SupplierLeadReward
 from ..core.security import decrypt_text
-from .claim_fast_v12 import claim_assignment_fast
+from .claim_fast_v12 import ClaimExecution, claim_assignment_fast
 from .dispatch_v12 import CLAIMED_CONTACT_STATUSES, ClaimResult, get_dispatch_lead
 
 
@@ -44,7 +44,7 @@ def _existing_claim_result(
     *,
     assignment: Assignment,
     company_id: str,
-) -> ClaimResult | None:
+) -> ClaimExecution | None:
     if assignment.company_id != company_id:
         raise AppError("ASSIGNMENT_FORBIDDEN", "无权领取其他公司的派发单", 403)
     if assignment.status not in CLAIMED_CONTACT_STATUSES:
@@ -63,12 +63,15 @@ def _existing_claim_result(
     reward = db.scalar(
         select(SupplierLeadReward).where(SupplierLeadReward.assignment_id == assignment.id)
     )
-    return ClaimResult(
-        assignment=assignment,
-        ledger=ledger,
-        reward=reward,
-        phone=decrypt_text(lead.phone_encrypted),
-        idempotent=True,
+    return ClaimExecution(
+        result=ClaimResult(
+            assignment=assignment,
+            ledger=ledger,
+            reward=reward,
+            phone=decrypt_text(lead.phone_encrypted),
+            idempotent=True,
+        ),
+        lead=lead,
     )
 
 
@@ -86,7 +89,7 @@ def claim_assignment_coordinated(
     assignment_id: str,
     company_id: str,
     claimed_by: str,
-) -> ClaimResult:
+) -> ClaimExecution:
     """Claim with replay fast-path, worker coordination and a short transaction."""
 
     assignment = _read_assignment(db, assignment_id)
