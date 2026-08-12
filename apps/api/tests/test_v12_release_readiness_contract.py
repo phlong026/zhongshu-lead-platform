@@ -160,6 +160,7 @@ def test_preflight_has_explicit_object_storage_canary() -> None:
     assert "scripts/check_object_storage.py" in preflight
     assert "--canary" in storage_check
     assert '"code": exc.code' in storage_check
+    assert "sys.path.insert(0, str(ROOT))" in storage_check
 
 
 def test_sprint6_runbooks_and_release_documents_exist() -> None:
