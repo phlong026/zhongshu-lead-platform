@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from scripts.claim_performance_v12 import load_dataset, metrics, run_profile
+from scripts.claim_performance_v12 import latency_gate, load_dataset, metrics, run_profile
 
 
 def test_claim_performance_metrics_report_tail_latency() -> None:
@@ -14,6 +14,23 @@ def test_claim_performance_metrics_report_tail_latency() -> None:
     assert result["p95_ms"] == 48.0
     assert result["p99_ms"] == 49.6
     assert result["throughput_rps"] == 5.0
+
+
+def test_claim_latency_gate_is_hard_for_300_but_capacity_only_for_500() -> None:
+    assert latency_gate("replay", 300, 499.0)["passed"] is True
+    failed = latency_gate("replay", 300, 501.0)
+    assert failed["hard_gate"] is True
+    assert failed["passed"] is False
+    assert failed["status"] == "FAIL"
+
+    capacity = latency_gate("distributed", 500, 900.0)
+    assert capacity["hard_gate"] is False
+    assert capacity["passed"] is True
+    assert capacity["status"] == "CAPACITY_LIMIT_REACHED"
+
+    hot = latency_gate("hot_account", 300, 900.0)
+    assert hot["hard_gate"] is False
+    assert hot["status"] == "OBSERVE_HOT_ACCOUNT_CAPACITY"
 
 
 def test_claim_performance_dataset_requires_synthetic_staging(tmp_path) -> None:
