@@ -19,7 +19,10 @@ from apps.api.src.services.dispatch_v12 import (
     list_candidates,
     list_dispatch_pool,
 )
-from apps.api.src.services.reward_rule_v12 import create_supplier_reward_rule
+from apps.api.src.services.reward_rule_v12 import (
+    create_supplier_reward_rule,
+    publish_supplier_reward_rule,
+)
 from apps.api.src.services.workday_calendar import WorkdayCalendarService
 
 
@@ -291,6 +294,24 @@ def test_claim_explicitly_snapshots_published_reward_rule(db, dispatch_setup) ->
         "historical_suspect_days": 120,
     }
     assert snapshot["effective_at"]
+
+    replacement = create_supplier_reward_rule(
+        db,
+        values={
+            "ratio_bps": 9000,
+            "min_points": 0,
+            "max_points": None,
+            "hard_duplicate_days": 30,
+            "reward_duplicate_days": 60,
+            "historical_suspect_days": 120,
+        },
+        created_by=receiver_user.id,
+    )
+    publish_supplier_reward_rule(db, config_id=replacement.id, published_by=receiver_user.id)
+    db.refresh(result.reward)
+    assert result.reward.reward_ratio_bps == 2500
+    assert result.reward.reward_points == 40
+    assert result.reward.rule_snapshot_json == snapshot
 
 
 def test_platform_lead_claim_does_not_create_supplier_reward(db, dispatch_setup) -> None:
