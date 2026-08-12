@@ -49,6 +49,7 @@ from .routers import (
     verification,
 )
 from .services.rbac import seed_rbac
+from .services.storage import get_storage
 
 settings = get_settings()
 configure_logging()
@@ -130,8 +131,10 @@ def health_live() -> dict[str, str]:
 def health_ready() -> dict[str, str]:
     with SessionLocal() as db:
         db.execute(text("SELECT 1"))
-    storage = "s3-configured" if settings.object_storage_backend.lower() == "s3" else "local-mounted"
-    if settings.object_storage_backend.lower() != "s3":
+    storage = "s3-ready" if settings.object_storage_backend.lower() == "s3" else "local-mounted"
+    if settings.object_storage_backend.lower() == "s3":
+        get_storage().check_readiness()
+    else:
         storage_root = Path(settings.object_storage_dir)
         storage_root.mkdir(parents=True, exist_ok=True)
         if not storage_root.is_dir() or not os.access(storage_root, os.W_OK):

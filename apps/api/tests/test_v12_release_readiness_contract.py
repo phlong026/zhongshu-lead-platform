@@ -152,6 +152,17 @@ def test_deployment_persists_reconciliation_and_uses_compose_database_preflight(
     assert "--scan-subject scan-subject.json" in go_no_go
 
 
+def test_preflight_has_explicit_object_storage_canary() -> None:
+    preflight = Path("scripts/preflight_v12.py").read_text(encoding="utf-8")
+    storage_check = Path("scripts/check_object_storage.py").read_text(encoding="utf-8")
+    assert "--storage-canary" in preflight
+    assert "object-storage-canary" in preflight
+    assert "scripts/check_object_storage.py" in preflight
+    assert "--canary" in storage_check
+    assert '"code": exc.code' in storage_check
+    assert "sys.path.insert(0, str(ROOT))" in storage_check
+
+
 def test_sprint6_runbooks_and_release_documents_exist() -> None:
     required = (
         "docs/quality/DEPENDENCY_RISK_ACCEPTANCE.md",
