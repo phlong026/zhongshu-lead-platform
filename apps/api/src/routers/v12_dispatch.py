@@ -15,6 +15,7 @@ from ..core.security import decrypt_text, mask_phone
 from ..core.v12_enums import LeadV12Status
 from ..schemas.v12_dispatch import ManualDispatchBody
 from ..services.audit import write_audit
+from ..services.claim_singleflight import run_claim_singleflight
 from ..services.dispatch_v12 import (
     CLAIMED_CONTACT_STATUSES,
     candidate_to_dict,
@@ -139,6 +140,28 @@ def _projected_assignment_dict(row, *, reveal_phone: bool = False) -> dict:
         "first_followup_due_at": row.first_followup_due_at.isoformat()
         if row.first_followup_due_at
         else None,
+    }
+
+
+def _claim_response_payload(result, lead: Lead) -> dict:
+    return {
+        "assignment": _assignment_dict(result.assignment, lead, reveal_phone=True),
+        "ledger": {
+            "id": result.ledger.id,
+            "delta": result.ledger.delta,
+            "balance_after": result.ledger.balance_after,
+        },
+        "reward": {
+            "id": result.reward.id,
+            "status": result.reward.status,
+            "reward_points": result.reward.reward_points,
+            "reward_due_at": result.reward.reward_due_at.isoformat()
+            if result.reward.reward_due_at
+            else None,
+        }
+        if result.reward
+        else None,
+        "idempotent": result.idempotent,
     }
 
 
@@ -293,54 +316,46 @@ def claim_own_assignment(
     db: Session = Depends(get_db),
 ):
     company_id = _principal_company_id(principal)
-    result = claim_assignment(
-        db,
-        assignment_id=assignment_id,
-        company_id=company_id,
-        claimed_by=principal.user_id,
-    )
-    lead = get_dispatch_lead(db, result.assignment.lead_id)
-    write_audit(
-        db,
-        principal=principal,
-        action="V12_ASSIGNMENT_CLAIM",
-        resource_type="assignment",
-        resource_id=result.assignment.id,
-        company_id=company_id,
-        after={
-            "lead_id": lead.id,
-            "status": result.assignment.status,
-            "points": result.assignment.points_price,
-            "ledger_id": result.ledger.id,
-            "appeal_deadline_at": result.assignment.appeal_deadline_at.isoformat()
-            if result.assignment.appeal_deadline_at
-            else None,
-            "reward_id": result.reward.id if result.reward else None,
-            "idempotent": result.idempotent,
-        },
-        request_id=request.state.request_id,
-    )
-    db.commit()
+
+    def execute_claim() -> dict:
+        result = claim_assignment(
+            db,
+            assignment_id=assignment_id,
+            company_id=company_id,
+            claimed_by=principal.user_id,
+        )
+        lead = get_dispatch_lead(db, result.assignment.lead_id)
+        if not result.idempotent:
+            write_audit(
+                db,
+                principal=principal,
+                action="V12_ASSIGNMENT_CLAIM",
+                resource_type="assignment",
+                resource_id=result.assignment.id,
+                company_id=company_id,
+                after={
+                    "lead_id": lead.id,
+                    "status": result.assignment.status,
+                    "points": result.assignment.points_price,
+                    "ledger_id": result.ledger.id,
+                    "appeal_deadline_at": result.assignment.appeal_deadline_at.isoformat()
+                    if result.assignment.appeal_deadline_at
+                    else None,
+                    "reward_id": result.reward.id if result.reward else None,
+                    "idempotent": False,
+                },
+                request_id=request.state.request_id,
+            )
+        db.commit()
+        return _claim_response_payload(result, lead)
+
+    # Include the company in the key so a cross-tenant request can never reuse a
+    # successful response snapshot from another tenant.
+    payload, coalesced = run_claim_singleflight(f"{company_id}:{assignment_id}", execute_claim)
+    if coalesced:
+        payload["idempotent"] = True
     return ok(
         request,
-        {
-            "assignment": _assignment_dict(result.assignment, lead, reveal_phone=True),
-            "ledger": {
-                "id": result.ledger.id,
-                "delta": result.ledger.delta,
-                "balance_after": result.ledger.balance_after,
-            },
-            "reward": {
-                "id": result.reward.id,
-                "status": result.reward.status,
-                "reward_points": result.reward.reward_points,
-                "reward_due_at": result.reward.reward_due_at.isoformat()
-                if result.reward.reward_due_at
-                else None,
-            }
-            if result.reward
-            else None,
-            "idempotent": result.idempotent,
-        },
-        "领取成功" if not result.idempotent else "派发单已领取",
+        payload,
+        "派发单已领取" if payload["idempotent"] else "领取成功",
     )
