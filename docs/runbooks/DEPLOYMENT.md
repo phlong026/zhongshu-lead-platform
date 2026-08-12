@@ -119,6 +119,7 @@ python scripts/preflight_v12.py \
   --env-file .env \
   --require-certificates \
   --compose-database \
+  --storage-canary \
   --scan-subject scan-subject.json \
   --output dist/v12-preflight.json
 ```
