@@ -87,9 +87,12 @@ def load_dataset(path: Path) -> dict[str, Any]:
                 if not isinstance(case, dict):
                     raise ValueError("claim cases must be objects")
                 assignment_id = case.get("assignment_id")
+                company_id = case.get("company_id")
                 prefix = case.get("credential_env_prefix")
                 if not isinstance(assignment_id, str) or not assignment_id.strip():
                     raise ValueError("each claim case requires assignment_id")
+                if not isinstance(company_id, str) or not company_id.strip():
+                    raise ValueError("each claim case requires company_id")
                 if not isinstance(prefix, str) or not prefix.strip():
                     raise ValueError("each claim case requires credential_env_prefix")
                 _credential_names(prefix)
@@ -113,6 +116,27 @@ async def _login(base_url: str, prefix: str) -> httpx.AsyncClient:
     return client
 
 
+def _validate_profile_cases(scenario: str, profile: int, cases: list[dict[str, str]]) -> list[dict[str, str]]:
+    if scenario == "replay":
+        if len(cases) != 1:
+            raise ValueError("replay scenario must contain exactly one assignment case per profile")
+        return [cases[0] for _ in range(profile)]
+
+    if len(cases) < profile:
+        raise ValueError(f"{scenario}.{profile} needs at least {profile} distinct assignment cases")
+    request_cases = cases[:profile]
+    assignment_ids = [case["assignment_id"] for case in request_cases]
+    if len(set(assignment_ids)) != len(assignment_ids):
+        raise ValueError(f"{scenario}.{profile} assignments must be distinct")
+
+    company_ids = {case["company_id"] for case in request_cases}
+    if scenario == "hot_account" and len(company_ids) != 1:
+        raise ValueError("hot_account must use one receiver company_id")
+    if scenario == "distributed" and len(company_ids) < 2:
+        raise ValueError("distributed must use at least two receiver company_ids")
+    return request_cases
+
+
 async def run_profile(
     *,
     base_url: str,
@@ -120,52 +144,43 @@ async def run_profile(
     profile: int,
     cases: list[dict[str, str]],
 ) -> dict[str, Any]:
-    if scenario == "replay":
-        if len(cases) != 1:
-            raise ValueError("replay scenario must contain exactly one assignment case per profile")
-        request_cases = [cases[0] for _ in range(profile)]
-    else:
-        if len(cases) < profile:
-            raise ValueError(f"{scenario}.{profile} needs at least {profile} distinct assignment cases")
-        request_cases = cases[:profile]
-        assignment_ids = [case["assignment_id"] for case in request_cases]
-        if len(set(assignment_ids)) != len(assignment_ids):
-            raise ValueError(f"{scenario}.{profile} assignments must be distinct")
-        prefixes = {case["credential_env_prefix"] for case in request_cases}
-        if scenario == "hot_account" and len(prefixes) != 1:
-            raise ValueError("hot_account must use one receiver credential prefix")
-        if scenario == "distributed" and len(prefixes) < 2:
-            raise ValueError("distributed must use at least two receiver credential prefixes")
-
+    request_cases = _validate_profile_cases(scenario, profile, cases)
     prefixes = sorted({case["credential_env_prefix"] for case in request_cases})
+    company_ids = sorted({case["company_id"] for case in request_cases})
     clients = {prefix: await _login(base_url, prefix) for prefix in prefixes}
     latencies: list[float] = []
     failures = 0
     first_claims = 0
     idempotent_replays = 0
+    company_mismatches = 0
 
-    async def request_once(case: dict[str, str]) -> tuple[float, bool, bool | None]:
+    async def request_once(case: dict[str, str]) -> tuple[float, bool, bool | None, bool]:
         client = clients[case["credential_env_prefix"]]
         started = time.perf_counter()
         try:
             response = await client.post(f"/api/v1/v1.2/assignments/{case['assignment_id']}/claim")
             elapsed = (time.perf_counter() - started) * 1000
             if not 200 <= response.status_code < 300:
-                return elapsed, False, None
-            body = response.json()
-            idempotent = bool(body.get("data", {}).get("idempotent"))
-            return elapsed, True, idempotent
-        except (httpx.HTTPError, ValueError):
-            return (time.perf_counter() - started) * 1000, False, None
+                return elapsed, False, None, False
+            body = response.json().get("data", {})
+            assignment = body.get("assignment", {})
+            company_matches = assignment.get("company_id") == case["company_id"]
+            idempotent = bool(body.get("idempotent"))
+            return elapsed, True, idempotent, company_matches
+        except (httpx.HTTPError, ValueError, TypeError):
+            return (time.perf_counter() - started) * 1000, False, None, False
 
     started = time.perf_counter()
     results = await asyncio.gather(*(request_once(case) for case in request_cases))
     duration = time.perf_counter() - started
-    for latency, ok, idempotent in results:
+    for latency, ok, idempotent, company_matches in results:
         latencies.append(latency)
         if not ok:
             failures += 1
-        elif idempotent:
+            continue
+        if not company_matches:
+            company_mismatches += 1
+        if idempotent:
             idempotent_replays += 1
         else:
             first_claims += 1
@@ -173,14 +188,36 @@ async def run_profile(
     for client in clients.values():
         await client.aclose()
 
+    expected_first_claims = 1 if scenario == "replay" else profile
+    expected_replays = profile - 1 if scenario == "replay" else 0
+    scenario_errors: list[str] = []
+    if failures:
+        scenario_errors.append(f"http_failures={failures}")
+    if company_mismatches:
+        scenario_errors.append(f"company_mismatches={company_mismatches}")
+    if first_claims != expected_first_claims:
+        scenario_errors.append(
+            f"first_claims={first_claims}, expected={expected_first_claims}"
+        )
+    if idempotent_replays != expected_replays:
+        scenario_errors.append(
+            f"idempotent_replays={idempotent_replays}, expected={expected_replays}"
+        )
+
     result = metrics(latencies, failures, duration)
     result.update(
         {
             "scenario": scenario,
             "concurrency": profile,
-            "receiver_count": len(prefixes),
+            "credential_count": len(prefixes),
+            "receiver_company_count": len(company_ids),
             "first_claims": first_claims,
+            "expected_first_claims": expected_first_claims,
             "idempotent_replays": idempotent_replays,
+            "expected_idempotent_replays": expected_replays,
+            "company_mismatches": company_mismatches,
+            "scenario_valid": not scenario_errors,
+            "scenario_errors": scenario_errors,
         }
     )
     return result
@@ -216,6 +253,7 @@ async def async_main(args) -> dict[str, Any]:
                     cases=cases,
                 )
             )
+    output["valid"] = all(item.get("scenario_valid") is True for item in output["results"])
     return output
 
 
@@ -236,7 +274,7 @@ def main() -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0
+    return 0 if result.get("valid") is True else 2
 
 
 if __name__ == "__main__":
