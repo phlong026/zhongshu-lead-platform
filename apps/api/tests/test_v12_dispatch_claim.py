@@ -223,7 +223,12 @@ def test_manual_dispatch_does_not_deduct_points_and_claim_is_atomic_and_idempote
     assert reward is not None
     assert reward.supplier_company_id == supplier.id
     assert reward.status == RewardStatus.OBSERVING.value
+    assert reward.reward_ratio_bps == 3000
     assert reward.reward_points == 30
+    assert reward.rule_version == 1
+    assert reward.rule_snapshot_json["ratio_bps"] == 3000
+    assert reward.rule_snapshot_json["min_points"] == 0
+    assert reward.rule_snapshot_json["max_points"] is None
 
     second = claim_assignment(
         db,
