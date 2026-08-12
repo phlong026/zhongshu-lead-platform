@@ -10,16 +10,22 @@ import re
 import statistics
 import sys
 import time
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import httpx
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from apps.api.src.core.enums import AssignmentStatus, PointsLedgerType
+from apps.api.src.core.models import Assignment, AssignmentEvent, AuditLog, Lead, PointsLedger
+from apps.api.src.core.v12_enums import LeadV12Status
 from scripts.performance_v12 import DatabaseSampler, consistency_snapshot, safe_origin
 
 
@@ -104,6 +110,72 @@ def _credential_names(prefix: str) -> tuple[str, str]:
     return f"{normalized}_USERNAME", f"{normalized}_PASSWORD"
 
 
+def _resolve_git_dir(root: Path) -> Path:
+    marker = root / ".git"
+    if marker.is_dir():
+        return marker
+    if not marker.is_file():
+        raise ValueError("capacity evidence must run from a Git checkout containing .git metadata")
+    line = marker.read_text(encoding="utf-8").strip()
+    if not line.startswith("gitdir:"):
+        raise ValueError("unsupported .git metadata file")
+    candidate = Path(line.split(":", 1)[1].strip())
+    if not candidate.is_absolute():
+        candidate = (root / candidate).resolve()
+    return candidate
+
+
+def _common_git_dir(git_dir: Path) -> Path:
+    commondir = git_dir / "commondir"
+    if not commondir.is_file():
+        return git_dir
+    raw = commondir.read_text(encoding="utf-8").strip()
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = (git_dir / candidate).resolve()
+    return candidate
+
+
+def _read_packed_ref(packed_refs: Path, ref_name: str) -> str | None:
+    if not packed_refs.is_file():
+        return None
+    for line in packed_refs.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("#", "^")):
+            continue
+        parts = stripped.split(" ", 1)
+        if len(parts) == 2 and parts[1] == ref_name:
+            return parts[0].lower()
+    return None
+
+
+def resolve_checked_out_commit(root: Path = ROOT) -> str:
+    """Resolve HEAD without invoking a shell/subprocess so the evidence check is self-contained."""
+
+    git_dir = _resolve_git_dir(root)
+    common_dir = _common_git_dir(git_dir)
+    head_file = git_dir / "HEAD"
+    if not head_file.is_file():
+        raise ValueError("Git HEAD metadata is missing")
+    head = head_file.read_text(encoding="utf-8").strip()
+    if SOURCE_COMMIT_PATTERN.fullmatch(head.lower()):
+        return head.lower()
+    if not head.startswith("ref:"):
+        raise ValueError("Git HEAD is neither a commit nor a symbolic ref")
+    ref_name = head.split(":", 1)[1].strip()
+    for base in (git_dir, common_dir):
+        ref_file = base / ref_name
+        if ref_file.is_file():
+            value = ref_file.read_text(encoding="utf-8").strip().lower()
+            if SOURCE_COMMIT_PATTERN.fullmatch(value):
+                return value
+    for base in (git_dir, common_dir):
+        packed = _read_packed_ref(base / "packed-refs", ref_name)
+        if packed and SOURCE_COMMIT_PATTERN.fullmatch(packed):
+            return packed
+    raise ValueError(f"unable to resolve checked-out Git ref {ref_name!r}")
+
+
 def load_dataset(path: Path) -> dict[str, Any]:
     document = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(document, dict) or document.get("synthetic_data") is not True:
@@ -173,6 +245,121 @@ def _validate_profile_cases(scenario: str, profile: int, cases: list[dict[str, s
     return request_cases
 
 
+def claim_fact_snapshot(database_url: str, request_cases: list[dict[str, str]]) -> dict[str, Any]:
+    """Verify the exact business facts that a successful Claim profile must persist."""
+
+    expected_company_by_assignment: dict[str, str] = {}
+    for case in request_cases:
+        expected_company_by_assignment[case["assignment_id"]] = case["company_id"]
+    assignment_ids = list(expected_company_by_assignment)
+    expected = len(assignment_ids)
+
+    engine = create_engine(database_url, pool_pre_ping=True)
+    if engine.dialect.name != "postgresql":
+        engine.dispose()
+        raise ValueError("claim fact evidence requires PostgreSQL")
+    try:
+        with Session(engine) as db:
+            assignment_rows = db.execute(
+                select(Assignment.id, Assignment.status, Assignment.lead_id, Assignment.company_id).where(
+                    Assignment.id.in_(assignment_ids)
+                )
+            ).all()
+            lead_ids = [row.lead_id for row in assignment_rows]
+            lead_rows = db.execute(
+                select(Lead.id, Lead.status, Lead.current_assignment_id).where(Lead.id.in_(lead_ids))
+            ).all()
+            ledger_business_ids = list(
+                db.scalars(
+                    select(PointsLedger.business_id).where(
+                        PointsLedger.ledger_type == PointsLedgerType.CLAIM.value,
+                        PointsLedger.business_id.in_(assignment_ids),
+                    )
+                ).all()
+            )
+            event_assignment_ids = list(
+                db.scalars(
+                    select(AssignmentEvent.assignment_id).where(
+                        AssignmentEvent.assignment_id.in_(assignment_ids),
+                        AssignmentEvent.event_type == "V12_CLAIMED",
+                    )
+                ).all()
+            )
+            audit_resource_ids = list(
+                db.scalars(
+                    select(AuditLog.resource_id).where(
+                        AuditLog.resource_id.in_(assignment_ids),
+                        AuditLog.action == "V12_ASSIGNMENT_CLAIM",
+                    )
+                ).all()
+            )
+    finally:
+        engine.dispose()
+
+    assignment_by_id = {row.id: row for row in assignment_rows}
+    assignment_by_lead = {row.lead_id: row for row in assignment_rows}
+    ledger_counts = Counter(ledger_business_ids)
+    event_counts = Counter(event_assignment_ids)
+    audit_counts = Counter(item for item in audit_resource_ids if item is not None)
+
+    assignment_company_matches = sum(
+        1
+        for assignment_id, company_id in expected_company_by_assignment.items()
+        if assignment_id in assignment_by_id and assignment_by_id[assignment_id].company_id == company_id
+    )
+    assignments_pending = sum(
+        1 for row in assignment_rows if row.status == AssignmentStatus.PENDING_CLAIM.value
+    )
+    assignments_claimed = sum(1 for row in assignment_rows if row.status == AssignmentStatus.CLAIMED.value)
+    leads_claimed_and_linked = sum(
+        1
+        for lead in lead_rows
+        if lead.id in assignment_by_lead
+        and lead.status == LeadV12Status.CLAIMED.value
+        and lead.current_assignment_id == assignment_by_lead[lead.id].id
+    )
+    ledger_exact_one = sum(1 for assignment_id in assignment_ids if ledger_counts[assignment_id] == 1)
+    event_exact_one = sum(1 for assignment_id in assignment_ids if event_counts[assignment_id] == 1)
+    audit_exact_one = sum(1 for assignment_id in assignment_ids if audit_counts[assignment_id] == 1)
+
+    return {
+        "expected_assignments": expected,
+        "assignment_rows": len(assignment_rows),
+        "assignment_company_matches": assignment_company_matches,
+        "assignments_pending": assignments_pending,
+        "assignments_claimed": assignments_claimed,
+        "lead_rows": len(lead_rows),
+        "leads_claimed_and_linked": leads_claimed_and_linked,
+        "claim_ledgers_total": len(ledger_business_ids),
+        "claim_ledgers_exact_one": ledger_exact_one,
+        "claim_events_total": len(event_assignment_ids),
+        "claim_events_exact_one": event_exact_one,
+        "claim_audits_total": len(audit_resource_ids),
+        "claim_audits_exact_one": audit_exact_one,
+        "preflight_valid": (
+            len(assignment_rows) == expected
+            and assignment_company_matches == expected
+            and assignments_pending == expected
+            and len(ledger_business_ids) == 0
+            and len(event_assignment_ids) == 0
+            and len(audit_resource_ids) == 0
+        ),
+        "postclaim_valid": (
+            len(assignment_rows) == expected
+            and assignment_company_matches == expected
+            and assignments_claimed == expected
+            and len(lead_rows) == expected
+            and leads_claimed_and_linked == expected
+            and ledger_exact_one == expected
+            and len(ledger_business_ids) == expected
+            and event_exact_one == expected
+            and len(event_assignment_ids) == expected
+            and audit_exact_one == expected
+            and len(audit_resource_ids) == expected
+        ),
+    }
+
+
 async def run_profile(
     *,
     base_url: str,
@@ -184,6 +371,9 @@ async def run_profile(
     request_cases = _validate_profile_cases(scenario, profile, cases)
     prefixes = sorted({case["credential_env_prefix"] for case in request_cases})
     company_ids = sorted({case["company_id"] for case in request_cases})
+    claim_facts_before = await asyncio.to_thread(claim_fact_snapshot, database_url, request_cases)
+    if claim_facts_before["preflight_valid"] is not True:
+        raise ValueError(f"claim scenario facts are not fresh before load: {claim_facts_before}")
     clients = {prefix: await _login(base_url, prefix) for prefix in prefixes}
     latencies: list[float] = []
     failures = 0
@@ -228,6 +418,7 @@ async def run_profile(
         database_metrics = await sampler.finish()
         await sampler_task
     consistency_after = await asyncio.to_thread(consistency_snapshot, database_url)
+    claim_facts_after = await asyncio.to_thread(claim_fact_snapshot, database_url, request_cases)
 
     for latency, ok, idempotent, company_matches in results:
         latencies.append(latency)
@@ -263,6 +454,8 @@ async def run_profile(
     ):
         if int(consistency_after[key]) != 0:
             scenario_errors.append(f"{key}={consistency_after[key]}")
+    if claim_facts_after["postclaim_valid"] is not True:
+        scenario_errors.append("required claim business facts are missing or duplicated")
     if latency["hard_gate"] and not latency["passed"]:
         scenario_errors.append(f"p95_ms={result['p95_ms']} exceeds {CLAIM_P95_TARGET_MS}ms target")
 
@@ -281,6 +474,8 @@ async def run_profile(
             "database": database_metrics,
             "consistency_before": consistency_before,
             "consistency_after": consistency_after,
+            "claim_facts_before": claim_facts_before,
+            "claim_facts_after": claim_facts_after,
             "scenario_valid": not scenario_errors,
             "scenario_errors": scenario_errors,
         }
@@ -295,6 +490,11 @@ async def async_main(args) -> dict[str, Any]:
     source_commit = args.source_commit.strip().lower()
     if not SOURCE_COMMIT_PATTERN.fullmatch(source_commit):
         raise ValueError("--source-commit must be the exact 40-character lowercase candidate SHA")
+    checked_out_commit = resolve_checked_out_commit()
+    if checked_out_commit != source_commit:
+        raise ValueError(
+            f"--source-commit {source_commit} does not match checked-out HEAD {checked_out_commit}"
+        )
     profiles = tuple(args.profiles or DEFAULT_PROFILES)
     scenario_names = args.scenarios or [
         name for name in ("replay", "distributed", "hot_account") if name in dataset["scenarios"]
