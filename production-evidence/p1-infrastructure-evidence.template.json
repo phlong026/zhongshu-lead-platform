@@ -1,0 +1,29 @@
+{
+  "environment": "production",
+  "generated_at_utc": "PENDING-EXTERNAL",
+  "hostname": "PENDING-EXTERNAL",
+  "host_spec": { "cpu_cores": 0, "memory_mb": null, "os_release": null },
+  "docker": { "cli": null, "server_version": null, "compose": null },
+  "postgresql": {
+    "image": null,
+    "container": null,
+    "version": null,
+    "published_ports": [],
+    "data_bind": null,
+    "data_bind_fs": null
+  },
+  "ntp": { "synchronized": null, "detail": null, "clock_offset_seconds": null },
+  "listeners": { "expected_public_ports": ["80", "443"], "public_listeners": [] },
+  "tls": { "fullchain_present": false, "privkey_present": false, "expires_in_days": null },
+  "object_storage": {
+    "backend": "s3",
+    "bucket": "",
+    "endpoint": "",
+    "credentials_configured": false,
+    "hardening": null
+  },
+  "environment_isolation": { "errors": [] },
+  "valid": false,
+  "errors": ["外部云资源未提供，P1 验收待执行"],
+  "warnings": []
+}
