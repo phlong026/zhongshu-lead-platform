@@ -85,6 +85,7 @@ def test_distributed_claim_requires_distinct_assignments() -> None:
                 scenario="distributed",
                 profile=2,
                 cases=cases,
+                database_url="postgresql://unused-for-validation",
             )
 
     asyncio.run(run())
@@ -103,6 +104,7 @@ def test_distributed_claim_requires_distinct_receiver_companies() -> None:
                 scenario="distributed",
                 profile=2,
                 cases=cases,
+                database_url="postgresql://unused-for-validation",
             )
 
     asyncio.run(run())
