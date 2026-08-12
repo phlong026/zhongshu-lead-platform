@@ -56,6 +56,17 @@ configure_logging()
 ROOT = Path(__file__).resolve().parents[3]
 
 
+def _runtime_build_sha() -> str:
+    """Return the immutable revision baked into a container image when available."""
+
+    marker = ROOT / ".build-sha"
+    if marker.is_file():
+        value = marker.read_text(encoding="utf-8").strip().lower()
+        if value:
+            return value
+    return os.environ.get("APP_BUILD_SHA", "").strip().lower()
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     current_default_thread_limiter().total_tokens = settings.sync_threadpool_tokens
@@ -119,12 +130,18 @@ app.include_router(v12_insights.router, prefix=api_prefix)
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "service": "zhongshu-lead-platform", "version": settings.app_version, "environment": settings.app_env}
+    return {
+        "status": "ok",
+        "service": "zhongshu-lead-platform",
+        "version": settings.app_version,
+        "environment": settings.app_env,
+        "build_sha": _runtime_build_sha(),
+    }
 
 
 @app.get("/health/live")
 def health_live() -> dict[str, str]:
-    return {"status": "alive", "version": settings.app_version}
+    return {"status": "alive", "version": settings.app_version, "build_sha": _runtime_build_sha()}
 
 
 @app.get("/health/ready")
@@ -139,7 +156,13 @@ def health_ready() -> dict[str, str]:
         storage_root.mkdir(parents=True, exist_ok=True)
         if not storage_root.is_dir() or not os.access(storage_root, os.W_OK):
             raise RuntimeError("对象存储目录不可写")
-    return {"status": "ready", "database": "ok", "storage": storage, "version": settings.app_version}
+    return {
+        "status": "ready",
+        "database": "ok",
+        "storage": storage,
+        "version": settings.app_version,
+        "build_sha": _runtime_build_sha(),
+    }
 
 
 def _has_valid_web_session(db: Session, access_token: str | None) -> bool:
