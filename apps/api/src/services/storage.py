@@ -67,6 +67,31 @@ class LocalObjectStorage(ObjectStorage):
         if not self.root.is_dir() or not os.access(self.root, os.W_OK):
             raise AppError("STORAGE_NOT_READY", "对象存储目录不可写", 503)
 
+    def run_canary(self) -> str:
+        key = f".canary/zhongshu-readiness/{uuid.uuid4().hex}"
+        target = (self.root / key).resolve()
+        content = b"zhongshu-storage-canary-v1"
+        created = False
+        try:
+            if self.root not in target.parents:
+                raise AppError("STORAGE_PATH_INVALID", "文件路径非法", 400)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+            created = True
+            if target.read_bytes() != content:
+                raise AppError("STORAGE_CANARY_INVALID", "对象存储 canary 内容校验失败", 503)
+            return key
+        except AppError:
+            raise
+        except OSError as exc:
+            raise AppError("STORAGE_CANARY_FAILED", "对象存储 canary 失败", 503) from exc
+        finally:
+            if created:
+                try:
+                    target.unlink()
+                except OSError as exc:
+                    raise AppError("STORAGE_CANARY_CLEANUP_FAILED", "对象存储 canary 清理失败", 503) from exc
+
 
 class S3ObjectStorage(ObjectStorage):
     def __init__(self) -> None:

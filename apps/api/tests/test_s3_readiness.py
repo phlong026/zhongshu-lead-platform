@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import pytest
 
+from apps.api.src.services import storage as storage_module
 from apps.api.src.core.errors import AppError
-from apps.api.src.services.storage import S3ObjectStorage
+from apps.api.src.services.storage import LocalObjectStorage, S3ObjectStorage
 
 
 class _Body:
@@ -48,6 +49,16 @@ def test_s3_readiness_only_checks_bucket_without_writing() -> None:
 
     assert client.head_bucket_calls == 1
     assert client.objects == {}
+
+
+def test_local_canary_reads_then_deletes_disposable_object(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    root = tmp_path / "private-storage"
+    monkeypatch.setattr(storage_module.settings, "object_storage_dir", str(root))
+
+    key = LocalObjectStorage().run_canary()
+
+    assert key.startswith(".canary/zhongshu-readiness/")
+    assert list(root.rglob("*")) == [root / ".canary", root / ".canary" / "zhongshu-readiness"]
 
 
 def test_s3_canary_reads_then_deletes_disposable_object() -> None:
