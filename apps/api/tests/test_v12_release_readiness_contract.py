@@ -228,3 +228,34 @@ def test_postgres_ci_contract_runs_h04_dataset_integration() -> None:
             "apps/api/tests/test_prepare_performance_dataset.py::"
             "test_prepare_dataset_flush_order_on_postgresql"
         ) in workflow
+
+
+def test_all_workflows_pin_node24_actions_without_expanding_permissions() -> None:
+    expected_refs = {
+        "actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09",
+        "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
+        "actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444",
+        "actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4",
+    }
+    forbidden_node20_refs = (
+        "actions/checkout@v4",
+        "actions/setup-python@v5",
+        "actions/setup-node@v4",
+        "actions/upload-artifact@v4",
+        "11bd71901bbe5b1630ceea73d27597364c9af683",
+        "a26af69be951a213d495a4c3e4e4022e16d87065",
+        "ea165f8d65b6e75b540449e92b4886f43607fa02",
+    )
+    workflow_paths = tuple(Path(".github/workflows").glob("*.yml"))
+    assert workflow_paths
+    for workflow_path in workflow_paths:
+        workflow = workflow_path.read_text(encoding="utf-8")
+        action_refs = {
+            line.strip().split(" #", maxsplit=1)[0].removeprefix("uses: ")
+            for line in workflow.splitlines()
+            if line.strip().startswith("uses: actions/")
+        }
+        assert action_refs <= expected_refs
+        assert not any(reference in workflow for reference in forbidden_node20_refs)
+        assert "ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION" not in workflow
+        assert "permissions:\n  contents: read" in workflow

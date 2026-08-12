@@ -759,11 +759,11 @@ def test_security_workflow_pins_third_party_actions_to_full_commits() -> None:
     action_refs = re.findall(r"^\s+uses:\s+([^\s#]+)", source, flags=re.MULTILINE)
 
     assert action_refs == [
-        "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
-        "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
-        "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
-        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
-        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+        "actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09",
+        "actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09",
+        "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
+        "actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4",
+        "actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4",
     ]
 
 
