@@ -75,7 +75,7 @@ def test_singleflight_failed_leader_is_not_reused_as_success() -> None:
     assert coalesced is False
 
 
-def test_transient_failure_elects_only_one_replacement_leader() -> None:
+def test_transient_failure_is_shared_without_replacement_leader() -> None:
     callers = 20
     barrier = Barrier(callers)
     lock = Lock()
@@ -85,30 +85,30 @@ def test_transient_failure_elects_only_one_replacement_leader() -> None:
         nonlocal executions
         with lock:
             executions += 1
-            call_number = executions
         time.sleep(0.08)
-        if call_number == 1:
-            raise RuntimeError("transient database failure")
-        return {"assignment_id": "assignment-retry", "idempotent": False}
+        raise RuntimeError("transient database failure")
 
     def worker():
         barrier.wait()
         return run_claim_singleflight("assignment-retry", execute)
 
-    successes = []
-    failures = []
+    original_failures: list[RuntimeError] = []
+    follower_failures: list[AppError] = []
     with ThreadPoolExecutor(max_workers=callers) as pool:
         futures = [pool.submit(worker) for _ in range(callers)]
         for future in futures:
             try:
-                successes.append(future.result())
+                future.result()
             except RuntimeError as exc:
-                failures.append(exc)
+                original_failures.append(exc)
+            except AppError as exc:
+                follower_failures.append(exc)
 
-    assert executions == 2
-    assert len(failures) == 1
-    assert len(successes) == callers - 1
-    assert all(payload["assignment_id"] == "assignment-retry" for payload, _ in successes)
+    assert executions == 1
+    assert len(original_failures) == 1
+    assert len(follower_failures) == callers - 1
+    assert all(error.code == "CLAIM_TRANSIENT_FAILURE" for error in follower_failures)
+    assert all(error.status_code == 503 for error in follower_failures)
 
 
 def test_app_error_is_shared_without_database_reexecution() -> None:
