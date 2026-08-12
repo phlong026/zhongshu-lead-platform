@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import time
-from datetime import datetime, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -12,7 +11,8 @@ from ..core.errors import AppError
 from ..core.models import Assignment, PointsLedger
 from ..core.models_v12 import SupplierLeadReward
 from ..core.security import decrypt_text
-from .dispatch_v12 import CLAIMED_CONTACT_STATUSES, ClaimResult, claim_assignment, get_dispatch_lead
+from .claim_fast_v12 import claim_assignment_fast
+from .dispatch_v12 import CLAIMED_CONTACT_STATUSES, ClaimResult, get_dispatch_lead
 
 
 _CROSS_WORKER_FOLLOWER_WAIT_SECONDS = 0.75
@@ -87,13 +87,7 @@ def claim_assignment_coordinated(
     company_id: str,
     claimed_by: str,
 ) -> ClaimResult:
-    """Claim with a fast replay path and cross-worker request coordination.
-
-    PostgreSQL remains authoritative. A transaction-scoped advisory lock prevents
-    one same-assignment burst from becoming multiple worker leaders. Followers do
-    not queue on the assignment row lock: they poll the committed state briefly
-    and return the idempotent result as soon as the leader commits.
-    """
+    """Claim with replay fast-path, worker coordination and a short transaction."""
 
     assignment = _read_assignment(db, assignment_id)
     if assignment is None:
@@ -106,7 +100,7 @@ def claim_assignment_coordinated(
         return existing
 
     if db.get_bind().dialect.name != "postgresql":
-        return claim_assignment(
+        return claim_assignment_fast(
             db,
             assignment_id=assignment_id,
             company_id=company_id,
@@ -116,7 +110,7 @@ def claim_assignment_coordinated(
     advisory_key = claim_advisory_lock_key(assignment_id)
     if _try_postgres_advisory_lock(db, advisory_key):
         db.expire_all()
-        return claim_assignment(
+        return claim_assignment_fast(
             db,
             assignment_id=assignment_id,
             company_id=company_id,
@@ -136,12 +130,9 @@ def claim_assignment_coordinated(
         if existing is not None:
             return existing
 
-    # Preserve correctness if the leader is unusually slow. Waiting for the
-    # advisory lock still limits the row-lock queue to worker leaders rather than
-    # every replay request. Refresh state before entering the authoritative path.
     _wait_for_postgres_advisory_lock(db, advisory_key)
     db.expire_all()
-    return claim_assignment(
+    return claim_assignment_fast(
         db,
         assignment_id=assignment_id,
         company_id=company_id,
