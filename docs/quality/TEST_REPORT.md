@@ -5,6 +5,7 @@
 - 代码基线：V1.2 Sprint 0–6 / `release/v1.2.0`
 - 目标生产环境：Python 3.12、PostgreSQL 16、私有 S3/COS/OSS、Nginx HTTPS、API + Scheduler
 - 最终自动化证据：以 `.github/workflows/v12-release-ci.yml` 在发布分支合并提交上的执行记录与 Artifact 为唯一权威结果
+- 依赖基线：`cryptography==50.0.0` 已修复 CVE-2026-69247；依赖审计不使用漏洞豁免。
 
 ## 1. 质量结论边界
 

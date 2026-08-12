@@ -42,7 +42,6 @@ REQUIRED_RELEASE_DOCS = (
     "RELEASE_MANIFEST.json",
     "docs/quality/TEST_REPORT.md",
     "docs/quality/SECURITY_AUDIT.md",
-    "docs/quality/DEPENDENCY_RISK_ACCEPTANCE.md",
     "docs/traceability/IMPLEMENTATION_MATRIX.md",
     "docs/release/RELEASE_NOTES_V1.2.0.md",
     "docs/reviews/INDEX.md",

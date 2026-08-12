@@ -47,5 +47,4 @@ def test_release_package_contains_generated_openapi_source_history_and_quality_d
         assert "质量与发布资料/docs__api__openapi.json" in names
         assert "质量与发布资料/docs__quality__TEST_REPORT.md" in names
         assert "质量与发布资料/docs__quality__SECURITY_AUDIT.md" in names
-        assert "质量与发布资料/docs__quality__DEPENDENCY_RISK_ACCEPTANCE.md" in names
         assert "质量与发布资料/docs__runbooks__V1.2_GO_NO_GO.md" in names
