@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -8,7 +9,7 @@ from sqlalchemy.orm import Session
 from ..core.config import get_settings
 from ..core.enums import AssignmentStatus, PointsLedgerType
 from ..core.errors import AppError
-from ..core.models import Assignment, AssignmentEvent, PointsLedger
+from ..core.models import Assignment, AssignmentEvent, Lead, PointsLedger
 from ..core.models_v12 import CalendarDay, SupplierLeadReward
 from ..core.security import decrypt_text
 from ..core.time import as_utc
@@ -28,12 +29,18 @@ from .reward_rule_v12 import calculate_reward_points, resolve_supplier_reward_ru
 settings = get_settings()
 
 
+@dataclass(frozen=True, slots=True)
+class ClaimExecution:
+    result: ClaimResult
+    lead: Lead
+
+
 def _claim_deadline(db: Session, moment: datetime, workdays: int = 3) -> datetime:
     """Resolve a short workday deadline with one calendar query, not N db.get calls."""
 
     if workdays <= 0:
         return moment
-    horizon_days = max(14, workdays * 5)
+    horizon_days = max(31, workdays * 7)
     end_day = (moment + timedelta(days=horizon_days)).date()
     rows = db.scalars(
         select(CalendarDay).where(
@@ -55,7 +62,7 @@ def _claim_deadline(db: Session, moment: datetime, workdays: int = 3) -> datetim
 def _reward_for_claim_fast(
     db: Session,
     *,
-    lead,
+    lead: Lead,
     assignment: Assignment,
     now: datetime,
     deadline: datetime,
@@ -105,7 +112,7 @@ def claim_assignment_fast(
     assignment_id: str,
     company_id: str,
     claimed_by: str,
-) -> ClaimResult:
+) -> ClaimExecution:
     """Authoritative V1.2 claim path with a shorter lock-held critical section."""
 
     assignment = db.scalar(
@@ -132,12 +139,15 @@ def claim_assignment_fast(
         reward = db.scalar(
             select(SupplierLeadReward).where(SupplierLeadReward.assignment_id == assignment.id)
         )
-        return ClaimResult(
-            assignment=assignment,
-            ledger=existing_ledger,
-            reward=reward,
-            phone=decrypt_text(lead.phone_encrypted),
-            idempotent=True,
+        return ClaimExecution(
+            result=ClaimResult(
+                assignment=assignment,
+                ledger=existing_ledger,
+                reward=reward,
+                phone=decrypt_text(lead.phone_encrypted),
+                idempotent=True,
+            ),
+            lead=lead,
         )
     if assignment.status != AssignmentStatus.PENDING_CLAIM.value:
         raise AppError(
@@ -178,9 +188,6 @@ def claim_assignment_fast(
             {"assignment_id": duplicate.id},
         )
 
-    # change_points owns the only PointsAccount serialization boundary. The old
-    # claim path locked the same account first and then change_points locked it
-    # again, adding a redundant round-trip inside the assignment critical path.
     ledger = change_points(
         db,
         company_id=company_id,
@@ -232,10 +239,13 @@ def claim_assignment_fast(
         )
     )
     db.flush()
-    return ClaimResult(
-        assignment=assignment,
-        ledger=ledger,
-        reward=reward,
-        phone=decrypt_text(lead.phone_encrypted),
-        idempotent=False,
+    return ClaimExecution(
+        result=ClaimResult(
+            assignment=assignment,
+            ledger=ledger,
+            reward=reward,
+            phone=decrypt_text(lead.phone_encrypted),
+            idempotent=False,
+        ),
+        lead=lead,
     )
