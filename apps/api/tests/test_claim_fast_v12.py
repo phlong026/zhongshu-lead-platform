@@ -91,14 +91,16 @@ def _prepare(db):
 def test_fast_claim_preserves_accounting_and_deadline(db) -> None:
     receiver, user, assignment = _prepare(db)
 
-    result = claim_assignment_fast(
+    execution = claim_assignment_fast(
         db,
         assignment_id=assignment.id,
         company_id=receiver.id,
         claimed_by=user.id,
     )
     db.commit()
+    result = execution.result
 
+    assert execution.lead.id == assignment.lead_id
     assert result.idempotent is False
     assert result.assignment.status == AssignmentStatus.CLAIMED.value
     account = db.scalar(select(PointsAccount).where(PointsAccount.company_id == receiver.id))
@@ -115,12 +117,13 @@ def test_fast_claim_preserves_accounting_and_deadline(db) -> None:
         result.assignment.appeal_deadline_at.date(),
     ) == 3
 
-    replay = claim_assignment_fast(
+    replay_execution = claim_assignment_fast(
         db,
         assignment_id=assignment.id,
         company_id=receiver.id,
         claimed_by=user.id,
     )
     db.commit()
-    assert replay.idempotent is True
+    assert replay_execution.result.idempotent is True
+    assert replay_execution.lead.id == assignment.lead_id
     assert db.scalar(select(PointsAccount.balance).where(PointsAccount.company_id == receiver.id)) == 900
