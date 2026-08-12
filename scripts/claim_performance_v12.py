@@ -6,9 +6,11 @@ import asyncio
 import json
 import math
 import os
+import re
 import statistics
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +25,8 @@ from scripts.performance_v12 import DatabaseSampler, consistency_snapshot, safe_
 
 DEFAULT_PROFILES = (100, 300, 500)
 VALID_SCENARIOS = {"replay", "distributed", "hot_account"}
+SOURCE_COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
+CLAIM_P95_TARGET_MS = 500.0
 
 
 class ClaimDatabaseSampler(DatabaseSampler):
@@ -65,6 +69,24 @@ def metrics(latencies: list[float], failures: int, duration: float) -> dict[str,
         "p95_ms": round(percentile(latencies, 0.95), 3),
         "p99_ms": round(percentile(latencies, 0.99), 3),
         "mean_ms": round(statistics.fmean(latencies), 3) if latencies else 0.0,
+    }
+
+
+def latency_gate(scenario: str, profile: int, p95_ms: float) -> dict[str, Any]:
+    hard_gate = scenario in {"replay", "distributed"} and profile in {100, 300}
+    if scenario == "hot_account":
+        status = "OBSERVE_HOT_ACCOUNT_CAPACITY"
+    elif p95_ms <= CLAIM_P95_TARGET_MS:
+        status = "PASS"
+    elif profile == 500:
+        status = "CAPACITY_LIMIT_REACHED"
+    else:
+        status = "FAIL"
+    return {
+        "target_p95_ms": CLAIM_P95_TARGET_MS,
+        "hard_gate": hard_gate,
+        "passed": (not hard_gate) or p95_ms <= CLAIM_P95_TARGET_MS,
+        "status": status,
     }
 
 
@@ -171,6 +193,8 @@ async def run_profile(
     consistency_before = await asyncio.to_thread(consistency_snapshot, database_url)
     sampler = ClaimDatabaseSampler(database_url)
     sampler_task = asyncio.create_task(sampler.sample())
+    results: list[tuple[float, bool, bool | None, bool]] = []
+    duration = 0.0
 
     async def request_once(case: dict[str, str]) -> tuple[float, bool, bool | None, bool]:
         client = clients[case["credential_env_prefix"]]
@@ -213,6 +237,8 @@ async def run_profile(
 
     expected_first_claims = 1 if scenario == "replay" else profile
     expected_replays = profile - 1 if scenario == "replay" else 0
+    result = metrics(latencies, failures, duration)
+    latency = latency_gate(scenario, profile, float(result["p95_ms"]))
     scenario_errors: list[str] = []
     if failures:
         scenario_errors.append(f"http_failures={failures}")
@@ -231,8 +257,11 @@ async def run_profile(
     ):
         if int(consistency_after[key]) != 0:
             scenario_errors.append(f"{key}={consistency_after[key]}")
+    if latency["hard_gate"] and not latency["passed"]:
+        scenario_errors.append(
+            f"p95_ms={result['p95_ms']} exceeds {CLAIM_P95_TARGET_MS}ms target"
+        )
 
-    result = metrics(latencies, failures, duration)
     result.update(
         {
             "scenario": scenario,
@@ -244,6 +273,7 @@ async def run_profile(
             "idempotent_replays": idempotent_replays,
             "expected_idempotent_replays": expected_replays,
             "company_mismatches": company_mismatches,
+            "latency_gate": latency,
             "database": database_metrics,
             "consistency_before": consistency_before,
             "consistency_after": consistency_after,
@@ -258,13 +288,19 @@ async def async_main(args) -> dict[str, Any]:
     dataset = load_dataset(Path(args.dataset))
     base_url = safe_origin(args.base_url or dataset.get("base_url_origin", ""))
     database_url = args.database_url or _required_env("DATABASE_URL")
+    source_commit = args.source_commit.strip().lower()
+    if not SOURCE_COMMIT_PATTERN.fullmatch(source_commit):
+        raise ValueError("--source-commit must be the exact 40-character lowercase candidate SHA")
     profiles = tuple(args.profiles or DEFAULT_PROFILES)
-    scenario_names = args.scenarios or sorted(dataset["scenarios"])
+    scenario_names = args.scenarios or [name for name in ("replay", "distributed", "hot_account") if name in dataset["scenarios"]]
     output: dict[str, Any] = {
         "schema_version": 1,
         "synthetic_data": True,
         "environment": dataset["environment"],
         "base_url_origin": base_url,
+        "source_commit": source_commit,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "claim_p95_target_ms": CLAIM_P95_TARGET_MS,
         "results": [],
     }
     for scenario in scenario_names:
@@ -295,6 +331,7 @@ def parse_args():
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--base-url", default="")
     parser.add_argument("--database-url", default="")
+    parser.add_argument("--source-commit", required=True)
     parser.add_argument("--profiles", nargs="*", type=int, choices=DEFAULT_PROFILES)
     parser.add_argument("--scenarios", nargs="*", choices=sorted(VALID_SCENARIOS))
     parser.add_argument("--output", default="dist/performance/claim-performance-v12.json")
