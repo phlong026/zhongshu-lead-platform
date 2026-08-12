@@ -41,7 +41,6 @@ def test_required_v12_delivery_documents_and_generated_openapi_exist(tmp_path) -
     sources = validate_release_docs()
     assert len(sources) == len(REQUIRED_RELEASE_DOCS)
     assert "docs/quality/SECURITY_AUDIT.md" in REQUIRED_RELEASE_DOCS
-    assert "docs/quality/DEPENDENCY_RISK_ACCEPTANCE.md" in REQUIRED_RELEASE_DOCS
     assert "docs/reviews/INDEX_V1.2.md" in REQUIRED_RELEASE_DOCS
     assert "docs/reviews/53-v1.2-sprint6-comprehensive-final-review.md" in REQUIRED_RELEASE_DOCS
     assert "docs/runbooks/DEPLOYMENT.md" in REQUIRED_RELEASE_DOCS
@@ -59,6 +58,5 @@ def test_required_v12_delivery_documents_and_generated_openapi_exist(tmp_path) -
     openapi = json.loads((target / "docs__api__openapi.json").read_text(encoding="utf-8"))
     assert openapi["info"]["version"] == "1.2.0"
     assert any("SECURITY_AUDIT.md" in name for name in copied)
-    assert any("DEPENDENCY_RISK_ACCEPTANCE.md" in name for name in copied)
     assert any("INDEX_V1.2.md" in name for name in copied)
     assert any("53-v1.2-sprint6-comprehensive-final-review.md" in name for name in copied)

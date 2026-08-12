@@ -39,9 +39,6 @@ jobs:
       - name: Verify installed dependencies
         run: pip check
 
-      - name: Validate temporary dependency waiver expiry
-        run: python scripts/check_dependency_waiver.py
-
       - name: Audit Python dependencies
         shell: bash
         run: |
@@ -53,9 +50,7 @@ jobs:
             cat requirements-browser.txt
             printf '\n'
           } > /tmp/v12-requirements.txt
-          # Temporary, single-ID exception. See docs/quality/DEPENDENCY_RISK_ACCEPTANCE.md.
-          # Remove immediately when cryptography 50.0.0 (or an official equivalent fix) is released.
-          pip-audit -r /tmp/v12-requirements.txt --progress-spinner off --ignore-vuln PYSEC-2026-3552
+          pip-audit -r /tmp/v12-requirements.txt --progress-spinner off
 
       - name: Run backend tests
         shell: bash

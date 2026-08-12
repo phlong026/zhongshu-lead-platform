@@ -63,16 +63,6 @@
     },
     {
       "scanner": "trivy",
-      "id": "CVE-2026-69247",
-      "scope": "cryptography",
-      "occurrence": "Python|lang-pkgs|python-pkg|49.0.0",
-      "reason": "Temporary isolation waiver for Hardening H12 #61. The scanner reports cryptography 49.0.0 and fixed version 50.0.0. This exact occurrence remains temporarily isolated only until the existing dependency-waiver deadline; H12 must upgrade and delete it before expiry.",
-      "owner": "H12-#61",
-      "created_on": "2026-08-08",
-      "expires_on": "2026-08-21"
-    },
-    {
-      "scanner": "trivy",
       "id": "CVE-2026-53615",
       "scope": "bsdutils",
       "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|1:2.38.1-5+deb12u3",

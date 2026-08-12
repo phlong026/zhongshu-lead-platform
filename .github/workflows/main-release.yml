@@ -55,9 +55,6 @@ jobs:
       - name: Verify installed dependencies
         run: pip check
 
-      - name: Validate temporary dependency waiver expiry
-        run: python scripts/check_dependency_waiver.py
-
       - name: Audit Python dependencies
         shell: bash
         run: |
@@ -69,7 +66,7 @@ jobs:
             cat requirements-browser.txt
             printf '\n'
           } > /tmp/main-release-requirements.txt
-          pip-audit -r /tmp/main-release-requirements.txt --progress-spinner off --ignore-vuln PYSEC-2026-3552
+          pip-audit -r /tmp/main-release-requirements.txt --progress-spinner off
 
       - name: Run backend tests with coverage gate
         shell: bash

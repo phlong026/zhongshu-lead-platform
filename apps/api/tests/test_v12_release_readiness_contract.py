@@ -165,7 +165,6 @@ def test_preflight_has_explicit_object_storage_canary() -> None:
 
 def test_sprint6_runbooks_and_release_documents_exist() -> None:
     required = (
-        "docs/quality/DEPENDENCY_RISK_ACCEPTANCE.md",
         "docs/runbooks/PRODUCTION_CHECKLIST_V1.2.md",
         "docs/runbooks/V1.2_MIGRATION_RUNBOOK.md",
         "docs/runbooks/V1.2_UAT.md",
@@ -203,9 +202,8 @@ def test_ci_contains_postgres_browser_dependency_evidence_and_packaging_gates() 
         assert "release-package-${{ github.run_id }}" in workflow
         assert "cat requirements.txt requirements-postgres.txt requirements-browser.txt" not in workflow
         assert workflow.count("printf '\\n'") >= 3
-        assert "--ignore-vuln PYSEC-2026-3552" in workflow
-        assert workflow.count("--ignore-vuln") == 1
-        assert "DEPENDENCY_RISK_ACCEPTANCE.md" in workflow
+        assert "--ignore-vuln" not in workflow
+        assert "check_dependency_waiver.py" not in workflow
         assert "dist/openapi/openapi.json" in workflow
         assert "path: docs/api/openapi.json" not in workflow
         assert "dist/quality/pytest-output.txt" in workflow
