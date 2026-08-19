@@ -18,7 +18,7 @@ function zsPatchTopbar() {
     const small = brandCopy.querySelector('small');
     const titleNode = [...brandCopy.childNodes].find(node => node.nodeType === Node.TEXT_NODE);
     if (titleNode) titleNode.nodeValue = '合家美宅';
-    if (small) small.textContent = '客资审核 · 派发 · 积分';
+    small?.remove();
     brandCopy.dataset.zsV13 = '1';
   }
   const messageButton = document.querySelector('.topbar .icon-btn[data-route="notifications"]');
