@@ -3,8 +3,7 @@
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
 button,input,select,textarea{font:inherit}.ops-shell{min-height:100vh;display:grid;grid-template-columns:var(--sidebar) 1fr}
 .ops-side{position:sticky;top:0;height:100vh;background:#2e2821;color:#fff;padding:22px 16px;display:flex;flex-direction:column}
-.ops-brand{display:flex;align-items:center;gap:11px;padding:0 7px 22px}.ops-logo{width:42px;height:42px;border-radius:13px;background:linear-gradient(135deg,#8a6e4f,#c69a60);
-display:grid;place-items:center;font-weight:900}.ops-brand strong{display:block}.ops-brand small{display:block;opacity:.6;margin-top:3px}.ops-menu{display:grid;gap:5px}
+.ops-brand{display:flex;align-items:center;gap:11px;padding:0 7px 22px}.ops-logo{width:42px;height:42px;object-fit:contain}.ops-brand strong{display:block}.ops-brand small{display:block;opacity:.6;margin-top:3px}.ops-menu{display:grid;gap:5px}
 .ops-menu-label{font-size:11px;opacity:.44;text-transform:uppercase;letter-spacing:.12em;padding:14px 10px 5px}.ops-menu button{border:0;background:transparent;color:rgba(255,255,255,.68);
 text-align:left;padding:11px 12px;border-radius:11px;cursor:pointer;display:flex;gap:10px;align-items:center}.ops-menu button:hover,.ops-menu button.active{background:rgba(255,255,255,.1);color:#fff}
 .ops-menu button:disabled{display:none}.ops-side-foot{margin-top:auto;padding:14px 8px 0;border-top:1px solid rgba(255,255,255,.1);font-size:12px;opacity:.65}

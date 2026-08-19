@@ -71,7 +71,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(
-    title="众墅之家客资审核、派发与积分管理平台 API",
+    title="合家美宅客资审核、派发与积分管理平台 API",
     version=settings.app_version,
     lifespan=lifespan,
 )

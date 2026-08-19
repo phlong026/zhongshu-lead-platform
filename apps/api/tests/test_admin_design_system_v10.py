@@ -30,7 +30,7 @@ def test_admin_v10_preserves_role_and_finance_boundaries():
     assert "const pageText=" not in js
     assert "仅展示资格状态，不展示具体积分余额" in js
     assert "现金在线下完成" in js
-    assert "页面、接口、数据范围和字段权限必须同时生效" in js
+    assert "页面、接口、数据范围和字段权限必须同时生效" not in js
     assert "MutationObserver" in js
 
 

@@ -20,7 +20,7 @@ async function api(path, options={}) {
   return data.data;
 }
 function shell(content, active='home', title='客资助手') {
-  return `<header class="topbar"><div class="brand"><img src="./logo.png" alt="众墅之家"><div>${esc(title)}<small>让好品牌在乡村生根</small></div></div><button class="icon-btn" data-route="notifications" aria-label="消息">◉</button></header><main class="content">${content}</main>${nav(active)}`;
+  return `<header class="topbar"><div class="brand"><img src="./logo.png" alt="合家美宅"><div>${esc(title)}</div></div><button class="icon-btn" data-route="notifications" aria-label="消息">◉</button></header><main class="content">${content}</main>${nav(active)}`;
 }
 function nav(active){return `<nav class="bottom-nav">${[['home','⌂','首页'],['leads','▤','客资'],['points','◈','积分'],['notifications','◉','消息'],['profile','♙','我的']].map(([r,i,l])=>`<button class="nav-item ${active===r?'active':''}" data-route="${r}"><i>${i}</i>${l}</button>`).join('')}</nav>`;}
 function loading(active='home'){zsSetSafeHtml(app, shell(`<div class="skeleton"></div><div class="skeleton" style="margin-top:14px"></div>`,active));bindRoutes();}
@@ -33,7 +33,7 @@ async function ensureAuth(){
 
 function renderLogin(){
   const params=new URLSearchParams(location.hash.split('?')[1]||''); const invite=params.get('invite')||'';
-  app.innerHTML=`<section class="login-page"><div class="login-logo"><img src="./logo.png" alt="众墅之家"><h1>加盟商客资助手</h1><p>微信内打开 · 无需安装 · 点击即处理</p></div><div class="login-panel"><button class="btn btn-primary btn-block" id="wechat-login">微信授权登录</button>${invite?'<p class="help">已识别专属加盟商邀请，授权后将自动绑定。</p>':'<p class="help">请通过平台发送的专属邀请链接在微信内进入。</p>'}</div></section>`;
+  app.innerHTML=`<section class="login-page"><div class="login-logo"><img src="./logo.png" alt="合家美宅"><h1>合家美宅客资助手</h1><p>微信授权后即可使用</p></div><div class="login-panel"><button class="btn btn-primary btn-block" id="wechat-login">微信授权登录</button>${invite?'<p class="help">已识别专属邀请，授权后自动绑定。</p>':'<p class="help">请通过专属邀请链接进入。</p>'}</div></section>`;
   document.querySelector('#wechat-login').onclick=()=>{if(!invite){toast('请使用平台发出的专属邀请链接','error');return;} location.href=`${API}/auth/wechat/start?invite=${encodeURIComponent(invite)}&return_url=${encodeURIComponent('/h5/#/home')}`;};
 }
 

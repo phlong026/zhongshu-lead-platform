@@ -26,7 +26,7 @@ function injectEntry(){
   if(topbar&&!document.querySelector('#v12-workbench-top')){
     const button=document.createElement('button');
     button.className='icon-btn';button.id='v12-workbench-top';button.type='button';
-    button.setAttribute('aria-label','V1.2 全链路工作台');button.textContent='链';
+    button.setAttribute('aria-label','客资工作台');button.textContent='链';
     button.onclick=openWorkbench;
     const notice=topbar.querySelector('[data-route="notifications"]');
     topbar.insertBefore(button,notice||null);
@@ -37,7 +37,7 @@ function injectEntry(){
     if(target){
       const button=document.createElement('button');
       button.className='btn btn-primary btn-block';button.id='v12-workbench-profile';button.type='button';
-      button.style.marginBottom='10px';button.textContent='进入 V1.2 全链路工作台';button.onclick=openWorkbench;
+      button.style.marginBottom='10px';button.textContent='进入客资工作台';button.onclick=openWorkbench;
       target.prepend(button);
     }
   }
