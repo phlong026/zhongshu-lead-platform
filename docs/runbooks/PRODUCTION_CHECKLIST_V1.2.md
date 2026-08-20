@@ -13,6 +13,7 @@
 - [ ] `APP_IMAGE` 采用 `repo:APP_VERSION@sha256:digest`，显式 tag 与 `APP_VERSION` 完全一致；
 - [ ] `docker image inspect` 的 OCI `org.opencontainers.image.version` 与 `APP_VERSION` 完全一致；
 - [ ] README、部署、迁移、回滚、UAT、测试、安全审计和发布说明均为 V1.2；
+- [ ] 全角色初始化按 `docs/runbooks/V1.2_INITIALIZATION_SOP.md` 演练，冻结步骤保持未执行且有记录；
 - [ ] Main Release Verification 的 global/critical line+branch coverage 门禁通过并保留 coverage artifact；
 - [ ] Security Analysis 对当前提交的 Semgrep Python/JavaScript SAST、生产 Docker 镜像 Trivy HIGH/CRITICAL 扫描全部通过；
 - [ ] 当前生产候选镜像存在可追踪 CycloneDX SBOM；

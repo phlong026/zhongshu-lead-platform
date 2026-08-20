@@ -52,6 +52,7 @@ REQUIRED_RELEASE_DOCS = (
     "docs/runbooks/BACKUP_RESTORE.md",
     "docs/runbooks/SECURITY_CHECKLIST.md",
     "docs/runbooks/PRODUCTION_CHECKLIST_V1.2.md",
+    "docs/runbooks/V1.2_INITIALIZATION_SOP.md",
     "docs/runbooks/V1.2_MIGRATION_RUNBOOK.md",
     "docs/runbooks/V1.2_UAT.md",
     "docs/runbooks/V1.2_GO_NO_GO.md",

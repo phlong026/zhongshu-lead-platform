@@ -87,6 +87,7 @@ python scripts/preflight_v12.py \
 
 - `docs/runbooks/DEPLOYMENT.md`
 - `docs/runbooks/PRODUCTION_CHECKLIST_V1.2.md`
+- `docs/runbooks/V1.2_INITIALIZATION_SOP.md`
 - `docs/runbooks/V1.2_MIGRATION_RUNBOOK.md`
 - `docs/runbooks/V1.2_UAT.md`
 - `docs/runbooks/V1.2_GO_NO_GO.md`

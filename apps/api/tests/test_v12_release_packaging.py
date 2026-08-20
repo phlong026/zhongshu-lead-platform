@@ -45,6 +45,7 @@ def test_required_v12_delivery_documents_and_generated_openapi_exist(tmp_path) -
     assert "docs/reviews/53-v1.2-sprint6-comprehensive-final-review.md" in REQUIRED_RELEASE_DOCS
     assert "docs/runbooks/DEPLOYMENT.md" in REQUIRED_RELEASE_DOCS
     assert "docs/runbooks/BACKUP_RESTORE.md" in REQUIRED_RELEASE_DOCS
+    assert "docs/runbooks/V1.2_INITIALIZATION_SOP.md" in REQUIRED_RELEASE_DOCS
     assert "docs/runbooks/V1.2_POST_LAUNCH.md" in REQUIRED_RELEASE_DOCS
 
     delivery_names = [_delivery_doc_name(source) for source in sources]
