@@ -28,6 +28,9 @@ ROLE_PERMISSION_MATRIX: dict[str, tuple[str, list[str]]] = {
             "return.read",
             "audit.read",
             "report.v12.read",
+            "calendar.read",
+            "calendar.manage",
+            "calendar.import",
         ],
     ),
     "LEAD_ENTRY": (
@@ -57,6 +60,7 @@ ROLE_PERMISSION_MATRIX: dict[str, tuple[str, list[str]]] = {
             "dashboard.operation.read",
             "audit.read",
             "report.v12.read",
+            "calendar.read",
         ],
     ),
     "TELESALES": (
@@ -118,6 +122,8 @@ SENSITIVE_PERMISSION_CODES = frozenset(
         "reward.manage",
         "reward.reverse",
         "audit.read",
+        "calendar.manage",
+        "calendar.import",
     }
 )
 

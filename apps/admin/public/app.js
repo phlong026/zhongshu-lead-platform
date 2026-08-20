@@ -2,7 +2,7 @@ import {request,query} from './api.js';
 import {badge,closeOverlay,esc,field,fmt,icon,input,num,openDrawer,openModal,pageHead,select,statusType,table,toast,uuid,yuan} from './ui.js';
 
 const app=document.querySelector('#app');
-const state={me:null,companies:[],packages:[],currentPage:'dashboard'};
+const state={me:null,companies:[],packages:[],currentPage:'dashboard',calendarMonth:null};
 const can=code=>state.me?.permissions?.includes('*')||state.me?.permissions?.includes(code);
 const adminIcon=name=>window.ZSIconSystem?.svg?.(name)||icon(name);
 const INTERNAL_USER_ROLES=[
@@ -18,7 +18,7 @@ const menu=[
   ['概览',[['dashboard','layout-dashboard','数据看板',()=>can('dashboard.business.read')||can('dashboard.operation.read')||can('dashboard.finance.read')||can('*')]]],
   ['客资运营',[['staging','inbox','飞书暂存区',()=>can('lead.read')],['verification','phone','电销核验任务',()=>can('verification.read')||can('verification.task.read')],['qualified','user-check','合格客资池',()=>can('lead.dispatch')],['assignments','hand-claim','派发订单',()=>can('assignment.read')]]],
   ['加盟商与积分',[['companies','building','加盟商公司',()=>can('company.read')||can('*')],['points','coins','积分规则',()=>can('points.read')||can('points.package.manage')],['recharge','plus','人工充值积分',()=>can('points.recharge')],['ledgers','receipt','积分流水',()=>can('points.read')]]],
-  ['质量与系统',[['returns','rotate-ccw','退回审核',()=>can('return.read')||can('return.review')],['outbox','bell','通知任务',()=>can('notification.retry')||can('*')],['users','users','账号角色',()=>can('*')],['configs','settings','规则配置',()=>can('*')],['audit','activity','审计日志',()=>can('audit.read')||can('*')]]]
+  ['质量与系统',[['returns','rotate-ccw','退回审核',()=>can('return.read')||can('return.review')],['calendar','calendar','工作日历',()=>can('calendar.read')],['outbox','bell','通知任务',()=>can('notification.retry')||can('*')],['users','users','账号角色',()=>can('*')],['configs','settings','规则配置',()=>can('*')],['audit','activity','审计日志',()=>can('audit.read')||can('*')]]]
 ];
 
 function login(){zsSetSafeHtml(app, `<section class="login"><div class="login-brand"><img src="./logo.png" alt="合家美宅"><h1>合家美宅客资管理平台</h1><p>客资审核、派发与积分管理。</p></div><div class="login-form"><div class="login-card"><h2>管理后台登录</h2><p style="color:var(--muted);font-size:13px">按角色展示业务数据。</p>${field('username','账号',input('username','','text','请输入管理账号'))}${field('password','密码',input('password','','password','请输入密码'))}<button id="login-btn" class="btn btn-primary" style="width:100%">登录系统</button></div></div></section>`);document.querySelector('#login-btn').onclick=async()=>{try{await request('/auth/login',{method:'POST',body:JSON.stringify({username:document.querySelector('#username').value,password:document.querySelector('#password').value})});await boot()}catch(e){toast(e.message,'error')}}}
@@ -59,10 +59,126 @@ async function returnDrawer(id){try{const r=await request('/returns/'+id);const 
 
 async function outbox(){const [g,f]=await Promise.all([request('/notifications/gate0'),request('/notifications/outbox/failed?status=FAILED')]);const rows=f.map(x=>`<tr><td>${esc(x.event_type)}</td><td>${esc(x.aggregate_id)}</td><td>${x.attempts}</td><td>${esc(x.last_error||'--')}</td><td>${fmt(x.created_at)}</td><td><button class="btn btn-small btn-outline" data-retry="${x.id}">重试</button></td></tr>`);shell(`${pageHead('微信通知与失败队列','公众号通知采用Outbox异步投递；业务事务成功不因通知失败而回滚。','<button id="process-outbox" class="btn btn-primary">处理待发送队列</button>')}<section class="cards"><div class="stat"><div class="label">公众号配置</div><div class="value">${g.configured?'已配置':'未配置'}</div></div><div class="stat"><div class="label">消息适配器</div><div class="value" style="font-size:18px">${esc(g.message_adapter)}</div></div><div class="stat"><div class="label">开发模拟</div><div class="value">${g.dev_mock?'开启':'关闭'}</div></div></section><section class="panel"><div class="panel-head"><h3>发送失败任务</h3></div>${table(['事件','业务ID','尝试次数','错误','创建时间','操作'],rows,'当前没有失败通知')}</section>`,'通知任务');document.querySelector('#process-outbox').onclick=async()=>{try{const r=await request('/notifications/jobs/process-outbox?limit=100',{method:'POST'});toast(`处理完成：发送 ${r.sent||0}，失败 ${r.failed||0}`);outbox()}catch(e){toast(e.message,'error')}};document.querySelectorAll('[data-retry]').forEach(x=>x.onclick=async()=>{await request(`/notifications/outbox/${x.dataset.retry}/retry`,{method:'POST'});toast('已重新进入待发送队列');outbox()})}
 
+function calendarDayModal(dayValue,item={},lockedDate=false){
+  if(!can('calendar.manage'))return toast('无维护权限','error');
+  const currentDate=dayValue||`${state.calendarMonth}-01`;
+  const isWorkday=typeof item.is_workday==='boolean'?item.is_workday:true;
+  const source=item.is_override&&CALENDAR_SOURCE_CODES.includes(item.source)?item.source:'MANUAL';
+  const title=lockedDate?'编辑工作日历日期':'单日设定';
+  openModal(title,`${field('calendar-day','日期',`<input class="input" id="calendar-day" type="date" value="${esc(currentDate)}" ${lockedDate?'readonly':''}>`,'工作日历按中国时区（Asia/Shanghai）的日期计算。')}${field('calendar-is-workday','是否工作日',select('calendar-is-workday',[['true','工作日'],['false','休息日']],String(isWorkday)))}${field('calendar-holiday-name','节日/说明',input('calendar-holiday-name',item.holiday_name||'','text','例如 国庆节 / 调休工作日'))}${field('calendar-source','来源',select('calendar-source',CALENDAR_SOURCE_OPTIONS,source))}${field('calendar-version','版本',`<input class="input" id="calendar-version" type="number" min="1" max="9999" value="${esc(item.version||1)}">`)}<p style="color:var(--muted);margin:8px 0 0">影响范围：${esc(CALENDAR_IMPACT_TEXT)}</p>`,`<button data-close class="btn btn-outline">取消</button><button id="save-calendar-day" class="btn btn-primary">保存</button>`);
+  document.querySelector('#save-calendar-day').onclick=event=>runCalendarAction(event.currentTarget,async()=>{
+    const selectedDay=document.querySelector('#calendar-day').value.trim();
+    if(!selectedDay)throw new Error('请选择日期');
+    const payload={is_workday:document.querySelector('#calendar-is-workday').value==='true',holiday_name:document.querySelector('#calendar-holiday-name').value.trim()||null,source:document.querySelector('#calendar-source').value,version:Number(document.querySelector('#calendar-version').value||1)};
+    const result=await request(`/admin/v1.2/calendar-days/${selectedDay}`,{method:'PUT',body:JSON.stringify(payload)});
+    return result.changed?'工作日历已保存':'配置无变化，未重复写入审计';
+  });
+}
+
+function calendarImportModal(){
+  if(!can('calendar.import'))return toast('无导入权限','error');
+  const example=`日期,是否工作日,节日或说明,来源,版本\n${state.calendarMonth}-15,休息日,示例节假日,OFFICIAL,1\n${state.calendarMonth}-16,工作日,示例调休工作日,OFFICIAL,1`;
+  openModal('批量导入工作日历',`${field('calendar-import-text','CSV / JSON 内容',`<textarea id="calendar-import-text" class="textarea" style="width:100%;min-height:220px">${esc(example)}</textarea>`,'CSV 列：日期、是否工作日、说明、来源、版本；也支持 { "days": [...] } JSON。')}<p style="color:var(--muted);margin:8px 0 0">可用来源：MANUAL、OFFICIAL、IMPORT。同一批不允许重复日期；相同数据重复导入不更新时间，也不重复写审计。</p><p style="color:var(--muted);margin:8px 0 0">${esc(CALENDAR_IMPACT_TEXT)}</p>`,`<button data-close class="btn btn-outline">取消</button><button id="save-calendar-import" class="btn btn-primary">导入</button>`);
+  document.querySelector('#save-calendar-import').onclick=event=>{
+    try{
+      const days=parseCalendarImport(document.querySelector('#calendar-import-text').value);
+      const dates=days.map(item=>item.day).sort();
+      if(!confirm(`确认导入 ${days.length} 天（${dates[0]} 至 ${dates.at(-1)}）？`))return;
+      runCalendarAction(event.currentTarget,async()=>{
+        const result=await request('/admin/v1.2/calendar-days/import',{method:'POST',body:JSON.stringify({days})});
+        return `导入完成：新增 ${result.created_count}，更新 ${result.updated_count}，无变化 ${result.unchanged_count}`;
+      });
+    }catch(error){toast(error.message,'error')}
+  };
+}
+
+function calendarDayDrawer(dayValue,item){
+  const action=can('calendar.manage')?'<button id="edit-calendar-day" class="btn btn-primary">编辑当天</button>':'<span style="color:var(--muted)">无维护权限，当前为只读查看。</span>';
+  const body=`<dl class="detail-grid"><dt>日期</dt><dd>${esc(dayValue)}</dd><dt>状态</dt><dd>${badge(item.is_workday?'工作日':'休息日',item.is_workday?'ok':'neutral')}</dd><dt>规则类型</dt><dd>${esc(item.is_override?'显式覆盖':'系统默认')}</dd><dt>节日/说明</dt><dd>${esc(item.holiday_name||'--')}</dd><dt>来源</dt><dd>${esc(calendarDisplaySource(item))}</dd><dt>版本</dt><dd>${esc(item.version?`v${item.version}`:'--')}</dd><dt>变更人</dt><dd>${esc(calendarDisplayUpdatedBy(item))}</dd><dt>变更时间（中国时区）</dt><dd>${esc(calendarDisplayUpdatedAt(item))}</dd><dt>影响范围</dt><dd>${esc(CALENDAR_IMPACT_TEXT)}</dd></dl><div class="actions">${action}</div>`;
+  openDrawer('工作日历详情',body);
+  const edit=document.querySelector('#edit-calendar-day');
+  if(edit)edit.onclick=()=>calendarDayModal(dayValue,item,true);
+}
+
+async function calendar(){
+  state.calendarMonth=state.calendarMonth||chinaMonthValue(new Date());
+  const range=monthRange(state.calendarMonth);
+  const items=await request(`/admin/v1.2/calendar-days?start=${range.start}&end=${range.end}`);
+  if(items.length!==range.daysInMonth)throw new Error('工作日历返回的有效日期不完整');
+  const byDay=Object.fromEntries(items.map(item=>[item.day,item]));
+  const overrides=items.filter(item=>item.is_override);
+  const cells=[];
+  const leadingDays=(new Date(Date.UTC(range.year,range.month-1,1)).getUTCDay()+6)%7;
+  for(let index=0;index<leadingDays;index+=1)cells.push('<div aria-hidden="true" style="min-height:118px;border:1px dashed rgba(0,0,0,.08);border-radius:18px;background:rgba(255,255,255,.45)"></div>');
+  items.forEach(item=>{
+    const day=Number(item.day.slice(-2));
+    cells.push(`<button type="button" data-calendar-day="${item.day}" style="min-height:118px;padding:14px;border-radius:18px;text-align:left;cursor:pointer;${calendarCellTone(item)}"><div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start"><strong style="font-size:18px">${day}</strong>${badge(item.is_workday?'工作日':'休息日',item.is_workday?'ok':'neutral')}</div><div style="margin-top:8px;font-size:13px;line-height:1.45;color:var(--ink)">${esc(item.holiday_name||(item.is_override?'显式配置':'默认规则'))}</div><div style="margin-top:10px;font-size:11px;line-height:1.4;color:var(--muted)">${esc(calendarDisplaySource(item))}</div></button>`);
+  });
+  const overrideRows=overrides.map(item=>`<tr><td><b>${esc(item.day)}</b></td><td>${badge(item.is_workday?'工作日':'休息日',item.is_workday?'ok':'neutral')}</td><td>${esc(item.holiday_name||'--')}</td><td>${esc(calendarDisplaySource(item))}</td><td>${esc(item.version?`v${item.version}`:'--')}</td><td>${esc(calendarDisplayUpdatedBy(item))}<br><small>${esc(calendarDisplayUpdatedAt(item))}</small></td><td>${esc(CALENDAR_IMPACT_TEXT)}</td>${can('calendar.manage')?`<td><button class="btn btn-small btn-outline" data-calendar-edit="${item.day}">编辑</button></td>`:'<td>只读</td>'}</tr>`);
+  const actions=`<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button id="calendar-prev" class="btn btn-outline">上月</button><input id="calendar-month" class="input" type="month" value="${state.calendarMonth}" style="width:154px"><button id="calendar-next" class="btn btn-outline">下月</button>${can('calendar.manage')?'<button id="calendar-new" class="btn btn-primary">单日设定</button>':'<span style="color:var(--muted)">无维护权限</span>'}${can('calendar.import')?'<button id="calendar-import" class="btn btn-outline">批量导入</button>':'<span style="color:var(--muted)">无导入权限</span>'}</div>`;
+  shell(`${pageHead('工作日历','中国时区（Asia/Shanghai）；默认周一至周五为工作日、周末为休息日，法定节假日和调休以显式配置为准。',actions)}<section class="panel"><div class="panel-head"><h3>影响说明</h3></div><p style="color:var(--muted)">${esc(CALENDAR_IMPACT_TEXT)}</p></section><section class="cards"><div class="stat"><div class="icon">${adminIcon('calendar')}</div><div class="value">${num(overrides.length)}</div><div class="label">显式配置</div></div><div class="stat"><div class="icon">${adminIcon('sun')}</div><div class="value">${num(items.filter(item=>item.is_workday).length)}</div><div class="label">工作日</div></div><div class="stat"><div class="icon">${adminIcon('moon')}</div><div class="value">${num(items.filter(item=>!item.is_workday).length)}</div><div class="label">休息日</div></div></section><section class="panel"><div class="panel-head"><h3>${state.calendarMonth} 月历</h3><p>点击日期查看有效规则、变更人和变更时间。</p></div><div style="display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:10px;margin-bottom:10px">${CALENDAR_WEEKDAYS.map(label=>`<div style="padding:8px 10px;text-align:center;font-weight:700;color:var(--muted)">${label}</div>`).join('')}</div><div id="calendar-grid" style="display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:10px">${cells.join('')}</div></section><section class="panel"><div class="panel-head"><h3>显式配置列表</h3></div>${table(['日期','状态','节日/说明','来源','版本','变更人/时间','影响范围','操作'],overrideRows,'本月尚无显式配置，当前全部使用默认规则。')}</section>`,'工作日历');
+  document.querySelector('#calendar-month').onchange=event=>{state.calendarMonth=event.target.value;calendar()};
+  document.querySelector('#calendar-prev').onclick=()=>{state.calendarMonth=shiftMonthValue(state.calendarMonth,-1);calendar()};
+  document.querySelector('#calendar-next').onclick=()=>{state.calendarMonth=shiftMonthValue(state.calendarMonth,1);calendar()};
+  const create=document.querySelector('#calendar-new');
+  if(create)create.onclick=()=>calendarDayModal(range.start,byDay[range.start],false);
+  const importButton=document.querySelector('#calendar-import');
+  if(importButton)importButton.onclick=calendarImportModal;
+  document.querySelectorAll('[data-calendar-day]').forEach(button=>button.onclick=()=>calendarDayDrawer(button.dataset.calendarDay,byDay[button.dataset.calendarDay]));
+  document.querySelectorAll('[data-calendar-edit]').forEach(button=>button.onclick=()=>calendarDayModal(button.dataset.calendarEdit,byDay[button.dataset.calendarEdit],true));
+}
+
 const roleLabels=Object.fromEntries(INTERNAL_USER_ROLES);
 const userRoles=x=>(x.roles||x.role_codes||[]).filter(r=>roleLabels[r]);
 const roleCheckboxes=(name,selected=[])=>INTERNAL_USER_ROLES.map(([code,label])=>`<label style="display:flex;align-items:center;gap:8px;margin:8px 0"><input type="checkbox" name="${name}" value="${esc(code)}" ${selected.includes(code)?'checked':''}>${esc(label)}<small style="color:var(--muted)">${esc(code)}</small></label>`).join('');
 const selectedRoleCodes=name=>[...document.querySelectorAll(`input[name="${name}"]:checked`)].map(x=>x.value);
+const CHINA_TIMEZONE='Asia/Shanghai';
+const CALENDAR_WEEKDAYS=['一','二','三','四','五','六','日'];
+const CALENDAR_SOURCE_OPTIONS=[['MANUAL','人工维护'],['OFFICIAL','法定节假日/调休'],['IMPORT','批量导入']];
+const CALENDAR_SOURCE_CODES=CALENDAR_SOURCE_OPTIONS.map(([code])=>code);
+const CALENDAR_SOURCE_LABELS={DEFAULT_WEEKDAY:'默认工作日',DEFAULT_WEEKEND:'默认休息日',MANUAL:'人工维护',OFFICIAL:'法定节假日/调休',IMPORT:'批量导入'};
+const CALENDAR_IMPACT_TEXT='只影响保存后新领取或历史缺失字段补算；已固化的历史截止时间不回算。';
+const pad2=value=>String(value).padStart(2,'0');
+const chinaDateParts=moment=>Object.fromEntries(new Intl.DateTimeFormat('en-US',{timeZone:CHINA_TIMEZONE,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(moment).filter(part=>part.type!=='literal').map(part=>[part.type,part.value]));
+const chinaMonthValue=moment=>{const parts=chinaDateParts(moment);return `${parts.year}-${parts.month}`};
+const parseMonthValue=value=>{const [year,month]=value.split('-').map(Number);return {year,month};};
+const shiftMonthValue=(value,offset)=>{const {year,month}=parseMonthValue(value);const absolute=year*12+month-1+offset;return `${Math.floor(absolute/12)}-${pad2(absolute%12+1)}`;};
+const monthRange=value=>{const {year,month}=parseMonthValue(value);const daysInMonth=new Date(Date.UTC(year,month,0)).getUTCDate();return {year,month,daysInMonth,start:`${value}-01`,end:`${value}-${pad2(daysInMonth)}`};};
+const calendarDisplaySource=item=>CALENDAR_SOURCE_LABELS[item.source]||item.source||'未知来源';
+const calendarDisplayUpdatedBy=item=>item.updated_by_name||item.updated_by||'系统默认规则';
+const calendarDisplayUpdatedAt=item=>item.updated_at?new Date(item.updated_at).toLocaleString('zh-CN',{timeZone:CHINA_TIMEZONE,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}):'--';
+function calendarCellTone(item){if(item.is_override)return item.is_workday?'border:1px solid rgba(122,98,72,.32);background:linear-gradient(180deg,rgba(122,98,72,.12),rgba(122,98,72,.05));':'border:1px solid rgba(165,75,75,.30);background:linear-gradient(180deg,rgba(165,75,75,.10),rgba(165,75,75,.04));';return item.is_workday?'border:1px solid rgba(0,0,0,.08);background:linear-gradient(180deg,rgba(255,255,255,.94),rgba(245,241,235,.88));':'border:1px solid rgba(0,0,0,.08);background:linear-gradient(180deg,rgba(243,243,243,.92),rgba(232,229,223,.88));';}
+function parseCalendarImport(raw){
+  const content=raw.trim();
+  if(!content)throw new Error('请填写导入内容');
+  let days;
+  if(content.startsWith('{')||content.startsWith('[')){
+    const parsed=JSON.parse(content);
+    days=Array.isArray(parsed)?parsed:parsed.days;
+  }else{
+    const lines=content.split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
+    if(lines[0]?.replace(/^\ufeff/,'').startsWith('日期'))lines.shift();
+    days=lines.map((line,index)=>{
+      const [day,kind,holidayName='',source='IMPORT',version='1']=line.split(/[,\t]/).map(value=>value.trim());
+      const normalizedKind=kind?.toLowerCase();
+      const workdayKinds=new Set(['工作日','true','1','yes']);
+      const restKinds=new Set(['休息日','非工作日','false','0','no']);
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(day||''))throw new Error(`第 ${index+1} 行日期必须为 YYYY-MM-DD`);
+      if(!workdayKinds.has(normalizedKind)&&!restKinds.has(normalizedKind))throw new Error(`第 ${index+1} 行是否工作日无效`);
+      const normalizedSource=(source||'IMPORT').toUpperCase();
+      if(!CALENDAR_SOURCE_CODES.includes(normalizedSource))throw new Error(`第 ${index+1} 行来源无效`);
+      const normalizedVersion=Number(version||1);
+      if(!Number.isInteger(normalizedVersion)||normalizedVersion<1)throw new Error(`第 ${index+1} 行版本无效`);
+      return {day,is_workday:workdayKinds.has(normalizedKind),holiday_name:holidayName||null,source:normalizedSource,version:normalizedVersion};
+    });
+  }
+  if(!Array.isArray(days)||!days.length)throw new Error('导入内容必须包含至少一个日期');
+  if(days.length>1000)throw new Error('单次最多导入 1000 天');
+  const seen=new Set();
+  days.forEach(item=>{if(seen.has(item.day))throw new Error(`导入内容存在重复日期：${item.day}`);seen.add(item.day)});
+  return days;
+}
+async function runCalendarAction(button,action){const old=button.textContent;button.disabled=true;button.textContent='处理中';try{const message=await action();toast(message||'操作完成');closeOverlay();await calendar()}catch(e){toast(e.message,'error')}finally{button.disabled=false;button.textContent=old}}
 async function runUserAction(button,action,success){const old=button.textContent;let completed=false;button.disabled=true;button.textContent='处理中';try{await action();completed=true;toast(success);closeOverlay();await users()}catch(e){if(completed&&(e.code==='AUTH_REQUIRED'||e.code==='AUTH_INVALID')){state.me=null;login();toast(`${success}，请重新登录`)}else{toast(e.message,'error')}}finally{button.disabled=false;button.textContent=old}}
 async function users(){const data=await request('/users');const internal=data.filter(x=>!x.company_id&&userRoles(x).length);const rows=internal.map(x=>{const roles=userRoles(x);const active=x.status==='ACTIVE';return `<tr><td>${esc(x.display_name)}</td><td>${esc(x.username||'--')}</td><td>${esc(roles.map(r=>roleLabels[r]||r).join('、'))}<br><small>${esc(roles.join('、'))}</small></td><td>平台内部</td><td>${badge(x.status,statusType(x.status))}</td><td><button class="btn btn-small btn-outline" data-edit-user="${x.id}">编辑角色</button><button class="btn btn-small btn-outline" data-reset-user="${x.id}">重置密码</button>${active?`<button class="btn btn-small btn-danger" data-disable="${x.id}">停用</button>`:`<button class="btn btn-small btn-primary" data-enable="${x.id}">启用</button>`}</td></tr>`});shell(`${pageHead('账号与角色','仅管理平台内部账号；创建、改角色、启停和重置密码都会使相关会话失效。','<button id="new-user" class="btn btn-primary">新建内部账号</button>')}<section class="panel">${table(['姓名','账号','角色','归属','状态','操作'],rows,'暂无内部账号')}</section>`,'账号角色');document.querySelector('#new-user').onclick=userModal;document.querySelectorAll('[data-edit-user]').forEach(x=>x.onclick=()=>editUserRolesModal(internal.find(u=>u.id===x.dataset.editUser)));document.querySelectorAll('[data-reset-user]').forEach(x=>x.onclick=()=>resetUserPasswordModal(internal.find(u=>u.id===x.dataset.resetUser)));document.querySelectorAll('[data-disable]').forEach(x=>x.onclick=()=>{const id=x.dataset.disable;if(confirm('确认停用该账号并使全部会话立即失效？'))runUserAction(x,()=>request(`/users/${id}/disable`,{method:'POST'}),'账号已停用')});document.querySelectorAll('[data-enable]').forEach(x=>x.onclick=()=>{const id=x.dataset.enable;runUserAction(x,()=>request(`/users/${id}/enable`,{method:'POST'}),'账号已启用')})}
 function userModal(){openModal('新建内部账号',`${field('u-name','姓名',input('u-name'))}${field('u-user','登录账号',input('u-user'))}${field('u-pass','初始密码',input('u-pass','','password','请设置高强度初始密码'))}${field('u-roles','角色',`<div id="u-roles">${roleCheckboxes('u-role',['OPERATION'])}</div>`,'可多选，仅限平台内部角色。')}`,`<button data-close class="btn btn-outline">取消</button><button id="save-user" class="btn btn-primary">创建</button>`);document.querySelector('#save-user').onclick=x=>runUserAction(x.currentTarget,()=>request('/users',{method:'POST',body:JSON.stringify({username:document.querySelector('#u-user').value,password:document.querySelector('#u-pass').value,display_name:document.querySelector('#u-name').value,role_codes:selectedRoleCodes('u-role')})}),'账号已创建')}
@@ -74,5 +190,5 @@ function configModal(){openModal('新建配置版本',`${field('cfg-domain','配
 
 async function audit(){const d=await request('/audit-logs?page=1&page_size=100');const rows=d.items.map(x=>`<tr><td>${fmt(x.created_at)}</td><td>${esc(x.action)}</td><td>${esc(x.resource_type)}</td><td>${esc(x.resource_id||'--')}</td><td>${esc(x.actor_user_id||'系统')}</td><td><span class="link" data-audit="${x.id}">详情</span></td></tr>`);shell(`${pageHead('操作审计日志','高风险操作记录执行人、角色、请求ID、业务对象、变更前后值与时间。')}<section class="panel">${table(['时间','动作','资源类型','资源ID','操作人','详情'],rows,'暂无审计记录')}</section>`,'审计日志');document.querySelectorAll('[data-audit]').forEach(x=>x.onclick=()=>{const r=d.items.find(i=>i.id===x.dataset.audit);openDrawer('审计详情',`<pre style="white-space:pre-wrap;word-break:break-all">${esc(JSON.stringify(r,null,2))}</pre>`)})}
 
-async function route(){if(!state.me&&!(await auth()))return;const name=location.hash.replace(/^#\/?/,'').split('?')[0]||'dashboard';state.currentPage=name;const handlers={dashboard,staging,verification,qualified,assignments,companies,points,recharge,ledgers,returns:returnsPage,outbox,users,configs,audit};const fn=handlers[name]||dashboard;try{await fn()}catch(e){console.error(e);if(e.code==='AUTH_REQUIRED'||e.code==='AUTH_INVALID'){state.me=null;login()}else{toast(e.message||'页面加载失败','error');shell(`<div class="empty"><b>${adminIcon('alert-triangle')}</b>${esc(e.message||'页面加载失败')}</div>`,'错误')}}}
+async function route(){if(!state.me&&!(await auth()))return;const name=location.hash.replace(/^#\/?/,'').split('?')[0]||'dashboard';state.currentPage=name;const handlers={dashboard,staging,verification,qualified,assignments,companies,points,recharge,ledgers,returns:returnsPage,calendar,outbox,users,configs,audit};const fn=handlers[name]||dashboard;try{await fn()}catch(e){console.error(e);if(e.code==='AUTH_REQUIRED'||e.code==='AUTH_INVALID'){state.me=null;login()}else{toast(e.message||'页面加载失败','error');shell(`<div class="empty"><b>${adminIcon('alert-triangle')}</b>${esc(e.message||'页面加载失败')}</div>`,'错误')}}}
 window.addEventListener('hashchange',route);boot();

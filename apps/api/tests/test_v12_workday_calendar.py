@@ -19,11 +19,31 @@ def db() -> Session:
         yield session
 
 
-def test_add_three_workdays_skips_weekend_and_preserves_time(db: Session) -> None:
+def test_add_three_workdays_uses_shanghai_date_and_preserves_local_time(
+    db: Session,
+) -> None:
     service = WorkdayCalendarService(db)
     claimed_at = datetime(2026, 8, 7, 16, 30, tzinfo=timezone.utc)
     deadline = service.add_workdays(claimed_at, 3)
-    assert deadline == datetime(2026, 8, 12, 16, 30, tzinfo=timezone.utc)
+    assert deadline == datetime(2026, 8, 11, 16, 30, tzinfo=timezone.utc)
+
+
+def test_aware_timestamp_uses_shanghai_business_date_across_midnight(
+    db: Session,
+) -> None:
+    service = WorkdayCalendarService(db)
+    friday_utc_but_saturday_in_china = datetime(
+        2026,
+        8,
+        7,
+        16,
+        30,
+        tzinfo=timezone.utc,
+    )
+
+    deadline = service.add_workdays(friday_utc_but_saturday_in_china, 1)
+
+    assert deadline == datetime(2026, 8, 9, 16, 30, tzinfo=timezone.utc)
 
 
 def test_explicit_holiday_overrides_weekday_fallback(db: Session) -> None:

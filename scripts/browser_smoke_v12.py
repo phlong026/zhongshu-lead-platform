@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 from playwright.sync_api import Browser, Page, sync_playwright
 
@@ -91,7 +93,14 @@ def _assert_safe_html_boundary(page: Page) -> dict[str, bool]:
     return result
 
 
-def _admin_smoke(browser: Browser, base_url: str, output: Path, errors: list[str]) -> dict[str, object]:
+def _admin_smoke(
+    browser: Browser,
+    base_url: str,
+    output: Path,
+    errors: list[str],
+    *,
+    calendar_write_smoke: bool,
+) -> dict[str, object]:
     context = browser.new_context(viewport={"width": 1440, "height": 900}, locale="zh-CN")
     try:
         page = context.new_page()
@@ -127,6 +136,56 @@ def _admin_smoke(browser: Browser, base_url: str, output: Path, errors: list[str
         page.locator("#modal-root [data-close]").first.click()
         internal_user_screenshot = output / "v12-admin-internal-users.png"
         page.screenshot(path=str(internal_user_screenshot), full_page=True)
+        page.goto(f"{base_url}/admin/index.html#/calendar", wait_until="networkidle")
+        page.wait_for_selector("#calendar-month", timeout=15000)
+        page.wait_for_selector("#calendar-grid", timeout=15000)
+        month_day_count = page.locator("[data-calendar-day]").count()
+        if month_day_count < 28 or month_day_count > 31:
+            raise AssertionError(f"unexpected calendar day count: {month_day_count}")
+        if calendar_write_smoke:
+            china_today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+            smoke_day = china_today.replace(day=15).isoformat()
+            page.locator("#calendar-new").click()
+            page.wait_for_selector("#save-calendar-day", timeout=15000)
+            page.locator("#calendar-day").fill(smoke_day)
+            page.locator("#calendar-is-workday").select_option("false")
+            page.locator("#calendar-holiday-name").fill("浏览器 smoke 节假日")
+            page.locator("#calendar-source").select_option("OFFICIAL")
+            page.locator("#calendar-version").fill("1")
+            page.locator("#save-calendar-day").click()
+            page.wait_for_selector(
+                f'[data-calendar-edit="{smoke_day}"]',
+                timeout=15000,
+            )
+            page.locator("#calendar-import").click()
+            page.wait_for_selector("#save-calendar-import", timeout=15000)
+            import_day = china_today.replace(day=16).isoformat()
+            page.locator("#calendar-import-text").fill(
+                json.dumps(
+                    {
+                        "days": [
+                            {
+                                "day": import_day,
+                                "is_workday": True,
+                                "holiday_name": "浏览器 smoke 调休",
+                                "source": "IMPORT",
+                                "version": 1,
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            page.once("dialog", lambda dialog: dialog.accept())
+            page.locator("#save-calendar-import").click()
+            page.wait_for_selector(
+                f'[data-calendar-edit="{import_day}"]',
+                timeout=15000,
+            )
+        calendar_rows = page.locator("[data-calendar-edit]").count()
+        calendar_screenshot = output / "v12-admin-workday-calendar.png"
+        page.screenshot(path=str(calendar_screenshot), full_page=True)
         page.goto(f"{base_url}/admin/v12-operations.html?view=overview", wait_until="networkidle")
         page.wait_for_selector(".ops-shell", timeout=15000)
         page.wait_for_selector(".ops-kpi", timeout=15000)
@@ -143,6 +202,51 @@ def _admin_smoke(browser: Browser, base_url: str, output: Path, errors: list[str
             "internal_user_rows": internal_user_rows,
             "internal_role_count": internal_role_count,
             "internal_user_screenshot": str(internal_user_screenshot),
+            "calendar_day_count": month_day_count,
+            "calendar_rows": calendar_rows,
+            "calendar_write_smoke": calendar_write_smoke,
+            "calendar_screenshot": str(calendar_screenshot),
+            "screenshot": str(screenshot),
+        }
+    finally:
+        context.close()
+
+
+def _calendar_readonly_smoke(
+    browser: Browser,
+    base_url: str,
+    output: Path,
+    errors: list[str],
+) -> dict[str, object]:
+    context = browser.new_context(viewport={"width": 1440, "height": 900}, locale="zh-CN")
+    try:
+        response = context.request.post(
+            f"{base_url}/api/v1/auth/login",
+            data={"username": "operation", "password": "Operation123!"},
+        )
+        if not response.ok:
+            raise AssertionError(
+                f"operation login failed: {response.status} {response.text()}"
+            )
+        page = context.new_page()
+        _attach_error_capture(page, errors)
+        page.goto(f"{base_url}/admin/index.html#/calendar", wait_until="networkidle")
+        page.wait_for_selector("#calendar-grid", timeout=15000)
+        if page.locator("#calendar-new").count():
+            raise AssertionError("read-only operation user can see calendar manage action")
+        if page.locator("#calendar-import").count():
+            raise AssertionError("read-only operation user can see calendar import action")
+        content = page.locator("main.page").inner_text()
+        for marker in ("无维护权限", "无导入权限"):
+            if marker not in content:
+                raise AssertionError(f"missing read-only permission marker: {marker}")
+        screenshot = output / "v12-admin-workday-calendar-readonly.png"
+        page.screenshot(path=str(screenshot), full_page=True)
+        return {
+            "valid": True,
+            "calendar_day_count": page.locator("[data-calendar-day]").count(),
+            "manage_action_visible": False,
+            "import_action_visible": False,
             "screenshot": str(screenshot),
         }
     finally:
@@ -260,6 +364,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="V1.2 Chromium visual and interaction smoke")
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
     parser.add_argument("--output-dir", type=Path, default=Path("dist/browser-smoke"))
+    parser.add_argument(
+        "--calendar-write-smoke",
+        action="store_true",
+        help="仅限隔离临时数据库：写入两天日历数据以验证单日维护和批量导入",
+    )
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     errors: list[str] = []
@@ -270,7 +379,23 @@ def main() -> int:
             base_url = args.base_url.rstrip("/")
             results["admin"] = _run_scenario(
                 "admin",
-                lambda: _admin_smoke(browser, base_url, args.output_dir, errors),
+                lambda: _admin_smoke(
+                    browser,
+                    base_url,
+                    args.output_dir,
+                    errors,
+                    calendar_write_smoke=args.calendar_write_smoke,
+                ),
+                errors,
+            )
+            results["calendar_readonly"] = _run_scenario(
+                "calendar_readonly",
+                lambda: _calendar_readonly_smoke(
+                    browser,
+                    base_url,
+                    args.output_dir,
+                    errors,
+                ),
                 errors,
             )
             results["h5"] = _run_scenario(

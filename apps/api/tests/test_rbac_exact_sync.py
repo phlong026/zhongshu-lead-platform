@@ -16,13 +16,22 @@ from apps.api.src.services.rbac import (
 
 MINIMUM_ROLE_PERMISSIONS = {
     "SUPER_ADMIN": {"*"},
-    "OWNER": {"lead.phone.read", "points.read", "audit.read", "report.v12.read"},
+    "OWNER": {
+        "lead.phone.read",
+        "points.read",
+        "audit.read",
+        "report.v12.read",
+        "calendar.read",
+        "calendar.manage",
+        "calendar.import",
+    },
     "LEAD_ENTRY": {"lead.read", "lead.manual.manage"},
     "OPERATION": {
         "lead.dispatch",
         "company.profile.review",
         "verification.read",
         "notification.retry",
+        "calendar.read",
     },
     "TELESALES": {
         "verification.task.read",
