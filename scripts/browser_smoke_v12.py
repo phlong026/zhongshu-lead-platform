@@ -113,7 +113,7 @@ def _admin_smoke(browser: Browser, base_url: str, output: Path, errors: list[str
         page.wait_for_selector(".ops-kpi", timeout=15000)
         _assert_no_visible_error(page, (".ops-error",))
         title = page.title()
-        if "V1.2" not in title:
+        if "客资运营台" not in title:
             raise AssertionError(f"unexpected admin title: {title}")
         screenshot = output / "v12-admin-overview.png"
         page.screenshot(path=str(screenshot), full_page=True)
@@ -150,7 +150,7 @@ def _h5_smoke(browser: Browser, base_url: str, output: Path, errors: list[str]) 
         _assert_no_visible_error(page, (".wb-error",))
         safe_html_boundary = _assert_safe_html_boundary(page)
         title = page.title()
-        if "全链路工作台" not in title:
+        if "客资工作台" not in title:
             raise AssertionError(f"unexpected H5 title: {title}")
         screenshot = output / "v12-h5-home-mobile.png"
         page.screenshot(path=str(screenshot), full_page=True)
@@ -159,6 +159,57 @@ def _h5_smoke(browser: Browser, base_url: str, output: Path, errors: list[str]) 
             "title": title,
             "nav_count": page.locator(".wb-nav").count(),
             "safe_html_boundary": safe_html_boundary,
+            "screenshot": str(screenshot),
+        }
+    finally:
+        context.close()
+
+
+def _call_smoke(
+    browser: Browser,
+    base_url: str,
+    output: Path,
+    errors: list[str],
+) -> dict[str, object]:
+    context = browser.new_context(
+        viewport={"width": 390, "height": 844},
+        device_scale_factor=2,
+        is_mobile=True,
+        has_touch=True,
+        locale="zh-CN",
+    )
+    try:
+        response = context.request.post(
+            f"{base_url}/api/v1/auth/login",
+            data={"username": "telesales", "password": "Telesales123!"},
+        )
+        if not response.ok:
+            raise AssertionError(
+                f"telesales login failed: {response.status} {response.text()}"
+            )
+        page = context.new_page()
+        _attach_error_capture(page, errors)
+        page.goto(f"{base_url}/call/", wait_until="networkidle")
+        page.wait_for_selector(".shell", timeout=15000)
+        page.wait_for_selector(".top", timeout=15000)
+        page.wait_for_selector(".content", timeout=15000)
+        _assert_no_visible_error(page, (".toast.show.error",))
+        title = page.title()
+        if "电销核验台" not in title:
+            raise AssertionError(f"unexpected call title: {title}")
+        task_count = page.locator("[data-task]").count()
+        empty_state = None
+        if task_count == 0:
+            empty_state = page.locator(".empty").inner_text()
+            if "暂无待办任务" not in empty_state:
+                raise AssertionError(f"unexpected call empty state: {empty_state}")
+        screenshot = output / "v12-call-home-mobile.png"
+        page.screenshot(path=str(screenshot), full_page=True)
+        return {
+            "valid": True,
+            "title": title,
+            "task_count": task_count,
+            "empty_state": empty_state,
             "screenshot": str(screenshot),
         }
     finally:
@@ -203,6 +254,11 @@ def main() -> int:
             results["h5"] = _run_scenario(
                 "h5",
                 lambda: _h5_smoke(browser, base_url, args.output_dir, errors),
+                errors,
+            )
+            results["call"] = _run_scenario(
+                "call",
+                lambda: _call_smoke(browser, base_url, args.output_dir, errors),
                 errors,
             )
         finally:
