@@ -55,6 +55,8 @@ def _assignment_dict(assignment: Assignment, lead: Lead, *, reveal_phone: bool =
         "supplier_company_id": assignment.supplier_company_id,
         "receiver_company_id": assignment.receiver_company_id,
         "status": assignment.status,
+        "lead_status": lead.status,
+        "current_follow_status": lead.current_follow_status,
         "points_price": assignment.points_price,
         "claim_points": assignment.claim_points,
         "price_rule_id": assignment.price_rule_id,
@@ -100,6 +102,8 @@ def _assignment_detail_projection(assignment_id: str, company_id: str):
             Lead.district,
             Lead.region_code,
             Lead.need_summary,
+            Lead.status.label("lead_status"),
+            Lead.current_follow_status,
         )
         .join(Lead, Lead.id == Assignment.lead_id)
         .where(Assignment.id == assignment_id, Assignment.company_id == company_id)
@@ -118,6 +122,8 @@ def _projected_assignment_dict(row, *, reveal_phone: bool = False) -> dict:
         "supplier_company_id": row.supplier_company_id,
         "receiver_company_id": row.receiver_company_id,
         "status": row.status,
+        "lead_status": row.lead_status,
+        "current_follow_status": row.current_follow_status,
         "points_price": row.points_price,
         "claim_points": row.claim_points,
         "price_rule_id": row.price_rule_id,

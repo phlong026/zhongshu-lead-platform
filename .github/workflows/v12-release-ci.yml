@@ -188,6 +188,51 @@ jobs:
             dist/v12-postgres-verification.json
           if-no-files-found: error
 
+  release-production-lifecycle-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: zhongshu_e2e_ci
+          POSTGRES_USER: zhongshu
+          POSTGRES_PASSWORD: ci-postgres-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U zhongshu -d zhongshu_e2e_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      V12_E2E_DATABASE_URL: postgresql+psycopg://zhongshu:ci-postgres-password@127.0.0.1:5432/zhongshu_e2e_ci
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-postgres.txt
+
+      - name: Run V1.2 production lifecycle E2E on fresh PostgreSQL
+        run: python scripts/run_v12_e2e.py
+
+      - name: Upload production lifecycle E2E evidence
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: v12-release-production-lifecycle-e2e-${{ github.run_id }}
+          path: |
+            dist/e2e/v12-production-lifecycle-evidence.json
+            dist/e2e/v12-production-lifecycle.xml
+          if-no-files-found: error
+
   release-browser-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 25

@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 from playwright.sync_api import Browser, Page, sync_playwright
 
@@ -91,7 +93,14 @@ def _assert_safe_html_boundary(page: Page) -> dict[str, bool]:
     return result
 
 
-def _admin_smoke(browser: Browser, base_url: str, output: Path, errors: list[str]) -> dict[str, object]:
+def _admin_smoke(
+    browser: Browser,
+    base_url: str,
+    output: Path,
+    errors: list[str],
+    *,
+    calendar_write_smoke: bool,
+) -> dict[str, object]:
     context = browser.new_context(viewport={"width": 1440, "height": 900}, locale="zh-CN")
     try:
         page = context.new_page()
@@ -108,19 +117,180 @@ def _admin_smoke(browser: Browser, base_url: str, output: Path, errors: list[str
         _attach_console_error_capture(page, errors)
         page.locator("#login-btn").click()
         page.wait_for_selector(".layout", timeout=15000)
+        page.goto(f"{base_url}/admin/index.html#/users", wait_until="networkidle")
+        page.wait_for_selector("#new-user", timeout=15000)
+        internal_user_rows = page.locator("main.page table tbody tr").count()
+        page.locator("#new-user").click()
+        page.wait_for_selector("#save-user", timeout=15000)
+        internal_role_count = page.locator('input[name="u-role"]').count()
+        if internal_role_count != 7:
+            raise AssertionError(f"unexpected internal role count: {internal_role_count}")
+        if page.locator('input[value="FRANCHISE_OWNER"]').count():
+            raise AssertionError("franchise role leaked into internal account modal")
+        page.locator("#modal-root [data-close]").first.click()
+        page.locator("[data-edit-user]").first.click()
+        page.wait_for_selector("#save-user-roles", timeout=15000)
+        page.locator("#modal-root [data-close]").first.click()
+        page.locator("[data-reset-user]").first.click()
+        page.wait_for_selector("#reset-user-password", timeout=15000)
+        page.locator("#modal-root [data-close]").first.click()
+        internal_user_screenshot = output / "v12-admin-internal-users.png"
+        page.screenshot(path=str(internal_user_screenshot), full_page=True)
+        page.goto(f"{base_url}/admin/index.html#/calendar", wait_until="networkidle")
+        page.wait_for_selector("#calendar-month", timeout=15000)
+        page.wait_for_selector("#calendar-grid", timeout=15000)
+        month_day_count = page.locator("[data-calendar-day]").count()
+        if month_day_count < 28 or month_day_count > 31:
+            raise AssertionError(f"unexpected calendar day count: {month_day_count}")
+        if calendar_write_smoke:
+            china_today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+            smoke_day = china_today.replace(day=15).isoformat()
+            page.locator("#calendar-new").click()
+            page.wait_for_selector("#save-calendar-day", timeout=15000)
+            page.locator("#calendar-day").fill(smoke_day)
+            page.locator("#calendar-is-workday").select_option("false")
+            page.locator("#calendar-holiday-name").fill("浏览器 smoke 节假日")
+            page.locator("#calendar-source").select_option("OFFICIAL")
+            page.locator("#calendar-version").fill("1")
+            page.locator("#save-calendar-day").click()
+            page.wait_for_selector(
+                f'[data-calendar-edit="{smoke_day}"]',
+                timeout=15000,
+            )
+            page.locator("#calendar-import").click()
+            page.wait_for_selector("#save-calendar-import", timeout=15000)
+            import_day = china_today.replace(day=16).isoformat()
+            page.locator("#calendar-import-text").fill(
+                json.dumps(
+                    {
+                        "days": [
+                            {
+                                "day": import_day,
+                                "is_workday": True,
+                                "holiday_name": "浏览器 smoke 调休",
+                                "source": "IMPORT",
+                                "version": 1,
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            page.once("dialog", lambda dialog: dialog.accept())
+            page.locator("#save-calendar-import").click()
+            page.wait_for_selector(
+                f'[data-calendar-edit="{import_day}"]',
+                timeout=15000,
+            )
+        calendar_rows = page.locator("[data-calendar-edit]").count()
+        calendar_screenshot = output / "v12-admin-workday-calendar.png"
+        page.screenshot(path=str(calendar_screenshot), full_page=True)
         page.goto(f"{base_url}/admin/v12-operations.html?view=overview", wait_until="networkidle")
         page.wait_for_selector(".ops-shell", timeout=15000)
         page.wait_for_selector(".ops-kpi", timeout=15000)
         _assert_no_visible_error(page, (".ops-error",))
         title = page.title()
-        if "V1.2" not in title:
+        if "客资运营台" not in title:
             raise AssertionError(f"unexpected admin title: {title}")
+        kpi_count = page.locator(".ops-kpi").count()
         screenshot = output / "v12-admin-overview.png"
         page.screenshot(path=str(screenshot), full_page=True)
+        system_settings_visible = page.locator("[data-system-setting]").count()
+        for setting in ("users", "calendar", "configs"):
+            if page.locator(f'[data-system-setting="{setting}"]').count() != 1:
+                raise AssertionError(f"admin system setting is not visible: {setting}")
+
+        page.locator('[data-view="companies"]').click()
+        page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=companies")
+        page.wait_for_selector(".company-review", timeout=15000)
+        page.go_back()
+        page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=overview")
+        page.wait_for_selector(".ops-kpi", timeout=15000)
+        page.go_forward()
+        page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=companies")
+        page.wait_for_selector(".company-review", timeout=15000)
+
+        page.locator('[data-system-setting="calendar"]').click()
+        page.wait_for_url(f"{base_url}/admin/index.html#/calendar")
+        page.wait_for_selector("#calendar-grid", timeout=15000)
+        system_settings_screenshot = output / "v12-admin-system-settings.png"
+        page.screenshot(path=str(system_settings_screenshot), full_page=True)
+        page.go_back()
+        page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=companies")
+        page.wait_for_selector(".company-review", timeout=15000)
+        _assert_no_visible_error(page, (".ops-error",))
+        browser_history_valid = True
         return {
             "valid": True,
             "title": title,
-            "kpi_count": page.locator(".ops-kpi").count(),
+            "kpi_count": kpi_count,
+            "internal_user_rows": internal_user_rows,
+            "internal_role_count": internal_role_count,
+            "internal_user_screenshot": str(internal_user_screenshot),
+            "calendar_day_count": month_day_count,
+            "calendar_rows": calendar_rows,
+            "calendar_write_smoke": calendar_write_smoke,
+            "calendar_screenshot": str(calendar_screenshot),
+            "screenshot": str(screenshot),
+            "system_settings_visible": system_settings_visible,
+            "system_settings_screenshot": str(system_settings_screenshot),
+            "browser_history_valid": browser_history_valid,
+        }
+    finally:
+        context.close()
+
+
+def _calendar_readonly_smoke(
+    browser: Browser,
+    base_url: str,
+    output: Path,
+    errors: list[str],
+) -> dict[str, object]:
+    context = browser.new_context(viewport={"width": 1440, "height": 900}, locale="zh-CN")
+    try:
+        response = context.request.post(
+            f"{base_url}/api/v1/auth/login",
+            data={"username": "operation", "password": "Operation123!"},
+        )
+        if not response.ok:
+            raise AssertionError(
+                f"operation login failed: {response.status} {response.text()}"
+            )
+        page = context.new_page()
+        _attach_error_capture(page, errors)
+        page.goto(
+            f"{base_url}/admin/v12-operations.html?view=overview",
+            wait_until="networkidle",
+        )
+        page.wait_for_selector(".ops-shell", timeout=15000)
+        if page.locator('[data-system-setting="calendar"]').count() != 1:
+            raise AssertionError("operation user cannot see calendar system setting")
+        forbidden_settings = page.locator(
+            '[data-system-setting="users"], [data-system-setting="configs"]'
+        )
+        if forbidden_settings.count():
+            raise AssertionError("operation user can see a super-admin system setting")
+        system_settings_visible = page.locator("[data-system-setting]").count()
+        page.locator('[data-system-setting="calendar"]').click()
+        page.wait_for_url(f"{base_url}/admin/index.html#/calendar")
+        page.wait_for_selector("#calendar-grid", timeout=15000)
+        if page.locator("#calendar-new").count():
+            raise AssertionError("read-only operation user can see calendar manage action")
+        if page.locator("#calendar-import").count():
+            raise AssertionError("read-only operation user can see calendar import action")
+        content = page.locator("main.page").inner_text()
+        for marker in ("无维护权限", "无导入权限"):
+            if marker not in content:
+                raise AssertionError(f"missing read-only permission marker: {marker}")
+        screenshot = output / "v12-admin-workday-calendar-readonly.png"
+        page.screenshot(path=str(screenshot), full_page=True)
+        return {
+            "valid": True,
+            "calendar_day_count": page.locator("[data-calendar-day]").count(),
+            "manage_action_visible": False,
+            "import_action_visible": False,
+            "system_settings_visible": system_settings_visible,
             "screenshot": str(screenshot),
         }
     finally:
@@ -150,7 +320,7 @@ def _h5_smoke(browser: Browser, base_url: str, output: Path, errors: list[str]) 
         _assert_no_visible_error(page, (".wb-error",))
         safe_html_boundary = _assert_safe_html_boundary(page)
         title = page.title()
-        if "全链路工作台" not in title:
+        if "客资工作台" not in title:
             raise AssertionError(f"unexpected H5 title: {title}")
         screenshot = output / "v12-h5-home-mobile.png"
         page.screenshot(path=str(screenshot), full_page=True)
@@ -159,6 +329,57 @@ def _h5_smoke(browser: Browser, base_url: str, output: Path, errors: list[str]) 
             "title": title,
             "nav_count": page.locator(".wb-nav").count(),
             "safe_html_boundary": safe_html_boundary,
+            "screenshot": str(screenshot),
+        }
+    finally:
+        context.close()
+
+
+def _call_smoke(
+    browser: Browser,
+    base_url: str,
+    output: Path,
+    errors: list[str],
+) -> dict[str, object]:
+    context = browser.new_context(
+        viewport={"width": 390, "height": 844},
+        device_scale_factor=2,
+        is_mobile=True,
+        has_touch=True,
+        locale="zh-CN",
+    )
+    try:
+        response = context.request.post(
+            f"{base_url}/api/v1/auth/login",
+            data={"username": "telesales", "password": "Telesales123!"},
+        )
+        if not response.ok:
+            raise AssertionError(
+                f"telesales login failed: {response.status} {response.text()}"
+            )
+        page = context.new_page()
+        _attach_error_capture(page, errors)
+        page.goto(f"{base_url}/call/", wait_until="networkidle")
+        page.wait_for_selector(".shell", timeout=15000)
+        page.wait_for_selector(".top", timeout=15000)
+        page.wait_for_selector(".content", timeout=15000)
+        _assert_no_visible_error(page, (".toast.show.error",))
+        title = page.title()
+        if "电销核验台" not in title:
+            raise AssertionError(f"unexpected call title: {title}")
+        task_count = page.locator("[data-task]").count()
+        empty_state = None
+        if task_count == 0:
+            empty_state = page.locator(".empty").inner_text()
+            if "暂无待办任务" not in empty_state:
+                raise AssertionError(f"unexpected call empty state: {empty_state}")
+        screenshot = output / "v12-call-home-mobile.png"
+        page.screenshot(path=str(screenshot), full_page=True)
+        return {
+            "valid": True,
+            "title": title,
+            "task_count": task_count,
+            "empty_state": empty_state,
             "screenshot": str(screenshot),
         }
     finally:
@@ -187,22 +408,57 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="V1.2 Chromium visual and interaction smoke")
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
     parser.add_argument("--output-dir", type=Path, default=Path("dist/browser-smoke"))
+    parser.add_argument(
+        "--browser-executable",
+        type=Path,
+        default=None,
+        help="可选：使用本机 Chromium/Chrome 可执行文件；CI 默认使用 Playwright 安装的 Chromium",
+    )
+    parser.add_argument(
+        "--calendar-write-smoke",
+        action="store_true",
+        help="仅限隔离临时数据库：写入两天日历数据以验证单日维护和批量导入",
+    )
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     errors: list[str] = []
     results: dict[str, Any] = {}
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
+        browser = playwright.chromium.launch(
+            headless=True,
+            executable_path=str(args.browser_executable) if args.browser_executable else None,
+        )
         try:
             base_url = args.base_url.rstrip("/")
             results["admin"] = _run_scenario(
                 "admin",
-                lambda: _admin_smoke(browser, base_url, args.output_dir, errors),
+                lambda: _admin_smoke(
+                    browser,
+                    base_url,
+                    args.output_dir,
+                    errors,
+                    calendar_write_smoke=args.calendar_write_smoke,
+                ),
+                errors,
+            )
+            results["calendar_readonly"] = _run_scenario(
+                "calendar_readonly",
+                lambda: _calendar_readonly_smoke(
+                    browser,
+                    base_url,
+                    args.output_dir,
+                    errors,
+                ),
                 errors,
             )
             results["h5"] = _run_scenario(
                 "h5",
                 lambda: _h5_smoke(browser, base_url, args.output_dir, errors),
+                errors,
+            )
+            results["call"] = _run_scenario(
+                "call",
+                lambda: _call_smoke(browser, base_url, args.output_dir, errors),
                 errors,
             )
         finally:

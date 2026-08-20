@@ -75,7 +75,7 @@ def seed_reference_data(db: Session) -> None:
             ("SELF_BUILD", "农村自建房"),
             ("INTERIOR", "室内装修"),
         ],
-        "brand": [("ZHONGSHU", "众墅之家"), ("PARTNER", "合作品牌")],
+        "brand": [("ZHONGSHU", "合家美宅"), ("PARTNER", "合作品牌")],
         "return_reason": [
             ("EMPTY_NUMBER", "空号/停机/无法接通"),
             ("DUPLICATE", "重复客户"),
@@ -141,7 +141,7 @@ def seed_users_and_company(db: Session) -> dict[str, User | Company]:
             db,
             CompanyCreateBody(
                 code="SH-DEMO",
-                name="上海众墅之家加盟服务中心",
+                name="上海合家美宅加盟服务中心",
                 owner_name="张老板",
                 contact_phone="13800138000",
                 level_code="V1",
@@ -375,7 +375,7 @@ def seed_demo_workflow(db: Session, resources: dict[str, User | Company]) -> dic
 
 
 def seed_demo(db: Session) -> dict[str, Any]:
-    seed_rbac(db)
+    seed_rbac(db, source="seed_demo")
     seed_reference_data(db)
     db.flush()
     resources = seed_users_and_company(db)

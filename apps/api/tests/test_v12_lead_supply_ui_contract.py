@@ -15,10 +15,11 @@ def _assert_local_references_exist(html: Path) -> None:
     for reference in _references(html):
         if reference.startswith(("#", "data:", "/api/")):
             continue
-        if reference.startswith("/h5/"):
-            target = Path("apps/h5/public") / reference.removeprefix("/h5/")
+        path = reference.split("?", 1)[0]
+        if path.startswith("/h5/"):
+            target = Path("apps/h5/public") / path.removeprefix("/h5/")
         else:
-            target = html.parent / reference.lstrip("./")
+            target = html.parent / path.lstrip("./")
         assert target.exists(), f"missing {reference} from {html}"
 
 
@@ -38,13 +39,15 @@ def test_dedicated_v12_pages_are_self_contained() -> None:
 
 def test_admin_lead_supply_ui_uses_v12_flow_without_pre_verification() -> None:
     js = Path("apps/admin/public/v12-leads.js").read_text(encoding="utf-8")
+    assert "返回工作台首页" in js
+    assert "返回管理后台" not in js
     assert "/v1.2/platform/leads" in js
     assert "/v1.2/admin/supplier-leads" in js
     assert "/master-data/regions" in js
     assert "READY_DISPATCH" in js
     assert "/verification/tasks" not in js
     assert "LEAD_VERIFY" not in js
-    assert "前置电销任务" in js
+    assert "前置电销核验任务" in js
 
 
 def test_supplier_h5_supports_capability_upload_list_and_detail() -> None:

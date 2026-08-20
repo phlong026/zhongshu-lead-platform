@@ -2,7 +2,7 @@ FROM python:3.12-slim-bookworm@sha256:72d3d75f2639ab82b34b29390ad3d6e0827c775bef
 ARG APP_VERSION=1.2.0
 LABEL org.opencontainers.image.title="zhongshu-lead-platform" \
       org.opencontainers.image.version="${APP_VERSION}" \
-      org.opencontainers.image.description="众墅之家客资审核、派发与积分管理平台"
+      org.opencontainers.image.description="合家美宅客资审核、派发与积分管理平台"
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 WORKDIR /app
 RUN useradd --create-home --uid 10001 appuser

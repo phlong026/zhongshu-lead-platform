@@ -81,6 +81,7 @@ def request_capability(db: Session, company_id: str, capability_code: str) -> Co
         item.active = False
         item.reviewed_by = None
         item.reviewed_at = None
+        item.review_note = None
     db.flush()
     return item
 
@@ -92,6 +93,7 @@ def review_capability(
     capability_code: str,
     approve: bool,
     reviewed_by: str,
+    note: str | None = None,
 ) -> CompanyLeadCapability:
     item = db.scalar(
         select(CompanyLeadCapability).where(
@@ -105,6 +107,7 @@ def review_capability(
     item.active = approve
     item.reviewed_by = reviewed_by
     item.reviewed_at = datetime.now(timezone.utc)
+    item.review_note = note.strip() if note else None
     db.flush()
     return item
 

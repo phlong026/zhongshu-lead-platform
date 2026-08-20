@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     app_env: str = "development"
-    app_name: str = "众墅之家客资平台"
+    app_name: str = "合家美宅客资平台"
     app_version: str = "1.2.0"
     log_level: str = "INFO"
     log_json: bool = True

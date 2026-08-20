@@ -185,9 +185,9 @@ def test_full_http_dispatch_claim_followup_return_refund(api_client):
 def test_static_entrypoints_are_served(api_client):
     client, _ = api_client
     for path, marker in [
-        ("/h5/", "众墅之家"),
+        ("/h5/", "合家美宅"),
         ("/call/", "电销"),
-        ("/admin/", "众墅之家"),
+        ("/admin/", "合家美宅"),
     ]:
         response = client.get(path)
         assert response.status_code == 200

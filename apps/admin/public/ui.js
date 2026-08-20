@@ -4,9 +4,10 @@ export const fmt=v=>v?new Date(v).toLocaleString('zh-CN',{year:'numeric',month:'
 export const num=v=>new Intl.NumberFormat('zh-CN').format(Number(v||0));
 export const yuan=cents=>`¥${num(Number(cents||0)/100)}`;
 export const uuid=()=>crypto.randomUUID?.()||`${Date.now()}-${Math.random()}`;
+export const icon=name=>window.ZSIconSystem?.svg(name)||'';
 export function toast(message,type=''){toastEl.textContent=message;toastEl.className=`toast show ${type==='error'?'error':''}`;setTimeout(()=>toastEl.className='toast',2800)}
 export function badge(text,type='neutral'){return `<span class="badge badge-${type}">${esc(text)}</span>`}
-export function table(headers,rows,empty='暂无数据'){if(!rows.length)return `<div class="empty"><b>⌕</b>${esc(empty)}</div>`;return `<div class="table-wrap"><table class="table"><thead><tr>${headers.map(x=>`<th>${esc(x)}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`}
+export function table(headers,rows,empty='暂无数据'){if(!rows.length)return `<div class="empty"><b>${icon('search')}</b>${esc(empty)}</div>`;return `<div class="table-wrap"><table class="table"><thead><tr>${headers.map(x=>`<th>${esc(x)}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`}
 export function openModal(title,body,footer=''){zsSetSafeHtml(modalRoot, `<div class="modal-bg" id="modal-bg"><section class="modal"><header class="modal-head"><h3>${esc(title)}</h3><button class="btn btn-small btn-outline" data-close>关闭</button></header><div class="modal-body">${body}</div>${footer?`<footer class="modal-footer">${footer}</footer>`:''}</section></div>`);modalRoot.querySelectorAll('[data-close]').forEach(x=>x.onclick=closeOverlay);return modalRoot.querySelector('.modal')}
 export function openDrawer(title,body){zsSetSafeHtml(modalRoot, `<div class="drawer-bg" id="drawer-bg"><aside class="drawer"><header class="drawer-head"><h3>${esc(title)}</h3><button class="btn btn-small btn-outline" data-close>关闭</button></header><div class="drawer-body">${body}</div></aside></div>`);modalRoot.querySelectorAll('[data-close]').forEach(x=>x.onclick=closeOverlay);return modalRoot.querySelector('.drawer')}
 export function closeOverlay(){modalRoot.innerHTML=''}

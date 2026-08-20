@@ -17,8 +17,8 @@ function zsPatchTopbar() {
   if (brandCopy && brandCopy.dataset.zsV13 !== '1') {
     const small = brandCopy.querySelector('small');
     const titleNode = [...brandCopy.childNodes].find(node => node.nodeType === Node.TEXT_NODE);
-    if (titleNode) titleNode.nodeValue = '众墅之家';
-    if (small) small.textContent = '客资审核 · 派发 · 积分';
+    if (titleNode) titleNode.nodeValue = '合家美宅';
+    small?.remove();
     brandCopy.dataset.zsV13 = '1';
   }
   const messageButton = document.querySelector('.topbar .icon-btn[data-route="notifications"]');
@@ -36,7 +36,7 @@ function zsCreateQuickActions() {
     <div class="zs-v13-section-head"><h3>快捷入口</h3><small>高频操作</small></div>
     <div class="zs-v13-actions">
       <button class="zs-v13-action" data-zs-route="leads"><i>${zsIcon('list')}</i><span>我的客资</span></button>
-      <button class="zs-v13-action" data-zs-route="points"><i>${zsIcon('gem')}</i><span>积分中心</span></button>
+      <button class="zs-v13-action" data-zs-route="points"><i>${zsIcon('coins')}</i><span>积分中心</span></button>
       <button class="zs-v13-action" data-zs-route="leads?status=FOLLOWING"><i>${zsIcon('clipboard-check')}</i><span>跟进记录</span></button>
       <button class="zs-v13-action" data-zs-route="notifications"><i>${zsIcon('bell')}</i><span>消息中心</span></button>
     </div>`);

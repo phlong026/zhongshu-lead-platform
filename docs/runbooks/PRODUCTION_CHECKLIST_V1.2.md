@@ -1,6 +1,8 @@
-# V1.2 生产上线检查表
+# 合家美宅客资平台 V1.2 生产上线检查表
 
 所有 P0 项必须有证据并由责任人签字。任何一项失败均为 `NO-GO`。
+
+检查证据必须注明属于 `代码完成`、`自动化通过` 或 `真实环境验收`；前两类证据不能勾选第三类现场门禁。
 
 ## A. 版本和质量
 
@@ -11,6 +13,7 @@
 - [ ] `APP_IMAGE` 采用 `repo:APP_VERSION@sha256:digest`，显式 tag 与 `APP_VERSION` 完全一致；
 - [ ] `docker image inspect` 的 OCI `org.opencontainers.image.version` 与 `APP_VERSION` 完全一致；
 - [ ] README、部署、迁移、回滚、UAT、测试、安全审计和发布说明均为 V1.2；
+- [ ] 全角色初始化按 `docs/runbooks/V1.2_INITIALIZATION_SOP.md` 演练，冻结步骤保持未执行且有记录；
 - [ ] Main Release Verification 的 global/critical line+branch coverage 门禁通过并保留 coverage artifact；
 - [ ] Security Analysis 对当前提交的 Semgrep Python/JavaScript SAST、生产 Docker 镜像 Trivy HIGH/CRITICAL 扫描全部通过；
 - [ ] 当前生产候选镜像存在可追踪 CycloneDX SBOM；
@@ -50,8 +53,11 @@
 - [ ] 上线窗口完成即时数据库和对象存储备份；
 - [ ] `migrate_v12_data.py --dry-run` 无失败行；
 - [ ] 正式手机号指纹回填完成，检查点状态为 `COMPLETED`；
+- [ ] 固定 RBAC 差异预览已人工复核，应用后 `v12-rbac-after.json` 为 `result.changed=false`；
+- [ ] 有权限变化时存在 `SYSTEM_RBAC_SYNC` 审计，新增和移除映射与批准的代码矩阵一致；
+- [ ] 生产 API 在未同步 RBAC 差异时拒绝启动，不存在启动时静默回收权限；
 - [ ] `reconcile_v12.py` 返回 valid；
-- [ ] `dist/v101-baseline-before.json`、`dist/v12-reconciliation-before-backfill.json`、`dist/v12-reconciliation-after.json` 和 `dist/v12-preflight.json` 已持久化到宿主机并归档；
+- [ ] `dist/v101-baseline-before.json`、RBAC 预览/应用/复查 JSON、`dist/v12-reconciliation-before-backfill.json`、`dist/v12-reconciliation-after.json` 和 `dist/v12-preflight.json` 已持久化到宿主机并归档；
 - [ ] 所有 JSON 证据通过 `python -m json.tool` 校验，未保存在 `run --rm` 容器临时目录；
 - [ ] 无未知历史状态、重复有效派发单或积分余额差异；
 - [ ] 奖励结算/冲正流水的公司、类型、业务 ID、金额和关联原流水与奖励事实一致；
@@ -72,7 +78,7 @@
 - [ ] 平台运营、财务、电销、审核员和加盟商全流程 E2E 通过；
 - [ ] 并发派发、并发领取、重复返分和奖励结算验证通过；
 - [ ] 越权读取手机号、积分、财务字段和证据文件均失败；
-- [ ] 实际节假日工作日历已导入并验收；
+- [ ] 实际节假日工作日历已按 `V1.2_WORKDAY_CALENDAR.md` 导入，重复导入幂等，并完成管理员写入/运营只读/无权限 403 验收；
 - [ ] 奖励比例、上下限、去重窗口、价格和服务区域完成审批；
 - [ ] 服务协议、隐私政策、客户授权和数据保留策略完成法务确认；
 - [ ] 3–5 家试点加盟商完成 UAT；

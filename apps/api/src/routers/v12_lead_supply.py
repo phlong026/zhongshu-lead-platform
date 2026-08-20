@@ -59,20 +59,36 @@ def _dedup_dict(result) -> dict | None:
     }
 
 
-def _capability_dict(item: CompanyLeadCapability) -> dict:
-    return {
+def _capability_dict(
+    item: CompanyLeadCapability,
+    *,
+    company_name: str | None = None,
+    company_code: str | None = None,
+) -> dict:
+    result = {
         "id": item.id,
         "company_id": item.company_id,
         "capability_code": item.capability_code,
         "active": item.active,
         "review_status": item.review_status,
+        "review_note": item.review_note,
         "reviewed_by": item.reviewed_by,
         "reviewed_at": item.reviewed_at.isoformat() if item.reviewed_at else None,
     }
+    if company_name is not None:
+        result["company_name"] = company_name
+    if company_code is not None:
+        result["company_code"] = company_code
+    return result
 
 
-def _area_dict(item: CompanyServiceAreaV12) -> dict:
-    return {
+def _area_dict(
+    item: CompanyServiceAreaV12,
+    *,
+    company_name: str | None = None,
+    company_code: str | None = None,
+) -> dict:
+    result = {
         "id": item.id,
         "company_id": item.company_id,
         "region_code": item.region_code,
@@ -84,6 +100,11 @@ def _area_dict(item: CompanyServiceAreaV12) -> dict:
         "reviewed_by": item.reviewed_by,
         "reviewed_at": item.reviewed_at.isoformat() if item.reviewed_at else None,
     }
+    if company_name is not None:
+        result["company_name"] = company_name
+    if company_code is not None:
+        result["company_code"] = company_code
+    return result
 
 
 @router.post("/platform/leads")
@@ -381,6 +402,7 @@ def request_own_capability(
         action="V12_COMPANY_CAPABILITY_REQUEST",
         resource_type="company_lead_capability",
         resource_id=item.id,
+        company_id=company.id,
         after=_capability_dict(item),
         request_id=request.state.request_id,
     )
@@ -418,6 +440,7 @@ def replace_own_service_areas(
         action="V12_COMPANY_SERVICE_AREAS_REPLACE",
         resource_type="company",
         resource_id=company.id,
+        company_id=company.id,
         after={"region_codes": [item.region_code for item in items], "review_status": "PENDING"},
         request_id=request.state.request_id,
     )
@@ -431,12 +454,26 @@ def admin_capability_list(
     principal=Depends(require_permissions("company.profile.review")),
     db: Session = Depends(get_db),
     review_status: str | None = Query(default="PENDING"),
+    page_no: int = Query(default=1, alias="page", ge=1),
+    page_size: int = Query(default=20, ge=1, le=200),
 ):
-    stmt = select(CompanyLeadCapability)
+    filters = []
     if review_status:
-        stmt = stmt.where(CompanyLeadCapability.review_status == review_status.upper())
-    items = db.scalars(stmt.order_by(CompanyLeadCapability.created_at.desc())).all()
-    return ok(request, [_capability_dict(item) for item in items])
+        filters.append(CompanyLeadCapability.review_status == review_status.upper())
+    total = db.scalar(select(func.count(CompanyLeadCapability.id)).where(*filters)) or 0
+    rows = db.execute(
+        select(CompanyLeadCapability, Company.name, Company.code)
+        .join(Company, Company.id == CompanyLeadCapability.company_id)
+        .where(*filters)
+        .order_by(CompanyLeadCapability.created_at.desc())
+        .offset((page_no - 1) * page_size)
+        .limit(page_size)
+    ).all()
+    items = [
+        _capability_dict(item, company_name=company_name, company_code=company_code)
+        for item, company_name, company_code in rows
+    ]
+    return ok(request, page(items, int(total), page_no, page_size))
 
 
 @router.post("/admin/companies/{company_id}/capabilities/{capability_code}/review")
@@ -448,7 +485,8 @@ def admin_review_capability(
     principal=Depends(require_permissions("company.profile.review")),
     db: Session = Depends(get_db),
 ):
-    if db.get(Company, company_id) is None:
+    company = db.get(Company, company_id)
+    if company is None:
         raise AppError("COMPANY_NOT_FOUND", "公司不存在", 404)
     item = review_capability(
         db,
@@ -456,6 +494,7 @@ def admin_review_capability(
         capability_code=capability_code,
         approve=body.decision == "APPROVE",
         reviewed_by=principal.user_id,
+        note=body.note,
     )
     write_audit(
         db,
@@ -463,12 +502,17 @@ def admin_review_capability(
         action="V12_COMPANY_CAPABILITY_REVIEW",
         resource_type="company_lead_capability",
         resource_id=item.id,
-        after=_capability_dict(item),
-        reason=body.decision,
+        company_id=company_id,
+        after=_capability_dict(item, company_name=company.name, company_code=company.code),
+        reason=body.note or body.decision,
         request_id=request.state.request_id,
     )
     db.commit()
-    return ok(request, _capability_dict(item), "公司能力审核已完成")
+    return ok(
+        request,
+        _capability_dict(item, company_name=company.name, company_code=company.code),
+        "公司能力审核已完成",
+    )
 
 
 @router.get("/admin/service-areas")
@@ -477,12 +521,26 @@ def admin_service_area_list(
     principal=Depends(require_permissions("company.profile.review")),
     db: Session = Depends(get_db),
     review_status: str | None = Query(default="PENDING"),
+    page_no: int = Query(default=1, alias="page", ge=1),
+    page_size: int = Query(default=20, ge=1, le=200),
 ):
-    stmt = select(CompanyServiceAreaV12)
+    filters = []
     if review_status:
-        stmt = stmt.where(CompanyServiceAreaV12.review_status == review_status.upper())
-    items = db.scalars(stmt.order_by(CompanyServiceAreaV12.created_at.desc())).all()
-    return ok(request, [_area_dict(item) for item in items])
+        filters.append(CompanyServiceAreaV12.review_status == review_status.upper())
+    total = db.scalar(select(func.count(CompanyServiceAreaV12.id)).where(*filters)) or 0
+    rows = db.execute(
+        select(CompanyServiceAreaV12, Company.name, Company.code)
+        .join(Company, Company.id == CompanyServiceAreaV12.company_id)
+        .where(*filters)
+        .order_by(CompanyServiceAreaV12.created_at.desc())
+        .offset((page_no - 1) * page_size)
+        .limit(page_size)
+    ).all()
+    items = [
+        _area_dict(item, company_name=company_name, company_code=company_code)
+        for item, company_name, company_code in rows
+    ]
+    return ok(request, page(items, int(total), page_no, page_size))
 
 
 @router.post("/admin/service-areas/{area_id}/review")
@@ -493,6 +551,12 @@ def admin_review_area(
     principal=Depends(require_permissions("company.profile.review")),
     db: Session = Depends(get_db),
 ):
+    area = db.get(CompanyServiceAreaV12, area_id)
+    if area is None:
+        raise AppError("SERVICE_AREA_NOT_FOUND", "服务区域申请不存在", 404)
+    company = db.get(Company, area.company_id)
+    if company is None:
+        raise AppError("COMPANY_NOT_FOUND", "公司不存在", 404)
     item = review_service_area(
         db,
         area_id=area_id,
@@ -506,9 +570,14 @@ def admin_review_area(
         action="V12_COMPANY_SERVICE_AREA_REVIEW",
         resource_type="company_service_area_v12",
         resource_id=item.id,
-        after=_area_dict(item),
+        company_id=item.company_id,
+        after=_area_dict(item, company_name=company.name, company_code=company.code),
         reason=body.note or body.decision,
         request_id=request.state.request_id,
     )
     db.commit()
-    return ok(request, _area_dict(item), "服务区域审核已完成")
+    return ok(
+        request,
+        _area_dict(item, company_name=company.name, company_code=company.code),
+        "服务区域审核已完成",
+    )

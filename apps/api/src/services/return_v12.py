@@ -692,12 +692,16 @@ def return_verification_task_to_dict(
     request = db.get(ReturnRequest, task.return_request_id) if task.return_request_id else None
     lead = db.get(Lead, task.lead_id)
     assignment = db.get(Assignment, task.assignment_id) if task.assignment_id else None
-    phone = decrypt_text(lead.phone_encrypted) if lead else None
     can_view_phone = bool(
         include_phone
         and task.assignee_user_id == principal.user_id
         and (principal.can("lead.phone.read") or principal.can("*"))
     )
+    phone = decrypt_text(lead.phone_encrypted) if lead and can_view_phone else None
+    snapshot = assignment.lead_snapshot if assignment and assignment.lead_snapshot else {}
+    phone_masked = snapshot.get("phone_masked")
+    if not phone_masked and lead:
+        phone_masked = mask_phone(phone or decrypt_text(lead.phone_encrypted))
     return {
         "id": task.id,
         "task_type": task.task_type,
@@ -726,8 +730,8 @@ def return_verification_task_to_dict(
         "lead": {
             "id": lead.id if lead else None,
             "customer_name": lead.customer_name if lead else None,
-            "phone": phone if can_view_phone else None,
-            "phone_masked": mask_phone(phone),
+            "phone": phone,
+            "phone_masked": phone_masked,
             "city": lead.city if lead else None,
             "district": lead.district if lead else None,
             "region_code": lead.region_code if lead else None,

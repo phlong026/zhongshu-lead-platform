@@ -5,6 +5,9 @@ from datetime import date
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
+CALENDAR_SOURCES = frozenset({"MANUAL", "OFFICIAL", "IMPORT"})
+
+
 class CalendarDayBody(BaseModel):
     is_workday: bool
     holiday_name: str | None = Field(default=None, max_length=128)
@@ -14,7 +17,18 @@ class CalendarDayBody(BaseModel):
     @field_validator("source")
     @classmethod
     def normalize_source(cls, value: str) -> str:
-        return value.strip().upper()
+        normalized = value.strip().upper()
+        if normalized not in CALENDAR_SOURCES:
+            raise ValueError(
+                "source 必须为 MANUAL、OFFICIAL 或 IMPORT"
+            )
+        return normalized
+
+    @field_validator("holiday_name")
+    @classmethod
+    def normalize_holiday_name(cls, value: str | None) -> str | None:
+        normalized = value.strip() if value else ""
+        return normalized or None
 
 
 class CalendarDayImportItem(CalendarDayBody):

@@ -4,7 +4,7 @@ import json
 import logging
 import sys
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, TextIO
 
 from .config import get_settings
 
@@ -32,10 +32,10 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False, default=str)
 
 
-def configure_logging() -> None:
+def configure_logging(*, stream: TextIO | None = None) -> None:
     settings = get_settings()
     level = getattr(logging, settings.log_level.upper(), logging.INFO)
-    handler = logging.StreamHandler(sys.stdout)
+    handler = logging.StreamHandler(stream if stream is not None else sys.stdout)
     handler.setFormatter(JsonFormatter() if settings.log_json else logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
     root = logging.getLogger()
     root.handlers.clear()

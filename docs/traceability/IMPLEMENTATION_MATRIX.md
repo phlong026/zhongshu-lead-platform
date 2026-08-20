@@ -1,46 +1,46 @@
-# V1.2 实现追踪矩阵
+# 合家美宅客资平台 V1.2 实现追踪矩阵
 
-> “代码完成”表示实现、自动测试和评审门禁已纳入仓库；“待现场验收”表示必须在真实服务号、目标基础设施或真实业务角色中执行，不能由模拟环境替代。
+> 状态必须分层记录：`代码存在`只说明实现与入口可定位；`自动化通过`只说明当前分支的自动门禁已有通过证据；`待真实环境验收`表示仍须在目标 PostgreSQL、对象存储、微信 WebView 或真实业务角色中执行。API 测试不能代替缺失的 UI，也不能代替生产验收。
 
-| 领域 | V1.2 能力 | 后端/脚本 | 前端/入口 | 自动验证 | 交付状态 |
+| 领域 | V1.2 能力 | 后端/脚本 | 前端/入口 | 自动化验证 | 真实环境验收 |
 |---|---|---|---|---|---|
-| AUTH | 内部账号、RBAC、微信 OAuth、公司绑定、安全深链 | `routers/auth.py`、`services/auth_service.py` | H5 登录/邀请/状态页 | OAuth、公司隔离、无权深链测试 | 代码完成；真实微信待现场验收 |
-| SUP | 平台手工供给、供应商草稿/提交、资料初审 | `routers/v12_leads.py`、`services/lead_supply_v12.py` | `admin/v12-leads.html`、`h5/supplier.html` | V1.2 供给 API、归属、初审和前端契约 | 代码完成 |
-| DEDUP | 独立手机号指纹、90/180/365、历史关系、覆盖审计 | `services/dedup_v12.py`、`core/security.py` | 初审和详情去重结论 | 动态窗口、覆盖权限、历史迁移 | 代码完成；生产密钥和数据抽样待现场验收 |
-| CAP/REGION | 供给/接收能力、主要城市、服务区审核 | `services/company_profile_v12.py` | H5 能力申请、后台审核 | 能力状态、层级和区域生效测试 | 代码完成；正式公司配置待初始化 |
-| DISPATCH | 待派发池、候选过滤、人工派发、积分预留 | `services/dispatch_v12.py`、`routers/v12_dispatch.py` | `admin/v12-operations.html` | 自供自领、重复、区域、积分、幂等、数据库唯一约束 | 代码完成；PostgreSQL并发门禁已加入 |
-| CLAIM | 原子领取、扣分、手机号解锁、3工作日截止、奖励快照 | `services/claim_v12.py` | `h5/v12-workbench.html` | 扣分幂等、截止固化、字段隔离、奖励观察 | 代码完成 |
-| RETURN | 四类申诉、截图或录音、逾期、补证 | `services/return_v12.py`、`routers/v12_returns.py` | V1.2 H5退回流程 | 单证据、原因、截止、重复提交测试 | 代码完成；真实对象存储待现场验收 |
-| VERIFY | 仅申诉后创建核验任务、电销事实结论、终审分权 | `services/return_verification_v12.py` | 电销H5、V1.2运营台 | 分配、领取、手机号权限、终审前置条件 | 代码完成 |
-| REFUND | 终审通过一次返分、回池、奖励取消；驳回恢复 | `services/return_verification_v12.py` | V1.2运营台 | 返分幂等、状态恢复、多轮补证 | 代码完成 |
-| REWARD | 规则快照、观察/冻结/结算、异常冲正、版本配置 | `services/supplier_reward_v12.py`、`routers/v12_rewards.py` | H5奖励、后台奖励管理 | 公式、上下限、幂等、积压排空、冲正负余额 | 代码完成 |
-| NTF | 状态变化通知、站内消息、Outbox、业务深链 | `services/notification_v12.py`、`outbox_worker.py` | H5消息、后台深链 | 事件键幂等、审计投影、Scheduler包装器 | 代码完成；真实微信发送待现场验收 |
-| REPORT/AUDIT | 平台/本公司报表、审计事件、业务ID全链路追踪 | `routers/v12_insights.py` | V1.2 H5/运营台 | RBAC、未知ID、递归脱敏 | 代码完成 |
-| MIGRATION | 历史手机号指纹回填、严格状态映射、数据对账 | `services/migration_v12.py`、`reconciliation_v12.py`、CLI | 无 | SQLite单测、PostgreSQL16历史夹具升级 | 代码完成；生产备份副本和正式执行待现场门禁 |
-| BROWSER | 桌面运营台和移动H5真实渲染/交互 | `scripts/browser_smoke_v12.py` | 1440×900后台、390×844 H5 | Chromium登录、加载、console/pageerror、截图 | 自动门禁完成；iOS/Android微信和Figma人工对照待UAT |
-| SECURITY | 密钥隔离、敏感字段脱敏、私有文件、依赖审计 | `core/production.py`、`secret_scan.py`、pip-audit | 全端 | 权限负测、密钥扫描、依赖审计、上传契约 | 代码门禁完成；渗透和目标环境配置待验收 |
-| OPS | 显式迁移、生产预检、备份恢复、回滚、灰度 | `preflight_v12.py`、Docker/Compose、Runbooks | 运维入口 | 配置契约、迁移门禁、发布文档检查 | 工具和文档完成；真实恢复、灰度和全量批准待现场执行 |
+| AUTH | 内部账号、RBAC、微信 OAuth、公司绑定、安全深链 | `apps/api/src/routers/auth.py`、`apps/api/src/services/auth_service.py` | `apps/admin/public/index.html`、`apps/h5/public/index.html` | `apps/api/tests/test_v12_auth_hardening.py`：自动化通过 | 待真实服务号 OAuth、公司绑定和全角色 UAT |
+| SUP | 平台手工供给、供应商草稿/提交、资料初审 | `apps/api/src/routers/v12_lead_supply.py`、`apps/api/src/services/lead_supply_v12.py` | `apps/admin/public/v12-leads.html`、`apps/h5/public/supplier.html` | `apps/api/tests/test_v12_lead_supply.py`、`apps/api/tests/test_v12_lead_supply_ui_contract.py`：自动化通过 | 待真实业务角色和生产数据 UAT |
+| DEDUP | 独立手机号指纹、90/180/365 天窗口、历史关系、覆盖审计、自供自领阻止 | `apps/api/src/services/dedup_v12.py`、`apps/api/src/core/security.py`、`apps/api/src/services/dispatch_v12.py` | `apps/admin/public/v12-leads.html`、`apps/admin/public/v12-operations.html` | `apps/api/tests/test_v12_lead_supply.py`、`apps/api/tests/test_v12_sprint6_migration.py`、`apps/api/tests/test_v12_dispatch_claim.py`：自动化通过 | 待生产密钥托管和生产数据抽样；配置与微信密钥相关 Gate 当前暂缓 |
+| CAP/REGION | 供给/接收能力、主要城市、服务区申请与审核 | `apps/api/src/services/company_profile_v12.py`、`apps/api/src/routers/v12_lead_supply.py` | `apps/h5/public/v12-workbench.html`、`apps/admin/public/v12-operations.html` | `apps/api/tests/test_v12_company_profile_http.py`、`apps/api/tests/test_v12_company_profile_ui_contract.py`：自动化通过 | 待真实公司初始化与全角色 UAT |
+| DISPATCH | 待派发池、候选过滤、人工派发、积分预留 | `apps/api/src/services/dispatch_v12.py`、`apps/api/src/routers/v12_dispatch.py` | `apps/admin/public/v12-operations.html` | `apps/api/tests/test_v12_dispatch_claim.py`、`apps/api/tests/test_v12_dispatch_http.py`：自动化通过 | 待真实运营角色、生产数据和 PostgreSQL UAT |
+| CLAIM | 原子领取、扣分、手机号解锁、3 工作日截止、奖励快照 | `apps/api/src/services/dispatch_v12.py`、`apps/api/src/routers/v12_dispatch.py` | `apps/h5/public/v12-workbench.html` | `apps/api/tests/test_v12_dispatch_claim.py`、`apps/api/tests/test_v12_production_lifecycle_e2e.py`：自动化通过 | 待真实加盟商、生产账务与移动端 UAT |
+| RETURN | 四类申诉、截图或录音、逾期、补证 | `apps/api/src/services/return_v12.py`、`apps/api/src/routers/v12_returns.py` | `apps/h5/public/v12-workbench.html` | `apps/api/tests/test_v12_return_workflow.py`、`apps/api/tests/test_h5_return_v13.py`：自动化通过 | 待真实对象存储、微信 WebView 和业务 UAT |
+| VERIFY | 仅申诉后创建核验任务、电销事实结论、终审分权 | `apps/api/src/services/return_v12.py`、`apps/api/src/routers/v12_returns.py` | `apps/call-h5/public/index.html`、`apps/admin/public/v12-operations.html` | `apps/api/tests/test_call_h5_v12_contract.py`、`apps/api/tests/test_v12_return_workflow.py`：自动化通过 | 待真实电销与退回终审角色 UAT |
+| REFUND | 终审通过一次返分、回池、奖励取消；驳回恢复 | `apps/api/src/services/return_v12.py` | `apps/admin/public/v12-operations.html` | `apps/api/tests/test_v12_return_workflow.py`、`apps/api/tests/test_v12_reconciliation_legacy.py`：自动化通过 | 待生产账务抽样与财务/运营联合 UAT |
+| REWARD | 规则快照、观察/冻结/结算、异常冲正 | `apps/api/src/services/supplier_reward_v12.py`、`apps/api/src/routers/v12_rewards.py` | `apps/h5/public/v12-workbench.html`、`apps/admin/public/v12-operations.html` | `apps/api/tests/test_v12_supplier_rewards.py`、`apps/api/tests/test_v12_reward_scheduler_contract.py`：自动化通过 | 待批准规则、生产账务和财务 UAT；参数配置当前暂缓 |
+| NTF | 状态变化通知、站内消息、Outbox、业务深链 | `apps/api/src/services/notification_v12.py`、`apps/api/src/services/outbox_worker.py` | `apps/h5/public/v12-workbench.html`、`apps/admin/public/v12-operations.html` | `apps/api/tests/test_v12_sprint5_notifications.py`：自动化通过 | 待真实微信发送、失败重试和深链 UAT；微信 Gate 当前暂缓 |
+| REPORT/AUDIT | 平台/本公司报表、审计事件、业务 ID 全链路追踪 | `apps/api/src/routers/v12_insights.py`、`apps/api/src/services/audit.py` | `apps/h5/public/v12-workbench.html`、`apps/admin/public/v12-operations.html` | `apps/api/tests/test_v12_sprint5_insights.py`、`apps/api/tests/test_v12_audit_security.py`：自动化通过 | 待真实角色、生产数据口径和审计抽样 UAT |
+| MIGRATION | 历史手机号指纹回填、严格状态映射、数据对账 | `apps/api/src/services/migration_v12.py`、`apps/api/src/services/reconciliation_v12.py`、`scripts/migrate_v12_data.py`、`scripts/reconcile_v12.py` | 无用户界面；仅受控运维入口 | `apps/api/tests/test_v12_sprint6_migration.py`、`apps/api/tests/test_v12_postgres_constraint_gate.py`：自动化通过 | 待生产备份副本预演、正式执行和签字 |
+| BROWSER | Chromium 桌面运营台和移动视口 H5 渲染/交互门禁 | `scripts/browser_smoke_v12.py` | `apps/admin/public/v12-operations.html`、`apps/h5/public/v12-workbench.html`、`apps/call-h5/public/index.html` | `apps/api/tests/test_v12_browser_smoke_contract.py`：自动化通过 | 待 iOS/Android 微信 WebView、目标桌面浏览器和人工视觉 UAT |
+| SECURITY | 密钥隔离、敏感字段脱敏、私有文件、依赖审计 | `apps/api/src/core/production.py`、`scripts/secret_scan.py` | 全端后端强制，不依赖前端隐藏 | `apps/api/tests/test_pre_go_live_security_review.py`、`apps/api/tests/test_v12_audit_security.py`：自动化通过 | 待目标环境安全基线、渗透与密钥托管验收；微信密钥事项当前暂缓 |
+| OPS | 显式迁移、生产预检、备份恢复、回滚、灰度 | `scripts/preflight_v12.py`、`scripts/verify_production.py`、`scripts/bootstrap_superadmin.py` | 运维命令与 Runbook | `apps/api/tests/test_v12_release_readiness_contract.py`、`apps/api/tests/test_production_scripts_contract.py`：自动化通过 | 待真实恢复演练、灰度和 Go/No-Go 签字 |
 
 ## Sprint 6 T30–T33 证据
 
-| 任务 | 代码/文档证据 | 自动门禁 | 现场证据 |
+| 任务 | 代码/文档证据 | 自动化门禁 | 现场证据 |
 |---|---|---|---|
-| T30 | `migration_v12.py`、`migrate_v12_data.py`、`reconcile_v12.py`、迁移Runbook | PostgreSQL历史夹具、错误脱敏、幂等与对账测试 | 生产副本预演、迁移日志、财务抽样 |
-| T31 | 全量测试、生产配置测试、依赖审计、PostgreSQL CI、`performance_v12.py`、性能容量 Runbook | PR/Release 门禁验证压测合同可运行且禁止 PR 访问 staging | staging 合成租户 100/300/500 并发报告、目标 CPU/内存/I/O、签字门禁；目标环境故障注入 |
-| T32 | Playwright脚本、截图Artifact、UAT文档 | 桌面与移动Chromium | iOS/Android微信、Chrome/Edge、Figma对照、业务签字 |
-| T33 | preflight、显式迁移、部署/回滚/灰度/复盘文档 | 配置、Alembic、对账门禁 | 真实服务号、备份恢复、3–5家灰度、Go/No-Go签字 |
+| T30 | `apps/api/src/services/migration_v12.py`、`scripts/migrate_v12_data.py`、`scripts/reconcile_v12.py`、`docs/runbooks/V1.2_MIGRATION_RUNBOOK.md` | PostgreSQL 历史夹具、错误脱敏、幂等与对账测试 | 生产副本预演、迁移日志、财务抽样 |
+| T31 | `scripts/performance_v12.py`、`docs/runbooks/V1.2_PERFORMANCE_CAPACITY.md` | PR/Release 门禁验证压测合同可运行且禁止 PR 访问 staging | staging 合成租户并发报告、目标资源指标、签字门禁与故障注入 |
+| T32 | `scripts/browser_smoke_v12.py`、`docs/runbooks/V1.2_UAT.md` | 桌面与移动视口 Chromium | iOS/Android 微信、Chrome/Edge、人工视觉对照、业务签字 |
+| T33 | `scripts/preflight_v12.py`、`docs/runbooks/DEPLOYMENT.md`、`docs/runbooks/V1.2_ROLLBACK.md`、`docs/runbooks/V1.2_POST_LAUNCH.md` | 配置合同、Alembic 与对账门禁 | 真实服务号、备份恢复、3–5 家灰度、Go/No-Go 签字 |
 
 ## 明确不在 V1.2 范围
 
 - 在线支付、微信支付或支付宝；
 - 自动、随机、轮询、权重、竞价或抢单派发；
 - 加盟商老板向内部员工二次派发；
-- 微信小程序或独立App；
-- 云呼叫中心、虚拟号码或H5自动录制原生通话。
+- 微信小程序或独立 App；
+- 云呼叫中心、虚拟号码或 H5 自动录制原生通话。
 
 ## 追踪规则
 
-- 业务规则变更必须同步PRD、迁移、配置、测试和本矩阵；
+- 业务规则变更必须同步 PRD、迁移、配置、测试和本矩阵；
 - 高风险变更必须有 `docs/reviews/` 记录；
-- PR和Release门禁失败不得合并或发布；
-- 真实生产门禁未签字时，即使代码完成也保持 `NO-GO`。
+- PR 和 Release 门禁失败不得合并或发布；
+- 真实生产门禁未签字时，即使代码和自动化完成也保持 `NO-GO`。

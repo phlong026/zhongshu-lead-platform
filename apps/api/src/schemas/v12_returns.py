@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..core.v12_enums import ReturnReasonCode
 
@@ -50,6 +50,8 @@ class ReturnVerificationAssignBody(BaseModel):
 
 
 class ReturnVerificationSubmitBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     contact_result: str = Field(min_length=2, max_length=64)
     conclusion: str = Field(min_length=2, max_length=64)
     note: str = Field(min_length=2, max_length=1000)

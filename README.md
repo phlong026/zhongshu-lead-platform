@@ -1,6 +1,8 @@
-# 众墅之家客资审核、派发与积分管理平台 V1.2
+# 合家美宅客资平台 V1.2
 
-V1.2 是客资供给、审核、人工派发、加盟商领取、退回申诉、供应奖励、通知、报表与审计的一体化生产候选版本。
+合家美宅 V1.2 是客资供给、审核、人工派发、加盟商领取、退回申诉、供应奖励、通知、报表与审计的一体化生产候选版本。
+
+> 交付状态分为 `代码完成`、`自动化通过`、`真实环境验收`。前两项不能替代真实微信、目标基础设施、生产数据、业务 UAT、灾备和灰度验收。
 
 ## 已冻结的业务边界
 
@@ -85,6 +87,7 @@ python scripts/preflight_v12.py \
 
 - `docs/runbooks/DEPLOYMENT.md`
 - `docs/runbooks/PRODUCTION_CHECKLIST_V1.2.md`
+- `docs/runbooks/V1.2_INITIALIZATION_SOP.md`
 - `docs/runbooks/V1.2_MIGRATION_RUNBOOK.md`
 - `docs/runbooks/V1.2_UAT.md`
 - `docs/runbooks/V1.2_GO_NO_GO.md`

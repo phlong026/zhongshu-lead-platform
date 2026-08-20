@@ -52,6 +52,7 @@ REQUIRED_RELEASE_DOCS = (
     "docs/runbooks/BACKUP_RESTORE.md",
     "docs/runbooks/SECURITY_CHECKLIST.md",
     "docs/runbooks/PRODUCTION_CHECKLIST_V1.2.md",
+    "docs/runbooks/V1.2_INITIALIZATION_SOP.md",
     "docs/runbooks/V1.2_MIGRATION_RUNBOOK.md",
     "docs/runbooks/V1.2_UAT.md",
     "docs/runbooks/V1.2_GO_NO_GO.md",
@@ -133,7 +134,7 @@ def build_source_zip(output: Path, *, version: str, dirty: bool) -> dict[str, ob
     log_text = str(git("log", "--oneline", "--decorate", "--all"))
     generated_at = dt.datetime.now(dt.timezone.utc).isoformat()
     manifest: dict[str, object] = {
-        "product": "众墅之家客资审核、派发与积分管理平台",
+        "product": "合家美宅客资审核、派发与积分管理平台",
         "release": version,
         "commit": commit,
         "branch": branch,
@@ -189,7 +190,7 @@ def build_git_bundle(output: Path) -> None:
 
 def _write_delivery_note(path: Path, *, version: str, commit: str, dirty: bool, files: dict[str, Path]) -> None:
     lines = [
-        f"# 众墅之家客资平台 {version} 代码交付说明",
+        f"# 合家美宅客资平台 {version} 代码交付说明",
         "",
         f"- Git 提交：`{commit}`",
         f"- 工作区状态：{'包含未提交变更（仅测试构建）' if dirty else '干净'}",
@@ -247,9 +248,9 @@ def package_release(output_dir: Path, *, version: str, allow_dirty: bool = False
     validate_release_docs()
     safe_version = re.sub(r"[^A-Za-z0-9._-]+", "-", version).strip("-") or "release"
     output_dir.mkdir(parents=True, exist_ok=True)
-    source = output_dir / f"众墅之家客资平台_{safe_version}_完整源码.zip"
-    bundle = output_dir / f"众墅之家客资平台_{safe_version}_完整Git提交历史.bundle"
-    delivery = output_dir / f"众墅之家客资平台_{safe_version}_完整交付包.zip"
+    source = output_dir / f"合家美宅客资平台_{safe_version}_完整源码.zip"
+    bundle = output_dir / f"合家美宅客资平台_{safe_version}_完整Git提交历史.bundle"
+    delivery = output_dir / f"合家美宅客资平台_{safe_version}_完整交付包.zip"
 
     manifest = build_source_zip(source, version=safe_version, dirty=dirty)
     build_git_bundle(bundle)
@@ -274,7 +275,7 @@ def package_release(output_dir: Path, *, version: str, allow_dirty: bool = False
             for doc in sorted(quality.iterdir()):
                 archive.write(doc, f"质量与发布资料/{doc.name}")
 
-    external_checksums = output_dir / f"众墅之家客资平台_{safe_version}_SHA256SUMS.txt"
+    external_checksums = output_dir / f"合家美宅客资平台_{safe_version}_SHA256SUMS.txt"
     external_checksums.write_text(
         f"{sha256(source)}  {source.name}\n"
         f"{sha256(bundle)}  {bundle.name}\n"

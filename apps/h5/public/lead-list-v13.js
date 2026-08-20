@@ -1,3 +1,5 @@
+const zsLeadListIcon = (name, className='zs-svg-icon') => window.ZSIconSystem?.svg(name, className) || '';
+
 function zsEscape(value = '') {
   return String(value ?? '').replace(/[&<>"']/g, char => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -103,10 +105,10 @@ async function zsPatchLeadList() {
   wrapper.className = 'zs-v13-leads-page';
   const heading = document.createElement('div');
   heading.className = 'zs-v13-leads-heading';
-  zsSetSafeHtml(heading, `<div><h1>${zsEscape(title.textContent || '我的客资')}</h1><p>仅显示派发给当前加盟商公司的客资</p></div><button type="button" class="zs-v13-filter-trigger" aria-label="筛选">⌕ 筛选</button>`);
+  zsSetSafeHtml(heading, `<div><h1>${zsEscape(title.textContent || '我的客资')}</h1><p>仅显示派发给当前加盟商公司的客资</p></div><button type="button" class="zs-v13-filter-trigger zs-icon-label" aria-label="筛选">${zsLeadListIcon('filter')}<span>筛选</span></button>`);
   const search = document.createElement('label');
   search.className = 'zs-v13-search';
-  search.innerHTML = '<span>⌕</span><input type="search" data-zs-search placeholder="搜索客户姓名 / 地区 / 来源">';
+  zsSetSafeHtml(search, `<span>${zsLeadListIcon('search')}</span><input type="search" data-zs-search placeholder="搜索客户姓名 / 地区 / 来源">`);
   const filters = document.createElement('div');
   filters.className = 'zs-v13-filter-row';
   filters.innerHTML = `
@@ -115,7 +117,7 @@ async function zsPatchLeadList() {
     <select data-zs-time aria-label="时间筛选"><option value="">全部时间</option><option value="TODAY">今天</option><option value="7D">近7天</option><option value="30D">近30天</option></select>`;
   const reminder = document.createElement('div');
   reminder.className = 'zs-v13-reminder';
-  reminder.innerHTML = '<b>!</b><span>24小时未领取将再次提醒，48小时自动回收</span>';
+  zsSetSafeHtml(reminder, `<b>${zsLeadListIcon('alert-triangle')}</b><span>24小时未领取将再次提醒，48小时自动回收</span>`);
 
   title.remove();
   subtitle?.remove();

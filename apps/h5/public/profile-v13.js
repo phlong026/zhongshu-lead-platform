@@ -1,5 +1,10 @@
 function zsProfileRouteActive(){return /^#\/profile(?:\?|$)/.test(location.hash||'');}
 function zsSyncProfileRouteClass(){document.body.classList.toggle('zs-v13-profile-route',zsProfileRouteActive());}
+function zsProfileIcon(name){return window.ZSIconSystem?.svg(name)||'';}
+function zsPatchProfileActionIcons(actions){
+  const icons=[[actions.querySelector('[data-route="notifications"]'),'bell'],[actions.querySelector('[data-route="points"]'),'coins'],[actions.querySelector('#logout'),'log-out']];
+  for(const [button,name] of icons){if(!button||button.querySelector('.zs-v13-profile-action-icon'))continue;const icon=document.createElement('span');icon.className='zs-v13-profile-action-icon';zsSetSafeHtml(icon,zsProfileIcon(name));button.prepend(icon);}
+}
 async function zsProfileJson(path){const r=await fetch(`/api/v1${path}`,{credentials:'include'});const p=await r.json().catch(()=>({}));if(!r.ok||p.code!=='OK')throw new Error(p.message||'请求失败');return p.data;}
 function zsMetric(label,value){const item=document.createElement('div');item.className='zs-v13-profile-metric';const span=document.createElement('span');span.textContent=label;const b=document.createElement('b');b.textContent=Number(value||0).toLocaleString('zh-CN');item.append(span,b);return item;}
 async function zsLoadProfileMetrics(card){
@@ -21,7 +26,7 @@ function zsPatchProfile(){
   const title=main.querySelector(':scope > .page-title');const cards=[...main.querySelectorAll(':scope > .card')];if(!title||cards.length<3)return;
   const company=cards[0],actions=cards.find(c=>c.querySelector('#logout')),security=cards.find(c=>/隐私与安全/.test(c.textContent||''));if(!actions||!security)return;
   const heading=document.createElement('div');heading.className='zs-v13-profile-heading';heading.innerHTML='<h1>我的</h1>';
-  company.classList.add('zs-v13-company-card');actions.classList.add('zs-v13-profile-actions');security.classList.add('zs-v13-security-card');
+  company.classList.add('zs-v13-company-card');actions.classList.add('zs-v13-profile-actions');zsPatchProfileActionIcons(actions);security.classList.add('zs-v13-security-card');
   wrapper=document.createElement('div');wrapper.className='zs-v13-profile-page';wrapper.append(heading,title,company,actions,security);main.appendChild(wrapper);main.dataset.zsV13Profile='1';zsLoadProfileMetrics(company);
 }
 const zsProfileObserver=new MutationObserver(()=>queueMicrotask(zsPatchProfile));zsProfileObserver.observe(document.documentElement,{childList:true,subtree:true});window.addEventListener('hashchange',()=>queueMicrotask(zsPatchProfile));zsPatchProfile();
