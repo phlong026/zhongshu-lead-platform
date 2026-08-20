@@ -77,6 +77,29 @@ docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml 
   run --rm -T -e RUN_DB_MIGRATIONS=true api true
 ```
 
+在启动 API 前先预览固定 RBAC 差异，人工复核所有将被回收的权限，再显式应用并复查已精确收敛：
+
+```bash
+mkdir -p dist
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml \
+  run --rm -T -e RUN_DB_MIGRATIONS=false api \
+  python scripts/sync_rbac.py \
+  > dist/v12-rbac-preview.json
+
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml \
+  run --rm -T -e RUN_DB_MIGRATIONS=false api \
+  python scripts/sync_rbac.py --apply --source release_v1.2.0 \
+  > dist/v12-rbac-apply.json
+
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml \
+  run --rm -T -e RUN_DB_MIGRATIONS=false api \
+  python scripts/sync_rbac.py \
+  > dist/v12-rbac-after.json
+```
+
+`v12-rbac-after.json` 必须为 `result.changed=false`。有实际变更时必须存在 `SYSTEM_RBAC_SYNC` 审计；完整操作与回滚步骤见 `V1.2_RBAC_SYNC.md`。
+生产 API 启动还会执行只读门禁；若发现未同步差异将直接拒绝启动，不会绕过人工复核自动回收权限。
+
 先只读预检，再执行历史手机号指纹回填：
 
 ```bash

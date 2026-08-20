@@ -48,7 +48,7 @@ from .routers import (
     v12_supplier_review,
     verification,
 )
-from .services.rbac import seed_rbac
+from .services.rbac import require_rbac_sync_complete, seed_rbac
 from .services.storage import get_storage
 
 settings = get_settings()
@@ -59,14 +59,18 @@ ROOT = Path(__file__).resolve().parents[3]
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     current_default_thread_limiter().total_tokens = settings.sync_threadpool_tokens
-    if settings.app_env.lower() == "production":
+    production = settings.app_env.lower() == "production"
+    if production:
         validation = validate_production_settings(settings)
         if not validation.valid:
             raise RuntimeError("生产环境配置校验失败：" + "；".join(validation.errors))
     init_database()
     with SessionLocal() as db:
-        seed_rbac(db)
-        db.commit()
+        if production:
+            require_rbac_sync_complete(db, source="app_startup")
+        else:
+            seed_rbac(db, source="app_startup")
+            db.commit()
     yield
 
 

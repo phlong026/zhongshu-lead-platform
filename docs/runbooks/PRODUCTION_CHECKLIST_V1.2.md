@@ -50,8 +50,11 @@
 - [ ] 上线窗口完成即时数据库和对象存储备份；
 - [ ] `migrate_v12_data.py --dry-run` 无失败行；
 - [ ] 正式手机号指纹回填完成，检查点状态为 `COMPLETED`；
+- [ ] 固定 RBAC 差异预览已人工复核，应用后 `v12-rbac-after.json` 为 `result.changed=false`；
+- [ ] 有权限变化时存在 `SYSTEM_RBAC_SYNC` 审计，新增和移除映射与批准的代码矩阵一致；
+- [ ] 生产 API 在未同步 RBAC 差异时拒绝启动，不存在启动时静默回收权限；
 - [ ] `reconcile_v12.py` 返回 valid；
-- [ ] `dist/v101-baseline-before.json`、`dist/v12-reconciliation-before-backfill.json`、`dist/v12-reconciliation-after.json` 和 `dist/v12-preflight.json` 已持久化到宿主机并归档；
+- [ ] `dist/v101-baseline-before.json`、RBAC 预览/应用/复查 JSON、`dist/v12-reconciliation-before-backfill.json`、`dist/v12-reconciliation-after.json` 和 `dist/v12-preflight.json` 已持久化到宿主机并归档；
 - [ ] 所有 JSON 证据通过 `python -m json.tool` 校验，未保存在 `run --rm` 容器临时目录；
 - [ ] 无未知历史状态、重复有效派发单或积分余额差异；
 - [ ] 奖励结算/冲正流水的公司、类型、业务 ID、金额和关联原流水与奖励事实一致；

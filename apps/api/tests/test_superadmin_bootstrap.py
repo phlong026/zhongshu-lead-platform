@@ -218,6 +218,9 @@ def test_bootstrap_works_after_alembic_upgrade(tmp_path: Path) -> None:
         db.commit()
         assert result.created is True
         assert db.scalar(select(func.count(User.id))) == 1
+        assert db.scalar(
+            select(AuditLog).where(AuditLog.action == "SYSTEM_RBAC_SYNC")
+        ) is not None
     engine.dispose()
 
 

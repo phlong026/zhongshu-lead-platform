@@ -375,7 +375,7 @@ def seed_demo_workflow(db: Session, resources: dict[str, User | Company]) -> dic
 
 
 def seed_demo(db: Session) -> dict[str, Any]:
-    seed_rbac(db)
+    seed_rbac(db, source="seed_demo")
     seed_reference_data(db)
     db.flush()
     resources = seed_users_and_company(db)

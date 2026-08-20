@@ -156,7 +156,17 @@ def bootstrap_superadmin(
         )
         _validate_password(password, normalized_username)
 
-        seed_rbac(db)
+        rbac_result = seed_rbac(db, source="superadmin_bootstrap")
+        if rbac_result.changed:
+            write_audit(
+                db,
+                principal=None,
+                action="SYSTEM_RBAC_SYNC",
+                resource_type="rbac",
+                resource_id="fixed-role-matrix",
+                after=rbac_result.to_dict(),
+                metadata={"mode": "apply", "source": "superadmin_bootstrap"},
+            )
         user = create_internal_user(
             db,
             username=normalized_username,
