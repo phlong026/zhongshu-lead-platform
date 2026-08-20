@@ -198,6 +198,9 @@ def test_v12_migration_upgrades_and_downgrades_from_v101(tmp_path: Path) -> None
     assert "rule_snapshot_json" in {
         column["name"] for column in inspector.get_columns("supplier_lead_rewards")
     }
+    assert "review_note" in {
+        column["name"] for column in inspector.get_columns("company_lead_capabilities")
+    }
     indexes = {item["name"]: item for item in inspector.get_indexes("assignments")}
     assert indexes["uq_assignments_active_lead_v12"]["unique"] == 1
 
