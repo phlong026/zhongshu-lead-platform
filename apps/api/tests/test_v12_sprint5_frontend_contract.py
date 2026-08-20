@@ -19,7 +19,7 @@ def test_h5_workbench_covers_v12_full_chain() -> None:
         assert endpoint in js
     assert "phone_masked" in js
     assert "supplier.reward.own.read" in entry
-    assert "followup.own.manage" in entry
+    assert "points.own.read" in entry
     assert "return.own.manage" in entry
 
 
@@ -27,7 +27,7 @@ def test_h5_workbench_supports_followup_history_and_guarded_submission() -> None
     html = Path("apps/h5/public/v12-workbench.html").read_text(encoding="utf-8")
     js = Path("apps/h5/public/v12-workbench.js").read_text(encoding="utf-8")
 
-    assert "v12-workbench.js?v=20260820-followup" in html
+    assert "v12-workbench.js?v=20260820-company-profile" in html
     assert "跟进历史" in js
     assert "新增跟进" in js
     assert 'type="datetime-local"' in js

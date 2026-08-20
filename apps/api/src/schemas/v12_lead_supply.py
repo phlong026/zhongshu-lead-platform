@@ -107,3 +107,9 @@ class ServiceAreaReviewBody(BaseModel):
     @classmethod
     def normalize_decision(cls, value: str) -> str:
         return value.upper()
+
+    @model_validator(mode="after")
+    def require_rejection_note(self) -> "ServiceAreaReviewBody":
+        if self.decision == "REJECT" and not (self.note and self.note.strip()):
+            raise ValueError("驳回服务区域申请时必须填写原因")
+        return self

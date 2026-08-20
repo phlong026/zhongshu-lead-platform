@@ -6,14 +6,14 @@ ADMIN = ROOT / "apps" / "admin" / "public"
 
 GLYPHS = set("⌂▤◈◉♙⇩☎✓↗♟⚙⌁＋≋↩◇◷!×‹›☰⌕?▶●↻▦→◆")
 ASSET_VERSION = "?v=20260820-clarity"
-FOLLOWUP_ASSET_VERSION = "?v=20260820-followup"
+COMPANY_PROFILE_ASSET_VERSION = "?v=20260820-company-profile"
 
 
 def test_all_h5_surfaces_load_local_svg_icon_system_before_application():
     entries = {
         "index.html": ("./app.js", ASSET_VERSION),
         "supplier.html": ("./supplier.js", ASSET_VERSION),
-        "v12-workbench.html": ("./v12-workbench.js", FOLLOWUP_ASSET_VERSION),
+        "v12-workbench.html": ("./v12-workbench.js", COMPANY_PROFILE_ASSET_VERSION),
     }
     for filename, (application_script, application_version) in entries.items():
         index = (H5 / filename).read_text(encoding="utf-8")
@@ -27,13 +27,16 @@ def test_all_admin_surfaces_reuse_same_local_svg_icon_system():
     entries = {
         "index.html": "./app.js",
         "v12-leads.html": "./v12-leads.js",
-        "v12-operations.html": "./v12-operations.js",
+        "v12-operations.html": ("./v12-operations.js", COMPANY_PROFILE_ASSET_VERSION),
     }
-    for filename, application_script in entries.items():
+    for filename, application in entries.items():
+        application_script, application_version = (
+            application if isinstance(application, tuple) else (application, ASSET_VERSION)
+        )
         index = (ADMIN / filename).read_text(encoding="utf-8")
         assert f"/h5/svg-icon-system.css{ASSET_VERSION}" in index
         assert f"/h5/svg-icon-system.js{ASSET_VERSION}" in index
-        assert f"{application_script}{ASSET_VERSION}" in index
+        assert f"{application_script}{application_version}" in index
         assert index.index("/h5/svg-icon-system.js") < index.index(application_script)
 
 

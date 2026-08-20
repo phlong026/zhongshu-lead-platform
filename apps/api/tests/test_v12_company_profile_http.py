@@ -194,6 +194,12 @@ def test_service_area_approval_and_removal_change_dispatch_eligibility_only_afte
             json={"decision": "APPROVE", "note": "接收能力审核通过"},
         )
     )
+    missing_area_reason = client.post(
+        f"/api/v1/v1.2/admin/service-areas/{areas[0]['id']}/review",
+        headers=admin,
+        json={"decision": "REJECT"},
+    )
+    assert missing_area_reason.status_code == 422
     for area in areas:
         approved = _data(
             client.post(

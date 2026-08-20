@@ -1,7 +1,7 @@
 const API='/api/v1',app=document.querySelector('#app'),toastEl=document.querySelector('#toast'),modalRoot=document.querySelector('#modal-root');
-const S={me:null,view:'overview',id:'',page:1};
-const P={overview:['经营总览','layout-dashboard',['report.v12.read']],review:['供应商初审','user-check',['lead.supplier.review']],dispatch:['人工派发','hand-claim',['lead.dispatch']],returns:['退回与核验','rotate-ccw',['return.read','return.review','verification.read']],rewards:['奖励管理','award',['reward.read','reward.manage']],audit:['报表与审计','search',['audit.read']]};
-const L={PENDING_REVIEW:'待初审',READY_DISPATCH:'待派发',PENDING_CLAIM:'待领取',CLAIMED:'已领取',SUBMITTED:'已提交',VERIFYING:'核验中',REVIEWING:'待终审',NEED_MORE_EVIDENCE:'待补证',APPROVED:'已通过',REJECTED:'已驳回',OBSERVING:'观察期',FROZEN:'已冻结',SETTLED:'已结算',CANCELLED:'已取消',REVERSED:'已冲正'};
+const S={me:null,view:'overview',id:'',page:1,companyStatus:'PENDING',companyCapabilityPage:1,companyAreaPage:1};
+const P={overview:['经营总览','layout-dashboard',['report.v12.read']],review:['供应商初审','user-check',['lead.supplier.review']],dispatch:['人工派发','hand-claim',['lead.dispatch']],companies:['加盟商审核','building',['company.profile.review']],returns:['退回与核验','rotate-ccw',['return.read','return.review','verification.read']],rewards:['奖励管理','award',['reward.read','reward.manage']],audit:['报表与审计','search',['audit.read']]};
+const L={PENDING:'待审核',PENDING_REVIEW:'待初审',READY_DISPATCH:'待派发',PENDING_CLAIM:'待领取',CLAIMED:'已领取',SUBMITTED:'已提交',VERIFYING:'核验中',REVIEWING:'待终审',NEED_MORE_EVIDENCE:'待补证',APPROVED:'已通过',REJECTED:'已驳回',OBSERVING:'观察期',FROZEN:'已冻结',SETTLED:'已结算',CANCELLED:'已取消',REVERSED:'已冲正'};
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=v=>v?new Date(v).toLocaleString('zh-CN'):'--',can=p=>(S.me?.permissions||[]).some(x=>x==='*'||x===p),label=v=>L[v]||v||'--';
 const icon=name=>window.ZSIconSystem?.svg?.(name)||'';
@@ -18,11 +18,65 @@ function go(view,id=''){S.view=view;S.id=id;S.page=1;const u=new URL(location.hr
 function table(head,rows){return `<div class="ops-table-wrap"><table class="ops-table"><thead><tr>${head.map(x=>`<th>${x}</th>`).join('')}</tr></thead><tbody>${rows.join('')||`<tr><td colspan="${head.length}" class="ops-empty">暂无数据</td></tr>`}</tbody></table></div>`}
 function pager(d){const pages=Math.max(1,Math.ceil((d.total||0)/(d.page_size||20)));return `<div class="ops-pager"><button class="ops-btn" id="prev" ${S.page<=1?'disabled':''}>上一页</button><span>${S.page}/${pages}，共 ${d.total||0} 条</span><button class="ops-btn" id="next" ${S.page>=pages?'disabled':''}>下一页</button></div>`}
 function bindPager(d,fn){const pages=Math.max(1,Math.ceil((d.total||0)/(d.page_size||20)));document.querySelector('#prev')?.addEventListener('click',()=>{S.page--;fn()});document.querySelector('#next')?.addEventListener('click',()=>{S.page=Math.min(pages,S.page+1);fn()})}
-async function render(){shell('<div class="ops-loading">加载中…</div>');try{await ({overview,review,dispatch,returns,rewards,audit}[S.view]||overview)()}catch(e){shell(`<div class="ops-error">${esc(e.message)}</div>`);toast(e.message,true)}}
+async function render(){shell('<div class="ops-loading">加载中…</div>');try{await ({overview,review,dispatch,companies,returns,rewards,audit}[S.view]||overview)()}catch(e){shell(`<div class="ops-error">${esc(e.message)}</div>`);toast(e.message,true)}}
 async function overview(){const d=await api('/v1.2/reports/overview');const k=[['客资总量',d.leads.total,'list'],['派发单',d.assignments.total,'hand-claim'],['退回申诉',d.returns.total,'rotate-ccw'],['供应奖励',d.supplier_rewards.points+' 分','award'],['积分流水',d.points_ledger.count,'coins'],['净积分变化',d.points_ledger.net_delta,'activity']];shell(`<div class="ops-grid">${k.map(x=>`<div class="ops-kpi"><i>${icon(x[2])}</i><small>${x[0]}</small><b>${x[1]}</b></div>`).join('')}</div><section class="ops-card"><h2>状态分布</h2><pre class="ops-code">${esc(JSON.stringify({leads:d.leads.by_status,assignments:d.assignments.by_status,returns:d.returns.by_status,rewards:d.supplier_rewards.by_status},null,2))}</pre></section>`)}
 async function review(){const d=await api(`/v1.2/admin/supplier-leads${qs({page:S.page,page_size:20})}`);const rows=(d.items||[]).map(x=>`<tr><td><b>${esc(x.customer_name)}</b><br>${esc(x.phone_masked||'--')}</td><td>${esc(x.city||'--')} ${esc(x.district||'')}</td><td>${badge(x.status)} ${badge(x.review_status)}</td><td>${esc(label(x.duplicate_status))}</td><td>${fmt(x.submitted_at)}</td><td><button class="ops-btn" data-detail="${x.id}">详情</button>${x.review_status==='PENDING'?` <button class="ops-btn primary" data-review="${x.id}:APPROVE">通过</button> <button class="ops-btn danger" data-review="${x.id}:REJECT">驳回</button>`:''}</td></tr>`);shell(`<section class="ops-card"><div class="ops-card-head"><div><h2>供应商客资初审</h2><p>列表只展示脱敏手机号。</p></div></div>${table(['客户','区域','状态','去重','提交时间','操作'],rows)}${pager(d)}</section>`);bindPager(d,review);document.querySelectorAll('[data-detail]').forEach(b=>b.onclick=()=>reviewDetail(b.dataset.detail));document.querySelectorAll('[data-review]').forEach(b=>b.onclick=()=>{const [id,decision]=b.dataset.review.split(':');reviewAction(id,decision)});if(S.id){const id=S.id;S.id='';reviewDetail(id)}}
 async function reviewDetail(id){const x=await api(`/v1.2/admin/supplier-leads/${encodeURIComponent(id)}`);modal('客资初审详情',`<div class="ops-detail-grid">${[['业务ID',x.id],['客户',x.customer_name],['手机号',x.phone_masked],['状态',label(x.status)],['初审',label(x.review_status)],['去重',label(x.duplicate_status)],['区域',`${x.city||''} ${x.district||''}`],['供应商',x.supplier_company_id]].map(([a,b])=>`<div class="ops-detail"><small>${a}</small><b>${esc(b||'--')}</b></div>`).join('')}</div><section class="ops-card"><h3>客户需求</h3><p class="ops-muted">${esc(x.need_summary||'--')}</p></section><button class="ops-btn" id="trace">业务追踪</button>`,()=>document.querySelector('#trace').onclick=()=>{closeModal();go('audit',id)})}
 async function reviewAction(id,decision){const note=prompt(decision==='REJECT'?'请输入驳回说明（必填）':'请输入审核说明（可选）','')??'';if(decision==='REJECT'&&!note.trim())return toast('驳回说明不能为空',true);try{await api(`/v1.2/admin/supplier-leads/${encodeURIComponent(id)}/review`,{method:'POST',body:JSON.stringify({decision,note:note.trim()||null})});toast('初审结果已提交');review()}catch(e){toast(e.message,true)}}
+const CAPABILITY_LABEL={LEAD_SUPPLIER:'客资供应能力',LEAD_RECEIVER:'客资接收能力'};
+const cleanProfileNote=note=>String(note||'').replace(/^\[REMOVE_REQUEST\]\s*/,'');
+function capabilityReviewActions(item){
+  if(item.review_status==='PENDING')return `<button class="ops-btn primary" data-cap-company="${esc(item.company_id)}" data-cap-code="${esc(item.capability_code)}" data-cap-decision="APPROVE">通过</button> <button class="ops-btn danger" data-cap-company="${esc(item.company_id)}" data-cap-code="${esc(item.capability_code)}" data-cap-decision="REJECT">驳回</button>`;
+  if(item.review_status==='APPROVED'&&item.active)return `<button class="ops-btn danger" data-cap-company="${esc(item.company_id)}" data-cap-code="${esc(item.capability_code)}" data-cap-decision="REJECT">停用</button>`;
+  return `<button class="ops-btn primary" data-cap-company="${esc(item.company_id)}" data-cap-code="${esc(item.capability_code)}" data-cap-decision="APPROVE">重新通过</button>`;
+}
+function areaReviewActions(item){
+  if(item.review_status!=='PENDING')return '--';
+  const removal=String(item.review_note||'').startsWith('[REMOVE_REQUEST]');
+  return `<button class="ops-btn primary" data-area-id="${esc(item.id)}" data-area-decision="APPROVE">${removal?'同意移除':'通过'}</button> <button class="ops-btn danger" data-area-id="${esc(item.id)}" data-area-decision="REJECT">${removal?'驳回移除':'驳回'}</button>`;
+}
+function companyQueuePager(data,prefix,currentPage){
+  const pages=Math.max(1,Math.ceil((data.total||0)/(data.page_size||20)));
+  return `<div class="ops-pager"><button class="ops-btn" id="${prefix}-prev" ${currentPage<=1?'disabled':''}>上一页</button><span>${currentPage}/${pages}，共 ${data.total||0} 条</span><button class="ops-btn" id="${prefix}-next" ${currentPage>=pages?'disabled':''}>下一页</button></div>`;
+}
+function bindCompanyQueuePager(data,prefix,pageKey){
+  const pages=Math.max(1,Math.ceil((data.total||0)/(data.page_size||20)));
+  document.querySelector(`#${prefix}-prev`).onclick=()=>{S[pageKey]=Math.max(1,S[pageKey]-1);companies()};
+  document.querySelector(`#${prefix}-next`).onclick=()=>{S[pageKey]=Math.min(pages,S[pageKey]+1);companies()};
+}
+async function companies(){
+  const [capabilities,areas]=await Promise.all([
+    api(`/v1.2/admin/company-capabilities${qs({review_status:S.companyStatus,page:S.companyCapabilityPage,page_size:20})}`),
+    api(`/v1.2/admin/service-areas${qs({review_status:S.companyStatus,page:S.companyAreaPage,page_size:20})}`),
+  ]);
+  const capabilityRows=(capabilities.items||[]).map(item=>`<tr><td><b>${esc(item.company_name)}</b><br><small>${esc(item.company_code)}</small></td><td>${esc(CAPABILITY_LABEL[item.capability_code]||item.capability_code)}</td><td>${badge(item.review_status)}<br><small>${item.active?'已启用':'未启用'}</small></td><td>${esc(cleanProfileNote(item.review_note)||'--')}</td><td>${fmt(item.reviewed_at)}</td><td>${capabilityReviewActions(item)}</td></tr>`);
+  const areaRows=(areas.items||[]).map(item=>{const removal=String(item.review_note||'').startsWith('[REMOVE_REQUEST]');return `<tr><td><b>${esc(item.company_name)}</b><br><small>${esc(item.company_code)}</small></td><td>${esc(item.region_code)}<br><small>${esc(item.is_primary_city?'主要城市':item.region_level)}</small></td><td>${badge(item.review_status)}<br><small>${removal&&item.active?'待移除，当前仍生效':item.active?'已生效':'未生效'}</small></td><td>${esc(cleanProfileNote(item.review_note)||'--')}</td><td>${fmt(item.reviewed_at)}</td><td>${areaReviewActions(item)}</td></tr>`});
+  shell(`<section class="ops-card company-review"><div class="ops-card-head"><div><h2>加盟商能力与服务区域审核申请</h2><p>供应与接收能力独立审核；区域移除申请在批准前继续保持原服务资格。</p></div><select class="ops-input" id="company-review-status" style="width:auto"><option value="PENDING" ${S.companyStatus==='PENDING'?'selected':''}>待审核</option><option value="APPROVED" ${S.companyStatus==='APPROVED'?'selected':''}>已通过</option><option value="REJECTED" ${S.companyStatus==='REJECTED'?'selected':''}>已驳回</option></select></div><h3>公司能力（${capabilities.total||0}）</h3>${table(['加盟商','能力','状态','审核说明','审核时间','操作'],capabilityRows)}${companyQueuePager(capabilities,'capability',S.companyCapabilityPage)}</section><section class="ops-card company-review"><h3>服务区域（${areas.total||0}）</h3>${table(['加盟商','区域','状态','审核说明','审核时间','操作'],areaRows)}${companyQueuePager(areas,'area',S.companyAreaPage)}</section>`);
+  document.querySelector('#company-review-status').onchange=event=>{S.companyStatus=event.target.value;S.companyCapabilityPage=1;S.companyAreaPage=1;companies()};
+  bindCompanyQueuePager(capabilities,'capability','companyCapabilityPage');
+  bindCompanyQueuePager(areas,'area','companyAreaPage');
+  document.querySelectorAll('[data-cap-decision]').forEach(button=>button.onclick=()=>reviewCompanyCapability(button));
+  document.querySelectorAll('[data-area-decision]').forEach(button=>button.onclick=()=>reviewCompanyArea(button));
+}
+async function reviewCompanyCapability(button){
+  if(button.dataset.busy==='1')return;
+  const decision=button.dataset.capDecision;
+  const input=prompt(decision==='REJECT'?'请输入驳回或停用原因（必填）':'请输入审核说明（可选）','');
+  if(input===null)return;
+  const note=input.trim();
+  if(decision==='REJECT'&&!note)return toast('驳回或停用原因不能为空',true);
+  button.dataset.busy='1';button.disabled=true;
+  try{await api(`/v1.2/admin/companies/${encodeURIComponent(button.dataset.capCompany)}/capabilities/${encodeURIComponent(button.dataset.capCode)}/review`,{method:'POST',body:JSON.stringify({decision,note:note||null})});toast('公司能力审核已完成');await companies()}catch(error){delete button.dataset.busy;button.disabled=false;toast(error.message,true)}
+}
+async function reviewCompanyArea(button){
+  if(button.dataset.busy==='1')return;
+  const decision=button.dataset.areaDecision;
+  const input=prompt(decision==='REJECT'?'请输入驳回说明（必填）':'请输入审核说明（可选）','');
+  if(input===null)return;
+  if(decision==='REJECT'&&!input.trim())return toast('驳回说明不能为空',true);
+  button.dataset.busy='1';button.disabled=true;
+  try{await api(`/v1.2/admin/service-areas/${encodeURIComponent(button.dataset.areaId)}/review`,{method:'POST',body:JSON.stringify({decision,note:input.trim()||null})});toast('服务区域审核已完成');await companies()}catch(error){delete button.dataset.busy;button.disabled=false;toast(error.message,true)}
+}
 async function dispatch(){const d=await api(`/v1.2/dispatch-pool${qs({page:S.page,page_size:20})}`);const rows=(d.items||[]).map(x=>`<tr><td><b>${esc(x.customer_name)}</b><br>${esc(x.phone_masked||'--')}</td><td>${esc(x.city||'--')} ${esc(x.district||'')}</td><td>${esc(x.source_kind||'--')}</td><td>${esc(x.need_summary||'--')}</td><td><button class="ops-btn primary" data-candidate="${x.id}">选择接收公司</button></td></tr>`);shell(`<section class="ops-card"><h2>待人工派发池</h2>${table(['客户','区域','来源','需求','操作'],rows)}${pager(d)}</section>`);bindPager(d,dispatch);document.querySelectorAll('[data-candidate]').forEach(b=>b.onclick=()=>candidates(b.dataset.candidate));if(S.id){const id=S.id;S.id='';candidates(id)}}
 async function candidates(leadId){const d=await api(`/v1.2/dispatch-pool/${encodeURIComponent(leadId)}/candidates`);const rows=(d.candidates||[]).map(x=>`<tr><td>${esc(x.company_name)}<br><small>${esc(x.company_id)}</small></td><td>${x.eligible?badge('APPROVED'):badge('REJECTED')}</td><td>${x.points_price}</td><td>${x.points_available??'按权限隐藏'}</td><td>${esc((x.exclusion_reasons||[]).join('、')||'符合条件')}</td><td>${x.eligible?`<button class="ops-btn primary" data-dispatch="${x.company_id}">派发</button>`:'--'}</td></tr>`);modal('选择接收公司',table(['公司','资格','价格','可用积分','判断','操作'],rows),()=>document.querySelectorAll('[data-dispatch]').forEach(b=>b.onclick=()=>dispatchOne(leadId,b.dataset.dispatch)))}
 async function dispatchOne(leadId,companyId){const note=prompt('派发备注（可选）','')||'';try{await api(`/v1.2/dispatch-pool/${encodeURIComponent(leadId)}/dispatch`,{method:'POST',body:JSON.stringify({company_id:companyId,idempotency_key:`dispatch-${crypto.randomUUID()}`,note:note||null})});toast('客资已派发');closeModal();dispatch()}catch(e){toast(e.message,true)}}

@@ -12,7 +12,7 @@ async function refreshPermissions(){
 }
 function can(code){return permissions.includes('*')||permissions.includes(code);}
 function canLeadEntry(){return can('lead.manual.manage')||can('lead.supplier.review');}
-function canOperations(){return ['lead.dispatch','return.read','return.review','verification.read','reward.read','reward.manage','reward.reverse','report.v12.read','audit.read'].some(can);}
+function canOperations(){return ['lead.dispatch','return.read','return.review','verification.read','reward.read','reward.manage','reward.reverse','report.v12.read','audit.read','company.profile.review'].some(can);}
 function icon(name){return window.ZSIconSystem?.svg?.(name)||'';}
 function makeLink(id,href,iconName,label){const link=document.createElement('a');link.className='menu-item';link.id=id;link.href=href;zsSetSafeHtml(link, `<i>${icon(iconName)}</i>${label}`);return link;}
 function injectEntries(){
