@@ -6,19 +6,20 @@ ADMIN = ROOT / "apps" / "admin" / "public"
 
 GLYPHS = set("⌂▤◈◉♙⇩☎✓↗♟⚙⌁＋≋↩◇◷!×‹›☰⌕?▶●↻▦→◆")
 ASSET_VERSION = "?v=20260820-clarity"
+FOLLOWUP_ASSET_VERSION = "?v=20260820-followup"
 
 
 def test_all_h5_surfaces_load_local_svg_icon_system_before_application():
     entries = {
-        "index.html": "./app.js",
-        "supplier.html": "./supplier.js",
-        "v12-workbench.html": "./v12-workbench.js",
+        "index.html": ("./app.js", ASSET_VERSION),
+        "supplier.html": ("./supplier.js", ASSET_VERSION),
+        "v12-workbench.html": ("./v12-workbench.js", FOLLOWUP_ASSET_VERSION),
     }
-    for filename, application_script in entries.items():
+    for filename, (application_script, application_version) in entries.items():
         index = (H5 / filename).read_text(encoding="utf-8")
         assert f"./svg-icon-system.css{ASSET_VERSION}" in index
         assert f"./svg-icon-system.js{ASSET_VERSION}" in index
-        assert f"{application_script}{ASSET_VERSION}" in index
+        assert f"{application_script}{application_version}" in index
         assert index.index("./svg-icon-system.js") < index.index(application_script)
 
 

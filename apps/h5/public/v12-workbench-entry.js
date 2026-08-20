@@ -16,7 +16,7 @@ async function refreshPermissions(){
 function allowed(){
   return permissions.includes('*')||[
     'assignment.own.read','supplier.lead.manage','supplier.reward.own.read',
-    'return.own.manage','notification.own.read'
+    'followup.own.manage','return.own.manage','notification.own.read'
   ].some(code=>permissions.includes(code));
 }
 function openWorkbench(){location.href='./v12-workbench.html'}

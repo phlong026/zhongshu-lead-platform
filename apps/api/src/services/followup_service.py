@@ -13,6 +13,14 @@ from ..core.models import Assignment, AssignmentEvent, FollowUp, Lead, Notificat
 from .notification_service import create_station_message, enqueue_outbox
 
 
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def add_followup(
     db: Session,
     *,
@@ -26,6 +34,7 @@ def add_followup(
         raise AppError("FORBIDDEN", "无权更新该客资", 403)
     if assignment.status not in {AssignmentStatus.CLAIMED, AssignmentStatus.FOLLOWING}:
         raise AppError("FOLLOWUP_NOT_ALLOWED", "订单当前不可跟进", 409)
+    next_followup_at = _as_utc(next_followup_at)
     followup = FollowUp(
         assignment_id=assignment.id,
         company_id=assignment.company_id,
@@ -64,13 +73,15 @@ def add_followup(
 
 
 def followup_to_dict(item: FollowUp) -> dict[str, Any]:
+    next_followup_at = _as_utc(item.next_followup_at)
+    created_at = _as_utc(item.created_at)
     return {
         "id": item.id,
         "assignment_id": item.assignment_id,
         "status": item.status,
         "note": item.note,
-        "next_followup_at": item.next_followup_at.isoformat() if item.next_followup_at else None,
-        "created_at": item.created_at.isoformat(),
+        "next_followup_at": next_followup_at.isoformat() if next_followup_at else None,
+        "created_at": created_at.isoformat() if created_at else None,
     }
 
 
