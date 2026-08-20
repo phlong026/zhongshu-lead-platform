@@ -1,3 +1,5 @@
+const zsDetailIcon = (name, className='zs-svg-icon') => window.ZSIconSystem?.svg(name, className) || '';
+
 function zsDetailRouteActive() {
   return /^#\/lead\/[^/?]+/.test(location.hash || '');
 }
@@ -28,7 +30,8 @@ function zsPatchLeadDetail() {
 
   const heading = document.createElement('div');
   heading.className = 'zs-v13-detail-heading';
-  back.textContent = '‹ 返回';
+  back.classList.add('zs-icon-label');
+  zsSetSafeHtml(back, `${zsDetailIcon('chevron-left')}<span>返回</span>`);
   const headingTitle = document.createElement('h1');
   headingTitle.textContent = title.textContent || '客资详情';
   const spacer = document.createElement('span');

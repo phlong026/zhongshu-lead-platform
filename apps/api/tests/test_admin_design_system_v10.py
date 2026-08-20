@@ -17,7 +17,7 @@ def test_admin_v10_design_tokens_and_page_ids():
     js = (ADMIN / "admin-design-system-v10.js").read_text(encoding="utf-8")
     for token in ("--adm-brand:#7a6248", "--adm-gold:#c8a96a", "--adm-ivory:#f8f5ef"):
         assert token in css
-    for selector in (".adm-v10-page-id", ".adm-v10-scope", ".adm-v10-overlay-id", ".adm-v10-login-security"):
+    for selector in (".adm-v10-page-id", ".adm-v10-overlay-id", ".adm-v10-login-security"):
         assert selector in css
     for number in range(1, 20):
         assert f"ADM-{number:02d}" in js
@@ -28,10 +28,45 @@ def test_admin_v10_preserves_role_and_finance_boundaries():
     assert "admDashboardId" in js
     assert "main.page .stat .label" in js
     assert "const pageText=" not in js
-    assert "仅展示资格状态，不展示具体积分余额" in js
-    assert "现金在线下完成" in js
+    assert "仅展示资格状态，不展示具体积分余额" not in js
+    assert "现金在线下完成" not in js
     assert "页面、接口、数据范围和字段权限必须同时生效" not in js
     assert "MutationObserver" in js
+
+
+def test_admin_design_system_does_not_insert_permission_scope_banner():
+    js = (ADMIN / "admin-design-system-v10.js").read_text(encoding="utf-8")
+    css = (ADMIN / "admin-design-system-v10.css").read_text(encoding="utf-8")
+    extended = (ADMIN / "admin-extended-pages-v10.js").read_text(encoding="utf-8")
+    assert "adm-v10-scope" not in js
+    assert ".adm-v10-scope" not in css
+    assert "业务与财务汇总仅按授权展示" not in js
+    assert "page.querySelector('.page-head')?.insertAdjacentElement('afterend',stats)" in extended
+
+
+def test_admin_header_keeps_identity_in_an_avatar_menu_only():
+    app = (ADMIN / "app.js").read_text(encoding="utf-8")
+    css = (ADMIN / "admin-design-system-v10.css").read_text(encoding="utf-8")
+    assert 'id="user-menu"' in app
+    assert 'class="avatar avatar-button"' in app
+    assert 'aria-label="打开账号菜单"' in app
+    assert 'aria-expanded="false"' in app
+    assert 'id="account-menu"' in app
+    assert 'id="logout"' in app
+    assert '<span>${esc(state.me.display_name)}</span>' not in app
+    assert "state.me.roles.join" not in app
+    assert ".avatar-button:focus-visible" in css
+    assert ".account-menu[hidden]" in css
+
+
+def test_admin_icons_render_from_svg_system_without_glyph_placeholders():
+    js = (ADMIN / "app.js").read_text(encoding="utf-8")
+    ui = (ADMIN / "ui.js").read_text(encoding="utf-8")
+    assert "window.ZSIconSystem?.svg" in ui
+    for icon_name in ("layout-dashboard", "inbox", "phone", "user-check", "hand-claim", "building", "coins"):
+        assert icon_name in js
+    for glyph in ("'⌂'", "'⇩'", "'☎'", "'✓'", "'↗'", "'♙'", "'◈'", "'＋'", "'≋'", "'↩'", "'◉'", "'♟'", "'⚙'", "'⌁'"):
+        assert glyph not in js
 
 
 def test_admin_v10_extended_operational_pages():

@@ -30,6 +30,11 @@
     building:'<path d="M4 21V5l8-3 8 3v16M9 21v-4h6v4M8 7h.01M12 7h.01M16 7h.01M8 11h.01M12 11h.01M16 11h.01"/>',
     'layout-dashboard':'<rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>',
     'badge-check':'<path d="m12 2 3 2 3.5-.3.8 3.4 2.7 2.2-1.5 3.2 1.5 3.2-2.7 2.2-.8 3.4L15 20l-3 2-3-2-3.5.3-.8-3.4L2 14.7l1.5-3.2L2 8.3l2.7-2.2.8-3.4L9 4l3-2Z"/><path d="m8.5 12 2 2 5-5"/>',
+    'user-check':'<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="m16 11 2 2 4-4"/>',
+    'hand-claim':'<path d="M7 11V7a2 2 0 0 1 4 0v4"/><path d="M11 10V6a2 2 0 0 1 4 0v5"/><path d="M15 11V8a2 2 0 0 1 4 0v5c0 5-3 8-8 8H9a6 6 0 0 1-4.8-2.4L2 15.8"/><path d="M3 14h5l2 2h3"/>',
+    coins:'<circle cx="8" cy="8" r="5"/><path d="M8 5v6M5 8h6"/><path d="M12.5 10.5A5 5 0 1 1 9 18.7"/><path d="M16 14v4M14 16h4"/>',
+    'log-out':'<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5M21 12H9"/>',
+    award:'<circle cx="12" cy="8" r="5"/><path d="M8.5 12.5 7 22l5-3 5 3-1.5-9.5"/>',
     'clipboard-check':'<path d="M9 5h6M9 3h6v4H9z"/><path d="M7 5H5v16h14V5h-2M8 14l2 2 5-5"/>',
     'file-text':'<path d="M6 2h8l4 4v16H6z"/><path d="M14 2v5h5M9 13h6M9 17h6M9 9h2"/>',
     wallet:'<path d="M3 6h16a2 2 0 0 1 2 2v11H3V6Z"/><path d="M3 6V4h14v2M16 12h5"/>',
@@ -42,19 +47,19 @@
     '⌂':'home','▤':'list','◈':'gem','◉':'bell','♙':'user','⇩':'inbox','☎':'phone','✓':'circle-check',
     '↗':'external-link','♟':'users','⚙':'settings','⌁':'link-off','＋':'plus','+':'plus','≋':'receipt','↩':'rotate-ccw',
     '◇':'gem','◷':'clock','!':'alert-triangle','×':'x','‹':'chevron-left','›':'chevron-right','☰':'menu','⌕':'search',
-    '?':'help-circle','▶':'play','●':'circle-check','↻':'rotate-ccw'
+    '?':'help-circle','▶':'play','●':'circle-check','↻':'rotate-ccw','▦':'layout-dashboard','→':'hand-claim','◆':'award'
   };
 
   const ROUTE_MAP = {
-    home:'home',leads:'list',points:'gem',notifications:'bell',profile:'user',login:'shield-check',
-    dashboard:'layout-dashboard',staging:'inbox',verification:'phone',qualified:'badge-check',assignments:'external-link',
+    home:'home',leads:'list',points:'coins',notifications:'bell',profile:'user',login:'shield-check',
+    dashboard:'layout-dashboard',staging:'inbox',verification:'phone',qualified:'user-check',assignments:'hand-claim',
     companies:'building',recharge:'plus',ledgers:'receipt',returns:'rotate-ccw',outbox:'bell',users:'users',configs:'settings',
     audit:'activity','master-data':'database'
   };
 
   function svg(name, className='zs-svg-icon') {
     const body = ICONS[name] || ICONS.info;
-    return `<svg class="${className}" data-icon="${name}" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
+    return `<svg class="${className}" data-icon="${name}" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
   }
 
   function contextName(el, glyph) {
@@ -67,7 +72,9 @@
     if (/帮助/.test(text)) return 'help-circle';
     if (/跟进/.test(text)) return 'clipboard-check';
     if (/消息|通知/.test(text)) return 'bell';
-    if (/积分|余额|充值/.test(text)) return glyph === '＋' || glyph === '+' ? 'plus' : 'gem';
+    if (/积分|余额|充值/.test(text)) return glyph === '＋' || glyph === '+' ? 'plus' : 'coins';
+    if (/领取|派发|订单/.test(text)) return 'hand-claim';
+    if (/合格|通过|初审/.test(text)) return 'user-check';
     if (/客资|订单|列表/.test(text)) return 'list';
     if (/退回|回收/.test(text)) return 'rotate-ccw';
     if (/拨打|电话|核验/.test(text)) return 'phone';

@@ -1,3 +1,5 @@
+const zsPointsIcon = (name, className='zs-svg-icon') => window.ZSIconSystem?.svg(name, className) || '';
+
 function zsPointsRouteActive(){
   return /^#\/points(?:\?|$)/.test(location.hash || '');
 }
@@ -49,7 +51,7 @@ function zsPatchPoints(){
 
   const heading=document.createElement('div');
   heading.className='zs-v13-points-heading';
-  heading.innerHTML='<button type="button" data-zs-points-home>‹ 返回</button><h1>积分中心</h1><span>积分明细</span>';
+  zsSetSafeHtml(heading, `<button type="button" class="zs-icon-label" data-zs-points-home>${zsPointsIcon('chevron-left')}<span>返回</span></button><h1>积分中心</h1><span>积分明细</span>`);
   heading.querySelector('[data-zs-points-home]').onclick=()=>{location.hash='#/home';};
 
   wrapper=document.createElement('div');

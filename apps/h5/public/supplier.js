@@ -2,6 +2,7 @@ const API='/api/v1';
 const app=document.querySelector('#app');
 const toastEl=document.querySelector('#toast');
 const overlay=document.querySelector('#overlay');
+const supplierIcon=(name,className='zs-svg-icon')=>window.ZSIconSystem?.svg(name,className)||'';
 const state={
   me:null,
   tab:'list',
@@ -47,7 +48,7 @@ function bindCommon(){
   const requestButton=document.querySelector('#request-capability');if(requestButton)requestButton.onclick=requestSupplierCapability;
 }
 function loading(){shell('<div class="supplier-card supplier-loading">正在加载…</div>');}
-function empty(text){return `<div class="supplier-empty"><b>⌕</b>${esc(text)}</div>`;}
+function empty(text){return `<div class="supplier-empty"><b>${supplierIcon('search')}</b>${esc(text)}</div>`;}
 function closeSheet(){overlay.innerHTML='';}
 function openSheet(title,body){zsSetSafeHtml(overlay, `<div class="supplier-overlay"><section class="supplier-sheet"><div class="supplier-sheet-head"><h2>${esc(title)}</h2><button class="supplier-btn small" id="close-sheet">关闭</button></div>${body}</section></div>`);document.querySelector('#close-sheet').onclick=closeSheet;}
 

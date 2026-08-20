@@ -1,4 +1,5 @@
 const API='/api/v1';
+const supplierEntryIcon=(name,className='zs-svg-icon')=>window.ZSIconSystem?.svg(name,className)||'';
 let permissions=[];
 let checking=false;
 let lastCheckedAt=0;
@@ -17,7 +18,7 @@ function injectEntry(){
   if(!allowed()){refreshPermissions();return;}
   const topbar=document.querySelector('.topbar');
   if(topbar&&!document.querySelector('#supplier-workspace-top')){
-    const button=document.createElement('button');button.className='icon-btn';button.id='supplier-workspace-top';button.type='button';button.setAttribute('aria-label','供应商客资');button.textContent='＋';button.onclick=()=>{location.href='./supplier.html';};
+    const button=document.createElement('button');button.className='icon-btn';button.id='supplier-workspace-top';button.type='button';button.setAttribute('aria-label','供应商客资');zsSetSafeHtml(button,supplierEntryIcon('plus'));button.onclick=()=>{location.href='./supplier.html';};
     const notice=topbar.querySelector('[data-route="notifications"]');topbar.insertBefore(button,notice||null);
   }
   if(location.hash.startsWith('#/profile')&&!document.querySelector('#supplier-workspace-profile')){

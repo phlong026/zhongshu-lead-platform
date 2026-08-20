@@ -19,11 +19,10 @@ body.zs-v13-profile-route .content{padding-top:18px}
 .zs-v13-company-card .detail-row dd{text-align:right;font-size:11px}
 .zs-v13-profile-actions{margin:0!important;padding:0!important;border:1px solid var(--zs-line)!important;border-radius:18px!important;background:var(--zs-paper)!important;box-shadow:none!important;overflow:hidden}
 .zs-v13-profile-actions .btn{justify-content:flex-start;width:100%;min-height:54px;margin:0!important;padding:0 14px;border:0;border-bottom:1px solid #f1e9df;border-radius:0;background:transparent;color:var(--zs-ink);font-size:13px}
-.zs-v13-profile-actions .btn:before{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;margin-right:10px;border-radius:10px;background:#f8f2e8;color:var(--zs-brand);font-size:14px}
-.zs-v13-profile-actions [data-route="notifications"]:before{content:'◉'}
-.zs-v13-profile-actions [data-route="points"]:before{content:'◈'}
+.zs-v13-profile-action-icon{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;margin-right:10px;border-radius:10px;background:#f8f2e8;color:var(--zs-brand)}
+.zs-v13-profile-action-icon .zs-svg-icon{width:17px;height:17px}
 .zs-v13-profile-actions #logout{border-bottom:0;color:var(--zs-danger)}
-.zs-v13-profile-actions #logout:before{content:'↪';background:#fff1f0;color:var(--zs-danger)}
+.zs-v13-profile-actions #logout .zs-v13-profile-action-icon{background:#fff1f0;color:var(--zs-danger)}
 .zs-v13-security-card{margin:0!important;padding:14px!important;border:0!important;border-radius:18px!important;background:#fbf6ee!important;box-shadow:none!important}
 .zs-v13-security-card h3{margin:0 0 8px;font-size:14px}
 .zs-v13-security-card .subtitle{margin:0!important;font-size:11px;line-height:1.6}

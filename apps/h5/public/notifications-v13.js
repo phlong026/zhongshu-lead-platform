@@ -1,3 +1,5 @@
+const zsNotificationsIcon = (name, className='zs-svg-icon') => window.ZSIconSystem?.svg(name, className) || '';
+
 function zsNotificationsRouteActive(){return /^#\/notifications(?:\?|$)/.test(location.hash||'');}
 function zsSyncNotificationsRouteClass(){document.body.classList.toggle('zs-v13-notifications-route',zsNotificationsRouteActive());}
 function zsNotificationType(card){
@@ -7,14 +9,14 @@ function zsNotificationType(card){
   if(/客资|领取|派发|跟进/.test(text)) return 'leads';
   return 'system';
 }
-function zsNotificationIcon(type){return {leads:'▤',points:'◇',review:'✓',system:'◉'}[type]||'◉';}
+function zsNotificationIcon(type){return {leads:'list',points:'coins',review:'circle-check',system:'bell'}[type]||'bell';}
 function zsDecorateNotifications(wrapper){
   const list=wrapper.querySelector(':scope > .list');
   if(!list||list.dataset.zsV13==='1') return;
   list.classList.add('zs-v13-notification-list');
   list.querySelectorAll('[data-notification]').forEach(card=>{
     const type=zsNotificationType(card); card.dataset.zsType=type; card.classList.add('zs-v13-notification-card');
-    const icon=document.createElement('div'); icon.className=`zs-v13-notification-icon ${type}`; icon.textContent=zsNotificationIcon(type);
+    const icon=document.createElement('div'); icon.className=`zs-v13-notification-icon ${type}`; zsSetSafeHtml(icon, zsNotificationsIcon(zsNotificationIcon(type)));
     const copy=document.createElement('div'); copy.className='zs-v13-notification-copy';
     while(card.firstChild) copy.appendChild(card.firstChild);
     card.append(icon,copy);
@@ -33,7 +35,7 @@ function zsPatchNotifications(){
   if(!title||!subtitle||!list) return;
   const unread=list.querySelectorAll('.badge-danger').length;
   const heading=document.createElement('div'); heading.className='zs-v13-notifications-heading';
-  heading.innerHTML='<button type="button" data-zs-message-home>‹ 返回</button><h1>消息中心</h1><button type="button" data-zs-read-all>全部已读</button>';
+  zsSetSafeHtml(heading, `<button type="button" class="zs-icon-label" data-zs-message-home>${zsNotificationsIcon('chevron-left')}<span>返回</span></button><h1>消息中心</h1><button type="button" data-zs-read-all>全部已读</button>`);
   heading.querySelector('[data-zs-message-home]').onclick=()=>{location.hash='#/home';};
   const summary=document.createElement('section'); summary.className='zs-v13-notifications-summary'; zsSetSafeHtml(summary, `<div><span>待处理消息</span><b>${unread} 条未读</b></div><small>及时处理可避免客资超时与积分停用</small>`);
   const tabs=document.createElement('div'); tabs.className='zs-v13-notification-tabs';

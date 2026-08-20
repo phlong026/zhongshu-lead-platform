@@ -3,26 +3,27 @@ const ADM_PAGE_IDS={
   assignments:['ADM-08'],companies:['ADM-09'],points:['ADM-11'],recharge:['ADM-12'],ledgers:['ADM-13'],
   returns:['ADM-14'],outbox:['ADM-18'],users:['ADM-17'],configs:['ADM-18'],audit:['ADM-19'],'master-data':['ADM-16']
 };
+const admIcon=name=>window.ZSIconSystem?.svg(name)||'';
 const ADM_META={
-  'ADM-01':['管理后台登录','内部账号、会话与角色权限入口','secure'],
-  'ADM-02':['老板经营看板','业务与财务汇总仅按授权展示','secure'],
-  'ADM-03':['运营工作台','客资、核验、派发和异常；不展示财务字段','secure'],
-  'ADM-04':['飞书导入暂存区','导入、异常、疑似重复和字段修正','normal'],
-  'ADM-05':['电销核验任务管理','任务分配、回收、进度与模板','normal'],
-  'ADM-06':['合格客资池','筛选、查看与人工派发入口','normal'],
-  'ADM-07':['人工派发 / 候选公司','仅展示资格状态，不展示具体积分余额','secure'],
-  'ADM-08':['派发订单管理','待领取、已领取、回收与轨迹','normal'],
-  'ADM-09':['加盟商公司列表','状态、地区、类目与微信绑定','normal'],
-  'ADM-10':['加盟商公司详情','资料、服务范围、邀请与主账号','risk'],
-  'ADM-11':['充值档位 / 等级配置','金额、基础分、赠分、等级和版本','risk'],
-  'ADM-12':['线下充值人工入账','现金在线下完成，后台仅记录并增加积分','risk'],
-  'ADM-13':['积分账户与流水','充值、扣减、返还和冲正均不可变留痕','risk'],
-  'ADM-14':['退回审核列表','待审、补充、通过与驳回','secure'],
-  'ADM-15':['退回审核详情','截图、录音、积分影响与审批','risk'],
-  'ADM-16':['地区 / 类目 / 品牌配置','字典、停用与历史版本','normal'],
-  'ADM-17':['角色权限与字段隔离','菜单、接口、字段和数据范围同步生效','risk'],
-  'ADM-18':['系统规则 / 参数','24/48 小时、阈值、文件限制和开关','risk'],
-  'ADM-19':['操作审计日志','高风险操作、查询和导出','secure']
+  'ADM-01':'管理后台登录',
+  'ADM-02':'老板经营看板',
+  'ADM-03':'运营工作台',
+  'ADM-04':'飞书导入暂存区',
+  'ADM-05':'电销核验任务管理',
+  'ADM-06':'合格客资池',
+  'ADM-07':'人工派发 / 候选公司',
+  'ADM-08':'派发订单管理',
+  'ADM-09':'加盟商公司列表',
+  'ADM-10':'加盟商公司详情',
+  'ADM-11':'充值档位 / 等级配置',
+  'ADM-12':'线下充值人工入账',
+  'ADM-13':'积分账户与流水',
+  'ADM-14':'退回审核列表',
+  'ADM-15':'退回审核详情',
+  'ADM-16':'地区 / 类目 / 品牌配置',
+  'ADM-17':'角色权限与字段隔离',
+  'ADM-18':'系统规则 / 参数',
+  'ADM-19':'操作审计日志'
 };
 function admRoute(){return (location.hash.replace(/^#\/?/,'').split('?')[0]||'dashboard');}
 function admDashboardId(){const labels=[...document.querySelectorAll('main.page .stat .label')].map(node=>node.textContent.trim());return labels.some(label=>/(积分总余额|累计充值|积分收入)/.test(label))?'ADM-02':'ADM-03';}
@@ -31,8 +32,7 @@ function admAddPageContext(){
   const page=document.querySelector('main.page');const head=page?.querySelector('.page-head');if(!page||!head)return;
   const ids=admCurrentIds();const id=ids[0]||'ADM-03';document.body.dataset.admPage=id;page.dataset.admPageId=ids.join('/');
   if(head.dataset.admV10==='1')return;head.dataset.admV10='1';
-  const crumb=document.createElement('div');crumb.className='adm-v10-breadcrumb';zsSetSafeHtml(crumb, `合家美宅 <span>›</span> <b>${ADM_META[id]?.[0]||'管理后台'}</b>`);page.insertBefore(crumb,head);
-  const meta=ADM_META[id]||['管理后台','基于当前角色和权限显示数据','normal'];const scope=document.createElement('div');scope.className=`adm-v10-scope ${meta[2]==='risk'?'risk':meta[2]==='secure'?'secure':''}`;zsSetSafeHtml(scope, `<i>${meta[2]==='risk'?'!':'✓'}</i><span>${meta[1]}</span>`);head.insertAdjacentElement('afterend',scope);
+  const crumb=document.createElement('div');crumb.className='adm-v10-breadcrumb';zsSetSafeHtml(crumb, `合家美宅 <span>${admIcon('chevron-right')}</span> <b>${ADM_META[id]||'管理后台'}</b>`);page.insertBefore(crumb,head);
 }
 function admPatchLogin(){const login=document.querySelector('.login-card');if(!login||login.dataset.admV10==='1')return;login.dataset.admV10='1';document.body.dataset.admPage='ADM-01';}
 function admPatchTables(){document.querySelectorAll('.table').forEach(t=>{t.setAttribute('role','table');t.querySelectorAll('th').forEach(th=>th.setAttribute('scope','col'));});}
