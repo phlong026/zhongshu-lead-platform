@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from threading import Lock
 from typing import Any
 
-from sqlalchemy import Index, func, literal, or_, select
+from sqlalchemy import Index, and_, func, literal, or_, select
 from sqlalchemy.orm import Session
 
 from ..core.config import get_settings
@@ -18,7 +18,7 @@ from ..core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12, Supp
 from ..core.security import decrypt_text, mask_phone
 from ..core.time import as_utc
 from ..core.v12_enums import DuplicateDecision, LeadV12Status, RewardStatus
-from .company_profile_v12 import has_lead_capability, require_lead_capability
+from .company_profile_v12 import REMOVAL_REQUEST_PREFIX, has_lead_capability, require_lead_capability
 from .points_service import change_points, resolve_price
 from .reward_rule_v12 import (
     SupplierRewardRule,
@@ -131,9 +131,21 @@ def _region_matches(db: Session, company_id: str, lead: Lead) -> bool:
             CompanyServiceAreaV12.company_id == company_id,
             CompanyServiceAreaV12.region_code == lead.region_code,
             CompanyServiceAreaV12.active.is_(True),
-            CompanyServiceAreaV12.review_status == "APPROVED",
+            _service_area_dispatchable(),
         )
     ) is not None
+
+
+def _service_area_dispatchable():
+    """Keep approved coverage active while its removal request is pending."""
+
+    return or_(
+        CompanyServiceAreaV12.review_status == "APPROVED",
+        and_(
+            CompanyServiceAreaV12.review_status == "PENDING",
+            CompanyServiceAreaV12.review_note.like(f"{REMOVAL_REQUEST_PREFIX}%"),
+        ),
+    )
 
 
 def _points_snapshot(
@@ -283,7 +295,7 @@ def list_candidates(db: Session, *, lead: Lead) -> list[CandidateResult]:
             .where(
                 CompanyServiceAreaV12.region_code == lead.region_code,
                 CompanyServiceAreaV12.active.is_(True),
-                CompanyServiceAreaV12.review_status == "APPROVED",
+                _service_area_dispatchable(),
             )
             .distinct()
             .subquery()

@@ -69,11 +69,18 @@ class CapabilityRequestBody(BaseModel):
 
 class CapabilityReviewBody(BaseModel):
     decision: str = Field(pattern=r"^(APPROVE|REJECT)$")
+    note: str | None = Field(default=None, max_length=1000)
 
     @field_validator("decision")
     @classmethod
     def normalize_decision(cls, value: str) -> str:
         return value.upper()
+
+    @model_validator(mode="after")
+    def require_rejection_note(self) -> "CapabilityReviewBody":
+        if self.decision == "REJECT" and not (self.note and self.note.strip()):
+            raise ValueError("驳回公司能力申请时必须填写原因")
+        return self
 
 
 class ServiceAreaReplaceBody(BaseModel):

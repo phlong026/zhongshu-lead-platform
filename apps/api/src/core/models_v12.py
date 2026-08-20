@@ -159,6 +159,7 @@ class CompanyLeadCapability(Base, TimestampMixin):
     review_status: Mapped[str] = mapped_column(String(32), default="APPROVED", nullable=False)
     reviewed_by: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    review_note: Mapped[str | None] = mapped_column(Text)
 
 
 class CompanyServiceAreaV12(Base, TimestampMixin):
