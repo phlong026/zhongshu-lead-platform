@@ -17,13 +17,12 @@ from apps.api.src.services.company_service import create_company
 def _login(client, username: str, password: str) -> dict[str, str]:
     response = client.post(
         "/api/v1/auth/login",
-        headers={"Host": "app.example.com"},
         json={"username": username, "password": password},
     )
     assert response.status_code == 200, response.text
     token = response.cookies.get("access_token")
     assert token
-    return {"Authorization": f"Bearer {token}", "Host": "app.example.com"}
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _data(response):
