@@ -193,12 +193,38 @@ def _admin_smoke(
         title = page.title()
         if "客资运营台" not in title:
             raise AssertionError(f"unexpected admin title: {title}")
+        kpi_count = page.locator(".ops-kpi").count()
         screenshot = output / "v12-admin-overview.png"
         page.screenshot(path=str(screenshot), full_page=True)
+        system_settings_visible = page.locator("[data-system-setting]").count()
+        for setting in ("users", "calendar", "configs"):
+            if page.locator(f'[data-system-setting="{setting}"]').count() != 1:
+                raise AssertionError(f"admin system setting is not visible: {setting}")
+
+        page.locator('[data-view="companies"]').click()
+        page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=companies")
+        page.wait_for_selector(".company-review", timeout=15000)
+        page.go_back()
+        page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=overview")
+        page.wait_for_selector(".ops-kpi", timeout=15000)
+        page.go_forward()
+        page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=companies")
+        page.wait_for_selector(".company-review", timeout=15000)
+
+        page.locator('[data-system-setting="calendar"]').click()
+        page.wait_for_url(f"{base_url}/admin/index.html#/calendar")
+        page.wait_for_selector("#calendar-grid", timeout=15000)
+        system_settings_screenshot = output / "v12-admin-system-settings.png"
+        page.screenshot(path=str(system_settings_screenshot), full_page=True)
+        page.go_back()
+        page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=companies")
+        page.wait_for_selector(".company-review", timeout=15000)
+        _assert_no_visible_error(page, (".ops-error",))
+        browser_history_valid = True
         return {
             "valid": True,
             "title": title,
-            "kpi_count": page.locator(".ops-kpi").count(),
+            "kpi_count": kpi_count,
             "internal_user_rows": internal_user_rows,
             "internal_role_count": internal_role_count,
             "internal_user_screenshot": str(internal_user_screenshot),
@@ -207,6 +233,9 @@ def _admin_smoke(
             "calendar_write_smoke": calendar_write_smoke,
             "calendar_screenshot": str(calendar_screenshot),
             "screenshot": str(screenshot),
+            "system_settings_visible": system_settings_visible,
+            "system_settings_screenshot": str(system_settings_screenshot),
+            "browser_history_valid": browser_history_valid,
         }
     finally:
         context.close()
@@ -230,7 +259,21 @@ def _calendar_readonly_smoke(
             )
         page = context.new_page()
         _attach_error_capture(page, errors)
-        page.goto(f"{base_url}/admin/index.html#/calendar", wait_until="networkidle")
+        page.goto(
+            f"{base_url}/admin/v12-operations.html?view=overview",
+            wait_until="networkidle",
+        )
+        page.wait_for_selector(".ops-shell", timeout=15000)
+        if page.locator('[data-system-setting="calendar"]').count() != 1:
+            raise AssertionError("operation user cannot see calendar system setting")
+        forbidden_settings = page.locator(
+            '[data-system-setting="users"], [data-system-setting="configs"]'
+        )
+        if forbidden_settings.count():
+            raise AssertionError("operation user can see a super-admin system setting")
+        system_settings_visible = page.locator("[data-system-setting]").count()
+        page.locator('[data-system-setting="calendar"]').click()
+        page.wait_for_url(f"{base_url}/admin/index.html#/calendar")
         page.wait_for_selector("#calendar-grid", timeout=15000)
         if page.locator("#calendar-new").count():
             raise AssertionError("read-only operation user can see calendar manage action")
@@ -247,6 +290,7 @@ def _calendar_readonly_smoke(
             "calendar_day_count": page.locator("[data-calendar-day]").count(),
             "manage_action_visible": False,
             "import_action_visible": False,
+            "system_settings_visible": system_settings_visible,
             "screenshot": str(screenshot),
         }
     finally:
@@ -365,6 +409,12 @@ def main() -> int:
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
     parser.add_argument("--output-dir", type=Path, default=Path("dist/browser-smoke"))
     parser.add_argument(
+        "--browser-executable",
+        type=Path,
+        default=None,
+        help="可选：使用本机 Chromium/Chrome 可执行文件；CI 默认使用 Playwright 安装的 Chromium",
+    )
+    parser.add_argument(
         "--calendar-write-smoke",
         action="store_true",
         help="仅限隔离临时数据库：写入两天日历数据以验证单日维护和批量导入",
@@ -374,7 +424,10 @@ def main() -> int:
     errors: list[str] = []
     results: dict[str, Any] = {}
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
+        browser = playwright.chromium.launch(
+            headless=True,
+            executable_path=str(args.browser_executable) if args.browser_executable else None,
+        )
         try:
             base_url = args.base_url.rstrip("/")
             results["admin"] = _run_scenario(

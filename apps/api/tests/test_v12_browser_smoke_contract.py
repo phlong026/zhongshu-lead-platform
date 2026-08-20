@@ -21,6 +21,7 @@ def test_browser_smoke_covers_admin_franchise_and_telesales_surfaces() -> None:
     assert "v12-admin-internal-users.png" in script
     assert "v12-admin-workday-calendar.png" in script
     assert "--calendar-write-smoke" in script
+    assert "--browser-executable" in script
     assert "calendar_write_smoke" in script
     assert "仅限隔离临时数据库" in script
     assert "#calendar-grid" in script
@@ -34,6 +35,14 @@ def test_browser_smoke_covers_admin_franchise_and_telesales_surfaces() -> None:
     assert '"calendar_readonly"' in script
     assert "无维护权限" in script
     assert "无导入权限" in script
+    assert "page.go_back()" in script
+    assert "page.go_forward()" in script
+    assert "v12-admin-system-settings.png" in script
+    assert 'data-system-setting="calendar"' in script
+    assert 'data-system-setting="users"' in script
+    assert 'data-system-setting="configs"' in script
+    assert '"system_settings_visible"' in script
+    assert '"browser_history_valid"' in script
     assert "telesales" in script
     assert "Telesales123!" in script
     assert 'page.goto(f"{base_url}/call/"' in script

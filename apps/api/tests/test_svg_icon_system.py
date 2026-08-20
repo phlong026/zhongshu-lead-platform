@@ -7,6 +7,7 @@ ADMIN = ROOT / "apps" / "admin" / "public"
 GLYPHS = set("⌂▤◈◉♙⇩☎✓↗♟⚙⌁＋≋↩◇◷!×‹›☰⌕?▶●↻▦→◆")
 ASSET_VERSION = "?v=20260820-clarity"
 COMPANY_PROFILE_ASSET_VERSION = "?v=20260820-company-profile"
+ADMIN_NAV_ASSET_VERSION = "?v=20260820-admin-nav"
 
 
 def test_all_h5_surfaces_load_local_svg_icon_system_before_application():
@@ -27,7 +28,7 @@ def test_all_admin_surfaces_reuse_same_local_svg_icon_system():
     entries = {
         "index.html": "./app.js",
         "v12-leads.html": "./v12-leads.js",
-        "v12-operations.html": ("./v12-operations.js", COMPANY_PROFILE_ASSET_VERSION),
+        "v12-operations.html": ("./v12-operations.js", ADMIN_NAV_ASSET_VERSION),
     }
     for filename, application in entries.items():
         application_script, application_version = (
