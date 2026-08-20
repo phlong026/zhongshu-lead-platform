@@ -39,6 +39,8 @@ def test_dedicated_v12_pages_are_self_contained() -> None:
 
 def test_admin_lead_supply_ui_uses_v12_flow_without_pre_verification() -> None:
     js = Path("apps/admin/public/v12-leads.js").read_text(encoding="utf-8")
+    assert "返回工作台首页" in js
+    assert "返回管理后台" not in js
     assert "/v1.2/platform/leads" in js
     assert "/v1.2/admin/supplier-leads" in js
     assert "/master-data/regions" in js

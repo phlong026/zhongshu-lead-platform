@@ -20,7 +20,7 @@ const icon=name=>window.ZSIconSystem?.svg?.(name)||'';
 const value=id=>document.querySelector(id)?.value?.trim()||'';
 
 function shell(content=''){
-  zsSetSafeHtml(app, `<div class="v12-shell"><header class="v12-topbar"><div class="v12-brand"><img src="./logo.png" alt="合家美宅"><div><strong>客资供给工作台</strong><small>平台录入 · 供应商初审</small></div></div><div class="v12-top-actions"><a class="v12-btn" href="./#/dashboard">${icon('chevron-left')}返回管理后台</a></div></header><main class="v12-main"><section class="v12-hero"><div class="v12-hero-icon">${icon('inbox')}</div><div><h1>客资供给与资料初审</h1><p>完成字段、授权与去重校验后进入人工派发池。</p></div></section><nav class="v12-tabs">${can('lead.manual.manage')?`<button class="v12-tab ${state.tab==='platform'?'active':''}" data-tab="platform">${icon('inbox')}平台手工录入</button>`:''}${can('lead.supplier.review')?`<button class="v12-tab ${state.tab==='supplier'?'active':''}" data-tab="supplier">${icon('user-check')}供应商资料初审</button>`:''}</nav><div id="workspace">${content}</div></main></div>`);
+  zsSetSafeHtml(app, `<div class="v12-shell"><header class="v12-topbar"><div class="v12-brand"><img src="./logo.png" alt="合家美宅"><div><strong>客资供给工作台</strong><small>平台录入 · 供应商初审</small></div></div><div class="v12-top-actions"><a class="v12-btn" href="./#/dashboard">${icon('chevron-left')}返回工作台首页</a></div></header><main class="v12-main"><section class="v12-hero"><div class="v12-hero-icon">${icon('inbox')}</div><div><h1>客资供给与资料初审</h1><p>完成字段、授权与去重校验后进入人工派发池。</p></div></section><nav class="v12-tabs">${can('lead.manual.manage')?`<button class="v12-tab ${state.tab==='platform'?'active':''}" data-tab="platform">${icon('inbox')}平台手工录入</button>`:''}${can('lead.supplier.review')?`<button class="v12-tab ${state.tab==='supplier'?'active':''}" data-tab="supplier">${icon('user-check')}供应商资料初审</button>`:''}</nav><div id="workspace">${content}</div></main></div>`);
   document.querySelectorAll('[data-tab]').forEach(button=>button.onclick=()=>{state.tab=button.dataset.tab;renderCurrent();});
 }
 
@@ -37,7 +37,7 @@ async function boot(){
     await renderCurrent();
   }catch(error){
     if(error.code==='AUTH_REQUIRED'||error.code==='AUTH_INVALID'){location.href='./#/dashboard';return;}
-    zsSetSafeHtml(app, `<main class="v12-main"><div class="v12-error">${esc(error.message||'无法进入工作台')}</div><p><a class="v12-btn" href="./#/dashboard">返回管理后台</a></p></main>`);
+    zsSetSafeHtml(app, `<main class="v12-main"><div class="v12-error">${esc(error.message||'无法进入工作台')}</div><p><a class="v12-btn" href="./#/dashboard">返回工作台首页</a></p></main>`);
   }
 }
 
