@@ -29,7 +29,7 @@ def api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from fastapi.testclient import TestClient
 
     from apps.api.src.core.database import get_db
-    from apps.api.src.main import app
+    from apps.api.src.main import app, settings
     from apps.api.src.services.bootstrap import seed_demo
     import apps.api.src.integrations.wechat as wechat_module
     import apps.api.src.services.storage as storage_module
@@ -60,7 +60,11 @@ def api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "https://testserver/api/v1/auth/wechat/callback",
     )
     monkeypatch.setattr(wechat_module.settings, "wechat_oauth_scope", "snsapi_base")
-    client = TestClient(app)
+    allowed_host = next(
+        (host for host in settings.trusted_host_list if host and "*" not in host),
+        "localhost",
+    )
+    client = TestClient(app, base_url=f"http://{allowed_host}")
     try:
         yield client, factory
     finally:

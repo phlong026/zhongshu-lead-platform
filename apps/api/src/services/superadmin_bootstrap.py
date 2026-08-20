@@ -10,6 +10,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from ..core.models import Role, User, UserRole
+from ..core.security import validate_internal_password
 from .audit import write_audit
 from .auth_service import create_internal_user
 from .rbac import seed_rbac
@@ -114,18 +115,10 @@ def _validate_identity(username: str, display_name: str) -> tuple[str, str]:
 
 
 def _validate_password(password: str, username: str) -> None:
-    if not 12 <= len(password) <= 128:
-        raise SuperadminBootstrapError("密码长度必须为 12 到 128 位")
-    requirements = (
-        any(character.islower() for character in password),
-        any(character.isupper() for character in password),
-        any(character.isdigit() for character in password),
-        any(not character.isalnum() for character in password),
-    )
-    if not all(requirements):
-        raise SuperadminBootstrapError("密码必须同时包含大写字母、小写字母、数字和符号")
-    if username.casefold() in password.casefold():
-        raise SuperadminBootstrapError("密码不能包含超级管理员账号")
+    try:
+        validate_internal_password(password, username)
+    except ValueError as exc:
+        raise SuperadminBootstrapError(str(exc)) from exc
 
 
 def bootstrap_superadmin(

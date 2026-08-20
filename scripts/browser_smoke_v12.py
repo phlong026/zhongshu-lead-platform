@@ -108,6 +108,25 @@ def _admin_smoke(browser: Browser, base_url: str, output: Path, errors: list[str
         _attach_console_error_capture(page, errors)
         page.locator("#login-btn").click()
         page.wait_for_selector(".layout", timeout=15000)
+        page.goto(f"{base_url}/admin/index.html#/users", wait_until="networkidle")
+        page.wait_for_selector("#new-user", timeout=15000)
+        internal_user_rows = page.locator("main.page table tbody tr").count()
+        page.locator("#new-user").click()
+        page.wait_for_selector("#save-user", timeout=15000)
+        internal_role_count = page.locator('input[name="u-role"]').count()
+        if internal_role_count != 7:
+            raise AssertionError(f"unexpected internal role count: {internal_role_count}")
+        if page.locator('input[value="FRANCHISE_OWNER"]').count():
+            raise AssertionError("franchise role leaked into internal account modal")
+        page.locator("#modal-root [data-close]").first.click()
+        page.locator("[data-edit-user]").first.click()
+        page.wait_for_selector("#save-user-roles", timeout=15000)
+        page.locator("#modal-root [data-close]").first.click()
+        page.locator("[data-reset-user]").first.click()
+        page.wait_for_selector("#reset-user-password", timeout=15000)
+        page.locator("#modal-root [data-close]").first.click()
+        internal_user_screenshot = output / "v12-admin-internal-users.png"
+        page.screenshot(path=str(internal_user_screenshot), full_page=True)
         page.goto(f"{base_url}/admin/v12-operations.html?view=overview", wait_until="networkidle")
         page.wait_for_selector(".ops-shell", timeout=15000)
         page.wait_for_selector(".ops-kpi", timeout=15000)
@@ -121,6 +140,9 @@ def _admin_smoke(browser: Browser, base_url: str, output: Path, errors: list[str
             "valid": True,
             "title": title,
             "kpi_count": page.locator(".ops-kpi").count(),
+            "internal_user_rows": internal_user_rows,
+            "internal_role_count": internal_role_count,
+            "internal_user_screenshot": str(internal_user_screenshot),
             "screenshot": str(screenshot),
         }
     finally:

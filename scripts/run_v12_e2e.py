@@ -11,7 +11,10 @@ from uuid import uuid4
 
 
 ROOT = Path(__file__).resolve().parents[1]
-TARGET_TEST = "apps/api/tests/test_v12_production_lifecycle_e2e.py"
+TARGET_TESTS = (
+    "apps/api/tests/test_v12_production_lifecycle_e2e.py",
+    "apps/api/tests/test_internal_user_postgres_concurrency_e2e.py",
+)
 SAFE_DATABASE_MARKERS = ("e2e", "test", "ci")
 SAFE_ENVIRONMENT_KEYS = (
     "CI",
@@ -183,7 +186,7 @@ def _run_lifecycle(database_url: str, evidence_path: str, junit_xml: str) -> int
             "-m",
             "pytest",
             "-q",
-            TARGET_TEST,
+            *TARGET_TESTS,
             "--junitxml",
             str(junit),
         ],
