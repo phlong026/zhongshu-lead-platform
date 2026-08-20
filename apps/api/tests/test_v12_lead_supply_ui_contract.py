@@ -15,10 +15,11 @@ def _assert_local_references_exist(html: Path) -> None:
     for reference in _references(html):
         if reference.startswith(("#", "data:", "/api/")):
             continue
-        if reference.startswith("/h5/"):
-            target = Path("apps/h5/public") / reference.removeprefix("/h5/")
+        path = reference.split("?", 1)[0]
+        if path.startswith("/h5/"):
+            target = Path("apps/h5/public") / path.removeprefix("/h5/")
         else:
-            target = html.parent / reference.lstrip("./")
+            target = html.parent / path.lstrip("./")
         assert target.exists(), f"missing {reference} from {html}"
 
 

@@ -5,6 +5,7 @@ H5 = ROOT / "apps" / "h5" / "public"
 ADMIN = ROOT / "apps" / "admin" / "public"
 
 GLYPHS = set("⌂▤◈◉♙⇩☎✓↗♟⚙⌁＋≋↩◇◷!×‹›☰⌕?▶●↻▦→◆")
+ASSET_VERSION = "?v=20260820-clarity"
 
 
 def test_all_h5_surfaces_load_local_svg_icon_system_before_application():
@@ -15,8 +16,9 @@ def test_all_h5_surfaces_load_local_svg_icon_system_before_application():
     }
     for filename, application_script in entries.items():
         index = (H5 / filename).read_text(encoding="utf-8")
-        assert "./svg-icon-system.css" in index
-        assert "./svg-icon-system.js" in index
+        assert f"./svg-icon-system.css{ASSET_VERSION}" in index
+        assert f"./svg-icon-system.js{ASSET_VERSION}" in index
+        assert f"{application_script}{ASSET_VERSION}" in index
         assert index.index("./svg-icon-system.js") < index.index(application_script)
 
 
@@ -28,8 +30,9 @@ def test_all_admin_surfaces_reuse_same_local_svg_icon_system():
     }
     for filename, application_script in entries.items():
         index = (ADMIN / filename).read_text(encoding="utf-8")
-        assert "/h5/svg-icon-system.css" in index
-        assert "/h5/svg-icon-system.js" in index
+        assert f"/h5/svg-icon-system.css{ASSET_VERSION}" in index
+        assert f"/h5/svg-icon-system.js{ASSET_VERSION}" in index
+        assert f"{application_script}{ASSET_VERSION}" in index
         assert index.index("/h5/svg-icon-system.js") < index.index(application_script)
 
 
