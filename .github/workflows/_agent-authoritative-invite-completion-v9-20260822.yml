@@ -1,0 +1,108 @@
+name: Authoritative Invite Completion V9
+
+on:
+  push:
+    branches: [feat/invite-binding-complete]
+    paths:
+      - scripts/_agent_invite_orchestrator_v9_claim_fixture_patch_20260822.py
+      - .github/workflows/_agent-authoritative-invite-completion-v9-20260822.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: authoritative-invite-completion
+  cancel-in-progress: true
+
+jobs:
+  orchestrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: zhongshu_authoritative_v9
+          POSTGRES_USER: zhongshu
+          POSTGRES_PASSWORD: authoritative-v9-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U zhongshu -d zhongshu_authoritative_v9"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      INVITE_POSTGRES_TEST_URL: postgresql+psycopg://zhongshu:authoritative-v9-password@127.0.0.1:5432/zhongshu_authoritative_v9
+      CLAIM_POSTGRES_TEST_URL: postgresql+psycopg://zhongshu:authoritative-v9-password@127.0.0.1:5432/zhongshu_authoritative_v9
+      FIELD_ENCRYPTION_KEY: authoritative-v9-field-encryption-key-at-least-32-characters
+      PHONE_HASH_SECRET: authoritative-v9-phone-hash-secret-at-least-24
+      PHONE_FINGERPRINT_SECRET: authoritative-v9-phone-fingerprint-secret-at-least-32-characters
+    steps:
+      - name: Checkout latest feature branch
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: feat/invite-binding-complete
+          fetch-depth: 0
+
+      - name: Cancel obsolete runs and refresh branch
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, subprocess
+          obsolete={
+            "One-shot Invite Completion","One-shot Invite PostgreSQL FK Fix","Finalize Invite Completion",
+            "Authoritative Invite Completion","Relaunch Authoritative Invite Completion",
+            "Authoritative Invite Completion V2","Authoritative Invite Completion V3","Authoritative Invite Completion V4",
+            "Authoritative Invite Completion V5","Authoritative Invite Completion V6","Authoritative Invite Completion V7",
+            "Authoritative Invite Completion V8",
+          }
+          runs=json.loads(subprocess.check_output(["gh","run","list","--branch","feat/invite-binding-complete","--limit","200","--json","databaseId,name,status"],text=True))
+          for item in runs:
+            if str(item["databaseId"])!=os.environ["GITHUB_RUN_ID"] and item["name"] in obsolete and item["status"]!="completed":
+              subprocess.run(["gh","run","cancel",str(item["databaseId"])],check=False)
+          PY
+          sleep 10
+          git fetch origin feat/invite-binding-complete
+          git reset --hard origin/feat/invite-binding-complete
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Set up Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "22"
+
+      - name: Install verification dependencies
+        run: pip install -r requirements.txt -r requirements-postgres.txt -r requirements-audit.txt -r requirements-browser.txt
+
+      - name: Restore all patches and execute final orchestrator
+        shell: bash
+        run: |
+          restore_path(){ local path="$1"; [ -f "$path" ]&&return 0; mkdir -p "$(dirname "$path")"; for commit in $(git log --all --format=%H -- "$path"); do if git show "$commit:$path" > "$path" 2>/dev/null; then return 0; fi; done; return 1; }
+          for path in \
+            scripts/_agent_invite_completion_20260822.py \
+            scripts/_agent_invite_authoritative_20260822.py \
+            scripts/_agent_invite_retry_fixes_20260822.py \
+            scripts/_agent_invite_orchestrator_v3_20260822.py \
+            scripts/_agent_invite_orchestrator_v4_patch_20260822.py \
+            scripts/_agent_invite_orchestrator_v5_patch_20260822.py \
+            scripts/_agent_invite_orchestrator_v6_admin_entry_patch_20260822.py \
+            scripts/_agent_invite_orchestrator_v7_h5_compat_patch_20260822.py \
+            scripts/_agent_invite_orchestrator_v8_admin_tag_patch_20260822.py; do restore_path "$path"; done
+          python scripts/_agent_invite_orchestrator_v4_patch_20260822.py
+          python scripts/_agent_invite_orchestrator_v5_patch_20260822.py
+          python scripts/_agent_invite_orchestrator_v8_admin_tag_patch_20260822.py
+          python scripts/_agent_invite_orchestrator_v6_admin_entry_patch_20260822.py
+          python scripts/_agent_invite_orchestrator_v7_h5_compat_patch_20260822.py
+          python scripts/_agent_invite_orchestrator_v9_claim_fixture_patch_20260822.py
+          python scripts/_agent_invite_orchestrator_v3_20260822.py
