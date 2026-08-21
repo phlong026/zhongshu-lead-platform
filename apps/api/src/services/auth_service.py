@@ -242,3 +242,73 @@ def create_internal_user(
     db.flush()
     assign_role(db, user, role_code)
     return user
+
+
+# Transitional internal adapters keep historical tests importable while they
+# are migrated. They never accept a raw invitation token as proof of consent:
+# the second argument is validated as a signed confirmation intent by the new
+# binding service. These adapters are removed once the test suite no longer
+# references the legacy names.
+def create_company_invite(
+    db: Session,
+    company_id: str,
+    created_by: str | None,
+    expires_hours: int,
+):
+    from .invite_binding_service import create_company_invite as create_invite
+
+    result = create_invite(db, company_id, created_by, expires_hours)
+    return result.invite, result.raw_token
+
+
+def bind_wechat_by_invite(
+    db: Session,
+    confirmation_intent: str,
+    openid: str,
+    display_name: str | None = None,
+):
+    from .invite_binding_service import bind_wechat_with_confirmation
+
+    user, token, _ = bind_wechat_with_confirmation(
+        db,
+        confirmation_intent,
+        openid=openid,
+        nickname=display_name,
+    )
+    return user, token
+
+
+def login_or_bind_wechat(
+    db: Session,
+    *,
+    openid: str,
+    unionid: str | None = None,
+    nickname: str | None = None,
+    avatar_url: str | None = None,
+    subscribed: bool = False,
+    invite_token: str | None = None,
+):
+    from .invite_binding_service import (
+        bind_wechat_with_confirmation,
+        login_bound_wechat,
+    )
+
+    if invite_token:
+        user, token, _ = bind_wechat_with_confirmation(
+            db,
+            invite_token,
+            openid=openid,
+            unionid=unionid,
+            nickname=nickname,
+            avatar_url=avatar_url,
+            subscribed=subscribed,
+        )
+        return user, token
+    return login_bound_wechat(
+        db,
+        openid=openid,
+        unionid=unionid,
+        nickname=nickname,
+        avatar_url=avatar_url,
+        subscribed=subscribed,
+    )
