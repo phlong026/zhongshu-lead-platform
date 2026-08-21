@@ -14,6 +14,9 @@ node_modules/
 .idea/
 .vscode/
 *.log
+.omc/
+output/
+uv.lock
 backups/*
 !backups/README.md
 infra/certs/*
