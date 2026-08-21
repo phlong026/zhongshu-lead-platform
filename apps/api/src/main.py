@@ -32,7 +32,7 @@ from .routers import (
     companies,
     dispatch,
     followups,
-    invite_preview,
+    invitations,
     leads,
     master_data,
     notifications,
@@ -100,7 +100,7 @@ api_prefix = "/api/v1"
 app.include_router(admin.router, prefix=api_prefix)
 app.include_router(admin_meta.router, prefix=api_prefix)
 app.include_router(auth.router, prefix=api_prefix)
-app.include_router(invite_preview.router, prefix=api_prefix)
+app.include_router(invitations.router, prefix=api_prefix)
 app.include_router(users.router, prefix=api_prefix)
 app.include_router(companies.router, prefix=api_prefix)
 app.include_router(leads.router, prefix=api_prefix)
@@ -123,7 +123,12 @@ app.include_router(v12_insights.router, prefix=api_prefix)
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "service": "zhongshu-lead-platform", "version": settings.app_version, "environment": settings.app_env}
+    return {
+        "status": "ok",
+        "service": "zhongshu-lead-platform",
+        "version": settings.app_version,
+        "environment": settings.app_env,
+    }
 
 
 @app.get("/health/live")
@@ -143,7 +148,12 @@ def health_ready() -> dict[str, str]:
         storage_root.mkdir(parents=True, exist_ok=True)
         if not storage_root.is_dir() or not os.access(storage_root, os.W_OK):
             raise RuntimeError("对象存储目录不可写")
-    return {"status": "ready", "database": "ok", "storage": storage, "version": settings.app_version}
+    return {
+        "status": "ready",
+        "database": "ok",
+        "storage": storage,
+        "version": settings.app_version,
+    }
 
 
 def _has_valid_web_session(db: Session, access_token: str | None) -> bool:
