@@ -1,0 +1,83 @@
+name: Relaunch Authoritative Invite Completion
+
+on:
+  push:
+    branches: [feat/invite-binding-complete]
+    paths:
+      - scripts/_agent_invite_retry_fixes_20260822.py
+      - .github/workflows/_agent-invite-retry-launcher-20260822.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: relaunch-authoritative-invite-completion
+  cancel-in-progress: true
+
+jobs:
+  patch-and-dispatch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout latest feature branch
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: feat/invite-binding-complete
+          fetch-depth: 0
+
+      - name: Restore authoritative assets if a failed late gate removed them
+        shell: bash
+        run: |
+          restore_path() {
+            local path="$1"
+            [ -f "$path" ] && return 0
+            for commit in $(git log --all --format=%H -- "$path"); do
+              if git show "$commit:$path" > "$path" 2>/dev/null; then
+                return 0
+              fi
+            done
+            echo "Unable to restore $path" >&2
+            return 1
+          }
+          restore_path scripts/_agent_invite_authoritative_20260822.py
+          restore_path scripts/_agent_invite_authoritative_hotfix_20260822.py
+          restore_path .github/workflows/_agent-authoritative-invite-completion-20260822.yml
+
+      - name: Apply retry corrections
+        run: python scripts/_agent_invite_retry_fixes_20260822.py
+
+      - name: Commit corrected orchestration
+        shell: bash
+        run: |
+          rm -f scripts/_agent_invite_retry_fixes_20260822.py
+          rm -f .github/workflows/_agent-invite-retry-launcher-20260822.yml
+          git diff --check
+          git config user.name "荣赫智能"
+          git config user.email "peihr66@gmail.com"
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "校正邀请绑定迁移回滚与 PostgreSQL 夹具
+
+迁移验收改为 downgrade -1 后重升，避免依赖可变 revision 名称；领取并发夹具按 Assignment 实际截止字段适配，并复用已初始化客户端。
+
+Constraint: 仅测试与门禁修正
+Confidence: high
+Scope-risk: narrow
+Reversibility: clean
+Tested: 由重新调度的权威门禁执行
+Not-tested: 真实生产环境"
+            git push origin HEAD:feat/invite-binding-complete
+          fi
+
+      - name: Cancel old authoritative run and dispatch corrected workflow
+        shell: bash
+        run: |
+          for run_id in $(gh run list --workflow "Authoritative Invite Completion" --branch feat/invite-binding-complete --limit 10 --json databaseId,status --jq '.[] | select(.status != "completed") | .databaseId'); do
+            gh run cancel "$run_id" || true
+          done
+          sleep 10
+          gh workflow run _agent-authoritative-invite-completion-20260822.yml --ref feat/invite-binding-complete
