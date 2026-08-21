@@ -22,6 +22,7 @@ def database_engine_options(settings: Settings) -> dict[str, object]:
         )
     return options
 
+
 settings = get_settings()
 engine = create_engine(settings.database_url, **database_engine_options(settings))
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False, class_=Session)
@@ -41,6 +42,7 @@ def get_db() -> Generator[Session, None, None]:
 
 def init_database() -> None:
     from . import auth_models  # noqa: F401
+    from . import invite_models  # noqa: F401
     from . import models  # noqa: F401
     from . import models_v12  # noqa: F401
     from . import reward_models_v12  # noqa: F401
