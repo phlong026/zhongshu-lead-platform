@@ -1,0 +1,113 @@
+name: One-shot Invite Completion
+
+on:
+  push:
+    branches: [feat/invite-binding-complete]
+    paths:
+      - scripts/_agent_invite_completion_20260822.py
+      - .github/workflows/_agent-invite-completion-20260822.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+  pull-requests: write
+
+concurrency:
+  group: one-shot-invite-completion
+  cancel-in-progress: false
+
+jobs:
+  apply-test-commit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: feat/invite-binding-complete
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Set up Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "22"
+
+      - name: Install verification dependencies
+        run: pip install -r requirements.txt -r requirements-postgres.txt -r requirements-audit.txt -r requirements-browser.txt
+
+      - name: Apply deterministic invite completion patch
+        run: python scripts/_agent_invite_completion_20260822.py
+
+      - name: Run backend and frontend contract tests
+        run: |
+          node --check apps/h5/app.js
+          node --check apps/admin/app.js
+          python -m pytest -q \
+            apps/api/tests/test_auth_company.py \
+            apps/api/tests/test_invite_binding_security.py \
+            apps/api/tests/test_invite_preview.py \
+            apps/api/tests/test_wechat_oauth.py \
+            apps/api/tests/test_test_environment_isolation.py \
+            apps/api/tests/test_claim_singleflight.py \
+            apps/api/tests/test_claim_replay_coalescing.py \
+            apps/api/tests/test_invite_frontend_contract.py
+
+      - name: Install Chromium and run real browser smoke
+        run: |
+          python -m playwright install --with-deps chromium
+          python -m pytest apps/api/tests/test_invite_browser_smoke.py -q
+
+      - name: Run full repository gates
+        run: |
+          mkdir -p dist/coverage
+          python -m pytest \
+            --cov=apps.api.src \
+            --cov-branch \
+            --cov-report=term-missing \
+            --cov-report=json:dist/coverage/coverage.json \
+            --cov-fail-under=74
+          python scripts/check_coverage_gate.py --coverage dist/coverage/coverage.json --output dist/coverage/critical-coverage.json
+          python scripts/check_js.py
+          python scripts/secret_scan.py
+          python -m compileall -q apps scripts migrations
+          git diff --check
+
+      - name: Remove one-shot execution assets
+        run: |
+          rm -f scripts/_agent_invite_completion_20260822.py
+          rm -f .github/workflows/_agent-invite-completion-20260822.yml
+          rm -f .github/workflows/pr-source-snapshot.yml
+
+      - name: Commit verified result
+        run: |
+          git config user.name "荣赫智能"
+          git config user.email "peihr66@gmail.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "完成邀请确认前后端与并发验收收口
+
+修复主账号原子占用后的 ORM 状态一致性，并在公司行锁内撤销旧邀请。H5 统一为预览、主动确认、confirmation intent、OAuth 流程；后台补齐二次确认、复制、固定依赖二维码和邀请记录。新增前端合同、Chromium smoke、PostgreSQL 邀请并发门禁与交付报告。
+
+Constraint: 不读取或提交 .env、微信密钥和生产凭据
+Rejected: 继续调用 /wechat/start?invite= | 后端已显式废弃且会绕过确认门禁
+Confidence: medium-high
+Scope-risk: medium
+Reversibility: clean
+Tested: 邀请/领取专项、全量 pytest+coverage、JS、秘密扫描、编译、Chromium smoke
+Not-tested: 真实微信 WebView、生产配置、外部短信与全角色 UAT"
+            git push origin HEAD:feat/invite-binding-complete
+          fi
+
+      - name: Dispatch formal release verification
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run main-release.yml --ref feat/invite-binding-complete -f performance_action=none
