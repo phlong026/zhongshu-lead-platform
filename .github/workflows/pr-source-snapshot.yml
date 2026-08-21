@@ -1,0 +1,38 @@
+name: PR Source Snapshot
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout PR merge ref
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Create secret-free source archive
+        shell: bash
+        run: |
+          test ! -f .env
+          tar \
+            --exclude=.git \
+            --exclude=.env \
+            --exclude='*.db' \
+            --exclude=dist \
+            --exclude=storage \
+            --exclude=node_modules \
+            --exclude='__pycache__' \
+            -czf "$RUNNER_TEMP/zhongshu-pr-source.tgz" .
+
+      - name: Upload source snapshot
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: pr-source-${{ github.run_id }}
+          path: ${{ runner.temp }}/zhongshu-pr-source.tgz
+          if-no-files-found: error
+          retention-days: 1
