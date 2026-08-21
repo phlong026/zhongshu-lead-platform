@@ -41,7 +41,7 @@ os.environ.update(_TEST_ENVIRONMENT)
 from sqlalchemy import create_engine  # noqa: E402
 from sqlalchemy.orm import Session, sessionmaker  # noqa: E402
 
-from apps.api.src.core import auth_models, models  # noqa: E402,F401
+from apps.api.src.core import auth_models, invite_models, models  # noqa: E402,F401
 from apps.api.src.core.config import get_settings  # noqa: E402
 from apps.api.src.core.database import Base  # noqa: E402
 from apps.api.src.services.rbac import seed_rbac  # noqa: E402
@@ -70,7 +70,7 @@ def api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from fastapi.testclient import TestClient
 
     from apps.api.src.core.database import get_db
-    from apps.api.src.main import app, settings
+    from apps.api.src.main import app
     from apps.api.src.services.bootstrap import seed_demo
     import apps.api.src.integrations.wechat as wechat_module
     import apps.api.src.services.storage as storage_module
