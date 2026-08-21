@@ -9,8 +9,13 @@ from apps.api.src.core.models import WechatIdentity
 from apps.api.src.core.security import create_signed_state, decode_signed_state
 from apps.api.src.integrations.wechat import WechatOAuthClient
 from apps.api.src.schemas.company import CompanyCreateBody
-from apps.api.src.services.auth_service import create_company_invite, login_or_bind_wechat
 from apps.api.src.services.company_service import create_company
+from apps.api.src.services.invite_binding_service import (
+    bind_wechat_with_confirmation,
+    create_company_invite,
+    create_confirmation_intent,
+    login_bound_wechat,
+)
 
 
 def _company(db):
@@ -28,13 +33,13 @@ def _company(db):
     return company
 
 
-def test_signed_oauth_state_round_trip():
-    token = create_signed_state({"invite": "abc", "return_url": "/h5/#/home"}, purpose="wechat-oauth")
+def test_signed_oauth_state_round_trip_without_invite_payload():
+    token = create_signed_state({"return_url": "/h5/#/home"}, purpose="wechat-oauth")
     data = decode_signed_state(token, purpose="wechat-oauth")
-    assert data["invite"] == "abc"
+    assert "invite" not in data
     assert data["return_url"] == "/h5/#/home"
     with pytest.raises(InvalidTokenError):
-        decode_signed_state(token, purpose="other")
+        decode_signed_state(token, purpose="invite-binding-confirmation")
 
 
 def test_wechat_authorization_url(monkeypatch):
@@ -50,22 +55,23 @@ def test_wechat_authorization_url(monkeypatch):
     assert url.endswith("#wechat_redirect")
 
 
-def test_first_login_binds_company_and_repeat_login_needs_no_invite(db):
+def test_first_login_requires_confirmation_and_repeat_login_needs_no_invite(db):
     company = _company(db)
-    _, raw = create_company_invite(db, company.id, None, 24)
-    user, _ = login_or_bind_wechat(
+    created = create_company_invite(db, company.id, None, 24)
+    started = create_confirmation_intent(db, created.raw_token, "/h5/#/home")
+    user, _, _ = bind_wechat_with_confirmation(
         db,
+        started.confirmation_intent,
         openid="wx-openid-001",
         unionid="union-001",
         nickname="张老板",
-        invite_token=raw,
     )
     db.commit()
     assert user.company_id == company.id
     identity = db.scalar(select(WechatIdentity).where(WechatIdentity.openid == "wx-openid-001"))
     assert identity and identity.unionid == "union-001"
 
-    repeated, _ = login_or_bind_wechat(
+    repeated, _ = login_bound_wechat(
         db,
         openid="wx-openid-001",
         unionid="union-001",
@@ -73,10 +79,11 @@ def test_first_login_binds_company_and_repeat_login_needs_no_invite(db):
     )
     db.commit()
     assert repeated.id == user.id
+    db.refresh(identity)
     assert identity.nickname == "张老板新昵称"
 
 
 def test_unbound_wechat_without_invite_is_rejected(db):
     with pytest.raises(AppError) as exc:
-        login_or_bind_wechat(db, openid="unbound")
+        login_bound_wechat(db, openid="unbound")
     assert exc.value.code == "AUTH_WECHAT_NOT_BOUND"
