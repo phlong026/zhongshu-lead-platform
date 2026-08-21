@@ -26,6 +26,7 @@ class InviteBindingProfile(Base, TimestampMixin):
     )
     company_name_snapshot: Mapped[str] = mapped_column(String(128), nullable=False)
     owner_name_snapshot: Mapped[str | None] = mapped_column(String(64))
+    token_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
     bound_user_id: Mapped[str | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"),
         index=True,
