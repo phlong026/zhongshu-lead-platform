@@ -1,0 +1,379 @@
+name: Authoritative Invite Completion
+
+on:
+  push:
+    branches: [feat/invite-binding-complete]
+    paths:
+      - scripts/_agent_invite_authoritative_20260822.py
+      - scripts/_agent_invite_authoritative_hotfix_20260822.py
+      - .github/workflows/_agent-authoritative-invite-completion-20260822.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: authoritative-invite-completion
+  cancel-in-progress: true
+
+jobs:
+  verify-merge-main:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: zhongshu_authoritative
+          POSTGRES_USER: zhongshu
+          POSTGRES_PASSWORD: authoritative-ci-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U zhongshu -d zhongshu_authoritative"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      INVITE_POSTGRES_TEST_URL: postgresql+psycopg://zhongshu:authoritative-ci-password@127.0.0.1:5432/zhongshu_authoritative
+      CLAIM_POSTGRES_TEST_URL: postgresql+psycopg://zhongshu:authoritative-ci-password@127.0.0.1:5432/zhongshu_authoritative
+      FIELD_ENCRYPTION_KEY: authoritative-field-encryption-key-at-least-32-characters
+      PHONE_HASH_SECRET: authoritative-phone-hash-secret-at-least-24
+      PHONE_FINGERPRINT_SECRET: authoritative-phone-fingerprint-secret-at-least-32-characters
+    steps:
+      - name: Checkout latest feature branch
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: feat/invite-binding-complete
+          fetch-depth: 0
+
+      - name: Cancel obsolete one-shot runs and refresh branch
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+
+          obsolete = {
+              "One-shot Invite Completion",
+              "One-shot Invite PostgreSQL FK Fix",
+              "Finalize Invite Completion",
+          }
+          raw = subprocess.check_output(
+              ["gh", "run", "list", "--branch", "feat/invite-binding-complete", "--limit", "50", "--json", "databaseId,name,status"],
+              text=True,
+          )
+          for run in json.loads(raw):
+              if str(run["databaseId"]) == os.environ["GITHUB_RUN_ID"]:
+                  continue
+              if run["name"] in obsolete and run["status"] != "completed":
+                  subprocess.run(["gh", "run", "cancel", str(run["databaseId"])], check=False)
+          PY
+          sleep 10
+          git fetch origin feat/invite-binding-complete
+          git reset --hard origin/feat/invite-binding-complete
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Set up Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "22"
+
+      - name: Install all verification dependencies
+        run: pip install -r requirements.txt -r requirements-postgres.txt -r requirements-audit.txt -r requirements-browser.txt
+
+      - name: Recover and apply complete invitation patch
+        shell: bash
+        run: |
+          recover_script() {
+            local path="$1"
+            local output="$2"
+            for commit in $(git log --all --format=%H -- "$path"); do
+              if git show "$commit:$path" > "$output" 2>/dev/null; then
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          if ! grep -q "/auth/invites/confirm-start" apps/h5/app.js || ! grep -q "renderInviteQr" apps/admin/app.js; then
+            if [ -f scripts/_agent_invite_completion_20260822.py ]; then
+              python scripts/_agent_invite_completion_20260822.py
+            else
+              recover_script scripts/_agent_invite_completion_20260822.py "$RUNNER_TEMP/invite-completion.py"
+              python "$RUNNER_TEMP/invite-completion.py"
+            fi
+          fi
+
+          if ! grep -q "PostgreSQL enforces the primary_user_id foreign key" apps/api/src/services/invite_binding_service.py; then
+            if [ -f scripts/_agent_invite_pg_fk_fix_20260822.py ]; then
+              python scripts/_agent_invite_pg_fk_fix_20260822.py
+            else
+              recover_script scripts/_agent_invite_pg_fk_fix_20260822.py "$RUNNER_TEMP/invite-pg-fk.py"
+              python "$RUNNER_TEMP/invite-pg-fk.py"
+            fi
+          fi
+
+          python scripts/_agent_invite_authoritative_hotfix_20260822.py
+          python scripts/_agent_invite_authoritative_20260822.py
+          git diff --check
+
+      - name: Static and targeted regression gates
+        shell: bash
+        run: |
+          mkdir -p dist/agent-logs
+          set -o pipefail
+          node --check apps/h5/app.js 2>&1 | tee dist/agent-logs/h5-node-check.log
+          node --check apps/admin/app.js 2>&1 | tee dist/agent-logs/admin-node-check.log
+          python -m pytest -q \
+            apps/api/tests/test_auth_company.py \
+            apps/api/tests/test_invite_binding_security.py \
+            apps/api/tests/test_invite_preview.py \
+            apps/api/tests/test_wechat_oauth.py \
+            apps/api/tests/test_test_environment_isolation.py \
+            apps/api/tests/test_claim_singleflight.py \
+            apps/api/tests/test_claim_replay_coalescing.py \
+            apps/api/tests/test_invite_frontend_contract.py \
+            apps/api/tests/test_invite_api_contract.py \
+            2>&1 | tee dist/agent-logs/targeted-pytest.log
+
+      - name: PostgreSQL migration and concurrency gates
+        shell: bash
+        env:
+          DATABASE_URL: ${{ env.INVITE_POSTGRES_TEST_URL }}
+        run: |
+          set -o pipefail
+          python -m alembic -c alembic.ini upgrade head 2>&1 | tee dist/agent-logs/postgres-migration.log
+          python -m pytest -q \
+            apps/api/tests/test_invite_postgres_concurrency.py \
+            apps/api/tests/test_claim_postgres_concurrency.py \
+            2>&1 | tee dist/agent-logs/postgres-concurrency.log
+          python -m alembic -c alembic.ini downgrade 0006 2>&1 | tee dist/agent-logs/postgres-downgrade.log
+          python -m alembic -c alembic.ini upgrade head 2>&1 | tee dist/agent-logs/postgres-reupgrade.log
+
+      - name: Real Chromium and WeChat WebView smoke
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m playwright install --with-deps chromium 2>&1 | tee dist/agent-logs/playwright-install.log
+          python -m pytest apps/api/tests/test_invite_browser_smoke.py -q 2>&1 | tee dist/agent-logs/browser-smoke.log
+
+      - name: Full coverage, JavaScript and security gates
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p dist/coverage
+          python -m pytest \
+            --cov=apps.api.src \
+            --cov-branch \
+            --cov-report=term-missing \
+            --cov-report=json:dist/coverage/coverage.json \
+            --cov-fail-under=74 \
+            2>&1 | tee dist/agent-logs/full-pytest.log
+          python scripts/check_coverage_gate.py --coverage dist/coverage/coverage.json --output dist/coverage/critical-coverage.json 2>&1 | tee dist/agent-logs/coverage-gate.log
+          python scripts/export_openapi.py --output dist/openapi/openapi.json 2>&1 | tee dist/agent-logs/openapi.log
+          python scripts/check_js.py 2>&1 | tee dist/agent-logs/js-check.log
+          python scripts/secret_scan.py 2>&1 | tee dist/agent-logs/secret-scan.log
+          python -m compileall -q apps scripts migrations
+          python scripts/performance_v12.py --dataset performance/v12-staging-dataset.example.json --validate-config
+          git diff --check
+
+      - name: Remove temporary automation and finalize evidence
+        shell: bash
+        run: |
+          rm -f scripts/_agent_invite_completion_20260822.py
+          rm -f scripts/_agent_invite_pg_fk_fix_20260822.py
+          rm -f scripts/_agent_invite_authoritative_20260822.py
+          rm -f scripts/_agent_invite_authoritative_hotfix_20260822.py
+          rm -f .github/workflows/_agent-invite-completion-20260822.yml
+          rm -f .github/workflows/_agent-invite-pg-fk-fix-20260822.yml
+          rm -f .github/workflows/_agent-invite-finalize-20260822.yml
+          rm -f .github/workflows/_agent-authoritative-invite-completion-20260822.yml
+          rm -f .github/workflows/pr-source-snapshot.yml
+          python - <<'PY'
+          from pathlib import Path
+          report = Path("docs/reports/INVITE-BINDING-COMPLETE-DELIVERY.md")
+          text = report.read_text(encoding="utf-8")
+          block = """
+
+          ## 自动化验收命令
+
+          - `pytest --cov=apps.api.src --cov-branch --cov-fail-under=74`
+          - `pytest apps/api/tests/test_invite_postgres_concurrency.py`
+          - `pytest apps/api/tests/test_claim_postgres_concurrency.py`
+          - `pytest apps/api/tests/test_invite_browser_smoke.py`
+          - `python scripts/check_js.py`
+          - `python scripts/secret_scan.py`
+          - `alembic upgrade head -> downgrade 0006 -> upgrade head`
+
+          上述命令已在一次性受控 CI 中执行；正式 `main-release.yml` 仍需在最终 Head 和合并后 main 各通过一次。
+          """
+          if "## 自动化验收命令" not in text:
+              report.write_text(text + block, encoding="utf-8")
+          PY
+          git add -A
+          git diff --cached --check
+
+      - name: Commit and push verified feature result
+        shell: bash
+        run: |
+          git config user.name "荣赫智能"
+          git config user.email "peihr66@gmail.com"
+          if git diff --cached --quiet; then
+            echo "No verified changes to commit"
+          else
+            git commit -m "完成邀请绑定全链路与 PostgreSQL 验收
+
+统一收口测试隔离、S01 并发、邀请确认、后台复制二维码、H5 微信门禁、邀请管理、手机号与手工匹配、发送适配和审计；补齐真实 PostgreSQL 邀请及领取并发、Chromium、覆盖率和安全门禁。
+
+Constraint: 不提交生产秘密，不以 mock、SQLite 或健康检查冒充生产验证
+Rejected: /wechat/start?invite= 旧入口 | 绕过 confirmation intent
+Confidence: high
+Scope-risk: medium
+Reversibility: clean
+Tested: 全量 pytest+coverage、PostgreSQL 16、Chromium、JS、秘密扫描、迁移往返
+Not-tested: 真实微信平台、生产配置、真实发送供应商、全角色 UAT"
+            git push origin HEAD:feat/invite-binding-complete
+          fi
+          echo "FINAL_HEAD=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Dispatch and wait for formal feature CI
+        shell: bash
+        run: |
+          gh workflow run main-release.yml --ref feat/invite-binding-complete -f performance_action=none
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          import time
+          from pathlib import Path
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          head = os.environ["FINAL_HEAD"]
+          deadline = time.time() + 3600
+          selected = None
+          while time.time() < deadline:
+              raw = subprocess.check_output(["gh", "api", f"repos/{repo}/actions/runs?head_sha={head}&per_page=100"], text=True)
+              runs = json.loads(raw)["workflow_runs"]
+              candidates = [r for r in runs if r["name"] == "Main Release Verification"]
+              if candidates:
+                  selected = sorted(candidates, key=lambda r: r["created_at"], reverse=True)[0]
+                  if selected["status"] == "completed":
+                      break
+              time.sleep(15)
+          if not selected or selected["status"] != "completed":
+              raise SystemExit("formal feature CI did not complete before timeout")
+          Path("dist/agent-logs/formal-feature-run-id.txt").write_text(str(selected["id"]))
+          if selected["conclusion"] != "success":
+              with open("dist/agent-logs/formal-feature-ci.log", "w", encoding="utf-8") as handle:
+                  subprocess.run(["gh", "run", "view", str(selected["id"]), "--log-failed"], stdout=handle, stderr=subprocess.STDOUT, text=True)
+              raise SystemExit(f"formal feature CI failed: {selected['id']}")
+          jobs = json.loads(subprocess.check_output(["gh", "api", f"repos/{repo}/actions/runs/{selected['id']}/jobs?per_page=100"], text=True))["jobs"]
+          required = {"verify-main", "postgres-migration", "invite-browser-smoke"}
+          outcomes = {job["name"]: job["conclusion"] for job in jobs}
+          missing = required - outcomes.keys()
+          failed = {name: outcomes.get(name) for name in required if outcomes.get(name) != "success"}
+          if missing or failed:
+              raise SystemExit(f"formal feature jobs incomplete: missing={missing}, failed={failed}")
+          PY
+
+      - name: Update PR, resolve duplicate S01 and merge
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/pr-body.md" <<'EOF'
+          ## 已完成
+
+          - [x] 测试环境与本机 `.env` 隔离
+          - [x] S01 并发领取最小重集成与专项测试
+          - [x] 专属邀请快照、一次性消费与主账号原子保护
+          - [x] 后台二次确认、复制、固定依赖二维码和邀请记录
+          - [x] H5 预览、主动确认、confirmation intent 与微信 OAuth
+          - [x] P1 分页、筛选、撤销 404、绑定追溯和审计
+          - [x] P2 手机号唯一匹配确认、手工匹配、地区检索与发送适配
+          - [x] PostgreSQL 邀请及领取并发、Chromium、覆盖率和安全门禁
+
+          ## 独立外部门禁
+
+          `EXTERNAL_PENDING`：真实微信 WebView、生产配置、生产等价多实例 PostgreSQL、全角色 UAT、真实短信/微信消息供应商。
+
+          `PRODUCTION_NOT_VERIFIED`：未使用 mock、SQLite、健康检查或普通单元测试冒充生产验证。
+          EOF
+          gh pr edit 82 --title "完成专属邀请绑定、S01 并发与发布收口" --body-file "$RUNNER_TEMP/pr-body.md"
+          gh pr ready 82
+          if gh pr view 81 --json state --jq '.state' 2>/dev/null | grep -q OPEN; then
+            gh pr close 81 --comment "S01 有效实现已按最新 main 以最小差异重集成到 PR #82，并通过专项及 PostgreSQL 门禁；未盲目 cherry-pick 旧分支，关闭重复 Draft PR。"
+          fi
+          gh pr merge 82 --merge --delete-branch --subject "完成专属邀请绑定、S01 并发与发布收口"
+          echo "MERGE_SHA=$(gh pr view 82 --json mergeCommit --jq '.mergeCommit.oid')" >> "$GITHUB_ENV"
+
+      - name: Dispatch and wait for merged main CI
+        shell: bash
+        run: |
+          gh workflow run main-release.yml --ref main -f performance_action=none
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          import time
+          from pathlib import Path
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          head = os.environ["MERGE_SHA"]
+          deadline = time.time() + 3600
+          selected = None
+          while time.time() < deadline:
+              raw = subprocess.check_output(["gh", "api", f"repos/{repo}/actions/runs?head_sha={head}&per_page=100"], text=True)
+              runs = json.loads(raw)["workflow_runs"]
+              candidates = [r for r in runs if r["name"] == "Main Release Verification"]
+              if candidates:
+                  selected = sorted(candidates, key=lambda r: r["created_at"], reverse=True)[0]
+                  if selected["status"] == "completed":
+                      break
+              time.sleep(15)
+          if not selected or selected["status"] != "completed":
+              raise SystemExit("merged main CI did not complete before timeout")
+          Path("dist/agent-logs/main-run-id.txt").write_text(str(selected["id"]))
+          if selected["conclusion"] != "success":
+              with open("dist/agent-logs/formal-main-ci.log", "w", encoding="utf-8") as handle:
+                  subprocess.run(["gh", "run", "view", str(selected["id"]), "--log-failed"], stdout=handle, stderr=subprocess.STDOUT, text=True)
+              raise SystemExit(f"merged main CI failed: {selected['id']}")
+          PY
+          gh pr comment 82 --body "已合并并完成 main 回归。最终 main SHA：\`$MERGE_SHA\`。真实微信、生产配置、生产等价多实例 PostgreSQL、全角色 UAT 和真实外部发送继续保留为 EXTERNAL_PENDING；PRODUCTION_NOT_VERIFIED。"
+
+      - name: Commit sanitized failure evidence
+        if: failure()
+        shell: bash
+        run: |
+          mkdir -p docs/reports
+          {
+            echo "# 邀请绑定权威收口失败证据"
+            echo
+            echo "- workflow run: $GITHUB_RUN_ID"
+            echo "- commit: $GITHUB_SHA"
+            echo "- generated_at: $(date -u +%FT%TZ)"
+            echo
+            for log in dist/agent-logs/*.log; do
+              [ -f "$log" ] || continue
+              echo "## $(basename "$log")"
+              echo '```text'
+              tail -n 300 "$log" | sed -E \
+                -e 's#postgresql\+psycopg://[^@[:space:]]+@#postgresql+psycopg://[REDACTED]@#g' \
+                -e 's/(password|token|secret|authorization)[=:][^[:space:]]+/\1=[REDACTED]/Ig'
+              echo '```'
+            done
+          } > docs/reports/INVITE-AUTHORITATIVE-FAILURE.md
+          git config user.name "荣赫智能"
+          git config user.email "peihr66@gmail.com"
+          git add docs/reports/INVITE-AUTHORITATIVE-FAILURE.md
+          git commit -m "记录邀请绑定自动门禁失败证据" || true
+          git push origin HEAD:feat/invite-binding-complete || true
