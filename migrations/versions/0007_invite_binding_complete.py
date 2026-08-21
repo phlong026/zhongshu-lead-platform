@@ -34,6 +34,7 @@ def upgrade() -> None:
             sa.Column("company_id", sa.String(length=36), sa.ForeignKey("companies.id", ondelete="CASCADE"), nullable=False),
             sa.Column("company_name_snapshot", sa.String(length=128), nullable=False),
             sa.Column("owner_name_snapshot", sa.String(length=64), nullable=True),
+            sa.Column("token_encrypted", sa.Text(), nullable=False),
             sa.Column("bound_user_id", sa.String(length=36), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
             sa.Column("bound_at", sa.DateTime(timezone=True), nullable=True),
             sa.Column("target_phone_hash", sa.String(length=64), nullable=True),
