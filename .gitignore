@@ -21,3 +21,5 @@ backups/*
 !backups/README.md
 infra/certs/*
 !infra/certs/README.md
+.omx/*
+!.omx/plans/
