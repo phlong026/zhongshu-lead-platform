@@ -115,6 +115,12 @@ _CALLBACK_SECURITY_FAILURE_CODES = frozenset(
 
 # P1-04：允许透传到 H5 状态页的错误码；白名单外的异常统一归并为
 # AUTH_FAILED，避免把任意错误细节拼进重定向 URL。
+# P2-1：微信通道故障码（未配置/不可用/授权失败）显式入白名单——仍走
+# 302 状态页（微信浏览器不暴露裸 JSON），但携带具体码让 H5 给出「稍后
+# 重试」而非「重新获取邀请」的指引；可观测性由 P2-5 的失败审计
+# （failure_class=upstream）与下方结构化日志承载，不依赖响应码本身。
+# WECHAT_SCOPE_INVALID 只在 authorization_url（start 端点）抛出，到不了
+# callback 的 exchange_code 路径，故不入此白名单（codex 评审 #1）。
 _H5_AUTH_ERROR_CODES = frozenset(
     {
         "AUTH_OAUTH_STATE_INVALID",
@@ -125,6 +131,20 @@ _H5_AUTH_ERROR_CODES = frozenset(
         "AUTH_COMPANY_ALREADY_BOUND",
         "AUTH_INVITE_INVALID",
         "AUTH_ACCOUNT_DISABLED",
+        "WECHAT_NOT_CONFIGURED",
+        "WECHAT_OAUTH_UNAVAILABLE",
+        "WECHAT_OAUTH_FAILED",
+    }
+)
+
+# P2-1：微信通道故障码的显式集合——logger.error 的告警条件用它而非
+# 「任意 5xx」，避免内部未知 5xx 污染通道健康度指标（codex 评审 #2）；
+# 未知 5xx 仍由失败审计（failure_class=upstream）完整留痕。
+_WECHAT_CHANNEL_FAILURE_CODES = frozenset(
+    {
+        "WECHAT_NOT_CONFIGURED",
+        "WECHAT_OAUTH_UNAVAILABLE",
+        "WECHAT_OAUTH_FAILED",
     }
 )
 
@@ -464,6 +484,19 @@ def wechat_callback(
             if exc.status_code >= 500
             else ("security" if exc.code in _CALLBACK_SECURITY_FAILURE_CODES else "business")
         )
+        # P2-1：微信通道故障（宕机/密钥错误/未配置）落结构化 error 日志——
+        # 302 状态页在网络监控里显示为正常跳转，通道健康度必须从日志告警；
+        # 仅对显式通道码告警，内部未知 5xx 走审计留痕，不污染通道指标。
+        if exc.code in _WECHAT_CHANNEL_FAILURE_CODES:
+            logger.error(
+                "wechat oauth channel failure at callback",
+                extra={
+                    "request_id": request.state.request_id,
+                    "reason_code": exc.code,
+                    "flow": flow,
+                    "status_code": exc.status_code,
+                },
+            )
         try:
             db.rollback()
             write_audit(
