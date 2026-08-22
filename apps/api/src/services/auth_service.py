@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import and_, case, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from ..core.auth_models import AuthLoginState
 from ..core.config import get_settings
@@ -330,36 +330,30 @@ def revoke_company_invite(db: Session, *, invite_id: str, principal, request_id:
 
 
 def list_company_invites(db: Session, company_id: str) -> list[dict[str, Any]]:
-    """P1-01/P1-02: read-only invite records for the admin console.
+    """P1-01/P1-02/N9: read-only invite records for the admin console.
 
-    Returns lifecycle records without token material. Historical usage can
-    only be evidenced by used_at plus the *current* primary account name;
-    anything unverifiable stays None so the UI shows 「未记录」.
+    Returns lifecycle records without token material. Usage attribution comes
+    from used_by_user_id captured in the binding transaction itself — it never
+    drifts with later primary-user changes; unverifiable history stays None
+    so the UI shows 「未记录」.
     """
 
     company = db.get(Company, company_id)
     if company is None:
         raise AppError("COMPANY_NOT_AVAILABLE", "加盟商公司不存在或已停用", 404)
     now = utcnow()
+    creator = aliased(User)
+    consumer = aliased(User)
     rows = db.execute(
-        select(InviteToken, User.display_name)
-        .outerjoin(User, User.id == InviteToken.created_by)
+        select(InviteToken, creator.display_name, consumer.display_name)
+        .outerjoin(creator, creator.id == InviteToken.created_by)
+        .outerjoin(consumer, consumer.id == InviteToken.used_by_user_id)
         .where(InviteToken.company_id == company_id)
         .order_by(InviteToken.created_at.desc())
         .limit(50)
     ).all()
-    primary_account_name = None
-    if company.primary_user_id:
-        owner = db.get(User, company.primary_user_id)
-        primary_account_name = owner.display_name if owner else None
-    # P3-6：多条 USED 历史邀请都显示当前主账号会过度归因（换绑后旧邀请并非
-    # 当前账号使用）；仅 used_at 最近的一条关联当前主账号，其余保持 None。
-    latest_used_id = None
-    used_invites = [invite for invite, _ in rows if invite.used_at is not None]
-    if used_invites:
-        latest_used_id = max(used_invites, key=lambda item: as_utc(item.used_at)).id
     items: list[dict[str, Any]] = []
-    for invite, creator_name in rows:
+    for invite, creator_name, used_by_name in rows:
         if invite.used_at is not None:
             status = "USED"
         elif invite.revoked_at is not None:
@@ -377,7 +371,7 @@ def list_company_invites(db: Session, company_id: str) -> list[dict[str, Any]]:
                 "expires_at": as_utc(invite.expires_at),
                 "used_at": as_utc(invite.used_at),
                 "revoked_at": as_utc(invite.revoked_at),
-                "primary_account_name": primary_account_name if invite.id == latest_used_id else None,
+                "used_by_name": used_by_name,
                 # P2-01：发出时的对象快照原样返回；迁移前的存量行无快照即为
                 # None，前端显示「未记录」——与 P1-02 一样不用当前值冒充快照。
                 "invitee_name": invite.invitee_name_snapshot,
@@ -429,11 +423,13 @@ def _consume_invite(
     raw_token: str | None = None,
     invite_id: str | None = None,
     expected_company_id: str | None = None,
+    used_by_user_id: str | None = None,
 ) -> InviteToken:
     """Atomically consume a one-time invite.
 
     The conditional UPDATE is the concurrency boundary for both PostgreSQL and
     SQLite. Exactly one transaction can transition used_at from NULL.
+    N9：used_by_user_id 同语句写回——归因与消费原子落库，不依赖事后补写。
     """
 
     matchers = []
@@ -455,7 +451,7 @@ def _consume_invite(
     row = db.execute(
         update(InviteToken)
         .where(*filters)
-        .values(used_at=now)
+        .values(used_at=now, used_by_user_id=used_by_user_id)
         .returning(InviteToken.id)
         .execution_options(synchronize_session=False)
     ).first()
@@ -500,7 +496,13 @@ def _login_bound_identity(
         if invite.company_id != company.id:
             raise AppError("AUTH_WECHAT_BOUND_OTHER_COMPANY", "该微信已绑定其他加盟商公司", 409)
         if consume_invite:
-            _consume_invite(db, raw_token=invite_token, invite_id=invite_id, expected_company_id=company.id)
+            _consume_invite(
+                db,
+                raw_token=invite_token,
+                invite_id=invite_id,
+                expected_company_id=company.id,
+                used_by_user_id=identity.user_id,
+            )
     identity.unionid = unionid or identity.unionid
     identity.nickname = nickname or identity.nickname
     user.last_login_at = utcnow()
@@ -625,6 +627,13 @@ def login_or_bind_wechat(
         ).rowcount
         if not claimed:
             raise AppError("AUTH_COMPANY_ALREADY_BOUND", "该公司已绑定微信主账号", 409)
+        # N9：新用户路径在 user 建档后补写归因——与邀请消费同一事务提交。
+        db.execute(
+            update(InviteToken)
+            .where(InviteToken.id == invite.id, InviteToken.used_by_user_id.is_(None))
+            .values(used_by_user_id=user.id)
+            .execution_options(synchronize_session=False)
+        )
         db.flush()
     except IntegrityError as exc:
         # codex #3：仅 openid 唯一冲突走幂等重放——同一段 flush 覆盖

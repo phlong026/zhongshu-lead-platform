@@ -278,15 +278,18 @@ def test_list_company_invites_returns_full_lifecycle_records(api_client) -> None
 
 
 def test_list_company_invites_shows_current_primary_account_for_used_invite(api_client) -> None:
-    """P1-02：使用结果与当前主账号可追溯；无法证实的历史字段为「未记录」。"""
+    """P1-02/N9：使用者是消费邀请时落库的 used_by_user_id——绑定流消费的
+    邀请归因到真实使用者；无法核实的历史字段保持「未记录」。"""
 
     client, factory = api_client
     headers = _admin_headers(client)
     with factory() as db:
         bound = create_company(db, _company_body("SH-TRACE-BOUND"))
-        _, raw, _ = create_company_invite(db, bound.id, None, 24)
-        bind_wechat_by_invite(db, raw, "openid-trace", "张老板")
+        invite, raw, _ = create_company_invite(db, bound.id, None, 24)
+        user, _ = bind_wechat_by_invite(db, raw, "openid-trace", "张老板")
         db.commit()
+        db.refresh(invite)  # consume/update 走 synchronize_session=False，缓存对象不回填
+        assert invite.used_by_user_id == user.id, "消费邀请必须同事务写回真实使用者"
         bound_id = bound.id
         # 模拟历史遗留：used_at 非空但公司从未绑定主账号
         legacy_used = create_company(db, _company_body("SH-TRACE-LEGACY"))
@@ -304,12 +307,12 @@ def test_list_company_invites_shows_current_primary_account_for_used_invite(api_
     bound_items = client.get(f"/api/v1/auth/companies/{bound_id}/invites", headers=headers).json()["data"]["items"]
     used = next(item for item in bound_items if item["status"] == "USED")
     assert used["used_at"] is not None
-    assert used["primary_account_name"] == "张老板"
+    assert used["used_by_name"] == "张老板"
 
     legacy_items = client.get(f"/api/v1/auth/companies/{legacy_id}/invites", headers=headers).json()["data"]["items"]
     legacy_used_item = legacy_items[0]
     assert legacy_used_item["status"] == "USED"
-    assert legacy_used_item["primary_account_name"] is None
+    assert legacy_used_item["used_by_name"] is None
 
 
 def test_revoke_invite_returns_404_for_missing_invite(api_client) -> None:
@@ -512,7 +515,8 @@ def test_list_company_invites_expired_boundary_matches_validation(api_client) ->
 
 
 def test_list_company_invites_attributes_primary_only_to_latest_used(api_client) -> None:
-    """P3-6：多条 USED 历史邀请仅 used_at 最近一条显示当前主账号，避免过度归因。"""
+    """N9：归因来自消费时刻的 used_by_user_id，不随主账号换绑漂移——
+    历史邀请不得因数据修复/人工换绑被重新归因到新账号。"""
 
     client, factory = api_client
     headers = _admin_headers(client)
@@ -521,7 +525,7 @@ def test_list_company_invites_attributes_primary_only_to_latest_used(api_client)
         _, raw, _ = create_company_invite(db, company.id, None, 24)
         bind_wechat_by_invite(db, raw, "openid-p3-06", "李老板")
         db.commit()
-        # 换绑前的历史行：used_at 早于当前主账号的绑定时间
+        # 换绑前的历史行：used_at 有值但无法核实使用者（N9 前的存量数据）
         db.add(
             InviteToken(
                 token_hash=hash_token("p3-06-legacy-used-token-0001"),
@@ -530,17 +534,21 @@ def test_list_company_invites_attributes_primary_only_to_latest_used(api_client)
                 used_at=utcnow() - timedelta(days=3),
             )
         )
+        # 模拟人工换绑：主账号被指到新用户（数据修复场景）
+        replacement = User(display_name="新主账号", company_id=company.id, status="ACTIVE")
+        db.add(replacement)
+        db.flush()
+        company.primary_user_id = replacement.id
         db.commit()
         company_id = company.id
 
     items = client.get(f"/api/v1/auth/companies/{company_id}/invites", headers=headers).json()["data"]["items"]
     used_rows = [item for item in items if item["status"] == "USED"]
-    named = [item for item in used_rows if item["primary_account_name"]]
+    named = [item for item in used_rows if item["used_by_name"]]
     assert len(used_rows) == 2
-    assert len(named) == 1 and named[0]["primary_account_name"] == "李老板"
-    # 关联当前主账号的必须是 used_at 最近的一条（绑定流刚消费的邀请），不是历史行
-    legacy_used_at = max(item["used_at"] for item in used_rows if item not in named)
-    assert named[0]["used_at"] > legacy_used_at
+    # 只有绑定流真实消费的邀请有归因，且是当时的真实使用者，不是新主账号
+    assert len(named) == 1
+    assert named[0]["used_by_name"] == "李老板"
 
 
 def test_validate_invite_rejects_mismatched_token_and_id(db) -> None:
@@ -688,3 +696,25 @@ def test_confirm_start_buckets_are_bounded_and_fail_closed() -> None:
     finally:
         buckets.clear()
 
+
+
+def test_identity_hit_relogin_consumes_invite_with_real_user(db) -> None:
+    """N9：已绑定身份带新邀请重登（防御路径）——消费同样写回真实使用者。"""
+
+    company = create_company(db, _company_body("SH-N9-RELOGIN"))
+    _, raw, _ = create_company_invite(db, company.id, None, 24)
+    user, _ = bind_wechat_by_invite(db, raw, "openid-n9-relogin", "王老板")
+    db.commit()
+    # 已绑定公司不能再发新邀请，直接造行模拟并发/修复窗口的存量邀请
+    fresh = InviteToken(
+        token_hash=hash_token("n9-relogin-fresh-token-0001"),
+        company_id=company.id,
+        expires_at=utcnow() + timedelta(hours=1),
+    )
+    db.add(fresh)
+    db.commit()
+
+    login_or_bind_wechat(db, openid="openid-n9-relogin", nickname="王老板", invite_token="n9-relogin-fresh-token-0001")
+    db.commit()
+    assert fresh.used_at is not None
+    assert fresh.used_by_user_id == user.id

@@ -175,6 +175,9 @@ class InviteToken(Base, TimestampMixin):
     # P2-01：邀请发出时的展示对象快照——公司/负责人后续改名不影响历史追溯。
     invitee_name_snapshot: Mapped[str | None] = mapped_column(String(64))
     company_name_snapshot: Mapped[str | None] = mapped_column(String(128))
+    # N9：消费邀请的真实使用者——绑定事务内写回，归因不随主账号换绑漂移；
+    # 存量行（N9 前）无值，展示层按「未记录」处理，禁止用当前主账号猜测。
+    used_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
 
 
 class WechatIdentity(Base, TimestampMixin):
