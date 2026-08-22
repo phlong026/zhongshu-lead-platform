@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from sqlalchemy import and_, case, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -287,6 +288,54 @@ def build_invite_copy_text(
     greeting = f"{owner_name}，您好" if owner_name else "您好"
     company_label = company_name or "加盟商"
     return f"{greeting}：这是【{company_label}】的微信绑定邀请，请在微信内打开：{url}，有效期至：{expires_at}"
+
+
+def list_company_invites(db: Session, company_id: str) -> list[dict[str, Any]]:
+    """P1-01/P1-02: read-only invite records for the admin console.
+
+    Returns lifecycle records without token material. Historical usage can
+    only be evidenced by used_at plus the *current* primary account name;
+    anything unverifiable stays None so the UI shows 「未记录」.
+    """
+
+    company = db.get(Company, company_id)
+    if company is None:
+        raise AppError("COMPANY_NOT_AVAILABLE", "加盟商公司不存在或已停用", 404)
+    now = utcnow()
+    rows = db.execute(
+        select(InviteToken, User.display_name)
+        .outerjoin(User, User.id == InviteToken.created_by)
+        .where(InviteToken.company_id == company_id)
+        .order_by(InviteToken.created_at.desc())
+        .limit(50)
+    ).all()
+    primary_account_name = None
+    if company.primary_user_id:
+        owner = db.get(User, company.primary_user_id)
+        primary_account_name = owner.display_name if owner else None
+    items: list[dict[str, Any]] = []
+    for invite, creator_name in rows:
+        if invite.used_at is not None:
+            status = "USED"
+        elif invite.revoked_at is not None:
+            status = "REVOKED"
+        elif as_utc(invite.expires_at) <= now:
+            status = "EXPIRED"
+        else:
+            status = "ACTIVE"
+        items.append(
+            {
+                "id": invite.id,
+                "status": status,
+                "created_at": as_utc(invite.created_at),
+                "created_by_name": creator_name,
+                "expires_at": as_utc(invite.expires_at),
+                "used_at": as_utc(invite.used_at),
+                "revoked_at": as_utc(invite.revoked_at),
+                "primary_account_name": primary_account_name if status == "USED" else None,
+            }
+        )
+    return items
 
 
 def validate_invite(

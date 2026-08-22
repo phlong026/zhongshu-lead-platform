@@ -159,3 +159,35 @@ def test_admin_invite_dialog_requires_confirmation_and_offers_copy_qr_revoke():
     assert "renderInviteQr" in app and "new QRCode" in app and "'#invite-qr'" in app, "缺少本地二维码渲染与容器"
     assert "二维码生成失败" in app, "二维码渲染失败时缺少错误提示"
     assert "/revoke" in app and "撤销本次邀请" in app, "缺少撤销本次邀请入口"
+
+
+
+def test_h5_auth_error_status_page_covers_binding_failures():
+    app = Path("apps/h5/public/app.js").read_text(encoding="utf-8")
+    assert "function renderAuthError" in app, "缺少认证错误状态页渲染函数"
+    assert "auth-error" in app, "路由分发缺少 auth-error 入口"
+    for code in (
+        "AUTH_OAUTH_STATE_INVALID",
+        "AUTH_BINDING_CONFIRM_REQUIRED",
+        "AUTH_WECHAT_NOT_BOUND",
+        "AUTH_WECHAT_BOUND_OTHER_COMPANY",
+        "AUTH_COMPANY_DISABLED",
+        "AUTH_COMPANY_ALREADY_BOUND",
+        "AUTH_INVITE_INVALID",
+    ):
+        assert code in app, f"缺少错误码 {code} 的状态页映射"
+    fn = app.split("function renderAuthError", 1)[1]
+    fn = fn.split("\nfunction ", 1)[0]
+    assert "e.message" not in fn and "err.message" not in fn, "状态页不得直接渲染后端 message"
+    assert "重新获取" in app, "缺少重新获取邀请的引导文案"
+
+
+def test_admin_company_page_has_invite_records_modal():
+    app = Path("apps/admin/public/app.js").read_text(encoding="utf-8")
+    assert "data-invite-records" in app, "公司列表缺少邀请记录入口"
+    assert "function inviteRecordsModal" in app, "缺少邀请记录弹窗"
+    fn = app.split("function inviteRecordsModal", 1)[1]
+    fn = fn.split("\nfunction ", 1)[0]
+    assert "request(" in fn and "/invites" in fn, "弹窗必须请求邀请列表接口"
+    assert "data-revoke" in fn, "列表行缺少撤销入口"
+    assert "未记录" in app, "不可证实的追溯字段必须显示为未记录"

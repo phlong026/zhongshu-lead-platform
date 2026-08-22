@@ -1,0 +1,15 @@
+补齐邀请记录追溯与绑定失败状态页
+
+@P1-01/02:公司邀请记录只读端点 (超管专属、limit50、白名单字段) + 后台邀请记录弹窗 (状态徽章/撤销/「未记录」降级)
+-M4:revoke 不存在邀请→404 INVITE_NOT_FOUND，消除运营假成功反馈
+-P1-04:OAuth callback AppError 302 到 /h5/#/auth-error (错误码白名单 frozenset,白名单外归并 AUTH_FAILED);H5 renderAuthError 状态页 (9 码固定文案，不渲染后端 message)
+
+@Tests:+7 新用例 (列表/404/追溯/错误页合同);GET callback 4 处旧断言迁移 302 新契约 (POST mock-callback JSON 契约不变);check_js 29 文件语法全绿
+
+@Security-评审：自评审/diff (权限/白名单/转义/开放重定向)|仓库门禁 secret_scan 项目代码零命中 |CodeReview PASSED (XSS 转义完备/审计完整性确认/1 LOW 已修);云端 L2 因 Credits 耗尽未执行 (用户确认继续)
+
+@Tested:定向 35+pre_go_live 10+run_v12_e2e 4 passed(真实 PG)+全量回归 100%(deselect worktree 守护后)
+
+@Constraint:追溯仅当前主账号名，不可证实历史显示「未记录」；不新增快照字段 (worklist P2明确本次不做)
+
+@Rejected:InviteToken.used_by 历史快照(schema 变更 scope 外)

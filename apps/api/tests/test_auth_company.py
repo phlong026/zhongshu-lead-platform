@@ -228,3 +228,102 @@ def test_bound_wechat_login_with_same_company_invite_consumes_invite(db) -> None
     assert again.id == user.id
     assert db.get(InviteToken, second.id).used_at is not None
     assert db.get(Company, company.id).primary_user_id == user.id
+
+
+
+def test_list_company_invites_returns_full_lifecycle_records(api_client) -> None:
+    """P1-01：邀请记录列表覆盖全部生命周期状态，创建人可追溯，不泄露 token。"""
+
+    client, factory = api_client
+    headers = _admin_headers(client)
+    with factory() as db:
+        company = create_company(db, _company_body("SH-LIST"))
+        db.commit()
+        company_id = company.id
+        # 记录1：被第二条邀请同事务自动撤销（REVOKED）
+        client.post(f"/api/v1/auth/companies/{company_id}/invites", headers=headers, json={"expires_hours": 24})
+        # 记录2：当前有效（ACTIVE），创建人为 admin
+        active = client.post(
+            f"/api/v1/auth/companies/{company_id}/invites", headers=headers, json={"expires_hours": 24}
+        ).json()["data"]
+        # 记录3：直接插入的过期行（EXPIRED），无创建人，用于验证「未记录」
+        db.add(
+            InviteToken(
+                token_hash=hash_token("expired-list-token-0001"),
+                company_id=company_id,
+                expires_at=utcnow() - timedelta(hours=1),
+            )
+        )
+        db.commit()
+
+    response = client.get(f"/api/v1/auth/companies/{company_id}/invites", headers=headers)
+    assert response.status_code == 200, response.text
+    items = response.json()["data"]["items"]
+    assert len(items) == 3
+    by_status = {item["status"]: item for item in items}
+    assert set(by_status) == {"REVOKED", "ACTIVE", "EXPIRED"}
+    assert by_status["REVOKED"]["revoked_at"] is not None
+    assert by_status["ACTIVE"]["id"] == active["invite_id"]
+    assert by_status["ACTIVE"]["expires_at"] == active["expires_at"]
+    assert by_status["ACTIVE"]["created_by_name"]
+    assert by_status["EXPIRED"]["created_by_name"] is None
+    # 列表绝不携带 token 原文或哈希
+    assert all("token" not in item and "token_hash" not in item for item in items)
+
+
+def test_list_company_invites_shows_current_primary_account_for_used_invite(api_client) -> None:
+    """P1-02：使用结果与当前主账号可追溯；无法证实的历史字段为「未记录」。"""
+
+    client, factory = api_client
+    headers = _admin_headers(client)
+    with factory() as db:
+        bound = create_company(db, _company_body("SH-TRACE-BOUND"))
+        _, raw, _ = create_company_invite(db, bound.id, None, 24)
+        bind_wechat_by_invite(db, raw, "openid-trace", "张老板")
+        db.commit()
+        bound_id = bound.id
+        # 模拟历史遗留：used_at 非空但公司从未绑定主账号
+        legacy_used = create_company(db, _company_body("SH-TRACE-LEGACY"))
+        db.add(
+            InviteToken(
+                token_hash=hash_token("legacy-used-token-0002"),
+                company_id=legacy_used.id,
+                expires_at=utcnow() + timedelta(hours=1),
+                used_at=utcnow() - timedelta(hours=2),
+            )
+        )
+        db.commit()
+        legacy_id = legacy_used.id
+
+    bound_items = client.get(f"/api/v1/auth/companies/{bound_id}/invites", headers=headers).json()["data"]["items"]
+    used = next(item for item in bound_items if item["status"] == "USED")
+    assert used["used_at"] is not None
+    assert used["primary_account_name"] == "张老板"
+
+    legacy_items = client.get(f"/api/v1/auth/companies/{legacy_id}/invites", headers=headers).json()["data"]["items"]
+    legacy_used_item = legacy_items[0]
+    assert legacy_used_item["status"] == "USED"
+    assert legacy_used_item["primary_account_name"] is None
+
+
+def test_revoke_invite_returns_404_for_missing_invite(api_client) -> None:
+    """M4：撤销不存在的邀请必须明确失败，不再静默返回成功。"""
+
+    client, _ = api_client
+    headers = _admin_headers(client)
+    response = client.post("/api/v1/auth/invites/not-a-real-invite-id/revoke", headers=headers)
+    assert response.status_code == 404, response.text
+    assert response.json()["code"] == "INVITE_NOT_FOUND"
+
+
+def test_list_company_invites_requires_admin_permission(api_client) -> None:
+    """邀请记录仅限后台运营查看，未认证请求不得获得数据。"""
+
+    client, factory = api_client
+    with factory() as db:
+        company = create_company(db, _company_body("SH-LIST-PERM"))
+        db.commit()
+        company_id = company.id
+    response = client.get(f"/api/v1/auth/companies/{company_id}/invites")
+    assert response.status_code == 401
+    assert response.json()["code"] == "AUTH_REQUIRED"

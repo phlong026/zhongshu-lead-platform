@@ -198,8 +198,9 @@ def test_oauth_callback_binds_new_wechat_only_with_confirmed_intent(api_client, 
         params={"code": "code-legacy", "state": legacy_state},
         follow_redirects=False,
     )
-    assert rejected.status_code == 403
-    assert rejected.json()["code"] == "AUTH_WECHAT_NOT_BOUND"
+    # P1-04：绑定类失败在浏览器上下文统一 302 到 H5 状态页，不再返回裸 JSON。
+    assert rejected.status_code == 302
+    assert "/h5/#/auth-error?code=AUTH_WECHAT_NOT_BOUND" in rejected.headers["location"]
 
     # 伪造的 bind purpose（缺少 binding_confirmed）同样拒绝
     forged = create_signed_state(
@@ -211,8 +212,8 @@ def test_oauth_callback_binds_new_wechat_only_with_confirmed_intent(api_client, 
         params={"code": "code-forged", "state": forged},
         follow_redirects=False,
     )
-    assert unconfirmed.status_code == 400
-    assert unconfirmed.json()["code"] == "AUTH_BINDING_CONFIRM_REQUIRED"
+    assert unconfirmed.status_code == 302
+    assert "/h5/#/auth-error?code=AUTH_BINDING_CONFIRM_REQUIRED" in unconfirmed.headers["location"]
 
 
 def test_wechat_start_rejects_legacy_invite_entry_and_keeps_plain_login(api_client) -> None:
@@ -239,3 +240,29 @@ def test_wechat_start_rejects_legacy_invite_entry_and_keeps_plain_login(api_clie
     # legacy purpose 状态不再携带任何邀请信息，首次绑定只能走 confirm-start
     assert "invite" not in payload
     assert payload["return_url"] == "/h5/#/home"
+
+
+
+def test_oauth_callback_redirects_binding_errors_to_h5_status_page(api_client) -> None:
+    """P1-04：callback 的绑定类错误 302 到 H5 状态页，浏览器不再看到裸 JSON。"""
+
+    client, _ = api_client
+    invalid_state = client.get(
+        "/api/v1/auth/wechat/callback",
+        params={"code": "code-x", "state": "garbage-state"},
+        follow_redirects=False,
+    )
+    assert invalid_state.status_code == 302, invalid_state.text
+    assert invalid_state.headers["location"] == "/h5/#/auth-error?code=AUTH_OAUTH_STATE_INVALID"
+
+    forged = create_signed_state(
+        {"invite_id": "i-x", "company_id": "c-x", "return_url": "/h5/#/home"},
+        purpose="wechat-oauth-bind",
+    )
+    unconfirmed = client.get(
+        "/api/v1/auth/wechat/callback",
+        params={"code": "code-y", "state": forged},
+        follow_redirects=False,
+    )
+    assert unconfirmed.status_code == 302
+    assert unconfirmed.headers["location"] == "/h5/#/auth-error?code=AUTH_BINDING_CONFIRM_REQUIRED"

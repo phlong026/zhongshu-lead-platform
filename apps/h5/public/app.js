@@ -33,6 +33,25 @@ async function ensureAuth(){
   try{state.me=await api('/auth/me');return true;}catch(err){if(err.code==='AUTH_REQUIRED'||err.code==='AUTH_INVALID'){renderLogin();return false;}throw err;}
 }
 
+const AUTH_ERROR_META={
+  AUTH_OAUTH_STATE_INVALID:['授权状态已失效','授权会话已过期或链接被重复使用，请回到邀请链接重新发起绑定。'],
+  AUTH_BINDING_CONFIRM_REQUIRED:['需先确认邀请','请从平台发出的专属邀请链接进入，核对公司信息并确认后再授权。'],
+  AUTH_WECHAT_NOT_BOUND:['微信尚未绑定公司','当前微信未完成公司绑定，请通过专属邀请链接进入。'],
+  AUTH_WECHAT_BOUND_OTHER_COMPANY:['微信已绑定其他公司','一个微信只能绑定一家加盟商公司，如需变更请联系平台处理。'],
+  AUTH_COMPANY_DISABLED:['公司已停用','该加盟商公司已被平台停用，暂时无法完成绑定或登录。'],
+  AUTH_COMPANY_ALREADY_BOUND:['公司已完成绑定','该公司已绑定微信主账号，无需重复绑定；如遇账号异常请联系平台。'],
+  AUTH_INVITE_INVALID:['邀请已失效','邀请不存在、已过期、被撤销或已被使用，请联系平台重新获取专属邀请链接。'],
+  AUTH_ACCOUNT_DISABLED:['账号已停用','该账号已被平台停用，如有疑问请联系平台。'],
+  AUTH_FAILED:['绑定失败','绑定过程出现问题，请稍后重试；多次失败请联系平台重新获取邀请链接。']
+};
+// P1-04：绑定类失败统一落到 auth-error 状态页，只按错误码展示固定文案，
+// 不渲染后端 message，页面上也不出现 token / openid / 手机号等敏感信息。
+function renderAuthError(){
+  const params=new URLSearchParams(location.hash.split('?')[1]||''); const code=params.get('code')||'AUTH_FAILED';
+  const meta=AUTH_ERROR_META[code]||AUTH_ERROR_META.AUTH_FAILED;
+  app.innerHTML=`<section class="login-page"><div class="login-logo"><img src="./logo.png" alt="合家美宅"><h1>${esc(meta[0])}</h1><p>${esc(meta[1])}</p></div><div class="login-panel"><button class="btn btn-primary btn-block" data-route="login">重新获取邀请</button></div></section>`;
+  bindRoutes();
+}
 function renderLogin(){
   const params=new URLSearchParams(location.hash.split('?')[1]||''); const invite=params.get('invite')||'';
   app.innerHTML=`<section class="login-page"><div class="login-logo"><img src="./logo.png" alt="合家美宅"><h1>合家美宅客资助手</h1><p>确认公司信息后授权绑定</p></div><div class="login-panel"><button class="btn btn-primary btn-block" id="wechat-login">微信授权登录</button>${invite?'<p class="help">已识别专属邀请，请核对公司信息后确认绑定。</p>':'<p class="help">请通过专属邀请链接进入。</p>'}</div></section>`;
@@ -55,7 +74,7 @@ function bindWechatLogin(invite){
       button.disabled=true;button.textContent='正在进入微信授权…';
       const r=await api('/auth/invites/confirm-start',{method:'POST',body:JSON.stringify({invite})});
       location.href=r.authorization_url;
-    }catch(e){button.disabled=false;button.textContent='微信授权登录';toast(e.message,'error');}
+    }catch(e){button.disabled=false;button.textContent='微信授权登录';if(e.code&&AUTH_ERROR_META[e.code])return go(`auth-error?code=${encodeURIComponent(e.code)}`);toast(e.message,'error');}
   };
 }
 
@@ -143,6 +162,7 @@ async function route(){
   const raw=location.hash.replace(/^#\/?/,'')||'home';const [path]=raw.split('?');const parts=path.split('/');
   try{
     if(parts[0]==='login')return renderLogin();
+    if(parts[0]==='auth-error')return renderAuthError();
     if(parts[0]==='home')return renderHome();
     if(parts[0]==='leads'&&parts[1])return renderLead(parts[1]);
     if(parts[0]==='lead'&&parts[1])return renderLead(parts[1]);

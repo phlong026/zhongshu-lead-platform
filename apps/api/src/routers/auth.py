@@ -19,6 +19,7 @@ from ..services.auth_service import (
     authenticate_internal,
     build_invite_copy_text,
     create_company_invite,
+    list_company_invites,
     login_or_bind_wechat,
     validate_invite,
 )
@@ -90,6 +91,22 @@ def _resolve_binding_intent(state: str) -> tuple[str | None, str | None, str]:
         raise AppError("AUTH_OAUTH_STATE_INVALID", "微信授权状态已失效，请重新进入", 400) from exc
     # legacy purpose 状态不再携带邀请：未绑定微信必须先走确认后授权流程
     return None, None, str(legacy_state.get("return_url") or "/h5/#/home")
+
+
+# P1-04：允许透传到 H5 状态页的错误码；白名单外的异常统一归并为
+# AUTH_FAILED，避免把任意错误细节拼进重定向 URL。
+_H5_AUTH_ERROR_CODES = frozenset(
+    {
+        "AUTH_OAUTH_STATE_INVALID",
+        "AUTH_BINDING_CONFIRM_REQUIRED",
+        "AUTH_WECHAT_NOT_BOUND",
+        "AUTH_WECHAT_BOUND_OTHER_COMPANY",
+        "AUTH_COMPANY_DISABLED",
+        "AUTH_COMPANY_ALREADY_BOUND",
+        "AUTH_INVITE_INVALID",
+        "AUTH_ACCOUNT_DISABLED",
+    }
+)
 
 
 def _sanitize_return_url(value: str) -> str:
@@ -271,6 +288,18 @@ def invite_confirm_start(
     )
 
 
+@router.get("/companies/{company_id}/invites")
+def list_company_invites_endpoint(
+    company_id: str,
+    request: Request,
+    principal=Depends(require_permissions("*")),
+    db: Session = Depends(get_db),
+):
+    """P1-01/P1-02：公司邀请记录与使用追溯（只读，绝不返回 token 原文或哈希）。"""
+
+    return ok(request, {"items": list_company_invites(db, company_id)})
+
+
 @router.post("/invites/{invite_id}/revoke")
 def revoke_invite(
     invite_id: str,
@@ -278,11 +307,15 @@ def revoke_invite(
     principal=Depends(require_permissions("*")),
     db: Session = Depends(get_db),
 ):
+    from ..core.errors import AppError
+
     invite = db.get(InviteToken, invite_id)
-    if invite:
-        invite.revoked_at = datetime.now(timezone.utc)
-        write_audit(db, principal=principal, action="INVITE_REVOKE", resource_type="invite", resource_id=invite.id, company_id=invite.company_id, request_id=request.state.request_id)
-        db.commit()
+    if invite is None:
+        # M4：撤销不存在的邀请必须明确失败，运营端撤销按钮依赖该语义。
+        raise AppError("INVITE_NOT_FOUND", "邀请不存在或已被删除", 404)
+    invite.revoked_at = datetime.now(timezone.utc)
+    write_audit(db, principal=principal, action="INVITE_REVOKE", resource_type="invite", resource_id=invite.id, company_id=invite.company_id, request_id=request.state.request_id)
+    db.commit()
     return ok(request, message="邀请已撤销")
 
 
@@ -337,16 +370,23 @@ def wechat_callback(
     from fastapi.responses import RedirectResponse
     from ..integrations.wechat import WechatOAuthClient
 
-    invite_id, expected_company_id, return_url = _resolve_binding_intent(state)
-    identity = WechatOAuthClient().exchange_code(code)
-    user, token = login_or_bind_wechat(
-        db,
-        openid=identity.openid,
-        unionid=identity.unionid,
-        nickname=identity.nickname or "微信加盟商",
-        invite_id=invite_id,
-        expected_company_id=expected_company_id,
-    )
+    from ..core.errors import AppError
+
+    # P1-04：绑定类失败 302 到 H5 状态页；微信浏览器上下文不应看到裸 JSON。
+    try:
+        invite_id, expected_company_id, return_url = _resolve_binding_intent(state)
+        identity = WechatOAuthClient().exchange_code(code)
+        user, token = login_or_bind_wechat(
+            db,
+            openid=identity.openid,
+            unionid=identity.unionid,
+            nickname=identity.nickname or "微信加盟商",
+            invite_id=invite_id,
+            expected_company_id=expected_company_id,
+        )
+    except AppError as exc:
+        error_code = exc.code if exc.code in _H5_AUTH_ERROR_CODES else "AUTH_FAILED"
+        return RedirectResponse(url=f"/h5/#/auth-error?code={error_code}", status_code=302)
     write_audit(db, principal=None, action="WECHAT_OAUTH_LOGIN", resource_type="user", resource_id=user.id, company_id=user.company_id, request_id=request.state.request_id)
     db.commit()
     response = RedirectResponse(url=return_url, status_code=302)
