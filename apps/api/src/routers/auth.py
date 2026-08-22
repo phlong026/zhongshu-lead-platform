@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Annotated
 
@@ -11,6 +12,7 @@ from sqlalchemy.orm import Session
 from ..core.auth import CurrentPrincipal, require_permissions
 from ..core.config import get_settings
 from ..core.database import get_db
+from ..core.errors import AppError
 from ..core.models import Company, InviteToken, User
 from ..core.responses import ok
 from ..core.security import create_signed_state, decode_signed_state
@@ -36,6 +38,32 @@ logger = logging.getLogger("zhongshu.auth")
 def _request_ip(request: Request) -> str | None:
     return request.headers.get("x-real-ip") or (request.client.host if request.client else None)
 
+
+# I15：匿名 confirm-start 无认证无限流——持一条有效邀请即可循环刷审计写入
+# （审计表膨胀、写负载）。按 invite+IP 双键做进程内滑动窗口限流；短时重复
+# 确认的审计去重由该限流压制（每分钟至多 10 条），不再单独比对历史审计。
+_CONFIRM_START_BUCKETS: dict[tuple[str, str], list[float]] = {}
+_CONFIRM_START_WINDOW_SECONDS = 60.0
+_CONFIRM_START_MAX_PER_WINDOW = 10
+
+def _confirm_start_rate_limited(invite: str, ip: str | None) -> bool:
+    now = time.monotonic()
+    # 惰性清理：桶数量越界时整体清扫过期项，避免长驻进程的键无限累积。
+    if len(_CONFIRM_START_BUCKETS) > 4096:
+        for key, stamps in list(_CONFIRM_START_BUCKETS.items()):
+            alive = [stamp for stamp in stamps if now - stamp < _CONFIRM_START_WINDOW_SECONDS]
+            if alive:
+                _CONFIRM_START_BUCKETS[key] = alive
+            else:
+                _CONFIRM_START_BUCKETS.pop(key, None)
+    key = (invite, ip or "unknown")
+    hits = [stamp for stamp in _CONFIRM_START_BUCKETS.get(key, []) if now - stamp < _CONFIRM_START_WINDOW_SECONDS]
+    if len(hits) >= _CONFIRM_START_MAX_PER_WINDOW:
+        _CONFIRM_START_BUCKETS[key] = hits
+        return True
+    hits.append(now)
+    _CONFIRM_START_BUCKETS[key] = hits
+    return False
 
 def _audit_unlock(db: Session, *, user_id: str | None, request: Request) -> None:
     if not user_id:
@@ -76,7 +104,6 @@ def _resolve_binding_intent(state: str) -> tuple[str | None, str | None, str]:
 
     from jwt import InvalidTokenError
 
-    from ..core.errors import AppError
 
     try:
         bind_state = decode_signed_state(state, purpose="wechat-oauth-bind")
@@ -315,6 +342,10 @@ def invite_confirm_start(
 ):
     """Exchange a confirmed invite for a short-lived binding OAuth intent (P0-04)."""
 
+    # I15：限流在邀请校验之前——无效邀请的探测请求同样计数，防枚举刷。
+    if _confirm_start_rate_limited(body.invite, _request_ip(request)):
+        raise AppError("AUTH_RATE_LIMITED", "操作过于频繁，请稍后再试", 429)
+
     from ..integrations.wechat import WechatOAuthClient
 
     invite = validate_invite(db, raw_token=body.invite)
@@ -374,7 +405,6 @@ def revoke_invite(
     principal=Depends(require_permissions("*")),
     db: Session = Depends(get_db),
 ):
-    from ..core.errors import AppError
 
     # W1/I8：行锁读取——无锁 check-then-act 在并发撤销/绑定竞争下会把
     # revoked_at 盖写到 USED 邀请上；只锁邀请行不触碰 company，与 I5 的
@@ -400,7 +430,6 @@ def revoke_invite(
 
 @router.post("/wechat/mock-callback")
 def wechat_mock_callback(body: WechatMockCallbackBody, request: Request, response: Response, db: Session = Depends(get_db)):
-    from ..core.errors import AppError
 
     if not settings.wechat_dev_mock:
         raise AppError("AUTH_MOCK_DISABLED", "开发模拟登录已关闭", 403)
@@ -426,7 +455,6 @@ def wechat_start(
 ):
     from fastapi.responses import RedirectResponse
 
-    from ..core.errors import AppError
     from ..integrations.wechat import WechatOAuthClient
 
     # Phase 3.5/H2：旧邀请入口显式拒绝。只删参数声明时 FastAPI 会忽略
@@ -449,7 +477,6 @@ def wechat_callback(
     from fastapi.responses import RedirectResponse
     from ..integrations.wechat import WechatOAuthClient
 
-    from ..core.errors import AppError
 
     # P1-04：绑定类失败 302 到 H5 状态页；微信浏览器上下文不应看到裸 JSON。
     # P2-5：三个解析变量先置空——except 分支据此还原失败发生的环节
