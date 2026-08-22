@@ -14,6 +14,7 @@ if str(ROOT) not in sys.path:
 
 from apps.api.src.core.database import SessionLocal, init_database
 from apps.api.src.services.assignment_timeout_v12 import run_assignment_timeouts_active
+from apps.api.src.services.binding_integrity import audit_primary_binding_integrity
 from apps.api.src.services.followup_service import run_followup_overdue
 from apps.api.src.services.notification_v12 import drain_due_supplier_reward_settlement_notified
 from apps.api.src.services.outbox_worker import process_outbox
@@ -46,7 +47,7 @@ def publish_heartbeat(path: Path | None = None) -> None:
     temporary.replace(target)
 
 
-def run_cycle(run_slow_jobs: bool, run_hourly_jobs: bool) -> bool:
+def run_cycle(run_slow_jobs: bool, run_hourly_jobs: bool, run_daily_jobs: bool = False) -> bool:
     with SessionLocal() as db:
         try:
             outbox = process_outbox(db, limit=200)
@@ -69,7 +70,21 @@ def run_cycle(run_slow_jobs: bool, run_hourly_jobs: bool) -> bool:
                     max_batches=20,
                     settled_by=None,
                 )
-            if run_slow_jobs or run_hourly_jobs or outbox.get("sent") or outbox.get("failed"):
+            if run_daily_jobs:
+                # N2：绑定一致性日检——error 级违规必须告警，不能只在离线
+                # 核查时才被发现；报告只读不改库，失败不阻断调度循环。
+                report = audit_primary_binding_integrity(db)
+                metrics["binding_integrity"] = {
+                    "checked_companies": report.checked_companies,
+                    "issue_count": len(report.issues),
+                    "valid": report.valid,
+                }
+                if not report.valid:
+                    logger.error(
+                        "binding integrity violations detected: %s",
+                        [issue["code"] for issue in report.issues],
+                    )
+            if run_slow_jobs or run_hourly_jobs or run_daily_jobs or outbox.get("sent") or outbox.get("failed"):
                 logger.info("cycle metrics=%s", metrics)
             db.commit()
             return True
@@ -89,6 +104,7 @@ def main() -> int:
         cycle_succeeded = run_cycle(
             run_slow_jobs=tick % 10 == 0,
             run_hourly_jobs=tick % 120 == 0,
+            run_daily_jobs=tick % 1440 == 0,
         )
         if cycle_succeeded:
             publish_heartbeat()

@@ -96,8 +96,9 @@ def test_shared_primary_across_companies_is_reported(db) -> None:
     assert shared, "本测试造的跨公司共享主账号未被报告"
 
 
-def test_primary_without_identity_is_warning_only(db) -> None:
-    """I16：主账号缺微信身份属证据缺失（warning），不阻断 valid——与 error 级区分。"""
+def test_primary_without_identity_is_error(db) -> None:
+    """N2：主账号缺微信身份 = 公司「已绑定」却无法微信登录、无法重新邀请、
+    通知必败——不再是 warning，必须 error 并阻断 valid（发布门禁）。"""
     company, _user = _bind_owner(db, "I16-NOIDENT", "openid-i16-noident")
     identity = db.scalar(select(WechatIdentity).where(WechatIdentity.openid == "openid-i16-noident"))
     db.delete(identity)
@@ -106,4 +107,4 @@ def test_primary_without_identity_is_warning_only(db) -> None:
     report = audit_primary_binding_integrity(db)
 
     assert _codes(report) == {"PRIMARY_WITHOUT_IDENTITY"}
-    assert report.valid
+    assert not report.valid

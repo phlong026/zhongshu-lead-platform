@@ -22,7 +22,7 @@ from apps.api.src.core.errors import AppError
 from apps.api.src.core.models import Company, InviteToken, User, WechatIdentity
 from apps.api.src.core.security import hash_token
 from apps.api.src.core.time import utcnow
-from apps.api.src.services.auth_service import create_company_invite, login_or_bind_wechat
+from apps.api.src.services.auth_service import create_company_invite, login_or_bind_wechat, revoke_company_invite
 
 
 def _postgres_factory():
@@ -276,15 +276,13 @@ def test_concurrent_double_revoke_yields_exactly_one_success() -> None:
         barrier = Barrier(2)
 
         def revoke_once(session: Session) -> str:
-            # revoke 路由逻辑镜像：行锁读取 → 生命周期校验 → 盖写 revoked_at。
-            row = session.scalar(select(InviteToken).where(InviteToken.id == invite_id).with_for_update())
-            assert row is not None
-            if row.revoked_at is not None:
+            # N4：直接调生产实现，不再维护路由逻辑镜像（镜像漂移=测了个寂寞）。
+            try:
+                revoke_company_invite(session, invite_id=invite_id, principal=None, request_id="e2e-double-revoke")
+                return "REVOKED"
+            except AppError as exc:
                 session.rollback()
-                return "INVITE_ALREADY_REVOKED"
-            row.revoked_at = utcnow()
-            session.commit()
-            return "REVOKED"
+                return exc.code
 
         def worker() -> str:
             with factory() as session:

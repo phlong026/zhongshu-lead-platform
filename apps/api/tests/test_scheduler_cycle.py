@@ -61,3 +61,29 @@ def test_slow_job_failure_does_not_roll_back_outbox_progress(scheduler_session, 
     with scheduler_session() as db:
         item = db.get(NotificationOutbox, item_id)
         assert item.status == "SENT", "outbox 已发送状态被慢任务异常回滚"
+
+
+def test_daily_binding_integrity_violations_raise_alert(scheduler_session, caplog) -> None:
+    """N2：binding_integrity 接入 scheduler 日检——违规必须落 error 告警。"""
+
+    import logging as _logging
+
+    from apps.api.src.core.models import Company
+
+    with scheduler_session() as db:
+        db.add(
+            Company(
+                code="N2-DANGLING",
+                name="悬空主账号公司",
+                status="ACTIVE",
+                primary_user_id="ghost-user-id",
+            )
+        )
+        db.commit()
+
+    with caplog.at_level(_logging.ERROR, logger="scheduler"):
+        assert scheduler.run_cycle(run_slow_jobs=False, run_hourly_jobs=False, run_daily_jobs=True) is True
+
+    alerts = [r for r in caplog.records if "binding integrity" in r.message]
+    assert alerts, "绑定一致性违规必须落 error 级告警"
+    assert "DANGLING_PRIMARY" in caplog.text

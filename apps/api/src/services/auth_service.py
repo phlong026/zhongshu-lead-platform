@@ -21,6 +21,7 @@ from ..core.security import (
     verify_password,
 )
 from ..core.time import as_utc, utcnow
+from .audit import write_audit
 from .rbac import assign_role
 
 settings = get_settings()
@@ -292,6 +293,40 @@ def build_invite_copy_text(
     greeting = f"{owner_name}，您好" if owner_name else "您好"
     company_label = company_name or "加盟商"
     return f"{greeting}：这是【{company_label}】的微信绑定邀请，请在微信内打开：{url}，有效期至：{expires_at}"
+
+
+def revoke_company_invite(db: Session, *, invite_id: str, principal, request_id: str | None) -> None:
+    """N4：撤销邀请的唯一业务实现（router 与 PG 并发 e2e 共用，不再镜像）。
+
+    W1/I8：行锁读取——无锁 check-then-act 在并发撤销/绑定竞争下会把
+    revoked_at 盖写到 USED 邀请上；只锁邀请行不触碰 company，与 I5 的
+    「公司→邀请」锁序一致（SQLite 上 no-op，语义由 PG 并发测试守护）。
+    I8：撤销前校验生命周期——已撤销/已使用/已过期的邀请不得重复撤销，
+    也不得把 revoked_at 盖写到 used 邀请上，运营端得到明确错误码。
+    """
+
+    invite = db.scalar(select(InviteToken).where(InviteToken.id == invite_id).with_for_update())
+    if invite is None:
+        # M4：撤销不存在的邀请必须明确失败，运营端撤销按钮依赖该语义。
+        raise AppError("INVITE_NOT_FOUND", "邀请不存在或已被删除", 404)
+    now = datetime.now(timezone.utc)
+    if invite.revoked_at is not None:
+        raise AppError("INVITE_ALREADY_REVOKED", "邀请已撤销，无需重复操作", 409)
+    if invite.used_at is not None:
+        raise AppError("INVITE_ALREADY_USED", "邀请已被使用，不可撤销", 409)
+    if as_utc(invite.expires_at) is None or as_utc(invite.expires_at) <= now:
+        raise AppError("INVITE_ALREADY_EXPIRED", "邀请已过期，不可撤销", 409)
+    invite.revoked_at = now
+    write_audit(
+        db,
+        principal=principal,
+        action="INVITE_REVOKE",
+        resource_type="invite",
+        resource_id=invite.id,
+        company_id=invite.company_id,
+        request_id=request_id,
+    )
+    db.commit()
 
 
 def list_company_invites(db: Session, company_id: str) -> list[dict[str, Any]]:

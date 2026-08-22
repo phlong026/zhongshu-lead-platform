@@ -41,8 +41,8 @@ def audit_primary_binding_integrity(db: Session) -> BindingIntegrityReport:
       该形态只应来自误清空或脏数据）；
     - PRIMARY_USER_COMPANY_MISMATCH：主账号不属于该公司（身份串号）；
     - SHARED_PRIMARY：同一用户被多家公司登记为主账号；
-    - PRIMARY_WITHOUT_IDENTITY：主账号无微信身份（warning 级，绑定证据缺失，
-      不阻断 valid）。
+    - PRIMARY_WITHOUT_IDENTITY：主账号无微信身份（N2 起升级 error——公司
+      「已绑定」却无法微信登录、无法重新邀请、通知必败，必须阻断 valid）。
     """
     report = BindingIntegrityReport()
     companies = db.execute(select(Company).order_by(Company.id)).scalars().all()
@@ -99,7 +99,7 @@ def audit_primary_binding_integrity(db: Session) -> BindingIntegrityReport:
                 _issue(
                     "PRIMARY_WITHOUT_IDENTITY",
                     "公司主账号缺少微信身份，绑定证据不完整",
-                    severity="warning",
+                    severity="error",
                     company_id=company.id,
                     primary_user_id=primary_id,
                 )

@@ -28,6 +28,7 @@ from ..services.auth_service import (
     create_company_invite,
     list_company_invites,
     login_or_bind_wechat,
+    revoke_company_invite,
     validate_invite,
 )
 from ..services.notification_service import enqueue_outbox
@@ -480,26 +481,10 @@ def revoke_invite(
     principal=Depends(require_permissions("*")),
     db: Session = Depends(get_db),
 ):
+    """N4：撤销业务全部下沉 auth_service.revoke_company_invite——router
+    只保留鉴权与响应组装，PG 并发 e2e 直接测生产实现，不再维护镜像。"""
 
-    # W1/I8：行锁读取——无锁 check-then-act 在并发撤销/绑定竞争下会把
-    # revoked_at 盖写到 USED 邀请上；只锁邀请行不触碰 company，与 I5 的
-    # 「公司→邀请」锁序一致（SQLite 上 no-op，语义由 PG 并发测试守护）。
-    invite = db.scalar(select(InviteToken).where(InviteToken.id == invite_id).with_for_update())
-    if invite is None:
-        # M4：撤销不存在的邀请必须明确失败，运营端撤销按钮依赖该语义。
-        raise AppError("INVITE_NOT_FOUND", "邀请不存在或已被删除", 404)
-    # I8：撤销前校验生命周期——已撤销/已使用/已过期的邀请不得重复撤销，
-    # 也不得把 revoked_at 盖写到 used 邀请上，运营端得到明确错误码。
-    now = datetime.now(timezone.utc)
-    if invite.revoked_at is not None:
-        raise AppError("INVITE_ALREADY_REVOKED", "邀请已撤销，无需重复操作", 409)
-    if invite.used_at is not None:
-        raise AppError("INVITE_ALREADY_USED", "邀请已被使用，不可撤销", 409)
-    if as_utc(invite.expires_at) is None or as_utc(invite.expires_at) <= now:
-        raise AppError("INVITE_ALREADY_EXPIRED", "邀请已过期，不可撤销", 409)
-    invite.revoked_at = now
-    write_audit(db, principal=principal, action="INVITE_REVOKE", resource_type="invite", resource_id=invite.id, company_id=invite.company_id, request_id=request.state.request_id)
-    db.commit()
+    revoke_company_invite(db, invite_id=invite_id, principal=principal, request_id=request.state.request_id)
     return ok(request, message="邀请已撤销")
 
 
