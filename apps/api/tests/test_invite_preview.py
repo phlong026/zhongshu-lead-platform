@@ -16,7 +16,7 @@ def test_invite_preview_returns_only_safe_company_summary(api_client) -> None:
                 capabilities=[{"category_code": "VILLA_DECORATION", "brand_code": "ZHONGSHU"}],
             ),
         )
-        _, token = create_company_invite(session, company.id, None, 24)
+        _, token, _ = create_company_invite(session, company.id, None, 24)
         session.commit()
     response = client.get("/api/v1/auth/invites/preview", params={"invite": token})
     assert response.status_code == 200

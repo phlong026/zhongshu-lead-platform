@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from sqlalchemy import create_engine, func, inspect, select
@@ -39,6 +40,7 @@ SAFE_SUBPROCESS_ENVIRONMENT_KEYS = (
     "PATH",
     "PYTHONPATH",
     "PYTHONPYCACHEPREFIX",
+    "SYSTEMROOT",
     "TMP",
     "TMPDIR",
     "TEMP",
@@ -86,6 +88,7 @@ def production_lifecycle_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     from apps.api.src.core import legacy_guard
     from apps.api.src.main import app, settings
     from apps.api.src.routers import auth as auth_router
+    import apps.api.src.integrations.wechat as wechat_module
     import apps.api.src.services.storage as storage_module
 
     database_url = _database_url(tmp_path)
@@ -120,6 +123,14 @@ def production_lifecycle_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
 
     storage_dir = tmp_path / "private-object-storage"
     monkeypatch.setattr(auth_router.settings, "wechat_dev_mock", True)
+    # 绑定确认流程需要可构造的授权 URL，但绝不依赖真实微信凭据或外呼
+    monkeypatch.setattr(wechat_module.settings, "wechat_app_id", "wx-e2e-only")
+    monkeypatch.setattr(
+        wechat_module.settings,
+        "wechat_oauth_redirect_uri",
+        "https://testserver/api/v1/auth/wechat/callback",
+    )
+    monkeypatch.setattr(wechat_module.settings, "wechat_oauth_scope", "snsapi_base")
     monkeypatch.setattr(legacy_guard.settings, "legacy_write_enabled", False)
     monkeypatch.setattr(storage_module.settings, "object_storage_backend", "local")
     monkeypatch.setattr(storage_module.settings, "object_storage_dir", str(storage_dir))
@@ -193,6 +204,10 @@ def _create_company(client, admin: dict[str, str], code: str, name: str) -> str:
     )["id"]
 
 
+def _state_from_authorization_url(authorization_url: str) -> str:
+    return parse_qs(urlparse(authorization_url).query)["state"][0]
+
+
 def _bind_franchise(
     client,
     admin: dict[str, str],
@@ -208,11 +223,17 @@ def _bind_franchise(
             json={"expires_hours": 24},
         )
     )
+    confirm = _data(
+        client.post(
+            "/api/v1/auth/invites/confirm-start",
+            json={"invite": invite["token"]},
+        )
+    )
     bound = _data(
         client.post(
             "/api/v1/auth/wechat/mock-callback",
             json={
-                "invite_token": invite["token"],
+                "state": _state_from_authorization_url(confirm["authorization_url"]),
                 "openid": openid,
                 "nickname": nickname,
             },

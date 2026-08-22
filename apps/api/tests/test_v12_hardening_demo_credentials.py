@@ -51,7 +51,7 @@ def test_admin_login_and_user_creation_require_explicit_credentials() -> None:
 def test_h5_login_is_wechat_only_without_demo_account_form() -> None:
     source = Path("apps/h5/public/app.js").read_text(encoding="utf-8")
     assert 'id="wechat-login"' in source
-    assert "/auth/wechat/start?invite=" in source
+    assert "/auth/invites/confirm-start" in source
     assert 'id="username"' not in source
     assert 'id="password"' not in source
     assert "demo-login" not in source
