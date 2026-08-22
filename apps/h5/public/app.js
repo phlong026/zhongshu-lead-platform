@@ -54,20 +54,22 @@ function renderAuthError(){
 }
 function renderLogin(){
   const params=new URLSearchParams(location.hash.split('?')[1]||''); const invite=params.get('invite')||'';
-  app.innerHTML=`<section class="login-page"><div class="login-logo"><img src="./logo.png" alt="合家美宅"><h1>合家美宅客资助手</h1><p>确认公司信息后授权绑定</p></div><div class="login-panel"><button class="btn btn-primary btn-block" id="wechat-login">微信授权登录</button>${invite?'<p class="help">已识别专属邀请，请核对公司信息后确认绑定。</p>':'<p class="help">请通过专属邀请链接进入。</p>'}</div></section>`;
+  app.innerHTML=`<section class="login-page"><div class="login-logo"><img src="./logo.png" alt="合家美宅"><h1>合家美宅客资助手</h1><p>确认公司信息后授权绑定</p></div><div class="login-panel"><button class="btn btn-primary btn-block" id="wechat-login">微信授权登录</button>${invite?'<p class="help">已识别专属邀请，请核对公司信息后确认绑定。</p>':'<p class="help">已绑定微信的负责人可直接登录；新绑定请使用专属邀请链接进入。</p>'}</div></section>`;
   bindWechatLogin(invite);
 }
 // P0-04/H3：#wechat-login 唯一事件入口，enhancements.js / status-pages-v13.js 不得再绑定该按钮。
-// 门禁顺序：邀请存在 -> 规则勾选（增强层注入）-> 邀请预览通过（增强层标记）->
+// 门禁顺序：规则勾选（增强层注入）-> 邀请存在 ? 邀请预览通过（增强层标记）->
 // POST /auth/invites/confirm-start 取得后端签发的 authorization_url 后才跳转微信；
+// C2：无邀请时改走 legacy /wechat/start 普通登录，已绑定负责人重登不被锁死；
+// 未绑定的新微信由后端以 AUTH_WECHAT_NOT_BOUND 状态页引导获取邀请；
 // 任何一步失败都不发起 OAuth。
 function bindWechatLogin(invite){
   const button=document.querySelector('#wechat-login');
   if(!button)return;
   button.onclick=async()=>{
-    if(!invite){toast('请使用平台发出的专属邀请链接','error');return;}
     const agreement=document.querySelector('#zs-agreement');
     if(agreement&&!agreement.checked){toast('请先阅读并同意服务规则和隐私政策','error');return;}
+    if(!invite){location.href='/api/v1/auth/wechat/start?return_url='+encodeURIComponent('/h5/#/home');return;}
     if(button.dataset.inviteInvalid==='1'){toast('邀请已失效，请联系平台重新获取专属邀请链接','error');return;}
     if(button.dataset.inviteVerified!=='1'){toast('正在核验邀请信息，请稍候重试','error');return;}
     try{

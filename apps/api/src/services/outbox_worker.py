@@ -60,6 +60,10 @@ def process_outbox(db: Session, limit: int = 100) -> dict[str, int]:
 
 
 def _send(db: Session, client: WechatOfficialAccountClient, outbox: NotificationOutbox) -> dict[str, Any]:
+    # P2-03：邀请事件发生在负责人绑定微信之前——create_company_invite 拒绝已
+    # 绑定公司，所以不存在可解析的主账号；走渠道投递分支而非通用收件人解析。
+    if outbox.event_type == "INVITE_CREATED":
+        return _send_invite_created(db, client, outbox)
     company_id = outbox.payload.get("company_id")
     user_id = outbox.payload.get("user_id")
     if not user_id and company_id:
@@ -97,6 +101,41 @@ def _send(db: Session, client: WechatOfficialAccountClient, outbox: Notification
     )
     if notification:
         notification.status = "SENT" if result.success else "FAILED"
+    return {"success": result.success, "message_id": result.message_id, "error_code": result.error_code, "error_message": result.error_message}
+
+
+def _send_invite_created(db: Session, client: WechatOfficialAccountClient, outbox: NotificationOutbox) -> dict[str, Any]:
+    """P2-03 channel delivery for invite events (recipient not bound yet).
+
+    dev mock renders the template message and succeeds; the real channel
+    fails with TEMPLATE_NOT_CONFIGURED until a template_id is published via
+    SystemConfig(wechat_template/INVITE_CREATED) — that FAILED row is the
+    honest "channel pending" signal, and manual sending remains the fallback.
+    The outbox payload never carries the raw invite token.
+    """
+
+    payload = outbox.payload
+    invitee = str(payload.get("invitee_name") or "负责人")
+    company_name = str(payload.get("company_name") or "加盟商")
+    expires_at = str(payload.get("expires_at") or "")
+    template_id = _template_for_scene(db, outbox.event_type)
+    # S1：真实通道下收件人仍是占位符——发起 API 只会得到非法 openid 错误并
+    # 空转 5 次退避重试后落 DEAD；明确返回 NO_RECIPIENT，运营经创建弹窗人工
+    # 发送兜底。未发布模板时仍走 TEMPLATE_NOT_CONFIGURED 的诚实失败。
+    if not settings.wechat_dev_mock and template_id:
+        return {
+            "success": False,
+            "error_code": "NO_RECIPIENT",
+            "error_message": "邀请对象尚未绑定微信，请运营经创建弹窗手动发送",
+        }
+    result = client.send_scene_message(
+        openid="channel-pending-bind",
+        scene=outbox.event_type,
+        title=f"微信绑定邀请已生成（{company_name}）",
+        body=f"{invitee}的绑定邀请已生成，有效期至 {expires_at[:16].replace('T', ' ')}。请运营通过创建弹窗发送邀请链接。",
+        url=settings.app_base_url.rstrip("/") + str(payload.get("deep_link", "/h5/#/login")),
+        template_id=template_id,
+    )
     return {"success": result.success, "message_id": result.message_id, "error_code": result.error_code, "error_message": result.error_message}
 
 

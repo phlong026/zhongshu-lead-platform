@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request, Response
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..core.auth import CurrentPrincipal, require_permissions
@@ -12,6 +13,7 @@ from ..core.database import get_db
 from ..core.models import Company, InviteToken, User
 from ..core.responses import ok
 from ..core.security import create_signed_state, decode_signed_state
+from ..core.time import as_utc
 from ..schemas.auth import InviteConfirmStartBody, InviteCreateBody, LoginBody, WechatMockCallbackBody
 from ..services.audit import write_audit
 from ..services.auth_service import (
@@ -23,6 +25,7 @@ from ..services.auth_service import (
     login_or_bind_wechat,
     validate_invite,
 )
+from ..services.notification_service import enqueue_outbox
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
@@ -93,6 +96,10 @@ def _resolve_binding_intent(state: str) -> tuple[str | None, str | None, str]:
     return None, None, str(legacy_state.get("return_url") or "/h5/#/home")
 
 
+# I12：绑定预授权 state 的显式 TTL（分钟）。binding_confirmed state 是纯
+# bearer 令牌，不依赖 create_signed_state 的通用默认值，收紧签发窗口。
+_BINDING_STATE_TTL_MINUTES = 5
+
 # P1-04：允许透传到 H5 状态页的错误码；白名单外的异常统一归并为
 # AUTH_FAILED，避免把任意错误细节拼进重定向 URL。
 _H5_AUTH_ERROR_CODES = frozenset(
@@ -110,12 +117,17 @@ _H5_AUTH_ERROR_CODES = frozenset(
 
 
 def _sanitize_return_url(value: str) -> str:
-    """Constrain return_url to a same-origin path.
+    """Constrain return_url to the /h5/ app via a prefix whitelist.
 
-    Browsers treat backslashes like slashes for special schemes, so a value
-    like "/\\evil.com" is parsed as "//evil.com" and must be rejected too.
+    Browsers treat backslashes like slashes for special schemes, and WHATWG
+    URL parsing strips tab/LF/CR before parsing — so "/\\t/evil.com" reaches
+    the browser as "//evil.com". Any ASCII control character, backslash, or
+    non-/h5/ prefix therefore collapses to the safe default instead of being
+    pattern-matched against a blocklist.
     """
-    if not value.startswith("/") or value.startswith(("//", "/\\", "\\")):
+    if not value.startswith("/h5/"):
+        return "/h5/#/home"
+    if any(ord(ch) <= 0x1F or ord(ch) == 0x7F or ch == "\\" for ch in value):
         return "/h5/#/home"
     return value
 
@@ -226,6 +238,22 @@ def create_invite(
             metadata={"superseded_invite_ids": superseded_ids, "reason": "superseded_by_new_invite"},
             request_id=request.state.request_id,
         )
+    # P2-03：邀请生成即入 Outbox 事件（业务事务内，幂等键 invite:{id}:created）。
+    # 事件只描述快照事实，绝不携带 raw token——邀请链接仅经创建响应一次性下发。
+    enqueue_outbox(
+        db,
+        event_key=f"invite:{invite.id}:created",
+        event_type="INVITE_CREATED",
+        aggregate_type="invite",
+        aggregate_id=invite.id,
+        payload={
+            "company_id": company_id,
+            "company_name": invite.company_name_snapshot,
+            "invitee_name": invite.invitee_name_snapshot,
+            "expires_at": invite.expires_at.isoformat(),
+            "deep_link": "/h5/#/login",
+        },
+    )
     db.commit()
     company = db.get(Company, company_id)
     assert company is not None
@@ -258,6 +286,7 @@ def invite_confirm_start(
 
     invite = validate_invite(db, raw_token=body.invite)
     return_url = _sanitize_return_url(body.return_url)
+    # I12：绑定预授权 state 显式收紧 TTL，不依赖 create_signed_state 的通用默认值。
     state = create_signed_state(
         {
             "invite_id": invite.id,
@@ -266,7 +295,10 @@ def invite_confirm_start(
             "return_url": return_url,
         },
         purpose="wechat-oauth-bind",
+        expires_minutes=_BINDING_STATE_TTL_MINUTES,
     )
+    # I12：binding_confirmed state 是纯 bearer——预授权签发时记录客户端
+    # IP 与 User-Agent，回调侧令牌异常时可对照审计定位挪用。
     write_audit(
         db,
         principal=None,
@@ -275,6 +307,8 @@ def invite_confirm_start(
         resource_id=invite.id,
         company_id=invite.company_id,
         request_id=request.state.request_id,
+        ip_address=_request_ip(request),
+        user_agent=request.headers.get("user-agent"),
     )
     db.commit()
     payload = decode_signed_state(state, purpose="wechat-oauth-bind")
@@ -309,11 +343,23 @@ def revoke_invite(
 ):
     from ..core.errors import AppError
 
-    invite = db.get(InviteToken, invite_id)
+    # W1/I8：行锁读取——无锁 check-then-act 在并发撤销/绑定竞争下会把
+    # revoked_at 盖写到 USED 邀请上；只锁邀请行不触碰 company，与 I5 的
+    # 「公司→邀请」锁序一致（SQLite 上 no-op，语义由 PG 并发测试守护）。
+    invite = db.scalar(select(InviteToken).where(InviteToken.id == invite_id).with_for_update())
     if invite is None:
         # M4：撤销不存在的邀请必须明确失败，运营端撤销按钮依赖该语义。
         raise AppError("INVITE_NOT_FOUND", "邀请不存在或已被删除", 404)
-    invite.revoked_at = datetime.now(timezone.utc)
+    # I8：撤销前校验生命周期——已撤销/已使用/已过期的邀请不得重复撤销，
+    # 也不得把 revoked_at 盖写到 used 邀请上，运营端得到明确错误码。
+    now = datetime.now(timezone.utc)
+    if invite.revoked_at is not None:
+        raise AppError("INVITE_ALREADY_REVOKED", "邀请已撤销，无需重复操作", 409)
+    if invite.used_at is not None:
+        raise AppError("INVITE_ALREADY_USED", "邀请已被使用，不可撤销", 409)
+    if as_utc(invite.expires_at) is None or as_utc(invite.expires_at) <= now:
+        raise AppError("INVITE_ALREADY_EXPIRED", "邀请已过期，不可撤销", 409)
+    invite.revoked_at = now
     write_audit(db, principal=principal, action="INVITE_REVOKE", resource_type="invite", resource_id=invite.id, company_id=invite.company_id, request_id=request.state.request_id)
     db.commit()
     return ok(request, message="邀请已撤销")
@@ -387,7 +433,33 @@ def wechat_callback(
     except AppError as exc:
         error_code = exc.code if exc.code in _H5_AUTH_ERROR_CODES else "AUTH_FAILED"
         return RedirectResponse(url=f"/h5/#/auth-error?code={error_code}", status_code=302)
-    write_audit(db, principal=None, action="WECHAT_OAUTH_LOGIN", resource_type="user", resource_id=user.id, company_id=user.company_id, request_id=request.state.request_id)
+    # I4：区分首次绑定与重登——绑定意图（signed bind state）记 WECHAT_BIND
+    # 并保留 invite_id 追溯；legacy 普通登录记 WECHAT_OAUTH_LOGIN，与 mock 通道对齐。
+    if invite_id:
+        write_audit(
+            db,
+            principal=None,
+            action="WECHAT_BIND",
+            resource_type="user",
+            resource_id=user.id,
+            company_id=user.company_id,
+            metadata={"invite_id": invite_id},
+            request_id=request.state.request_id,
+            ip_address=_request_ip(request),
+            user_agent=request.headers.get("user-agent"),
+        )
+    else:
+        write_audit(
+            db,
+            principal=None,
+            action="WECHAT_OAUTH_LOGIN",
+            resource_type="user",
+            resource_id=user.id,
+            company_id=user.company_id,
+            request_id=request.state.request_id,
+            ip_address=_request_ip(request),
+            user_agent=request.headers.get("user-agent"),
+        )
     db.commit()
     response = RedirectResponse(url=return_url, status_code=302)
     response.set_cookie(

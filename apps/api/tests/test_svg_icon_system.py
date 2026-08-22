@@ -6,13 +6,15 @@ ADMIN = ROOT / "apps" / "admin" / "public"
 
 GLYPHS = set("⌂▤◈◉♙⇩☎✓↗♟⚙⌁＋≋↩◇◷!×‹›☰⌕?▶●↻▦→◆")
 ASSET_VERSION = "?v=20260820-clarity"
+# P2 整改批次递增的应用脚本缓存版本；svg-icon-system 共享资源未变更，保持原版本。
+APP_ASSET_VERSION = "?v=20260822-p2"
 COMPANY_PROFILE_ASSET_VERSION = "?v=20260820-company-profile"
 ADMIN_NAV_ASSET_VERSION = "?v=20260820-admin-nav"
 
 
 def test_all_h5_surfaces_load_local_svg_icon_system_before_application():
     entries = {
-        "index.html": ("./app.js", ASSET_VERSION),
+        "index.html": ("./app.js", APP_ASSET_VERSION),
         "supplier.html": ("./supplier.js", ASSET_VERSION),
         "v12-workbench.html": ("./v12-workbench.js", COMPANY_PROFILE_ASSET_VERSION),
     }
@@ -26,7 +28,7 @@ def test_all_h5_surfaces_load_local_svg_icon_system_before_application():
 
 def test_all_admin_surfaces_reuse_same_local_svg_icon_system():
     entries = {
-        "index.html": "./app.js",
+        "index.html": ("./app.js", APP_ASSET_VERSION),
         "v12-leads.html": "./v12-leads.js",
         "v12-operations.html": ("./v12-operations.js", ADMIN_NAV_ASSET_VERSION),
     }

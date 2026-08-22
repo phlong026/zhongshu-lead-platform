@@ -172,6 +172,9 @@ class InviteToken(Base, TimestampMixin):
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    # P2-01：邀请发出时的展示对象快照——公司/负责人后续改名不影响历史追溯。
+    invitee_name_snapshot: Mapped[str | None] = mapped_column(String(64))
+    company_name_snapshot: Mapped[str | None] = mapped_column(String(128))
 
 
 class WechatIdentity(Base, TimestampMixin):

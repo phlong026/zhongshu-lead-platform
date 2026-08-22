@@ -125,6 +125,7 @@ def _waiver(**overrides) -> Waiver:
         "owner": "security-owner",
         "created_on": date(2026, 8, 9),
         "expires_on": date(2026, 9, 8),
+        "first_waived_on": date(2026, 8, 9),
     }
     values.update(overrides)
     return Waiver(**values)
@@ -509,6 +510,7 @@ def test_matching_waiver_only_suppresses_one_semgrep_occurrence() -> None:
         owner="security-owner",
         created_on=date(2026, 8, 9),
         expires_on=date(2026, 9, 8),
+        first_waived_on=date(2026, 8, 9),
     )
     report, _ = _evaluate(
         semgrep=_semgrep(first, second, scanned=["scripts/verify_production.py"]),
@@ -1005,3 +1007,37 @@ def test_sbom_identity_and_generator_damage_fail_closed() -> None:
     )
     with pytest.raises(RuntimeError, match="must contain exactly"):
         validate_sbom(duplicate_reference, **kwargs)
+
+def test_waiver_total_span_hard_cap_blocks_perpetual_renewal(tmp_path: Path) -> None:
+    """waivers 门禁：续期不得重置累计起点——first_waived_on 与 expires_on 的
+    总跨度超过 90 天硬上限时 fail-closed；缺省回落 created_on 保持兼容。"""
+
+    renewed = tmp_path / "renewed.json"
+    _write_waivers(
+        renewed,
+        [
+            _waiver_json(
+                created_on="2026-09-01",
+                expires_on="2026-09-30",
+                first_waived_on="2026-06-01",
+            )
+        ],
+    )
+    with pytest.raises(RuntimeError, match="hard cap"):
+        load_waivers(renewed, today=date(2026, 9, 2))
+
+    legacy = tmp_path / "legacy.json"
+    _write_waivers(legacy, [_waiver_json()])
+    waivers = load_waivers(legacy, today=date(2026, 8, 9))
+    assert waivers[0].first_waived_on == date(2026, 8, 9)
+
+    late_first = tmp_path / "late-first.json"
+    _write_waivers(late_first, [_waiver_json(first_waived_on="2026-08-12")])
+    with pytest.raises(RuntimeError, match="first_waived_on .* later than created_on"):
+        load_waivers(late_first, today=date(2026, 8, 9))
+
+    malformed = tmp_path / "malformed-first.json"
+    _write_waivers(malformed, [_waiver_json(first_waived_on="not-a-date")])
+    with pytest.raises(RuntimeError, match="first_waived_on must be YYYY-MM-DD"):
+        load_waivers(malformed, today=date(2026, 8, 9))
+

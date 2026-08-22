@@ -8,7 +8,7 @@ from jwt import InvalidTokenError
 from sqlalchemy import select
 
 from apps.api.src.core.errors import AppError
-from apps.api.src.core.models import WechatIdentity
+from apps.api.src.core.models import AuditLog, Company, WechatIdentity
 from apps.api.src.core.security import create_signed_state, decode_signed_state
 from apps.api.src.integrations.wechat import WechatOAuthClient, WechatOAuthIdentity
 from apps.api.src.schemas.company import CompanyCreateBody
@@ -266,3 +266,258 @@ def test_oauth_callback_redirects_binding_errors_to_h5_status_page(api_client) -
     )
     assert unconfirmed.status_code == 302
     assert unconfirmed.headers["location"] == "/h5/#/auth-error?code=AUTH_BINDING_CONFIRM_REQUIRED"
+
+def test_confirm_start_neutralizes_control_char_return_urls(api_client) -> None:
+    """C1 整改：WHATWG URL 解析前会剥离 tab/LF/CR，"/\t/evil.com" 在浏览器等价
+    于 "//evil.com"（跨域）。控制字符、反斜杠与非 /h5/ 前缀必须一律收敛。"""
+
+    client, factory = api_client
+    with factory() as db:
+        company = _company(db)
+        db.commit()
+        _, raw_invite, _ = create_company_invite(db, company.id, None, 24)
+        db.commit()
+
+    hostile_values = [
+        "/\t/evil.com",
+        "/\t//evil.com",
+        "/\n//evil.com",
+        "/\r/evil.com",
+        "/h5/#/home\x00",
+        "/h5/#/home\x7f",
+        "/\\evil.com",
+        "/h5/#/ho\\me",
+        "/admin/console",
+        "/api/v1/auth/login",
+    ]
+    for value in hostile_values:
+        response = client.post(
+            "/api/v1/auth/invites/confirm-start",
+            json={"invite": raw_invite, "return_url": value},
+        )
+        assert response.status_code == 200, response.text
+        payload = decode_signed_state(
+            _state_from_authorization_url(response.json()["data"]["authorization_url"]),
+            purpose="wechat-oauth-bind",
+        )
+        assert payload["return_url"] == "/h5/#/home", f"未收敛: {value!r}"
+
+
+def test_wechat_start_neutralizes_control_char_return_urls(api_client) -> None:
+    """C1 整改同样覆盖 /wechat/start 的 return_url 注入面（可外链投递的 GET）。"""
+
+    client, _factory = api_client
+    for value in ["/\t/evil.com", "/\n//evil.com", "/admin/console", "//evil.example/steal"]:
+        response = client.get(
+            "/api/v1/auth/wechat/start",
+            params={"return_url": value},
+            follow_redirects=False,
+        )
+        assert response.status_code == 302, response.text
+        state = _state_from_authorization_url(response.headers["location"])
+        payload = decode_signed_state(state, purpose="wechat-oauth")
+        assert payload["return_url"] == "/h5/#/home", f"未收敛: {value!r}"
+
+
+def test_confirm_start_keeps_legitimate_h5_return_url(api_client) -> None:
+    """白名单不得误伤合法的 /h5/ 站内回跳目标。"""
+
+    client, factory = api_client
+    with factory() as db:
+        company = _company(db)
+        db.commit()
+        _, raw_invite, _ = create_company_invite(db, company.id, None, 24)
+        db.commit()
+
+    response = client.post(
+        "/api/v1/auth/invites/confirm-start",
+        json={"invite": raw_invite, "return_url": "/h5/#/home"},
+    )
+    assert response.status_code == 200, response.text
+    payload = decode_signed_state(
+        _state_from_authorization_url(response.json()["data"]["authorization_url"]),
+        purpose="wechat-oauth-bind",
+    )
+    assert payload["return_url"] == "/h5/#/home"
+
+def test_bound_user_can_relogin_without_invite_via_legacy_start(api_client, monkeypatch) -> None:
+    """C2 整改守护：已绑定负责人无邀请也能从 H5 普通登录，且未绑定新微信被引导
+    到状态页（而不是前端拒绝服务）。后端 legacy 路径必须保持可用。"""
+
+    client, factory = api_client
+    with factory() as db:
+        company = _company(db)
+        invite, raw, _ = create_company_invite(db, company.id, None, 24)
+        db.commit()
+        company_id = company.id
+    monkeypatch.setattr(
+        WechatOAuthClient,
+        "exchange_code",
+        lambda self, code: WechatOAuthIdentity(openid=f"oauth-{code}", unionid=None, nickname="授权用户"),
+    )
+
+    # 首次绑定：邀请确认 -> bind state -> callback 成功
+    confirm = client.post(
+        "/api/v1/auth/invites/confirm-start",
+        json={"invite": raw, "return_url": "/h5/#/home"},
+    )
+    assert confirm.status_code == 200, confirm.text
+    bind_state = _state_from_authorization_url(confirm.json()["data"]["authorization_url"])
+    first = client.get(
+        "/api/v1/auth/wechat/callback",
+        params={"code": "c2-bind", "state": bind_state},
+        follow_redirects=False,
+    )
+    assert first.status_code == 302, first.text
+
+    # C2 核心：无邀请 GET /wechat/start 走 legacy 登录，state 不携带 invite
+    start = client.get("/api/v1/auth/wechat/start", follow_redirects=False)
+    assert start.status_code == 302, start.text
+    legacy_state = _state_from_authorization_url(start.headers["location"])
+    payload = decode_signed_state(legacy_state, purpose="wechat-oauth")
+    assert "invite" not in payload and "invite_id" not in payload
+    assert payload["return_url"] == "/h5/#/home"
+
+    # 已绑定身份经 legacy state 重登成功：302 回 return_url 并下发 access_token cookie
+    relogin = client.get(
+        "/api/v1/auth/wechat/callback",
+        params={"code": "c2-bind", "state": legacy_state},
+        follow_redirects=False,
+    )
+    assert relogin.status_code == 302, relogin.text
+    assert relogin.headers["location"] == "/h5/#/home"
+    assert "access_token" in relogin.headers["set-cookie"]
+
+    # 重登不新建绑定，也不改动公司归属
+    with factory() as db:
+        identities = db.scalars(
+            select(WechatIdentity).where(WechatIdentity.openid == "oauth-c2-bind")
+        ).all()
+        assert len(identities) == 1
+        assert identities[0].user.company_id == company_id
+
+    # 未绑定的新微信走无邀请入口：引导到状态页，而非拒绝服务
+    fresh_start = client.get("/api/v1/auth/wechat/start", follow_redirects=False)
+    fresh_state = _state_from_authorization_url(fresh_start.headers["location"])
+    fresh = client.get(
+        "/api/v1/auth/wechat/callback",
+        params={"code": "c2-fresh", "state": fresh_state},
+        follow_redirects=False,
+    )
+    assert fresh.status_code == 302, fresh.text
+    assert "/h5/#/auth-error?code=AUTH_WECHAT_NOT_BOUND" in fresh.headers["location"]
+
+def test_binding_after_company_disable_lands_on_status_page(api_client, monkeypatch) -> None:
+    """I7 守护：确认在先、停用在后的时序下，callback 首次绑定必须以
+    AUTH_COMPANY_DISABLED 落状态页，且不创建身份、不占用主账号。"""
+
+    client, factory = api_client
+    with factory() as db:
+        company = _company(db)
+        invite, raw, _ = create_company_invite(db, company.id, None, 24)
+        db.commit()
+        company_id = company.id
+    confirm = client.post(
+        "/api/v1/auth/invites/confirm-start",
+        json={"invite": raw, "return_url": "/h5/#/home"},
+    )
+    assert confirm.status_code == 200, confirm.text
+    bind_state = _state_from_authorization_url(confirm.json()["data"]["authorization_url"])
+
+    monkeypatch.setattr(
+        WechatOAuthClient,
+        "exchange_code",
+        lambda self, code: WechatOAuthIdentity(openid=f"oauth-{code}", unionid=None, nickname="授权用户"),
+    )
+    with factory() as db:
+        company_row = db.get(Company, company_id)
+        assert company_row is not None
+        company_row.status = "DISABLED"
+        db.commit()
+
+    response = client.get(
+        "/api/v1/auth/wechat/callback",
+        params={"code": "i7-code", "state": bind_state},
+        follow_redirects=False,
+    )
+    assert response.status_code == 302, response.text
+    assert "/h5/#/auth-error?code=AUTH_COMPANY_DISABLED" in response.headers["location"]
+    with factory() as db:
+        identities = db.scalars(
+            select(WechatIdentity).where(WechatIdentity.openid == "oauth-i7-code")
+        ).all()
+        assert identities == []
+        company_row = db.get(Company, company_id)
+        assert company_row is not None and company_row.primary_user_id is None
+
+def test_callback_audit_distinguishes_bind_from_relogin(api_client, monkeypatch) -> None:
+    """I4：绑定意图完成记 WECHAT_BIND（含 invite_id 追溯），legacy 重登
+    记 WECHAT_OAUTH_LOGIN；两类审计行都带 IP 与 UA。"""
+
+    client, factory = api_client
+    with factory() as db:
+        company = _company(db)
+        invite, raw, _ = create_company_invite(db, company.id, None, 24)
+        db.commit()
+        invite_id = invite.id
+    monkeypatch.setattr(
+        WechatOAuthClient,
+        "exchange_code",
+        lambda self, code: WechatOAuthIdentity(openid=f"oauth-{code}", unionid=None, nickname="授权用户"),
+    )
+    confirm = client.post(
+        "/api/v1/auth/invites/confirm-start",
+        json={"invite": raw, "return_url": "/h5/#/home"},
+        headers={"user-agent": "i4-audit-h5"},
+    )
+    assert confirm.status_code == 200, confirm.text
+    bind_state = _state_from_authorization_url(confirm.json()["data"]["authorization_url"])
+    bound = client.get(
+        "/api/v1/auth/wechat/callback",
+        params={"code": "i4-bind", "state": bind_state},
+        follow_redirects=False,
+        headers={"user-agent": "i4-audit-h5"},
+    )
+    assert bound.status_code == 302, bound.text
+
+    start = client.get("/api/v1/auth/wechat/start", follow_redirects=False)
+    legacy_state = _state_from_authorization_url(start.headers["location"])
+    relogin = client.get(
+        "/api/v1/auth/wechat/callback",
+        params={"code": "i4-bind", "state": legacy_state},
+        follow_redirects=False,
+        headers={"user-agent": "i4-audit-h5"},
+    )
+    assert relogin.status_code == 302, relogin.text
+
+    with factory() as db:
+        bind_log = db.scalar(select(AuditLog).where(AuditLog.action == "WECHAT_BIND"))
+        assert bind_log is not None
+        assert bind_log.metadata_json.get("invite_id") == invite_id
+        assert bind_log.user_agent == "i4-audit-h5"
+        login_log = db.scalar(
+            select(AuditLog).where(AuditLog.action == "WECHAT_OAUTH_LOGIN")
+        )
+        assert login_log is not None
+        assert login_log.user_agent == "i4-audit-h5"
+
+
+def test_confirm_start_state_ttl_is_tightened(api_client) -> None:
+    """I12：绑定预授权 state 的 TTL 显式为 5 分钟常量，不随通用默认漂移。"""
+
+    client, factory = api_client
+    with factory() as db:
+        company = _company(db)
+        _, raw, _ = create_company_invite(db, company.id, None, 24)
+        db.commit()
+    confirm = client.post(
+        "/api/v1/auth/invites/confirm-start",
+        json={"invite": raw, "return_url": "/h5/#/home"},
+    )
+    assert confirm.status_code == 200, confirm.text
+    payload = decode_signed_state(
+        _state_from_authorization_url(confirm.json()["data"]["authorization_url"]),
+        purpose="wechat-oauth-bind",
+    )
+    assert int(payload["exp"]) - int(payload["iat"]) == 5 * 60
+

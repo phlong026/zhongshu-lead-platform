@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select
@@ -16,7 +17,7 @@ from apps.api.src.services.auth_service import (
     create_company_invite,
     login_or_bind_wechat,
 )
-from apps.api.src.services.company_service import create_company
+from apps.api.src.services.company_service import create_company, find_company_by_contact_phone
 
 
 def _company_body(code: str, **overrides) -> CompanyCreateBody:
@@ -327,3 +328,106 @@ def test_list_company_invites_requires_admin_permission(api_client) -> None:
     response = client.get(f"/api/v1/auth/companies/{company_id}/invites")
     assert response.status_code == 401
     assert response.json()["code"] == "AUTH_REQUIRED"
+
+def test_revoke_invite_validates_lifecycle_status(api_client) -> None:
+    """I8：已使用/已撤销/已过期的邀请撤销必须明确拒绝，且 revoked_at 不被盖写。"""
+
+    client, factory = api_client
+    headers = _admin_headers(client)
+    with factory() as db:
+        company = create_company(db, _company_body("SH-REVOKE-LIFE"))
+        db.flush()
+        used = InviteToken(
+            token_hash=hash_token("rev-used-01"),
+            company_id=company.id,
+            expires_at=utcnow() + timedelta(hours=1),
+            used_at=utcnow() - timedelta(hours=1),
+        )
+        revoked = InviteToken(
+            token_hash=hash_token("rev-revoked-01"),
+            company_id=company.id,
+            expires_at=utcnow() + timedelta(hours=1),
+            revoked_at=utcnow() - timedelta(hours=1),
+        )
+        expired = InviteToken(
+            token_hash=hash_token("rev-expired-01"),
+            company_id=company.id,
+            expires_at=utcnow() - timedelta(hours=1),
+        )
+        db.add_all([used, revoked, expired])
+        db.commit()
+        expectations = {
+            "INVITE_ALREADY_USED": used.id,
+            "INVITE_ALREADY_REVOKED": revoked.id,
+            "INVITE_ALREADY_EXPIRED": expired.id,
+        }
+
+    for code, invite_id in expectations.items():
+        response = client.post(f"/api/v1/auth/invites/{invite_id}/revoke", headers=headers)
+        assert response.status_code == 409, response.text
+        assert response.json()["code"] == code, response.text
+
+    with factory() as db:
+        used_row = db.get(InviteToken, expectations["INVITE_ALREADY_USED"])
+        assert used_row is not None and used_row.revoked_at is None
+
+
+
+def test_invite_records_keep_invitee_snapshot_after_company_rename(api_client) -> None:
+    """P2-01：邀请对象快照在公司/负责人改名后保持发出时的值；存量行无快照。"""
+
+    client, factory = api_client
+    headers = _admin_headers(client)
+    with factory() as db:
+        company = create_company(db, _company_body("SH-SNAPSHOT"))
+        db.commit()
+        created_id = client.post(
+            f"/api/v1/auth/companies/{company.id}/invites", headers=headers, json={"expires_hours": 24}
+        ).json()["data"]["invite_id"]
+        # legacy 行未过期同为 ACTIVE，必须按 id 区分，不能按状态取第一条。
+        legacy = _legacy_invite(db, company.id, "legacy-snapshot-token-0003")
+        snapshot_name = company.name
+        snapshot_owner = company.owner_name
+        company.name = "改名后的公司"
+        company.owner_name = "新负责人"
+        db.commit()
+        company_id = company.id
+        legacy_id = legacy.id
+
+    items = client.get(f"/api/v1/auth/companies/{company_id}/invites", headers=headers).json()["data"]["items"]
+    assert len(items) == 2
+    active = next(item for item in items if item["id"] == created_id)
+    assert active["invitee_name"] == snapshot_owner == "张老板"
+    assert active["company_name"] == snapshot_name == "上海测试加盟商"
+    legacy_item = next(item for item in items if item["id"] == legacy_id)
+    # 迁移前的存量邀请没有快照：返回 None 交由前端显示「未记录」，不回落当前值。
+    assert legacy_item["invitee_name"] is None
+    assert legacy_item["company_name"] is None
+
+
+def test_invite_snapshot_migration_is_registered_on_alembic_chain() -> None:
+    """P2-01：快照列迁移 0007 必须挂在当前链尾且包含两列，防漂移。"""
+
+    migration = Path("migrations/versions/0007_invite_snapshot.py").read_text(encoding="utf-8")
+    assert 'revision = "0007_invite_snapshot"' in migration
+    assert 'down_revision = "0006_capability_review_note"' in migration
+    assert "invitee_name_snapshot" in migration
+    assert "company_name_snapshot" in migration
+
+
+def test_find_company_by_contact_phone_matches_normalized_hash(db) -> None:
+    """P2-02：规范化手机号经 HMAC 命中唯一 ACTIVE 公司；停用/异号码不命中。"""
+
+    matched = create_company(db, _company_body("SH-PHONE-A", contact_phone="13900001111"))
+    create_company(db, _company_body("SH-PHONE-B", contact_phone="13900002222"))
+    disabled = create_company(db, _company_body("SH-PHONE-C", contact_phone="13900003333"))
+    disabled.status = "DISABLED"
+    db.commit()
+
+    assert find_company_by_contact_phone(db, "+86 139 0000 1111").id == matched.id
+    assert find_company_by_contact_phone(db, "13900001111").id == matched.id
+    assert find_company_by_contact_phone(db, "13900009999") is None
+    # 停用公司不是可绑定目标，不参与匹配。
+    assert find_company_by_contact_phone(db, "13900003333") is None
+    # 非 11 位输入直接拒绝，不做无意义查询。
+    assert find_company_by_contact_phone(db, "12345") is None

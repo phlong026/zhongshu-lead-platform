@@ -25,6 +25,9 @@ REQUIRED_WAIVER_FIELDS = {
 }
 ALLOWED_SCANNERS = {"semgrep", "trivy"}
 MAX_WAIVER_LIFETIME_DAYS = 30
+# waivers：单条豁免自首次登记起的累计跨度硬上限。续期只允许顺延 expires_on，
+# 不得通过重置 created_on 绕过——同一 finding 的豁免总寿命被 first_waived_on 锁死。
+MAX_WAIVER_TOTAL_SPAN_DAYS = 90
 SEMGREP_VERSION = "1.172.0"
 SEMGREP_IMAGE_REF = "semgrep/semgrep@sha256:a8298d1c09c84b9a0bbc75ec915e37023fc4657360b6dbfa645261d2353a366c"
 SEMGREP_RULES_COMMIT = "40b8c63f75dc7c22c8a77482d73bfb864b146f7e"
@@ -67,6 +70,7 @@ class Waiver:
     owner: str
     created_on: date
     expires_on: date
+    first_waived_on: date
 
     def matches(self, finding: Finding) -> bool:
         return (
@@ -167,6 +171,26 @@ def load_waivers(path: Path, *, today: date) -> list[Waiver]:
                 f"security waiver #{index + 1} lifetime {lifetime}d exceeds "
                 f"{MAX_WAIVER_LIFETIME_DAYS}d maximum"
             )
+        # 首次豁免日期：未登记时回落为 created_on（向后兼容既有 registry）。
+        # 续期必须保留原始 first_waived_on，累计跨度由硬上限封顶，防止无限续命。
+        first_waived_raw = raw.get("first_waived_on", str(raw["created_on"]))
+        try:
+            first_waived_on = date.fromisoformat(str(first_waived_raw).strip())
+        except ValueError as exc:
+            raise RuntimeError(
+                f"security waiver #{index + 1} first_waived_on must be YYYY-MM-DD"
+            ) from exc
+        if first_waived_on > created_on:
+            raise RuntimeError(
+                f"security waiver #{index + 1} first_waived_on {first_waived_on.isoformat()} "
+                "is later than created_on"
+            )
+        total_span = (expires_on - first_waived_on).days
+        if total_span > MAX_WAIVER_TOTAL_SPAN_DAYS:
+            raise RuntimeError(
+                f"security waiver #{index + 1} total span {total_span}d since first waive "
+                f"exceeds {MAX_WAIVER_TOTAL_SPAN_DAYS}d hard cap"
+            )
         if expires_on < today:
             raise RuntimeError(
                 f"expired security waiver: {scanner}/{finding_id}/{scope}/{occurrence} "
@@ -188,6 +212,7 @@ def load_waivers(path: Path, *, today: date) -> list[Waiver]:
                 owner=owner,
                 created_on=created_on,
                 expires_on=expires_on,
+                first_waived_on=first_waived_on,
             )
         )
     return waivers

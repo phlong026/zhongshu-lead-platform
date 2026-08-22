@@ -271,6 +271,9 @@ def create_company_invite(
         company_id=company_id,
         created_by=created_by,
         expires_at=now + timedelta(hours=expires_hours),
+        # P2-01：快照发出时的邀请对象与公司名，运营侧追溯不随改名失真。
+        invitee_name_snapshot=company.owner_name,
+        company_name_snapshot=company.name,
     )
     db.add(invite)
     db.flush()
@@ -333,6 +336,10 @@ def list_company_invites(db: Session, company_id: str) -> list[dict[str, Any]]:
                 "used_at": as_utc(invite.used_at),
                 "revoked_at": as_utc(invite.revoked_at),
                 "primary_account_name": primary_account_name if status == "USED" else None,
+                # P2-01：发出时的对象快照原样返回；迁移前的存量行无快照即为
+                # None，前端显示「未记录」——与 P1-02 一样不用当前值冒充快照。
+                "invitee_name": invite.invitee_name_snapshot,
+                "company_name": invite.company_name_snapshot,
             }
         )
     return items
@@ -444,14 +451,24 @@ def login_or_bind_wechat(
 
     if not invite_token and not invite_id:
         raise AppError("AUTH_WECHAT_NOT_BOUND", "该微信尚未绑定加盟商，请使用邀请链接进入", 403)
-    invite = _consume_invite(
+    # I5：统一 company 行锁先行——与 create_company_invite 的「公司→邀请」加锁顺序
+    # 一致，消除「创建（公司→邀请）× 绑定（邀请→公司）」的 AB-BA 死锁面。
+    # validate_invite 只读不加锁，行锁只落在随后的 FOR UPDATE 上。
+    invite = validate_invite(db, raw_token=invite_token, invite_id=invite_id)
+    if expected_company_id and invite.company_id != expected_company_id:
+        raise AppError("AUTH_INVITE_INVALID", "邀请已失效，请联系平台", 400)
+    company = db.scalar(
+        select(Company).where(Company.id == invite.company_id).with_for_update()
+    )
+    # I7：锁定后复核公司状态，停用公司不得被占用主账号。
+    if company is None or company.status != "ACTIVE":
+        raise AppError("AUTH_COMPANY_DISABLED", "加盟商公司不可用", 403)
+    _consume_invite(
         db,
         raw_token=invite_token,
         invite_id=invite_id,
         expected_company_id=expected_company_id,
     )
-    company = db.get(Company, invite.company_id)
-    assert company is not None
     user = User(
         display_name=nickname or company.owner_name or "加盟商负责人",
         company_id=company.id,
@@ -462,12 +479,17 @@ def login_or_bind_wechat(
     db.flush()
     assign_role(db, user, "FRANCHISE_OWNER")
     db.add(WechatIdentity(openid=openid, unionid=unionid, nickname=nickname, user_id=user.id, subscribed=False))
-    # P0-05 原子占用主账号：条件 UPDATE 保证并发下仅一个微信成为 primary。
+    # P0-05 原子占用主账号：条件 UPDATE 保证并发下仅一个微信成为 primary；
+    # I7：占用同时要求公司仍为 ACTIVE（行锁下的纵深防御，前置读被竞态绕过也不放行）。
     # 占用失败时不手动 rollback——AppError 冒泡后由请求作用域 session.close()
     # 隐式回滚整个事务（含邀请消费与用户创建），由 M2 计数断言锁定。
     claimed = db.execute(
         update(Company)
-        .where(Company.id == company.id, Company.primary_user_id.is_(None))
+        .where(
+            Company.id == company.id,
+            Company.primary_user_id.is_(None),
+            Company.status == "ACTIVE",
+        )
         .values(primary_user_id=user.id)
     ).rowcount
     if not claimed:

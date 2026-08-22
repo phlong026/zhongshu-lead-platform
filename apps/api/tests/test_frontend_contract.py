@@ -91,9 +91,15 @@ def test_h5_wechat_login_has_single_gated_confirm_start_entry():
     status_pages = sources["status-pages-v13.js"]
     assert "请确认是否绑定到" in status_pages and "邀请有效期至" in status_pages
     assert "expires_at" in status_pages
-    # 旧 OAuth 跳转入口在三脚本中彻底清零（Phase 3 步骤 6）
+    # C2 整改：app.js 保留无邀请普通登录入口（legacy /wechat/start，不带 invite 参数），
+    # 已绑定负责人重登不再被前端锁死；增强脚本仍彻底禁用旧入口。
+    for name in ("enhancements.js", "status-pages-v13.js"):
+        assert "/auth/wechat/start" not in sources[name], f"{name} 仍引用旧入口 /auth/wechat/start"
     for name, content in sources.items():
-        assert "/auth/wechat/start" not in content, f"{name} 仍引用旧入口 /auth/wechat/start"
+        for line in content.splitlines():
+            if "/auth/wechat/start" in line:
+                assert "invite=" not in line, f"{name} 不得经 wechat/start 携带 invite 参数"
+    assert "/auth/wechat/start?return_url=" in app, "app.js 缺少无邀请普通登录跳转（C2）"
     # H5 不得再出现“自动绑定”文案（Phase 3 验收）
     combined = "\n".join(sources.values())
     assert "自动绑定" not in combined, "H5 登录文案不得再承诺自动绑定"
