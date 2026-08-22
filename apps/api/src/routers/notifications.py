@@ -11,6 +11,7 @@ from ..core.database import get_db
 from ..core.errors import AppError
 from ..core.models import Notification, NotificationOutbox
 from ..core.responses import ok, page
+from ..core.security import scrub_credentials
 from ..integrations.wechat import WechatOfficialAccountClient
 from ..services.audit import write_audit
 from ..services.outbox_worker import process_outbox
@@ -55,7 +56,8 @@ def mark_read(notification_id: str, request: Request, principal: CurrentPrincipa
 @router.get("/outbox/failed")
 def failed_outbox(request: Request, principal=Depends(require_permissions("notification.retry")), db: Session = Depends(get_db), status: str = Query(default="FAILED")):
     items = db.scalars(select(NotificationOutbox).where(NotificationOutbox.status == status).order_by(NotificationOutbox.created_at.desc()).limit(500)).all()
-    return ok(request, [{"id": x.id, "event_type": x.event_type, "aggregate_id": x.aggregate_id, "attempts": x.attempts, "last_error": x.last_error, "next_attempt_at": x.next_attempt_at.isoformat() if x.next_attempt_at else None, "created_at": x.created_at.isoformat()} for x in items])
+    # N3：存量脏 last_error（脱敏上线前落库）出参前同样打码兜底。
+    return ok(request, [{"id": x.id, "event_type": x.event_type, "aggregate_id": x.aggregate_id, "attempts": x.attempts, "last_error": scrub_credentials(x.last_error), "next_attempt_at": x.next_attempt_at.isoformat() if x.next_attempt_at else None, "created_at": x.created_at.isoformat()} for x in items])
 
 
 @router.post("/outbox/{outbox_id}/retry")

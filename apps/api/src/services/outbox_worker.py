@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..core.config import get_settings
 from ..core.models import Company, Notification, NotificationOutbox, SystemConfig, WechatIdentity
+from ..core.security import scrub_credentials
 from ..integrations.wechat import WechatOfficialAccountClient
 
 settings = get_settings()
@@ -39,7 +40,7 @@ def process_outbox(db: Session, limit: int = 100) -> dict[str, int]:
                 item.status, item.sent_at, item.last_error = "SENT", now, None
                 sent += 1
             else:
-                item.last_error = f"{result.get('error_code')}: {result.get('error_message')}"
+                item.last_error = scrub_credentials(f"{result.get('error_code')}: {result.get('error_message')}")
                 if item.attempts >= 5:
                     item.status = "DEAD"
                     dead += 1
@@ -48,7 +49,9 @@ def process_outbox(db: Session, limit: int = 100) -> dict[str, int]:
                     item.next_attempt_at = now + timedelta(minutes=min(60, 2**item.attempts))
                     failed += 1
         except Exception as exc:  # final delivery boundary
-            item.last_error = str(exc)
+            # N3：httpx 异常原文含完整微信 URL，access_token/secret 等参数即凭据；
+            # 保留异常类名供排障，值一律打码并限长。
+            item.last_error = f"{type(exc).__name__}: {scrub_credentials(str(exc))}"
             if item.attempts >= 5:
                 item.status = "DEAD"
                 dead += 1

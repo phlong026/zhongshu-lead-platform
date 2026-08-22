@@ -117,3 +117,65 @@ def test_invite_outbox_real_mode_with_template_reports_no_recipient(api_client, 
         item = db.scalar(select(NotificationOutbox).where(NotificationOutbox.event_type == "INVITE_CREATED"))
         assert item is not None and item.status == "FAILED"
         assert "NO_RECIPIENT" in (item.last_error or "")
+
+
+def test_outbox_failure_text_never_persists_credentials(db, monkeypatch) -> None:
+    """N3：外发异常原文携带微信凭据 URL 时，last_error 落库前必须脱敏。"""
+
+    from apps.api.src.core.models import User, WechatIdentity
+    from apps.api.src.integrations.wechat import WechatOfficialAccountClient
+
+    user = User(display_name="通知负责人", status="ACTIVE")
+    db.add(user)
+    db.flush()
+    db.add(WechatIdentity(openid="o-outbox-leak", user_id=user.id))
+    item = enqueue_outbox(
+        db,
+        event_key="test:leak",
+        event_type="ASSIGNMENT_DISPATCHED",
+        aggregate_type="assignment",
+        aggregate_id="a-leak",
+        payload={"user_id": user.id},
+    )
+    db.commit()
+
+    def raise_with_credential_url(self, **kwargs):
+        raise RuntimeError(
+            "Client error '400 Bad Request' for url "
+            "'https://api.weixin.qq.com/cgi-bin/message/template/send?access_token=71_AbCdSECRET_TOKEN&x=1'"
+        )
+
+    monkeypatch.setattr(WechatOfficialAccountClient, "send_scene_message", raise_with_credential_url)
+    process_outbox(db)
+    db.commit()
+    assert item.status == "FAILED", ("status", item.status, "last_error", item.last_error, "attempts", item.attempts)
+    assert "71_AbCdSECRET_TOKEN" not in (item.last_error or ""), item.last_error
+    assert "access_token=***" in item.last_error, item.last_error  # 键名保留、值打码
+    assert "RuntimeError" in item.last_error, "异常类名保留供排障"
+
+
+def test_failed_outbox_response_scrubs_legacy_poisoned_last_error(api_client) -> None:
+    """N3：存量脏 last_error 经 failed-outbox 出参时同样脱敏。"""
+
+    client, factory = api_client
+    login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "Admin123!"})
+    assert login.status_code == 200, login.text
+    headers = {"Authorization": f"Bearer {login.cookies.get('access_token')}"}
+    with factory() as db:
+        item = enqueue_outbox(
+            db,
+            event_key="test:legacy-poison",
+            event_type="ASSIGNMENT_DISPATCHED",
+            aggregate_type="assignment",
+            aggregate_id="1",
+            payload={},
+        )
+        item.status = "FAILED"
+        item.last_error = (
+            "Client error '401' for url 'https://api.weixin.qq.com/cgi-bin/token?appid=wx123&secret=RAW_SECRET_9f'"
+        )
+        db.commit()
+    resp = client.get("/api/v1/notifications/outbox/failed", headers=headers)
+    assert resp.status_code == 200, resp.text
+    assert "RAW_SECRET_9f" not in resp.text
+    assert "access_token" not in resp.text or "***" in resp.text

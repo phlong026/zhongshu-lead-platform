@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -134,6 +135,25 @@ def mask_phone(value: str | None) -> str | None:
     if len(normalized) < 7:
         return "****"
     return normalized[:3] + "****" + normalized[-4:]
+
+
+# N3：外发异常文本（如 httpx 报错）会原样携带完整微信 API URL，
+# 其中 access_token/secret/appid 等查询参数即凭据。负向后行断言排除
+# error_code=、status_code= 等键名后缀撞车。
+_CREDENTIAL_QUERY_PARAM = re.compile(
+    r"(?i)(?<![a-z0-9_])(access_token|app_secret|appsecret|secret|appid|authorization|password|passwd|token|code)=([^&\s'\"<>]+)"
+)
+
+
+def scrub_credentials(text: str | None, *, max_length: int = 500) -> str | None:
+    """Strip credential query-param values from exception/receipt text."""
+
+    if not text:
+        return text
+    scrubbed = _CREDENTIAL_QUERY_PARAM.sub(r"\1=***", text)
+    if len(scrubbed) > max_length:
+        scrubbed = scrubbed[:max_length] + "…[truncated]"
+    return scrubbed
 
 
 def generate_token(bytes_length: int = 32) -> str:
