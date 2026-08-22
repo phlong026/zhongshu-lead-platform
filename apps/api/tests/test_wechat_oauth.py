@@ -11,6 +11,7 @@ from apps.api.src.core.errors import AppError
 from apps.api.src.core.models import AuditLog, Company, InviteToken, User, UserRole, WechatIdentity
 from apps.api.src.core.security import create_signed_state, decode_signed_state
 from apps.api.src.integrations.wechat import WechatOAuthClient, WechatOAuthIdentity
+from apps.api.src.routers.auth import _WECHAT_CHANNEL_FAILURE_CODES
 from apps.api.src.schemas.company import CompanyCreateBody
 from apps.api.src.services.auth_service import create_company_invite, login_or_bind_wechat
 from apps.api.src.services.company_service import create_company
@@ -686,19 +687,24 @@ def test_expired_bind_intent_state_is_rejected_at_callback(api_client, monkeypat
 
 
 
-def test_callback_upstream_failure_keeps_specific_code_and_alerts(api_client, monkeypatch, caplog) -> None:
+# N12：通道告警断言由码集合驱动——从 _WECHAT_CHANNEL_FAILURE_CODES 删码、
+# 或把告警条件放宽为「任意 5xx」都会让对应参数用例变红，防告警静默漂移。
+@pytest.mark.parametrize("code", sorted(_WECHAT_CHANNEL_FAILURE_CODES))
+def test_callback_upstream_failure_keeps_specific_code_and_alerts(api_client, monkeypatch, caplog, code) -> None:
     """P2-1：微信通道故障码显式透传到 H5（不再折叠为 AUTH_FAILED），
     失败审计归 failure_class=upstream，服务端落 error 级结构化日志
-    （codex #3：日志本身必须被断言，防告警被静默删除或降级）。"""
+    （codex #3：日志本身必须被断言，防告警被静默删除或降级）。
+    N12：本用例走 /wechat/start（无 invite）→ flow=='login'，审计行的
+    flow 字段与 login 分支一并锁定。"""
 
     import logging as _logging
 
     client, factory = api_client
 
-    def _unavailable(self, code):
-        raise AppError("WECHAT_OAUTH_UNAVAILABLE", "微信授权服务暂时不可用", 502)
+    def _channel_down(self, code_param):
+        raise AppError(code, f"通道故障（{code}）", 502)
 
-    monkeypatch.setattr(WechatOAuthClient, "exchange_code", _unavailable)
+    monkeypatch.setattr(WechatOAuthClient, "exchange_code", _channel_down)
     start = client.get("/api/v1/auth/wechat/start", follow_redirects=False)
     valid_state = _state_from_authorization_url(start.headers["location"])
     with caplog.at_level(_logging.ERROR, logger="zhongshu.auth"):
@@ -709,14 +715,15 @@ def test_callback_upstream_failure_keeps_specific_code_and_alerts(api_client, mo
         )
     assert response.status_code == 302, response.text
     assert (
-        response.headers["location"] == "/h5/#/auth-error?code=WECHAT_OAUTH_UNAVAILABLE"
+        response.headers["location"] == f"/h5/#/auth-error?code={code}"
     ), "通道故障码必须显式透传，供 H5 给出稍后重试指引"
 
     channel_errors = [
         record for record in caplog.records if record.name == "zhongshu.auth" and record.levelno == _logging.ERROR
     ]
     assert channel_errors, "通道故障必须留下 error 级日志供健康度告警"
-    assert channel_errors[0].reason_code == "WECHAT_OAUTH_UNAVAILABLE"
+    assert channel_errors[0].reason_code == code
+    assert channel_errors[0].flow == "login"
     assert channel_errors[0].status_code == 502
 
     with factory() as db:
@@ -724,8 +731,9 @@ def test_callback_upstream_failure_keeps_specific_code_and_alerts(api_client, mo
             select(AuditLog).where(AuditLog.action == "WECHAT_OAUTH_CALLBACK_FAILED")
         )
         assert audit_row is not None
-        assert audit_row.metadata_json.get("reason_code") == "WECHAT_OAUTH_UNAVAILABLE"
+        assert audit_row.metadata_json.get("reason_code") == code
         assert audit_row.metadata_json.get("failure_class") == "upstream"
+        assert audit_row.metadata_json.get("flow") == "login"
 
 
 def test_callback_wechat_failure_details_never_leak(api_client, monkeypatch, caplog) -> None:
