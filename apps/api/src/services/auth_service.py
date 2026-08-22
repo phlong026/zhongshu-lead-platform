@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy import and_, case, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..core.auth_models import AuthLoginState
@@ -435,6 +436,88 @@ def _consume_invite(
     return invite
 
 
+def _login_bound_identity(
+    db: Session,
+    identity: WechatIdentity,
+    *,
+    unionid: str | None = None,
+    nickname: str | None = None,
+    invite_token: str | None = None,
+    invite_id: str | None = None,
+    expected_company_id: str | None = None,
+    consume_invite: bool = True,
+) -> tuple[User, str]:
+    """已绑定身份的登录路径（login_or_bind_wechat 的 identity 命中分支）。
+
+    consume_invite=False 供 I14 并发冲突后的幂等重放使用——并发方已消费
+    邀请并完成绑定，本请求只需登录，不再重复消费。
+    """
+    user = db.get(User, identity.user_id)
+    if not user or user.status != "ACTIVE":
+        raise AppError("AUTH_ACCOUNT_DISABLED", "账号已停用", 403)
+    company = db.get(Company, user.company_id) if user.company_id else None
+    if not company or company.status != "ACTIVE":
+        raise AppError("AUTH_COMPANY_DISABLED", "加盟商公司不可用", 403)
+    if invite_token or invite_id:
+        invite = validate_invite(db, raw_token=invite_token, invite_id=invite_id)
+        if expected_company_id and invite.company_id != expected_company_id:
+            raise AppError("AUTH_INVITE_INVALID", "邀请已失效，请联系平台", 400)
+        if invite.company_id != company.id:
+            raise AppError("AUTH_WECHAT_BOUND_OTHER_COMPANY", "该微信已绑定其他加盟商公司", 409)
+        if consume_invite:
+            _consume_invite(db, raw_token=invite_token, invite_id=invite_id, expected_company_id=company.id)
+    identity.unionid = unionid or identity.unionid
+    identity.nickname = nickname or identity.nickname
+    user.last_login_at = utcnow()
+    token = create_access_token(user.id, user.session_version, role_codes_for_user(user), company.id)
+    return user, token
+
+
+def _is_openid_unique_conflict(exc: IntegrityError) -> bool:
+    """I14 判别：仅 wechat_identities.openid 唯一约束值得幂等重放。
+
+    PG 报 diag.constraint_name=wechat_identities_openid_key，SQLite 报
+    UNIQUE constraint failed: wechat_identities.openid——两方言的标识都含
+    openid；其他约束冲突（user_roles、其他唯一键）不在重放语义内。
+    """
+    orig = getattr(exc, "orig", None)
+    constraint = getattr(getattr(orig, "diag", None), "constraint_name", "") or ""
+    haystack = f"{constraint} {orig} {exc}".lower()
+    return "openid" in haystack
+
+
+def _replay_after_conflict(
+    db: Session,
+    *,
+    openid: str,
+    unionid: str | None,
+    nickname: str | None,
+    expected_company_id: str | None,
+) -> tuple[User, str]:
+    """I14：WechatIdentity.openid 唯一约束冲突后的幂等重放。
+
+    并发同 openid 回调在无锁查询双双 miss 后各自插入，后到者撞约束。
+    回滚本事务的半途写入（用户/角色/身份/邀请消费），重读身份并按已
+    绑定路径登录；邀请已被并发方消费，不再重复消费。身份仍不存在视为
+    不可恢复的竞态消失，按通用失败拒绝。
+    """
+    identity = db.scalar(select(WechatIdentity).where(WechatIdentity.openid == openid))
+    if identity is None:
+        raise AppError("AUTH_FAILED", "微信绑定处理异常，请稍后重试", 500)
+    if expected_company_id:
+        existing_user = db.get(User, identity.user_id)
+        if existing_user and existing_user.company_id and existing_user.company_id != expected_company_id:
+            raise AppError("AUTH_WECHAT_BOUND_OTHER_COMPANY", "该微信已绑定其他加盟商公司", 409)
+    return _login_bound_identity(
+        db,
+        identity,
+        unionid=unionid,
+        nickname=nickname,
+        expected_company_id=expected_company_id,
+        consume_invite=False,
+    )
+
+
 def login_or_bind_wechat(
     db: Session,
     *,
@@ -447,24 +530,15 @@ def login_or_bind_wechat(
 ) -> tuple[User, str]:
     identity = db.scalar(select(WechatIdentity).where(WechatIdentity.openid == openid))
     if identity:
-        user = db.get(User, identity.user_id)
-        if not user or user.status != "ACTIVE":
-            raise AppError("AUTH_ACCOUNT_DISABLED", "账号已停用", 403)
-        company = db.get(Company, user.company_id) if user.company_id else None
-        if not company or company.status != "ACTIVE":
-            raise AppError("AUTH_COMPANY_DISABLED", "加盟商公司不可用", 403)
-        if invite_token or invite_id:
-            invite = validate_invite(db, raw_token=invite_token, invite_id=invite_id)
-            if expected_company_id and invite.company_id != expected_company_id:
-                raise AppError("AUTH_INVITE_INVALID", "邀请已失效，请联系平台", 400)
-            if invite.company_id != company.id:
-                raise AppError("AUTH_WECHAT_BOUND_OTHER_COMPANY", "该微信已绑定其他加盟商公司", 409)
-            _consume_invite(db, raw_token=invite_token, invite_id=invite_id, expected_company_id=company.id)
-        identity.unionid = unionid or identity.unionid
-        identity.nickname = nickname or identity.nickname
-        user.last_login_at = utcnow()
-        token = create_access_token(user.id, user.session_version, role_codes_for_user(user), company.id)
-        return user, token
+        return _login_bound_identity(
+            db,
+            identity,
+            unionid=unionid,
+            nickname=nickname,
+            invite_token=invite_token,
+            invite_id=invite_id,
+            expected_company_id=expected_company_id,
+        )
 
     if not invite_token and not invite_id:
         raise AppError("AUTH_WECHAT_NOT_BOUND", "该微信尚未绑定加盟商，请使用邀请链接进入", 403)
@@ -500,18 +574,37 @@ def login_or_bind_wechat(
     # I7：占用同时要求公司仍为 ACTIVE（行锁下的纵深防御，前置读被竞态绕过也不放行）。
     # 占用失败时不手动 rollback——AppError 冒泡后由请求作用域 session.close()
     # 隐式回滚整个事务（含邀请消费与用户创建），由 M2 计数断言锁定。
-    claimed = db.execute(
-        update(Company)
-        .where(
-            Company.id == company.id,
-            Company.primary_user_id.is_(None),
-            Company.status == "ACTIVE",
+    # I14：try 必须罩住 UPDATE 与收尾 flush 两个 identity INSERT 落点——
+    # autoflush 的 session 会在 UPDATE 处推 INSERT，autoflush=False 的
+    # session（生产 get_db/e2e factory）推迟到显式 flush。并发同 openid
+    # 的后到者在此撞唯一约束，交由幂等重放按已绑定登录处理，而非 409。
+    try:
+        claimed = db.execute(
+            update(Company)
+            .where(
+                Company.id == company.id,
+                Company.primary_user_id.is_(None),
+                Company.status == "ACTIVE",
+            )
+            .values(primary_user_id=user.id)
+        ).rowcount
+        if not claimed:
+            raise AppError("AUTH_COMPANY_ALREADY_BOUND", "该公司已绑定微信主账号", 409)
+        db.flush()
+    except IntegrityError as exc:
+        # codex #3：仅 openid 唯一冲突走幂等重放——同一段 flush 覆盖
+        # user_roles 等其他待写约束，误吞会掩盖真实数据错误；其余冲突
+        # re-raise，由 router 统一收敛为 AUTH_FAILED 302。
+        if not _is_openid_unique_conflict(exc):
+            raise
+        db.rollback()
+        return _replay_after_conflict(
+            db,
+            openid=openid,
+            unionid=unionid,
+            nickname=nickname,
+            expected_company_id=expected_company_id,
         )
-        .values(primary_user_id=user.id)
-    ).rowcount
-    if not claimed:
-        raise AppError("AUTH_COMPANY_ALREADY_BOUND", "该公司已绑定微信主账号", 409)
-    db.flush()
     token = create_access_token(user.id, user.session_version, role_codes_for_user(user), company.id)
     return user, token
 

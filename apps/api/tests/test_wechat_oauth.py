@@ -792,3 +792,192 @@ def test_callback_unknown_error_code_collapses_to_auth_failed(api_client, monkey
     assert response.headers["location"] == "/h5/#/auth-error?code=AUTH_FAILED"
     assert "SOME_UNMAPPED_FAULT" not in response.headers["location"]
     assert "40029" not in response.headers["location"]
+
+
+def test_callback_missing_params_redirect_to_status_page_not_bare_422(api_client) -> None:
+    """P2-4：code/state 缺失属异常流量（微信正常回跳必带两者），但契约仍是
+    302 状态页——必填 query 参数会被 FastAPI 在函数体之前 422 拒成裸 JSON，
+    微信浏览器看到的是错误对象而非可读页面；改为可选默认空后在 try 内
+    显式拒绝，走与 AppError 同款失败审计。"""
+
+    client, factory = api_client
+
+    # 无 state（也无 code）：state 前置校验直接拒绝
+    response = client.get("/api/v1/auth/wechat/callback", follow_redirects=False)
+    assert response.status_code == 302, response.text
+    assert response.headers["location"] == "/h5/#/auth-error?code=AUTH_OAUTH_STATE_INVALID"
+
+    # 只缺 code：取有效 login state 后再打 callback
+    start = client.get("/api/v1/auth/wechat/start", follow_redirects=False)
+    valid_state = _state_from_authorization_url(start.headers["location"])
+    response = client.get(
+        "/api/v1/auth/wechat/callback",
+        params={"state": valid_state},
+        follow_redirects=False,
+    )
+    assert response.status_code == 302, response.text
+    assert response.headers["location"] == "/h5/#/auth-error?code=AUTH_FAILED"
+
+    # 两次缺参失败都发生在意图解析前（flow=unknown），审计不得缺席
+    with factory() as db:
+        rows = db.scalars(
+            select(AuditLog).where(AuditLog.action == "WECHAT_OAUTH_CALLBACK_FAILED")
+        ).all()
+        assert len(rows) == 2
+        assert {row.metadata_json.get("reason_code") for row in rows} == {
+            "AUTH_OAUTH_STATE_INVALID",
+            "AUTH_FAILED",
+        }
+        assert all(row.metadata_json.get("flow") == "unknown" for row in rows)
+
+
+def test_conflict_replay_relogs_bound_identity_without_reconsuming_invite(db):
+    """I14：唯一约束冲突后的幂等重放——按已绑定路径登录同一账号，
+    不重复消费邀请、不新建用户/身份。"""
+
+    from apps.api.src.services.auth_service import _replay_after_conflict
+
+    company = _company(db)
+    _, raw, _ = create_company_invite(db, company.id, None, 24)
+    bound, _ = login_or_bind_wechat(
+        db,
+        openid="wx-conflict-openid",
+        unionid="u-1",
+        nickname="并发胜者",
+        invite_token=raw,
+    )
+    db.commit()
+    invite = db.scalar(select(InviteToken).where(InviteToken.company_id == company.id))
+    used_at = invite.used_at
+    assert used_at is not None
+
+    replayed, _ = _replay_after_conflict(
+        db,
+        openid="wx-conflict-openid",
+        unionid="u-1",
+        nickname="重放昵称",
+        expected_company_id=company.id,
+    )
+    assert replayed.id == bound.id
+    db.commit()
+
+    invite = db.scalar(select(InviteToken).where(InviteToken.company_id == company.id))
+    assert invite.used_at == used_at, "重放不得二次消费邀请"
+    user_count = len(db.scalars(select(User).where(User.company_id == company.id)).all())
+    assert user_count == 1, "重放不得新建用户"
+    identity = db.scalar(select(WechatIdentity).where(WechatIdentity.openid == "wx-conflict-openid"))
+    assert identity is not None
+    assert identity.user_id == bound.id
+    assert identity.nickname == "重放昵称"
+
+
+def test_conflict_replay_rejects_ghost_identity_and_cross_company(db):
+    """I14 重放的拒绝分支：并发方回滚导致身份消失按通用失败拒绝（500，
+    不泄漏唯一约束细节）；expected_company_id 与既有绑定不符时保持与
+    转发误绑同款的 409 拒绝语义。"""
+
+    from apps.api.src.services.auth_service import _replay_after_conflict
+
+    with pytest.raises(AppError) as ghost:
+        _replay_after_conflict(db, openid="wx-ghost-openid", unionid=None, nickname=None, expected_company_id=None)
+    assert ghost.value.code == "AUTH_FAILED"
+    assert ghost.value.status_code == 500
+
+    company = _company(db)
+    _, raw, _ = create_company_invite(db, company.id, None, 24)
+    login_or_bind_wechat(db, openid="wx-cross-openid", unionid=None, nickname="跨公司", invite_token=raw)
+    db.commit()
+    other = Company(code="WX002", name="另一家加盟商", status="ACTIVE")
+    db.add(other)
+    db.flush()
+    with pytest.raises(AppError) as cross:
+        _replay_after_conflict(
+            db, openid="wx-cross-openid", unionid=None, nickname=None, expected_company_id=other.id
+        )
+    assert cross.value.code == "AUTH_WECHAT_BOUND_OTHER_COMPANY"
+
+
+def test_callback_integrity_conflict_and_unknown_failure_stay_302(api_client, monkeypatch, caplog) -> None:
+    """P2-4/codex #2/#5：service 重放之外的 IntegrityError 与任意未知异常
+    都不得穿透成全局处理器的裸 JSON——统一收敛 302 AUTH_FAILED + 失败审计；
+    日志只记异常类名，SQL 绑定参数（openid 等）不得落日志。"""
+
+    import logging as _logging
+
+    from sqlalchemy.exc import IntegrityError as _IntegrityError
+
+    client, factory = api_client
+    monkeypatch.setattr(
+        WechatOAuthClient,
+        "exchange_code",
+        lambda self, code: WechatOAuthIdentity(openid=f"oauth-{code}", unionid=None, nickname="授权用户"),
+    )
+    start = client.get("/api/v1/auth/wechat/start", follow_redirects=False)
+    valid_state = _state_from_authorization_url(start.headers["location"])
+
+    def _hit_callback() -> object:
+        return client.get(
+            "/api/v1/auth/wechat/callback",
+            params={"code": "p24-conflict", "state": valid_state},
+            follow_redirects=False,
+        )
+
+    # IntegrityError（含绑定参数的 message）：302 + 审计 + 类名日志，参数不落日志
+    with caplog.at_level(_logging.ERROR, logger="zhongshu.auth"):
+        monkeypatch.setattr(
+            "apps.api.src.routers.auth.login_or_bind_wechat",
+            lambda *a, **k: (_ for _ in ()).throw(
+                _IntegrityError(
+                    "INSERT INTO wechat_identities ...",
+                    {"openid": "p24-secret-openid", "nickname": "秘密昵称"},
+                    RuntimeError("duplicate key"),
+                )
+            ),
+        )
+        response = _hit_callback()
+    assert response.status_code == 302, response.text
+    assert response.headers["location"] == "/h5/#/auth-error?code=AUTH_FAILED"
+    conflict_errors = [r for r in caplog.records if r.name == "zhongshu.auth" and r.levelno == _logging.ERROR]
+    assert conflict_errors, "完整性冲突必须留 error 日志"
+    assert conflict_errors[0].exception_class == "IntegrityError"
+    assert "p24-secret-openid" not in caplog.text and "秘密昵称" not in caplog.text
+
+    # 未知异常：同样 302 + 审计，而非 500 裸 JSON
+    monkeypatch.setattr(
+        "apps.api.src.routers.auth.login_or_bind_wechat",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom-unexpected")),
+    )
+    response = _hit_callback()
+    assert response.status_code == 302, response.text
+    assert response.headers["location"] == "/h5/#/auth-error?code=AUTH_FAILED"
+
+    with factory() as db:
+        rows = db.scalars(
+            select(AuditLog).where(AuditLog.action == "WECHAT_OAUTH_CALLBACK_FAILED")
+        ).all()
+        assert len(rows) == 2
+        assert all(row.metadata_json.get("reason_code") == "AUTH_FAILED" for row in rows)
+        assert all(row.metadata_json.get("failure_class") == "upstream" for row in rows)
+        assert all(row.metadata_json.get("flow") == "login" for row in rows)
+        # 半途写入不残留
+        assert db.scalar(select(WechatIdentity).where(WechatIdentity.openid == "oauth-p24-conflict")) is None
+
+
+def test_callback_rejections_leave_warning_log(api_client, monkeypatch, caplog) -> None:
+    """P2-4/codex #4：缺参/业务拒绝不能只有数据库审计——request_completed
+    只见 302 不含原因，必须有 warning 级结构化日志（reason_code/flow）。"""
+
+    import logging as _logging
+
+    client, _ = api_client
+    with caplog.at_level(_logging.WARNING, logger="zhongshu.auth"):
+        response = client.get("/api/v1/auth/wechat/callback", follow_redirects=False)
+    assert response.status_code == 302, response.text
+    warnings = [
+        r
+        for r in caplog.records
+        if r.name == "zhongshu.auth" and r.levelno == _logging.WARNING and "rejected" in r.getMessage()
+    ]
+    assert warnings, "缺参拒绝必须留 warning 日志"
+    assert warnings[0].reason_code == "AUTH_OAUTH_STATE_INVALID"
+    assert warnings[0].flow == "unknown"

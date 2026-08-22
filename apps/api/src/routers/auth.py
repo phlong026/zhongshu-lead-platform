@@ -7,6 +7,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..core.auth import CurrentPrincipal, require_permissions
@@ -464,19 +465,115 @@ def wechat_start(
         raise AppError("AUTH_INVITE_ENTRY_DEPRECATED", "邀请入口已更新，请从最新邀请链接重新进入", 400)
     return_url = _sanitize_return_url(return_url)
     state = create_signed_state({"return_url": return_url}, purpose="wechat-oauth")
-    return RedirectResponse(url=WechatOAuthClient().authorization_url(state=state), status_code=302)
+    authorization_url = WechatOAuthClient().authorization_url(state=state)
+    return RedirectResponse(url=authorization_url, status_code=302)
+
+
+def _redirect_callback_failure(
+    exc: AppError,
+    *,
+    request: Request,
+    db: Session,
+    invite_id: str | None,
+    expected_company_id: str | None,
+    return_url: str | None,
+):
+    """P2-4/P2-5：callback 一切失败的统一收敛——302 状态页 + 失败审计 +
+    分级结构化日志，任何入口（AppError/IntegrityError/未知异常转译后）
+    都不得让微信浏览器看到裸 JSON。"""
+    from fastapi.responses import RedirectResponse
+
+    error_code = exc.code if exc.code in _H5_AUTH_ERROR_CODES else "AUTH_FAILED"
+    # P2-5：三个解析变量还原失败发生的环节（state 未验签 = unknown；
+    # 验签后 invite_id 有值为 bind，否则 login）。
+    flow = "bind" if invite_id else ("login" if return_url else "unknown")
+    failure_class = (
+        "upstream"
+        if exc.status_code >= 500
+        else ("security" if exc.code in _CALLBACK_SECURITY_FAILURE_CODES else "business")
+    )
+    # P2-1：微信通道故障（宕机/密钥错误/未配置）落结构化 error 日志——
+    # 302 状态页在网络监控里显示为正常跳转，通道健康度必须从日志告警；
+    # 仅对显式通道码告警，不污染通道指标。
+    if exc.code in _WECHAT_CHANNEL_FAILURE_CODES:
+        logger.error(
+            "wechat oauth channel failure at callback",
+            extra={
+                "request_id": request.state.request_id,
+                "reason_code": exc.code,
+                "flow": flow,
+                "status_code": exc.status_code,
+            },
+        )
+    else:
+        # P2-4/codex #4：缺参、state 篡改与业务拒绝不能只有数据库审计——
+        # request_completed 只见 302 不含原因，排障需要 warning 级留痕。
+        logger.warning(
+            "wechat oauth callback rejected",
+            extra={
+                "request_id": request.state.request_id,
+                "reason_code": exc.code,
+                "display_code": error_code,
+                "flow": flow,
+                "failure_class": failure_class,
+            },
+        )
+    # P2-5：callback 失败与 /auth/login 的失败审计口径对齐——state 篡改、
+    # 转发误绑、伪造意图等安全失败不能零痕迹。先 rollback 丢弃半途写入
+    # （隐式回滚只覆盖请求结束路径），审计行携带 invite_id/company_id/
+    # flow/failure_class 供追溯链关联；metadata 只落枚举与标量，不落
+    # state/token/openid。failure_class 的 upstream 涵盖微信侧与本机微信
+    # 通道（含未配置）的故障，business 为绑定规则拒绝。
+    try:
+        db.rollback()
+        write_audit(
+            db,
+            principal=None,
+            action="WECHAT_OAUTH_CALLBACK_FAILED",
+            resource_type="wechat_bind",
+            resource_id=invite_id,
+            company_id=expected_company_id,
+            metadata={
+                "reason_code": exc.code,
+                "display_code": error_code,
+                "status_code": exc.status_code,
+                "flow": flow,
+                "failure_class": failure_class,
+            },
+            request_id=request.state.request_id,
+            ip_address=_request_ip(request),
+            user_agent=request.headers.get("user-agent"),
+        )
+        db.commit()
+    except Exception:
+        # 审计持久化失败（含连接失效导致 rollback 本身抛错）不得反噬
+        # 302 契约：尽力 rollback 后以结构化日志兜底，让失败仍可观测
+        # （codex 评审 #1），页面行为维持 P1-04 的重定向语义。
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        logger.exception(
+            "wechat oauth callback failure audit fell back to log",
+            extra={
+                "request_id": request.state.request_id,
+                "reason_code": exc.code,
+                "flow": flow,
+                "failure_class": failure_class,
+            },
+        )
+    return RedirectResponse(url=f"/h5/#/auth-error?code={error_code}", status_code=302)
 
 
 @router.get("/wechat/callback")
 def wechat_callback(
-    code: str,
-    state: str,
     request: Request,
+    code: str = Query(default=""),
+    state: str = Query(default=""),
     db: Session = Depends(get_db),
 ):
     from fastapi.responses import RedirectResponse
     from ..integrations.wechat import WechatOAuthClient
-
 
     # P1-04：绑定类失败 302 到 H5 状态页；微信浏览器上下文不应看到裸 JSON。
     # P2-5：三个解析变量先置空——except 分支据此还原失败发生的环节
@@ -485,6 +582,13 @@ def wechat_callback(
     expected_company_id: str | None = None
     return_url: str | None = None
     try:
+        # P2-4：code/state 声明为可选默认空——微信正常回跳必带两者，缺参
+        # 属异常流量；必填参数会在函数体之前被 FastAPI 422 拒绝成裸 JSON，
+        # 破坏 302 状态页契约。缺失时在 try 内显式拒绝，走统一的失败审计。
+        if not state:
+            raise AppError("AUTH_OAUTH_STATE_INVALID", "微信授权状态缺失", 400)
+        if not code:
+            raise AppError("AUTH_FAILED", "微信授权码缺失，请重新发起授权", 400)
         invite_id, expected_company_id, return_url = _resolve_binding_intent(state)
         identity = WechatOAuthClient().exchange_code(code)
         user, token = login_or_bind_wechat(
@@ -495,102 +599,80 @@ def wechat_callback(
             invite_id=invite_id,
             expected_company_id=expected_company_id,
         )
-    except AppError as exc:
-        error_code = exc.code if exc.code in _H5_AUTH_ERROR_CODES else "AUTH_FAILED"
-        # P2-5：callback 失败与 /auth/login 的失败审计口径对齐——state 篡改、
-        # 转发误绑、伪造意图等安全失败不能零痕迹，否则 P1-02 的追溯诉求只剩
-        # 成功路径半边。先 rollback 丢弃半途写入（隐式回滚只覆盖请求结束路
-        # 径），审计行携带 invite_id/company_id/flow/failure_class 供追溯链
-        # 关联；metadata 只落枚举与标量，不落 state/token/openid。flow 的
-        # unknown 涵盖一切未解析出可用意图的 state（验签失败、缺
-        # binding_confirmed 字段等）；failure_class 的 upstream 涵盖微信侧
-        # 与本机微信通道（含未配置）的故障，business 为绑定规则拒绝。
-        flow = "bind" if invite_id else ("login" if return_url else "unknown")
-        failure_class = (
-            "upstream"
-            if exc.status_code >= 500
-            else ("security" if exc.code in _CALLBACK_SECURITY_FAILURE_CODES else "business")
-        )
-        # P2-1：微信通道故障（宕机/密钥错误/未配置）落结构化 error 日志——
-        # 302 状态页在网络监控里显示为正常跳转，通道健康度必须从日志告警；
-        # 仅对显式通道码告警，内部未知 5xx 走审计留痕，不污染通道指标。
-        if exc.code in _WECHAT_CHANNEL_FAILURE_CODES:
-            logger.error(
-                "wechat oauth channel failure at callback",
-                extra={
-                    "request_id": request.state.request_id,
-                    "reason_code": exc.code,
-                    "flow": flow,
-                    "status_code": exc.status_code,
-                },
-            )
-        try:
-            db.rollback()
+        # I4：区分首次绑定与重登——绑定意图（signed bind state）记 WECHAT_BIND
+        # 并保留 invite_id 追溯；legacy 普通登录记 WECHAT_OAUTH_LOGIN，与 mock 通道对齐。
+        if invite_id:
             write_audit(
                 db,
                 principal=None,
-                action="WECHAT_OAUTH_CALLBACK_FAILED",
-                resource_type="wechat_bind",
-                resource_id=invite_id,
-                company_id=expected_company_id,
-                metadata={
-                    "reason_code": exc.code,
-                    "display_code": error_code,
-                    "status_code": exc.status_code,
-                    "flow": flow,
-                    "failure_class": failure_class,
-                },
+                action="WECHAT_BIND",
+                resource_type="user",
+                resource_id=user.id,
+                company_id=user.company_id,
+                metadata={"invite_id": invite_id},
                 request_id=request.state.request_id,
                 ip_address=_request_ip(request),
                 user_agent=request.headers.get("user-agent"),
             )
-            db.commit()
-        except Exception:
-            # 审计持久化失败（含连接失效导致 rollback 本身抛错）不得反噬
-            # 302 契约：尽力 rollback 后以结构化日志兜底，让失败仍可观测
-            # （codex 评审 #1），页面行为维持 P1-04 的重定向语义。
-            try:
-                db.rollback()
-            except Exception:
-                pass
-            logger.exception(
-                "wechat oauth callback failure audit fell back to log",
-                extra={
-                    "request_id": request.state.request_id,
-                    "reason_code": exc.code,
-                    "flow": flow,
-                    "failure_class": failure_class,
-                },
+        else:
+            write_audit(
+                db,
+                principal=None,
+                action="WECHAT_OAUTH_LOGIN",
+                resource_type="user",
+                resource_id=user.id,
+                company_id=user.company_id,
+                request_id=request.state.request_id,
+                ip_address=_request_ip(request),
+                user_agent=request.headers.get("user-agent"),
             )
-        return RedirectResponse(url=f"/h5/#/auth-error?code={error_code}", status_code=302)
-    # I4：区分首次绑定与重登——绑定意图（signed bind state）记 WECHAT_BIND
-    # 并保留 invite_id 追溯；legacy 普通登录记 WECHAT_OAUTH_LOGIN，与 mock 通道对齐。
-    if invite_id:
-        write_audit(
-            db,
-            principal=None,
-            action="WECHAT_BIND",
-            resource_type="user",
-            resource_id=user.id,
-            company_id=user.company_id,
-            metadata={"invite_id": invite_id},
-            request_id=request.state.request_id,
-            ip_address=_request_ip(request),
-            user_agent=request.headers.get("user-agent"),
+        db.commit()
+    except AppError as exc:
+        return _redirect_callback_failure(
+            exc,
+            request=request,
+            db=db,
+            invite_id=invite_id,
+            expected_company_id=expected_company_id,
+            return_url=return_url,
         )
-    else:
-        write_audit(
-            db,
-            principal=None,
-            action="WECHAT_OAUTH_LOGIN",
-            resource_type="user",
-            resource_id=user.id,
-            company_id=user.company_id,
-            request_id=request.state.request_id,
-            ip_address=_request_ip(request),
-            user_agent=request.headers.get("user-agent"),
+    except IntegrityError as exc:
+        # P2-4：service 层幂等重放之外的完整性冲突不穿透成全局处理器的
+        # 裸 JSON。转译为 AppError 后走统一收敛；只记异常类名——
+        # IntegrityError 的默认 message 携带 SQL 绑定参数（openid/unionid/
+        # nickname），带 exc_info 的日志会把它们整体落盘（codex #5）。
+        logger.error(
+            "wechat oauth callback integrity conflict",
+            extra={"request_id": request.state.request_id, "exception_class": type(exc).__name__},
         )
-    db.commit()
+        translated = AppError("AUTH_FAILED", "微信绑定处理异常，请稍后重试", 500)
+        translated.__cause__ = exc
+        return _redirect_callback_failure(
+            translated,
+            request=request,
+            db=db,
+            invite_id=invite_id,
+            expected_company_id=expected_company_id,
+            return_url=return_url,
+        )
+    except Exception as exc:
+        # P2-4/codex #2：未知异常（OperationalError、ValueError 等）同样
+        # 不穿透成 500 裸 JSON——微信浏览器只能看到状态页；异常类名留痕
+        # 供排障，服务端观测靠失败审计与这条 error 日志。
+        logger.error(
+            "wechat oauth callback unexpected failure",
+            extra={"request_id": request.state.request_id, "exception_class": type(exc).__name__},
+        )
+        translated = AppError("AUTH_FAILED", "微信登录处理异常，请稍后重试", 500)
+        translated.__cause__ = exc
+        return _redirect_callback_failure(
+            translated,
+            request=request,
+            db=db,
+            invite_id=invite_id,
+            expected_company_id=expected_company_id,
+            return_url=return_url,
+        )
     response = RedirectResponse(url=return_url, status_code=302)
     response.set_cookie(
         "access_token",
