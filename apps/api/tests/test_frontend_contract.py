@@ -268,3 +268,17 @@ def test_h5_auth_error_codes_stay_in_sync_with_backend_whitelist():
         "WECHAT_OAUTH_FAILED",
     ):
         assert code in fn, f"{code} 应纳入 renderAuthError 的 CTA 分化集合"
+
+
+def test_admin_invite_actions_are_permission_gated():
+    """P2-2：邀请/邀请记录入口必须按 can('*') 门控——后端三个邀请接口都是
+    require_permissions('*')，无 * 权限的账号（如运营）在加盟商列表页不应
+    看到注定 403 的邀请入口。"""
+
+    app = Path("apps/admin/public/app.js").read_text(encoding="utf-8")
+    assert "const inviter=can('*')" in app, "companies() 必须先计算 can('*') 门控"
+    # 邀请/邀请记录 span 必须整体包在 inviter 条件渲染内
+    row = re.search(r"\$\{inviter\?`<td>.*?data-invite.*?data-invite-records.*?</td>`:''\}", app, re.S)
+    assert row, "data-invite / data-invite-records 不得无条件渲染"
+    # 操作列表头同步条件化，避免无邀请权限时出现空列
+    assert re.search(r"\.\.\.\(inviter\?\['操作'\]:\[\]\)", app), "操作列必须随 inviter 门控"
