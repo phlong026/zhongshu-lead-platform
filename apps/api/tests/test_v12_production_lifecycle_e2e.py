@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from urllib.parse import unquote
 
 import pytest
 from sqlalchemy import create_engine, func, inspect, select
@@ -208,18 +209,31 @@ def _bind_franchise(
             json={"expires_hours": 24},
         )
     )
+    raw_token = unquote(invite["invite_url"].split("invite=", 1)[1])
+    started = _data(
+        client.post(
+            "/api/v1/auth/invites/confirm-start",
+            json={
+                "invite_token": raw_token,
+                "return_url": "/h5/#/home",
+                "accepted_agreement": True,
+            },
+        )
+    )
     bound = _data(
         client.post(
             "/api/v1/auth/wechat/mock-callback",
             json={
-                "invite_token": invite["token"],
+                "confirmation_intent": started["confirmation_intent"],
                 "openid": openid,
                 "nickname": nickname,
             },
         )
     )
     assert bound["company_id"] == company_id
-    return {"Authorization": f"Bearer {bound['token']}"}
+    token = client.cookies.get("access_token")
+    assert token
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _request_profile(

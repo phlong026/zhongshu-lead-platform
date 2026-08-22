@@ -15,6 +15,7 @@ from ..core.security import decrypt_text, mask_phone
 from ..core.v12_enums import LeadV12Status
 from ..schemas.v12_dispatch import ManualDispatchBody
 from ..services.audit import write_audit
+from ..services.claim_singleflight import run_claim_singleflight
 from ..services.dispatch_v12 import (
     CLAIMED_CONTACT_STATUSES,
     candidate_to_dict,
@@ -43,11 +44,7 @@ def _masked_encrypted_phone(phone_encrypted: str) -> str:
 
 def _assignment_dict(assignment: Assignment, lead: Lead, *, reveal_phone: bool = False) -> dict:
     phone = decrypt_text(lead.phone_encrypted) if reveal_phone else None
-    phone_masked = (
-        mask_phone(phone)
-        if phone is not None
-        else _masked_encrypted_phone(lead.phone_encrypted)
-    )
+    phone_masked = mask_phone(phone) if phone is not None else _masked_encrypted_phone(lead.phone_encrypted)
     return {
         "id": assignment.id,
         "lead_id": assignment.lead_id,
@@ -112,9 +109,7 @@ def _assignment_detail_projection(assignment_id: str, company_id: str):
 
 def _projected_assignment_dict(row, *, reveal_phone: bool = False) -> dict:
     phone = decrypt_text(row.phone_encrypted) if reveal_phone else None
-    phone_masked = (
-        mask_phone(phone) if phone is not None else _masked_encrypted_phone(row.phone_encrypted)
-    )
+    phone_masked = mask_phone(phone) if phone is not None else _masked_encrypted_phone(row.phone_encrypted)
     return {
         "id": row.id,
         "lead_id": row.lead_id,
@@ -138,13 +133,9 @@ def _projected_assignment_dict(row, *, reveal_phone: bool = False) -> dict:
         "assigned_at": row.assigned_at.isoformat(),
         "expires_at": row.expires_at.isoformat() if row.expires_at else None,
         "claimed_at": row.claimed_at.isoformat() if row.claimed_at else None,
-        "appeal_deadline_at": row.appeal_deadline_at.isoformat()
-        if row.appeal_deadline_at
-        else None,
+        "appeal_deadline_at": row.appeal_deadline_at.isoformat() if row.appeal_deadline_at else None,
         "reward_due_at": row.reward_due_at.isoformat() if row.reward_due_at else None,
-        "first_followup_due_at": row.first_followup_due_at.isoformat()
-        if row.first_followup_due_at
-        else None,
+        "first_followup_due_at": row.first_followup_due_at.isoformat() if row.first_followup_due_at else None,
     }
 
 
@@ -190,9 +181,7 @@ def dispatch_candidates(
         {
             "lead": lead_pool_item(lead),
             "eligible_count": sum(1 for item in items if item.eligible),
-            "candidates": [
-                candidate_to_dict(item, include_financials=include_financials) for item in items
-            ],
+            "candidates": [candidate_to_dict(item, include_financials=include_financials) for item in items],
         },
     )
 
@@ -299,37 +288,38 @@ def claim_own_assignment(
     db: Session = Depends(get_db),
 ):
     company_id = _principal_company_id(principal)
-    result = claim_assignment(
-        db,
-        assignment_id=assignment_id,
-        company_id=company_id,
-        claimed_by=principal.user_id,
-    )
-    lead = get_dispatch_lead(db, result.assignment.lead_id)
-    write_audit(
-        db,
-        principal=principal,
-        action="V12_ASSIGNMENT_CLAIM",
-        resource_type="assignment",
-        resource_id=result.assignment.id,
-        company_id=company_id,
-        after={
-            "lead_id": lead.id,
-            "status": result.assignment.status,
-            "points": result.assignment.points_price,
-            "ledger_id": result.ledger.id,
-            "appeal_deadline_at": result.assignment.appeal_deadline_at.isoformat()
-            if result.assignment.appeal_deadline_at
-            else None,
-            "reward_id": result.reward.id if result.reward else None,
-            "idempotent": result.idempotent,
-        },
-        request_id=request.state.request_id,
-    )
-    db.commit()
-    return ok(
-        request,
-        {
+
+    def execute_claim() -> dict:
+        result = claim_assignment(
+            db,
+            assignment_id=assignment_id,
+            company_id=company_id,
+            claimed_by=principal.user_id,
+        )
+        lead = get_dispatch_lead(db, result.assignment.lead_id)
+        if not result.idempotent:
+            write_audit(
+                db,
+                principal=principal,
+                action="V12_ASSIGNMENT_CLAIM",
+                resource_type="assignment",
+                resource_id=result.assignment.id,
+                company_id=company_id,
+                after={
+                    "lead_id": lead.id,
+                    "status": result.assignment.status,
+                    "points": result.assignment.points_price,
+                    "ledger_id": result.ledger.id,
+                    "appeal_deadline_at": result.assignment.appeal_deadline_at.isoformat()
+                    if result.assignment.appeal_deadline_at
+                    else None,
+                    "reward_id": result.reward.id if result.reward else None,
+                    "idempotent": False,
+                },
+                request_id=request.state.request_id,
+            )
+        db.commit()
+        return {
             "assignment": _assignment_dict(result.assignment, lead, reveal_phone=True),
             "ledger": {
                 "id": result.ledger.id,
@@ -347,6 +337,13 @@ def claim_own_assignment(
             if result.reward
             else None,
             "idempotent": result.idempotent,
-        },
-        "领取成功" if not result.idempotent else "派发单已领取",
+        }
+
+    payload, coalesced = run_claim_singleflight(
+        f"{company_id}:{assignment_id}",
+        execute_claim,
+        before_wait=db.rollback,
     )
+    if coalesced:
+        payload["idempotent"] = True
+    return ok(request, payload, "派发单已领取" if payload["idempotent"] else "领取成功")
