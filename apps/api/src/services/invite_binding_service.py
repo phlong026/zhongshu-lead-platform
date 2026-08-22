@@ -234,6 +234,8 @@ def create_company_invite(
         .values(revoked_at=now)
         .execution_options(synchronize_session=False)
     )
+    for stale in [o for o in db.identity_map.values() if isinstance(o, InviteToken)]:
+        db.expire(stale)
 
     raw_token = generate_token(32)
     invite = InviteToken(
@@ -590,6 +592,7 @@ def bind_wechat_with_confirmation(
             "该绑定确认已使用或已过期",
             409,
         )
+    db.refresh(intent)
 
     invite_consumed = db.execute(
         update(InviteToken)

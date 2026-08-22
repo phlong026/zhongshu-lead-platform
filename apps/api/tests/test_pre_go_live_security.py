@@ -488,6 +488,10 @@ def test_oauth_state_redirect_invite_replay_and_cross_company_binding_are_reject
     assert expired.json()["code"] == "AUTH_OAUTH_STATE_INVALID"
 
     with factory() as db:
+        # 邀请绑定是公司获得主账号的唯一入口，演示种子里的主账号标记会让
+        # create_company_invite 直接拒绝；这里先清掉标记以进入待绑定状态。
+        db.get(Company, str(graph["target_company_id"])).primary_user_id = None
+        db.get(Company, str(graph["attacker_company_id"])).primary_user_id = None
         target_invite, target_raw = create_company_invite(
             db, str(graph["target_company_id"]), None, 24
         )
@@ -497,10 +501,23 @@ def test_oauth_state_redirect_invite_replay_and_cross_company_binding_are_reject
         db.commit()
         assert target_invite.id and attacker_invite.id
 
+    def _confirm(invite_raw: str) -> str:
+        started = client.post(
+            "/api/v1/auth/invites/confirm-start",
+            json={
+                "invite_token": invite_raw,
+                "return_url": "/h5/#/home",
+                "accepted_agreement": True,
+            },
+        )
+        assert started.status_code == 200, started.text
+        return started.json()["data"]["confirmation_intent"]
+
+    first_intent = _confirm(target_raw)
     first = client.post(
         "/api/v1/auth/wechat/mock-callback",
         json={
-            "invite_token": target_raw,
+            "confirmation_intent": first_intent,
             "openid": "security-openid-001",
             "nickname": "安全微信用户",
         },
@@ -510,18 +527,18 @@ def test_oauth_state_redirect_invite_replay_and_cross_company_binding_are_reject
     replay = client.post(
         "/api/v1/auth/wechat/mock-callback",
         json={
-            "invite_token": target_raw,
+            "confirmation_intent": first_intent,
             "openid": "security-openid-002",
             "nickname": "重放攻击",
         },
     )
-    assert replay.status_code == 400
-    assert replay.json()["code"] == "AUTH_INVITE_INVALID"
+    assert replay.status_code == 409
+    assert replay.json()["code"] == "AUTH_CONFIRMATION_INTENT_USED"
 
     cross_company = client.post(
         "/api/v1/auth/wechat/mock-callback",
         json={
-            "invite_token": attacker_raw,
+            "confirmation_intent": _confirm(attacker_raw),
             "openid": "security-openid-001",
             "nickname": "跨公司绑定攻击",
         },

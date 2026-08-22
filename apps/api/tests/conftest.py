@@ -11,6 +11,8 @@ import pytest
 # Settings/get_settings. Unconditional assignment deliberately prevents a
 # developer's production .env or shell variables from changing pytest behavior.
 _TEST_RUNTIME_ROOT = Path(tempfile.gettempdir()) / f"zhongshu-pytest-{os.getpid()}"
+_TEST_RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
+(_TEST_RUNTIME_ROOT / "storage").mkdir(parents=True, exist_ok=True)
 _TEST_ENVIRONMENT = {
     "APP_ENV": "test",
     "APP_BASE_URL": "http://testserver",

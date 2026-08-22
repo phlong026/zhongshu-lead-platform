@@ -168,6 +168,12 @@ def invite_records(
     return ok(request, page(items, total, page_no, page_size))
 
 
+@router.get("/invites/preview")
+def invite_preview_rejects_get() -> None:
+    # 预览令牌只允许放进 POST 请求体，避免令牌经 GET 查询串进入访问日志。
+    raise AppError("AUTH_INVITE_METHOD_NOT_ALLOWED", "邀请预览仅支持 POST 提交", 405)
+
+
 @router.get("/invites/{invite_id}")
 def invite_record_detail(
     invite_id: str,

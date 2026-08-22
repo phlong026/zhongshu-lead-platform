@@ -22,6 +22,7 @@ from apps.api.src.core.security import encrypt_text, fingerprint_phone, hash_pho
 from apps.api.src.core.v12_enums import LeadSourceKind, LeadV12Status, ReturnV12Status
 from apps.api.src.services.audit import write_audit
 from apps.api.src.services.auth_service import bind_wechat_by_invite, create_company_invite, create_internal_user
+from apps.api.src.services.invite_binding_service import create_confirmation_intent
 from apps.api.src.services.storage import create_file_access_token, get_storage
 
 
@@ -156,15 +157,19 @@ def test_invite_consumption_is_atomic_under_concurrent_callbacks(api_client) -> 
     with factory() as db:
         company = db.scalar(select(Company).where(Company.code == "SH-DEMO"))
         assert company is not None
+        # 演示种子已给公司绑定主账号，邀请绑定要求公司处于待绑定状态。
+        company.primary_user_id = None
         _, raw = create_company_invite(db, company.id, None, 24)
+        started = create_confirmation_intent(db, raw, "/h5/#/home")
         db.commit()
+        intent = started.confirmation_intent
 
     def bind(index: int) -> tuple[str, str | None]:
         with factory() as db:
             try:
                 user, _ = bind_wechat_by_invite(
                     db,
-                    raw,
+                    intent,
                     f"security-concurrent-openid-{index}",
                     f"并发邀请用户{index}",
                 )
@@ -178,7 +183,9 @@ def test_invite_consumption_is_atomic_under_concurrent_callbacks(api_client) -> 
         results = list(pool.map(bind, range(2)))
 
     assert [code for code, _ in results].count("OK") == 1
-    assert [code for code, _ in results].count("AUTH_INVITE_INVALID") == 1
+    loser_codes = {code for code, _ in results if code != "OK"}
+    # 同一确认意图并发绑定，败者会在占用公司主账号或消耗确认意图时被拒绝。
+    assert loser_codes <= {"AUTH_COMPANY_ALREADY_BOUND", "AUTH_CONFIRMATION_INTENT_USED"}
     with factory() as db:
         identities = db.scalar(
             select(func.count(WechatIdentity.openid)).where(
