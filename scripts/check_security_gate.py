@@ -641,9 +641,24 @@ def _validate_oci_archive_identity(
         raise RuntimeError("Docker archive index.json manifests must be a non-empty array")
     matches = [item for item in manifests if isinstance(item, dict) and item.get("digest") == expected_image_id]
     if len(matches) != 1:
-        raise RuntimeError(
-            f"Docker OCI index must contain exactly one descriptor for ImageID {expected_image_id!r}"
-        )
+        # 不同 docker 存储后端导出的 OCI 布局里，index.json 记录的是 manifest 摘要，
+        # 与 docker image inspect 返回的镜像 ID 摘要体系可能不同；退而用已经过
+        # 内容哈希校验的配置摘要确认归档中恰好只有一个镜像与之对应。
+        config_matches = []
+        for item in manifests:
+            if not isinstance(item, dict):
+                continue
+            try:
+                reachable = _reachable_oci_config_digests(archive, item, label="Docker OCI image")
+            except RuntimeError:
+                continue
+            if config_digest in reachable:
+                config_matches.append(item)
+        if len(config_matches) != 1:
+            raise RuntimeError(
+                f"Docker OCI index must contain exactly one descriptor for ImageID {expected_image_id!r}"
+            )
+        matches = config_matches
     reachable_configs = _reachable_oci_config_digests(
         archive,
         matches[0],
