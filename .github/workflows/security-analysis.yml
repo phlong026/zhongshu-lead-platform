@@ -89,6 +89,7 @@ jobs:
         run: |
           mkdir -p dist/security
           : > dist/security/semgrep.json
+          chmod 666 dist/security/semgrep.json
           printf '%s\n' "$SEMGREP_IMAGE" > dist/security/semgrep-image-ref.txt
           set +e
           docker pull "$SEMGREP_IMAGE" > dist/security/semgrep-pull.txt 2>&1
@@ -205,6 +206,7 @@ jobs:
 
           : > dist/security/trivy-image.json
           : > dist/security/sbom.cdx.json
+          chmod 666 dist/security/trivy-image.json dist/security/sbom.cdx.json
 
           set +e
           printf '%s\n' "$TRIVY_IMAGE" > dist/security/trivy-image-ref.txt
