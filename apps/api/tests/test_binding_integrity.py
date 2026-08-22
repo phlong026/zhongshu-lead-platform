@@ -1,0 +1,102 @@
+from __future__ import annotations
+
+from sqlalchemy import select
+
+from apps.api.src.core.models import Company, WechatIdentity
+from apps.api.src.schemas.company import CompanyCreateBody
+from apps.api.src.services.auth_service import bind_wechat_by_invite, create_company_invite
+from apps.api.src.services.binding_integrity import audit_primary_binding_integrity
+from apps.api.src.services.company_service import create_company
+
+
+def _company_body(code: str, **overrides) -> CompanyCreateBody:
+    payload = {
+        "code": code,
+        "name": "上海测试加盟商",
+        "owner_name": "张老板",
+        "region_codes": ["310100"],
+        "capabilities": [{"category_code": "OLD_RENOVATION", "brand_code": None}],
+    }
+    payload.update(overrides)
+    return CompanyCreateBody(**payload)
+
+
+def _bind_owner(db, code: str, openid: str):
+    company = create_company(db, _company_body(code))
+    _, raw, _ = create_company_invite(db, company.id, None, 24)
+    user, _ = bind_wechat_by_invite(db, raw, openid, "张老板")
+    db.commit()
+    return company, user
+
+
+def _codes(report) -> set[str]:
+    return {issue["code"] for issue in report.issues}
+
+
+def test_clean_binding_passes_integrity_audit(db) -> None:
+    """I16 正向不变量：正常绑定流落库后，主账号指向在册用户且证据齐全。"""
+    company, user = _bind_owner(db, "I16-CLEAN", "openid-i16-clean")
+
+    report = audit_primary_binding_integrity(db)
+
+    assert report.checked_companies >= 1
+    assert report.issues == []
+    assert report.valid
+    stored = db.get(Company, company.id)
+    assert stored.primary_user_id == user.id
+
+
+def test_dangling_primary_is_reported_as_error(db) -> None:
+    """I16 场景一：primary 指向不存在用户 → 公司被悬空指针锁死，核查必须报 error。"""
+    company, _user = _bind_owner(db, "I16-DANGLING", "openid-i16-dangling")
+    company.primary_user_id = "ghost-user-id-not-exists"
+    db.commit()
+
+    report = audit_primary_binding_integrity(db)
+
+    assert "DANGLING_PRIMARY" in _codes(report)
+    assert not report.valid
+
+
+def test_cleared_primary_with_identity_is_reported(db) -> None:
+    """I16 场景二：primary 被误清空而旧微信身份仍在 → 可绑第二个负责人，核查必须报 error。"""
+    company, _user = _bind_owner(db, "I16-CLEARED", "openid-i16-cleared")
+    company.primary_user_id = None
+    db.commit()
+    # 误清空不清理身份：旧微信身份仍挂在该公司成员上
+    assert db.scalar(select(WechatIdentity).where(WechatIdentity.openid == "openid-i16-cleared"))
+
+    report = audit_primary_binding_integrity(db)
+
+    assert "ORPHAN_OWNER_IDENTITY" in _codes(report)
+    assert not report.valid
+
+
+def test_shared_primary_across_companies_is_reported(db) -> None:
+    """I16：同一用户被两家公司登记为主账号（含身份串号），核查必须同时报两处 error。"""
+    first, user = _bind_owner(db, "I16-SHARE-A", "openid-i16-share")
+    second = create_company(db, _company_body("I16-SHARE-B"))
+    second.primary_user_id = user.id
+    db.commit()
+
+    report = audit_primary_binding_integrity(db)
+
+    codes = _codes(report)
+    assert "SHARED_PRIMARY" in codes
+    assert "PRIMARY_USER_COMPANY_MISMATCH" in codes
+    assert not report.valid
+    shared = next(issue for issue in report.issues if issue["code"] == "SHARED_PRIMARY")
+    assert shared["details"]["company_ids"] == [first.id, second.id]
+
+
+def test_primary_without_identity_is_warning_only(db) -> None:
+    """I16：主账号缺微信身份属证据缺失（warning），不阻断 valid——与 error 级区分。"""
+    company, _user = _bind_owner(db, "I16-NOIDENT", "openid-i16-noident")
+    identity = db.scalar(select(WechatIdentity).where(WechatIdentity.openid == "openid-i16-noident"))
+    db.delete(identity)
+    db.commit()
+
+    report = audit_primary_binding_integrity(db)
+
+    assert _codes(report) == {"PRIMARY_WITHOUT_IDENTITY"}
+    assert report.valid

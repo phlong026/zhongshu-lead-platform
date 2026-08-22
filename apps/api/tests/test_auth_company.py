@@ -15,9 +15,11 @@ from apps.api.src.services.auth_service import (
     bind_wechat_by_invite,
     build_invite_copy_text,
     create_company_invite,
+    create_internal_user,
     login_or_bind_wechat,
+    validate_invite,
 )
-from apps.api.src.services.company_service import create_company, find_company_by_contact_phone
+from apps.api.src.services.company_service import create_company
 
 
 def _company_body(code: str, **overrides) -> CompanyCreateBody:
@@ -132,9 +134,12 @@ def test_invite_http_response_omits_missing_owner_as_null(api_client) -> None:
     assert data["copy_text"].startswith("您好：这是【上海测试加盟商】的微信绑定邀请，请在微信内打开：")
 
 
-def test_pending_company_cannot_create_invite(db) -> None:
-    company = create_company(db, _company_body("SH-PENDING"))
-    company.status = "PENDING"
+@pytest.mark.parametrize("status", ["PENDING", "DISABLED"])
+def test_non_active_company_cannot_create_invite(db, status) -> None:
+    # I11：实现为 status != "ACTIVE" 一律拒绝；DISABLED 与 PENDING 同路径须都锁定
+    # （Company.status 是自由字符串，非数据库枚举，两条路径都可能被回归改坏）。
+    company = create_company(db, _company_body("SH-NOT-ACTIVE"))
+    company.status = status
     db.commit()
     with pytest.raises(AppError) as exc:
         create_company_invite(db, company.id, None, 24)
@@ -415,19 +420,175 @@ def test_invite_snapshot_migration_is_registered_on_alembic_chain() -> None:
     assert "company_name_snapshot" in migration
 
 
-def test_find_company_by_contact_phone_matches_normalized_hash(db) -> None:
-    """P2-02：规范化手机号经 HMAC 命中唯一 ACTIVE 公司；停用/异号码不命中。"""
+def test_list_company_invites_returns_404_for_missing_company(api_client) -> None:
+    """P3-9：不存在的公司请求邀请记录必须 404，不得用空列表冒充。"""
 
-    matched = create_company(db, _company_body("SH-PHONE-A", contact_phone="13900001111"))
-    create_company(db, _company_body("SH-PHONE-B", contact_phone="13900002222"))
-    disabled = create_company(db, _company_body("SH-PHONE-C", contact_phone="13900003333"))
-    disabled.status = "DISABLED"
-    db.commit()
+    client, _ = api_client
+    headers = _admin_headers(client)
+    response = client.get("/api/v1/auth/companies/nonexistent-company/invites", headers=headers)
+    assert response.status_code == 404, response.text
+    assert response.json()["code"] == "COMPANY_NOT_AVAILABLE"
 
-    assert find_company_by_contact_phone(db, "+86 139 0000 1111").id == matched.id
-    assert find_company_by_contact_phone(db, "13900001111").id == matched.id
-    assert find_company_by_contact_phone(db, "13900009999") is None
-    # 停用公司不是可绑定目标，不参与匹配。
-    assert find_company_by_contact_phone(db, "13900003333") is None
-    # 非 11 位输入直接拒绝，不做无意义查询。
-    assert find_company_by_contact_phone(db, "12345") is None
+
+def test_list_company_invites_rejects_authenticated_non_admin(api_client) -> None:
+    """P3-9：已认证但无 * 权限的内部账号同样被拒；401 之外补齐 403 分支。"""
+
+    client, factory = api_client
+    with factory() as db:
+        create_internal_user(
+            db, username="list-tel", password="Telesales9!", display_name="电销", role_code="TELESALES"
+        )
+        db.commit()
+    login = client.post("/api/v1/auth/login", json={"username": "list-tel", "password": "Telesales9!"})
+    assert login.status_code == 200, login.text
+    token = login.cookies.get("access_token")
+    assert token
+    response = client.get(
+        "/api/v1/auth/companies/any-company/invites",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == "FORBIDDEN"
+
+
+def test_list_company_invites_returns_desc_order_and_caps_at_50(api_client) -> None:
+    """P3-9：列表按创建时间降序且上限 50 条；更早的历史行会滑出窗口。"""
+
+    client, factory = api_client
+    headers = _admin_headers(client)
+    with factory() as db:
+        company = create_company(db, _company_body("SH-LIST-CAP"))
+        db.flush()
+        # 直插 52 条已使用历史行，序号写入快照列，断言窗口裁掉的是最旧两条。
+        for index in range(52):
+            db.add(
+                InviteToken(
+                    token_hash=hash_token(f"list-cap-{index:02d}"),
+                    company_id=company.id,
+                    expires_at=utcnow() - timedelta(hours=1),
+                    used_at=utcnow() - timedelta(hours=2),
+                    invitee_name_snapshot=f"负责人{index:02d}",
+                    created_at=utcnow() - timedelta(minutes=52 - index),
+                )
+            )
+        db.commit()
+        company_id = company.id
+
+    items = client.get(f"/api/v1/auth/companies/{company_id}/invites", headers=headers).json()["data"]["items"]
+    assert len(items) == 50
+    assert [item["invitee_name"] for item in items[:3]] == ["负责人51", "负责人50", "负责人49"]
+    assert items[-1]["invitee_name"] == "负责人02"
+    names = {item["invitee_name"] for item in items}
+    assert "负责人00" not in names
+    assert "负责人01" not in names
+
+
+def test_list_company_invites_expired_boundary_matches_validation(api_client) -> None:
+    """P3-9：expires_at 已到点的行列表判 EXPIRED，验证通道同步拒绝，两侧口径一致。"""
+
+    client, factory = api_client
+    headers = _admin_headers(client)
+    with factory() as db:
+        company = create_company(db, _company_body("SH-LIST-BOUND"))
+        db.flush()
+        # 写入时刻即过期：列表判定为 as_utc(expires_at) <= now，与 validate 同一口径。
+        db.add(
+            InviteToken(
+                token_hash=hash_token("list-boundary-expired"),
+                company_id=company.id,
+                expires_at=utcnow(),
+            )
+        )
+        db.commit()
+        company_id = company.id
+
+    items = client.get(f"/api/v1/auth/companies/{company_id}/invites", headers=headers).json()["data"]["items"]
+    assert [item["status"] for item in items] == ["EXPIRED"]
+
+    with factory() as db:
+        with pytest.raises(AppError) as exc:
+            validate_invite(db, raw_token="list-boundary-expired")
+        assert exc.value.code == "AUTH_INVITE_INVALID"
+
+
+def test_list_company_invites_attributes_primary_only_to_latest_used(api_client) -> None:
+    """P3-6：多条 USED 历史邀请仅 used_at 最近一条显示当前主账号，避免过度归因。"""
+
+    client, factory = api_client
+    headers = _admin_headers(client)
+    with factory() as db:
+        company = create_company(db, _company_body("SH-P36-USED"))
+        _, raw, _ = create_company_invite(db, company.id, None, 24)
+        bind_wechat_by_invite(db, raw, "openid-p3-06", "李老板")
+        db.commit()
+        # 换绑前的历史行：used_at 早于当前主账号的绑定时间
+        db.add(
+            InviteToken(
+                token_hash=hash_token("p3-06-legacy-used-token-0001"),
+                company_id=company.id,
+                expires_at=utcnow() + timedelta(hours=1),
+                used_at=utcnow() - timedelta(days=3),
+            )
+        )
+        db.commit()
+        company_id = company.id
+
+    items = client.get(f"/api/v1/auth/companies/{company_id}/invites", headers=headers).json()["data"]["items"]
+    used_rows = [item for item in items if item["status"] == "USED"]
+    named = [item for item in used_rows if item["primary_account_name"]]
+    assert len(used_rows) == 2
+    assert len(named) == 1 and named[0]["primary_account_name"] == "李老板"
+    # 关联当前主账号的必须是 used_at 最近的一条（绑定流刚消费的邀请），不是历史行
+    legacy_used_at = max(item["used_at"] for item in used_rows if item not in named)
+    assert named[0]["used_at"] > legacy_used_at
+
+
+def test_validate_invite_rejects_mismatched_token_and_id(db) -> None:
+    """I13：双参同给且指向不同邀请时，validate 与 consume 同口径拒绝，不再 raw 静默优先。"""
+
+    company = create_company(db, _company_body("SH-I13-VALID"))
+    first = _legacy_invite(db, company.id, "i13-first-raw-token-0001")
+    second = _legacy_invite(db, company.id, "i13-second-raw-token-0002")
+
+    # 单参与双参一致：都解析到同一条邀请
+    assert validate_invite(db, raw_token="i13-first-raw-token-0001").id == first.id
+    assert validate_invite(db, invite_id=first.id).id == first.id
+    assert validate_invite(db, raw_token="i13-first-raw-token-0001", invite_id=first.id).id == first.id
+    # 双参指向不同邀请：与 _consume_invite 的 AND 语义对齐，显式 AUTH_INVITE_INVALID
+    with pytest.raises(AppError) as exc:
+        validate_invite(db, raw_token="i13-first-raw-token-0001", invite_id=second.id)
+    assert exc.value.code == "AUTH_INVITE_INVALID"
+    with pytest.raises(AppError) as exc:
+        validate_invite(db, raw_token="not-a-real-token", invite_id=first.id)
+    assert exc.value.code == "AUTH_INVITE_INVALID"
+
+
+def test_confirm_start_rate_limits_repeated_anonymous_requests(api_client) -> None:
+    """I15：匿名 confirm-start 按 invite+IP 限流，持有效邀请也不能循环刷审计写入。"""
+
+    client, factory = api_client
+    with factory() as db:
+        company = create_company(db, _company_body("SH-I15-RATE"))
+        _, raw, _ = create_company_invite(db, company.id, None, 24)
+        db.commit()
+        invite = raw
+
+    codes = [
+        client.post(
+            "/api/v1/auth/invites/confirm-start",
+            json={"invite": invite, "return_url": "/h5/#/home"},
+            headers={"x-real-ip": "203.0.113.15"},
+        ).json()["code"]
+        for _ in range(11)
+    ]
+    # 前 10 次正常处理（本用例的邀请有效，应全部 OK），第 11 次触发限流
+    assert codes[:10] == ["OK"] * 10
+    assert codes[10] == "AUTH_RATE_LIMITED"
+    # 换源 IP 不受前一个桶拖累：限流键是 invite+IP 双键
+    fresh = client.post(
+        "/api/v1/auth/invites/confirm-start",
+        json={"invite": invite, "return_url": "/h5/#/home"},
+        headers={"x-real-ip": "203.0.113.99"},
+    )
+    assert fresh.json()["code"] == "OK"
+

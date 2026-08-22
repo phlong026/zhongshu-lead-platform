@@ -42,14 +42,22 @@ const AUTH_ERROR_META={
   AUTH_COMPANY_ALREADY_BOUND:['公司已完成绑定','该公司已绑定微信主账号，无需重复绑定；如遇账号异常请联系平台。'],
   AUTH_INVITE_INVALID:['邀请已失效','邀请不存在、已过期、被撤销或已被使用，请联系平台重新获取专属邀请链接。'],
   AUTH_ACCOUNT_DISABLED:['账号已停用','该账号已被平台停用，如有疑问请联系平台。'],
+  WECHAT_NOT_CONFIGURED:['微信登录暂不可用','平台的微信登录通道尚未就绪，请稍后通过原邀请链接重试。'],
+  WECHAT_OAUTH_UNAVAILABLE:['微信登录暂不可用','微信登录通道暂时不可用，请稍后通过原邀请链接重试。'],
+  WECHAT_OAUTH_FAILED:['微信授权失败','本次微信授权未能完成，请稍后通过原邀请链接重试。'],
   AUTH_FAILED:['绑定失败','绑定过程出现问题，请稍后重试；多次失败请联系平台重新获取邀请链接。']
 };
 // P1-04：绑定类失败统一落到 auth-error 状态页，只按错误码展示固定文案，
 // 不渲染后端 message，页面上也不出现 token / openid / 手机号等敏感信息。
 function renderAuthError(){
+  // P3-5：按错误类型分化 CTA——停用类错误只能线下联系平台解决，「重新获取邀请」
+  // 是错误指引且点击会丢弃原 invite；已绑定类直接回首页重登。
+  const noCta=new Set(['AUTH_ACCOUNT_DISABLED','AUTH_COMPANY_DISABLED','WECHAT_NOT_CONFIGURED','WECHAT_OAUTH_UNAVAILABLE','WECHAT_OAUTH_FAILED']);const homeCta=new Set(['AUTH_COMPANY_ALREADY_BOUND']);
   const params=new URLSearchParams(location.hash.split('?')[1]||''); const code=params.get('code')||'AUTH_FAILED';
   const meta=AUTH_ERROR_META[code]||AUTH_ERROR_META.AUTH_FAILED;
-  app.innerHTML=`<section class="login-page"><div class="login-logo"><img src="./logo.png" alt="合家美宅"><h1>${esc(meta[0])}</h1><p>${esc(meta[1])}</p></div><div class="login-panel"><button class="btn btn-primary btn-block" data-route="login">重新获取邀请</button></div></section>`;
+  const cta=noCta.has(code)?'':homeCta.has(code)?'<button class="btn btn-primary btn-block" data-route="home">返回首页</button>':'<button class="btn btn-primary btn-block" data-route="login">重新获取邀请</button>';
+  // P3-4：注入统一走 zsSetSafeHtml，与同文件其余渲染收敛为单一机制
+  zsSetSafeHtml(app, `<section class="login-page"><div class="login-logo"><img src="./logo.png" alt="合家美宅"><h1>${esc(meta[0])}</h1><p>${esc(meta[1])}</p></div><div class="login-panel">${cta}</div></section>`);
   bindRoutes();
 }
 function renderLogin(){

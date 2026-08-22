@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from threading import Barrier
 
 from sqlalchemy import func, select
 
@@ -151,18 +152,31 @@ def test_file_token_cannot_be_reused_by_second_user_in_same_company(api_client) 
     assert response.json()["code"] == "FILE_TOKEN_MISMATCH"
 
 
-def test_invite_consumption_is_atomic_under_concurrent_callbacks(api_client) -> None:
+def test_parallel_invite_callbacks_still_consume_exactly_once(api_client) -> None:
+    """I20：并行回调的「一次性消费」不变量（SQLite 串行化口径）。
+
+    SQLite 上 with_for_update 是 no-op，本测试对行锁语义没有证据价值；
+    锁语义（原子消费、创建/绑定交叉竞争、并发重复撤销）由
+    test_invite_binding_postgres_concurrency_e2e.py 在一次性 PostgreSQL
+    上经 run_v12_e2e 执行守护。这里锁定的是调度无关的不变量：无论两个
+    回调以何种顺序交错，恰好一次成功绑定、一次明确拒绝、只落一个身份。
+    """
+
     _, factory = api_client
     with factory() as db:
-        # SH-DEMO 已绑定主账号，改用未绑定的独立公司验证邀请一次性
+        # SH-DEMO 已绑定主账号，改用未绑定的独立公司验证邀请一次性消费。
         company = Company(code="SEC-INVITE", name="邀请并发安全公司", status="ACTIVE")
         db.add(company)
         db.flush()
         _, raw, _ = create_company_invite(db, company.id, None, 24)
         db.commit()
 
+    barrier = Barrier(2)
+
     def bind(index: int) -> tuple[str, str | None]:
         with factory() as db:
+            # 两连接全部就绪后再发起，排除「一个完全结束后另一个才开始」的假并发。
+            barrier.wait(timeout=10)
             try:
                 user, _ = bind_wechat_by_invite(
                     db,
@@ -177,7 +191,8 @@ def test_invite_consumption_is_atomic_under_concurrent_callbacks(api_client) -> 
                 return exc.code, None
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(bind, range(2)))
+        futures = [pool.submit(bind, index) for index in range(2)]
+        results = [future.result() for future in futures]
 
     assert [code for code, _ in results].count("OK") == 1
     assert [code for code, _ in results].count("AUTH_INVITE_INVALID") == 1

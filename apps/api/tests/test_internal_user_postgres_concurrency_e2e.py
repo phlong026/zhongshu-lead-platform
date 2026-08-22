@@ -6,7 +6,7 @@ from threading import Barrier
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, inspect, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from apps.api.src.core.errors import AppError
@@ -24,6 +24,10 @@ def test_postgres_serializes_concurrent_superadmin_demotions() -> None:
     if engine.dialect.name != "postgresql":
         engine.dispose()
         pytest.skip("PostgreSQL advisory lock coverage only")
+    # I21：与邀请并发专项同口径——不建 schema，空库/未迁移时显式 skip。
+    if "users" not in inspect(engine).get_table_names():
+        engine.dispose()
+        pytest.skip("database schema not initialized; run scripts/run_v12_e2e.py")
     factory = sessionmaker(
         bind=engine,
         autoflush=False,

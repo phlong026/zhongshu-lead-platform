@@ -15,7 +15,7 @@ from threading import Barrier
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, func, select, update
+from sqlalchemy import create_engine, func, inspect, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from apps.api.src.core.errors import AppError
@@ -33,6 +33,12 @@ def _postgres_factory():
     if engine.dialect.name != "postgresql":
         engine.dispose()
         pytest.skip("invite binding row-lock coverage is PostgreSQL only")
+    # I21：本文件不建 schema 不 seed，可运行性依赖 lifecycle e2e 先跑
+    # （run_v12_e2e 的 TARGET_TESTS 顺序契约）。对未迁移的空库显式 skip，
+    # 而不是半途 ValueError 让整批 e2e 报错。
+    if "invite_tokens" not in inspect(engine).get_table_names():
+        engine.dispose()
+        pytest.skip("database schema not initialized; run scripts/run_v12_e2e.py")
     factory = sessionmaker(
         bind=engine,
         autoflush=False,

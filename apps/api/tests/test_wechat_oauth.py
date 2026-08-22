@@ -637,3 +637,158 @@ def test_confirm_start_state_ttl_is_tightened(api_client) -> None:
     )
     assert int(payload["exp"]) - int(payload["iat"]) == 5 * 60
 
+
+def test_expired_bind_intent_state_is_rejected_at_callback(api_client, monkeypatch) -> None:
+    """I17：过期的绑定意图 state 在 callback 按状态页语义拒绝，不得回退裸 JSON 或落库。"""
+
+    client, factory = api_client
+    with factory() as db:
+        company = _company(db)
+        _, raw, _ = create_company_invite(db, company.id, None, 24)
+        db.commit()
+    confirm = client.post(
+        "/api/v1/auth/invites/confirm-start",
+        json={"invite": raw, "return_url": "/h5/#/home"},
+    )
+    assert confirm.status_code == 200, confirm.text
+    payload = decode_signed_state(
+        _state_from_authorization_url(confirm.json()["data"]["authorization_url"]),
+        purpose="wechat-oauth-bind",
+    )
+
+    # 同样的意图字段，但用已过期的签名（exp 在过去）：签名合法，仅时间窗失效。
+    expired_state = create_signed_state(
+        {
+            "invite_id": payload["invite_id"],
+            "company_id": payload["company_id"],
+            "binding_confirmed": True,
+            "return_url": "/h5/#/home",
+        },
+        purpose="wechat-oauth-bind",
+        expires_minutes=-1,
+    )
+    monkeypatch.setattr(
+        WechatOAuthClient,
+        "exchange_code",
+        lambda self, code: WechatOAuthIdentity(openid="i17-expired-openid", unionid=None, nickname="过期state用户"),
+    )
+    response = client.get(
+        "/api/v1/auth/wechat/callback",
+        params={"code": "i17-code", "state": expired_state},
+        follow_redirects=False,
+    )
+    assert response.status_code == 302, response.text
+    assert response.headers["location"] == "/h5/#/auth-error?code=AUTH_OAUTH_STATE_INVALID"
+
+    with factory() as db:
+        leaked = db.scalar(select(WechatIdentity).where(WechatIdentity.openid == "i17-expired-openid"))
+        assert leaked is None, "过期 state 不得完成绑定或落库"
+
+
+
+def test_callback_upstream_failure_keeps_specific_code_and_alerts(api_client, monkeypatch, caplog) -> None:
+    """P2-1：微信通道故障码显式透传到 H5（不再折叠为 AUTH_FAILED），
+    失败审计归 failure_class=upstream，服务端落 error 级结构化日志
+    （codex #3：日志本身必须被断言，防告警被静默删除或降级）。"""
+
+    import logging as _logging
+
+    client, factory = api_client
+
+    def _unavailable(self, code):
+        raise AppError("WECHAT_OAUTH_UNAVAILABLE", "微信授权服务暂时不可用", 502)
+
+    monkeypatch.setattr(WechatOAuthClient, "exchange_code", _unavailable)
+    start = client.get("/api/v1/auth/wechat/start", follow_redirects=False)
+    valid_state = _state_from_authorization_url(start.headers["location"])
+    with caplog.at_level(_logging.ERROR, logger="zhongshu.auth"):
+        response = client.get(
+            "/api/v1/auth/wechat/callback",
+            params={"code": "p21-down", "state": valid_state},
+            follow_redirects=False,
+        )
+    assert response.status_code == 302, response.text
+    assert (
+        response.headers["location"] == "/h5/#/auth-error?code=WECHAT_OAUTH_UNAVAILABLE"
+    ), "通道故障码必须显式透传，供 H5 给出稍后重试指引"
+
+    channel_errors = [
+        record for record in caplog.records if record.name == "zhongshu.auth" and record.levelno == _logging.ERROR
+    ]
+    assert channel_errors, "通道故障必须留下 error 级日志供健康度告警"
+    assert channel_errors[0].reason_code == "WECHAT_OAUTH_UNAVAILABLE"
+    assert channel_errors[0].status_code == 502
+
+    with factory() as db:
+        audit_row = db.scalar(
+            select(AuditLog).where(AuditLog.action == "WECHAT_OAUTH_CALLBACK_FAILED")
+        )
+        assert audit_row is not None
+        assert audit_row.metadata_json.get("reason_code") == "WECHAT_OAUTH_UNAVAILABLE"
+        assert audit_row.metadata_json.get("failure_class") == "upstream"
+
+
+def test_callback_wechat_failure_details_never_leak(api_client, monkeypatch, caplog) -> None:
+    """P2-1/codex #4：携带 errcode/errmsg details 的 WECHAT_OAUTH_FAILED 是
+    真实泄露面——URL、审计 metadata、日志三处都不得出现微信原始 details。"""
+
+    import logging as _logging
+
+    client, factory = api_client
+
+    def _failed_with_details(self, code):
+        raise AppError(
+            "WECHAT_OAUTH_FAILED",
+            "微信授权失败",
+            502,
+            {"errcode": 40029, "errmsg": "invalid code, hint: [secret-hint]"},
+        )
+
+    monkeypatch.setattr(WechatOAuthClient, "exchange_code", _failed_with_details)
+    start = client.get("/api/v1/auth/wechat/start", follow_redirects=False)
+    valid_state = _state_from_authorization_url(start.headers["location"])
+    with caplog.at_level(_logging.ERROR, logger="zhongshu.auth"):
+        response = client.get(
+            "/api/v1/auth/wechat/callback",
+            params={"code": "p21-raw", "state": valid_state},
+            follow_redirects=False,
+        )
+    assert response.status_code == 302, response.text
+    # 白名单码透传的是枚举本身；details（errcode/errmsg）不得拼进 URL。
+    assert response.headers["location"] == "/h5/#/auth-error?code=WECHAT_OAUTH_FAILED"
+    assert "40029" not in response.headers["location"]
+    assert "secret-hint" not in response.headers["location"]
+
+    dumped_logs = caplog.text
+    assert "secret-hint" not in dumped_logs and "40029" not in dumped_logs, "日志不得携带微信原始 details"
+
+    with factory() as db:
+        audit_row = db.scalar(
+            select(AuditLog).where(AuditLog.action == "WECHAT_OAUTH_CALLBACK_FAILED")
+        )
+        assert audit_row is not None
+        audit_text = str(audit_row.metadata_json)
+        assert "secret-hint" not in audit_text and "40029" not in audit_text, "审计不得携带微信原始 details"
+
+
+def test_callback_unknown_error_code_collapses_to_auth_failed(api_client, monkeypatch) -> None:
+    """P2-1/P3-2 回落负例：白名单外的任意异常码一律归并 AUTH_FAILED，
+    异常细节（如微信 errcode/errmsg）不得拼进重定向 URL。"""
+
+    client, _ = api_client
+
+    def _weird(self, code):
+        raise AppError("SOME_UNMAPPED_FAULT", "内部细节 message", 500, {"errcode": 40029})
+
+    monkeypatch.setattr(WechatOAuthClient, "exchange_code", _weird)
+    start = client.get("/api/v1/auth/wechat/start", follow_redirects=False)
+    valid_state = _state_from_authorization_url(start.headers["location"])
+    response = client.get(
+        "/api/v1/auth/wechat/callback",
+        params={"code": "p21-weird", "state": valid_state},
+        follow_redirects=False,
+    )
+    assert response.status_code == 302, response.text
+    assert response.headers["location"] == "/h5/#/auth-error?code=AUTH_FAILED"
+    assert "SOME_UNMAPPED_FAULT" not in response.headers["location"]
+    assert "40029" not in response.headers["location"]

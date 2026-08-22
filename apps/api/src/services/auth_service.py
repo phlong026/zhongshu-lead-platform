@@ -316,6 +316,12 @@ def list_company_invites(db: Session, company_id: str) -> list[dict[str, Any]]:
     if company.primary_user_id:
         owner = db.get(User, company.primary_user_id)
         primary_account_name = owner.display_name if owner else None
+    # P3-6：多条 USED 历史邀请都显示当前主账号会过度归因（换绑后旧邀请并非
+    # 当前账号使用）；仅 used_at 最近的一条关联当前主账号，其余保持 None。
+    latest_used_id = None
+    used_invites = [invite for invite, _ in rows if invite.used_at is not None]
+    if used_invites:
+        latest_used_id = max(used_invites, key=lambda item: as_utc(item.used_at)).id
     items: list[dict[str, Any]] = []
     for invite, creator_name in rows:
         if invite.used_at is not None:
@@ -335,7 +341,7 @@ def list_company_invites(db: Session, company_id: str) -> list[dict[str, Any]]:
                 "expires_at": as_utc(invite.expires_at),
                 "used_at": as_utc(invite.used_at),
                 "revoked_at": as_utc(invite.revoked_at),
-                "primary_account_name": primary_account_name if status == "USED" else None,
+                "primary_account_name": primary_account_name if invite.id == latest_used_id else None,
                 # P2-01：发出时的对象快照原样返回；迁移前的存量行无快照即为
                 # None，前端显示「未记录」——与 P1-02 一样不用当前值冒充快照。
                 "invitee_name": invite.invitee_name_snapshot,
@@ -358,8 +364,19 @@ def validate_invite(
         invite = db.scalar(
             select(InviteToken).where(InviteToken.token_hash == hash_token(raw_token))
         )
-    elif invite_id is not None:
-        invite = db.get(InviteToken, invite_id)
+        # I13：与 _consume_invite 的 AND 语义对齐——显式给出的 token 解析不到
+        # 邀请时直接拒绝，不得被 invite_id 兜底救回。
+        if invite is None:
+            raise AppError("AUTH_INVITE_INVALID", "邀请已失效，请联系平台", 400)
+    if invite_id is not None:
+        invite_by_id = db.get(InviteToken, invite_id)
+        # I13：双参同给时与 _consume_invite 的 AND 语义对齐——必须指向同一条
+        # 邀请，不再让 raw 静默优先（validate 与 consume 的双参行为不再分裂）。
+        if invite is not None:
+            if invite_by_id is None or invite_by_id.id != invite.id:
+                raise AppError("AUTH_INVITE_INVALID", "邀请已失效，请联系平台", 400)
+        else:
+            invite = invite_by_id
     now = utcnow()
     invite_expires_at = as_utc(invite.expires_at) if invite else None
     if not invite or invite.revoked_at or invite.used_at or not invite_expires_at or invite_expires_at <= now:
@@ -500,6 +517,8 @@ def login_or_bind_wechat(
 
 
 def bind_wechat_by_invite(db: Session, raw_token: str, openid: str, nickname: str) -> tuple[User, str]:
+    """I13：显式测试缝——生产路由已全部走 invite_id；raw_token 通道仅为存量
+    哈希邀请（P0-06 前）与测试保留，行为与 invite_id 通道完全同构。"""
     return login_or_bind_wechat(db, openid=openid, nickname=nickname, invite_token=raw_token)
 
 
