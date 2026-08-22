@@ -71,7 +71,8 @@ def _seed_cross_tenant_graph(factory) -> dict[str, str | int]:
             role_code="FRANCHISE_OWNER",
             company_id=attacker_company.id,
         )
-        attacker_company.primary_user_id = attacker_user.id
+        # 不设置 primary_user_id：攻击方公司保持可发邀请状态，
+        # 供跨公司绑定负例使用（已绑定主账号的公司拒绝创建邀请）。
 
         now = datetime.now(timezone.utc)
         phone = "13900139991"
@@ -488,29 +489,52 @@ def test_oauth_state_redirect_invite_replay_and_cross_company_binding_are_reject
     assert expired.json()["code"] == "AUTH_OAUTH_STATE_INVALID"
 
     with factory() as db:
-        target_invite, target_raw = create_company_invite(
+        # 本用例聚焦邀请链路：目标公司须处于未绑定主账号状态
+        target_company = db.get(Company, graph["target_company_id"])
+        assert target_company is not None
+        target_company.primary_user_id = None
+        _, target_raw, _ = create_company_invite(
             db, str(graph["target_company_id"]), None, 24
         )
-        attacker_invite, attacker_raw = create_company_invite(
+        _, attacker_raw, _ = create_company_invite(
             db, str(graph["attacker_company_id"]), None, 24
         )
         db.commit()
-        assert target_invite.id and attacker_invite.id
 
+    def _confirm_state(raw_invite: str) -> str:
+        confirm = client.post(
+            "/api/v1/auth/invites/confirm-start",
+            json={"invite": raw_invite},
+        )
+        assert confirm.status_code == 200, confirm.text
+        return parse_qs(
+            urlparse(confirm.json()["data"]["authorization_url"]).query
+        )["state"][0]
+
+    first_state = _confirm_state(target_raw)
     first = client.post(
         "/api/v1/auth/wechat/mock-callback",
         json={
-            "invite_token": target_raw,
+            "state": first_state,
             "openid": "security-openid-001",
             "nickname": "安全微信用户",
         },
     )
     assert first.status_code == 200, first.text
 
+    # 已消费的邀请不能再发起绑定确认
+    replay_confirm = client.post(
+        "/api/v1/auth/invites/confirm-start",
+        json={"invite": target_raw},
+    )
+    assert replay_confirm.status_code == 400
+    assert replay_confirm.json()["code"] == "AUTH_INVITE_INVALID"
+
+    # 重放同一确认意图换第二个 openid：邀请已消费，拒绝
     replay = client.post(
         "/api/v1/auth/wechat/mock-callback",
         json={
-            "invite_token": target_raw,
+            "state": first_state,
             "openid": "security-openid-002",
             "nickname": "重放攻击",
         },
@@ -521,13 +545,53 @@ def test_oauth_state_redirect_invite_replay_and_cross_company_binding_are_reject
     cross_company = client.post(
         "/api/v1/auth/wechat/mock-callback",
         json={
-            "invite_token": attacker_raw,
+            "state": _confirm_state(attacker_raw),
             "openid": "security-openid-001",
             "nickname": "跨公司绑定攻击",
         },
     )
     assert cross_company.status_code == 409
     assert cross_company.json()["code"] == "AUTH_WECHAT_BOUND_OTHER_COMPANY"
+
+
+def test_mock_callback_without_confirmation_intent_is_rejected(api_client) -> None:
+    client, _ = api_client
+    # 篡改签名的 state 不得通过校验
+    valid_state = create_signed_state(
+        {
+            "invite_id": "forged-invite",
+            "company_id": "forged-company",
+            "binding_confirmed": True,
+            "return_url": "/h5/#/home",
+        },
+        purpose="wechat-oauth-bind",
+    )
+    tampered_state = valid_state[:-1] + ("A" if valid_state[-1] != "A" else "B")
+    tampered = client.post(
+        "/api/v1/auth/wechat/mock-callback",
+        json={
+            "state": tampered_state,
+            "openid": "security-forged-openid",
+            "nickname": "伪造确认意图",
+        },
+    )
+    assert tampered.status_code == 400
+    assert tampered.json()["code"] == "AUTH_OAUTH_STATE_INVALID"
+
+    # legacy purpose 的 state 只允许已绑定用户登录，不允许触发首次绑定
+    legacy_state = create_signed_state(
+        {"invite": None, "return_url": "/h5/#/home"}, purpose="wechat-oauth"
+    )
+    legacy = client.post(
+        "/api/v1/auth/wechat/mock-callback",
+        json={
+            "state": legacy_state,
+            "openid": "security-unbound-openid",
+            "nickname": "未绑定用户",
+        },
+    )
+    assert legacy.status_code == 403
+    assert legacy.json()["code"] == "AUTH_WECHAT_NOT_BOUND"
 
 
 def test_points_idempotency_negative_balance_and_privilege_boundaries(api_client) -> None:

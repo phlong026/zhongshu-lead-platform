@@ -7,10 +7,6 @@ function safeJson(value, fallback = {}) {
   try { return JSON.parse(value || 'null') || fallback; } catch { return fallback; }
 }
 
-function currentReturnUrl() {
-  return `${location.pathname}${location.hash || '#/home'}`;
-}
-
 function ensureNetworkBanner() {
   let banner = document.querySelector('#h5-network-banner');
   if (navigator.onLine) {
@@ -61,19 +57,8 @@ window.fetch = async function enhancedFetch(input, init = {}) {
   }
 };
 
-function patchWechatLogin() {
-  const button = document.querySelector('#wechat-login');
-  if (!button || button.dataset.returnPatched === '1') return;
-  button.dataset.returnPatched = '1';
-  button.onclick = () => {
-    const params = new URLSearchParams(location.hash.split('?')[1] || '');
-    const invite = params.get('invite') || '';
-    const returnUrl = currentReturnUrl();
-    const query = new URLSearchParams({ return_url: returnUrl });
-    if (invite) query.set('invite', invite);
-    location.href = `${H5_API_PREFIX}/auth/wechat/start?${query.toString()}`;
-  };
-}
+// P0-04/H3：#wechat-login 的跳转逻辑已收敛到 app.js 的 bindWechatLogin
+// （POST /auth/invites/confirm-start），增强层不得再覆盖该按钮的事件绑定。
 
 function renderFileSummary(input, selector) {
   const target = document.querySelector(selector);
@@ -154,7 +139,6 @@ function patchLowPointsNotice() {
 }
 
 function patchPage() {
-  patchWechatLogin();
   patchReturnForm();
   patchLowPointsNotice();
 }

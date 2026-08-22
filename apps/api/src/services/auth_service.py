@@ -222,24 +222,88 @@ def authenticate_internal(db: Session, username: str, password: str) -> Internal
     return InternalAuthResult(user=user, token=token, lock_released=lock_released)
 
 
-def create_company_invite(db: Session, company_id: str, created_by: str | None, expires_hours: int) -> tuple[InviteToken, str]:
-    company = db.get(Company, company_id)
-    if not company or company.status == "DISABLED":
+def create_company_invite(
+    db: Session,
+    company_id: str,
+    created_by: str | None,
+    expires_hours: int,
+) -> tuple[InviteToken, str, list[str]]:
+    """Create the single valid invite for a company (P0-06).
+
+    The SELECT ... FOR UPDATE serializes concurrent creations on PostgreSQL
+    (no-op on SQLite), so revoking previous invites and inserting the new one
+    happen under the company row lock. Returns the invite, its raw token, and
+    the ids of invites revoked in the same transaction.
+    """
+
+    company = db.execute(
+        select(Company).where(Company.id == company_id).with_for_update()
+    ).scalar_one_or_none()
+    if company is None:
         raise AppError("COMPANY_NOT_AVAILABLE", "加盟商公司不存在或已停用", 404)
+    if company.status != "ACTIVE":
+        raise AppError("AUTH_COMPANY_DISABLED", "加盟商公司不可用", 403)
+    if company.primary_user_id:
+        raise AppError("AUTH_COMPANY_ALREADY_BOUND", "该公司已绑定微信主账号，无需重复邀请", 409)
+    now = utcnow()
+    superseded_ids = [
+        row.id
+        for row in db.execute(
+            update(InviteToken)
+            .where(
+                InviteToken.company_id == company_id,
+                InviteToken.revoked_at.is_(None),
+                InviteToken.used_at.is_(None),
+                InviteToken.expires_at > now,
+            )
+            .values(revoked_at=now)
+            .returning(InviteToken.id)
+        ).all()
+    ]
+    # 带显式 RETURNING 的 UPDATE 不会回填 session 内对象，
+    # 统一过期后重读，与 _consume_invite 的同步策略一致。
+    if superseded_ids:
+        db.expire_all()
     raw = generate_token(32)
     invite = InviteToken(
         token_hash=hash_token(raw),
         company_id=company_id,
         created_by=created_by,
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=expires_hours),
+        expires_at=now + timedelta(hours=expires_hours),
     )
     db.add(invite)
     db.flush()
-    return invite, raw
+    return invite, raw, superseded_ids
 
 
-def _validate_invite(db: Session, raw_token: str) -> InviteToken:
-    invite = db.scalar(select(InviteToken).where(InviteToken.token_hash == hash_token(raw_token)))
+def build_invite_copy_text(
+    owner_name: str | None,
+    company_name: str | None,
+    url: str,
+    expires_at: str,
+) -> str:
+    """Assemble the admin-copyable invite message (pure function, P0-01)."""
+
+    greeting = f"{owner_name}，您好" if owner_name else "您好"
+    company_label = company_name or "加盟商"
+    return f"{greeting}：这是【{company_label}】的微信绑定邀请，请在微信内打开：{url}，有效期至：{expires_at}"
+
+
+def validate_invite(
+    db: Session,
+    *,
+    raw_token: str | None = None,
+    invite_id: str | None = None,
+) -> InviteToken:
+    """Read-only invite validation without consuming it."""
+
+    invite = None
+    if raw_token is not None:
+        invite = db.scalar(
+            select(InviteToken).where(InviteToken.token_hash == hash_token(raw_token))
+        )
+    elif invite_id is not None:
+        invite = db.get(InviteToken, invite_id)
     now = utcnow()
     invite_expires_at = as_utc(invite.expires_at) if invite else None
     if not invite or invite.revoked_at or invite.used_at or not invite_expires_at or invite_expires_at <= now:
@@ -252,8 +316,9 @@ def _validate_invite(db: Session, raw_token: str) -> InviteToken:
 
 def _consume_invite(
     db: Session,
-    raw_token: str,
     *,
+    raw_token: str | None = None,
+    invite_id: str | None = None,
     expected_company_id: str | None = None,
 ) -> InviteToken:
     """Atomically consume a one-time invite.
@@ -262,9 +327,16 @@ def _consume_invite(
     SQLite. Exactly one transaction can transition used_at from NULL.
     """
 
+    matchers = []
+    if raw_token is not None:
+        matchers.append(InviteToken.token_hash == hash_token(raw_token))
+    if invite_id is not None:
+        matchers.append(InviteToken.id == invite_id)
+    if not matchers:
+        raise AppError("AUTH_INVITE_INVALID", "邀请已失效，请联系平台", 400)
     now = utcnow()
     filters = [
-        InviteToken.token_hash == hash_token(raw_token),
+        *matchers,
         InviteToken.revoked_at.is_(None),
         InviteToken.used_at.is_(None),
         InviteToken.expires_at > now,
@@ -297,6 +369,8 @@ def login_or_bind_wechat(
     unionid: str | None = None,
     nickname: str | None = None,
     invite_token: str | None = None,
+    invite_id: str | None = None,
+    expected_company_id: str | None = None,
 ) -> tuple[User, str]:
     identity = db.scalar(select(WechatIdentity).where(WechatIdentity.openid == openid))
     if identity:
@@ -306,20 +380,27 @@ def login_or_bind_wechat(
         company = db.get(Company, user.company_id) if user.company_id else None
         if not company or company.status != "ACTIVE":
             raise AppError("AUTH_COMPANY_DISABLED", "加盟商公司不可用", 403)
-        if invite_token:
-            invite = _validate_invite(db, invite_token)
+        if invite_token or invite_id:
+            invite = validate_invite(db, raw_token=invite_token, invite_id=invite_id)
+            if expected_company_id and invite.company_id != expected_company_id:
+                raise AppError("AUTH_INVITE_INVALID", "邀请已失效，请联系平台", 400)
             if invite.company_id != company.id:
                 raise AppError("AUTH_WECHAT_BOUND_OTHER_COMPANY", "该微信已绑定其他加盟商公司", 409)
-            _consume_invite(db, invite_token, expected_company_id=company.id)
+            _consume_invite(db, raw_token=invite_token, invite_id=invite_id, expected_company_id=company.id)
         identity.unionid = unionid or identity.unionid
         identity.nickname = nickname or identity.nickname
         user.last_login_at = utcnow()
         token = create_access_token(user.id, user.session_version, role_codes_for_user(user), company.id)
         return user, token
 
-    if not invite_token:
+    if not invite_token and not invite_id:
         raise AppError("AUTH_WECHAT_NOT_BOUND", "该微信尚未绑定加盟商，请使用邀请链接进入", 403)
-    invite = _consume_invite(db, invite_token)
+    invite = _consume_invite(
+        db,
+        raw_token=invite_token,
+        invite_id=invite_id,
+        expected_company_id=expected_company_id,
+    )
     company = db.get(Company, invite.company_id)
     assert company is not None
     user = User(
@@ -332,7 +413,16 @@ def login_or_bind_wechat(
     db.flush()
     assign_role(db, user, "FRANCHISE_OWNER")
     db.add(WechatIdentity(openid=openid, unionid=unionid, nickname=nickname, user_id=user.id, subscribed=False))
-    company.primary_user_id = user.id
+    # P0-05 原子占用主账号：条件 UPDATE 保证并发下仅一个微信成为 primary。
+    # 占用失败时不手动 rollback——AppError 冒泡后由请求作用域 session.close()
+    # 隐式回滚整个事务（含邀请消费与用户创建），由 M2 计数断言锁定。
+    claimed = db.execute(
+        update(Company)
+        .where(Company.id == company.id, Company.primary_user_id.is_(None))
+        .values(primary_user_id=user.id)
+    ).rowcount
+    if not claimed:
+        raise AppError("AUTH_COMPANY_ALREADY_BOUND", "该公司已绑定微信主账号", 409)
     db.flush()
     token = create_access_token(user.id, user.session_version, role_codes_for_user(user), company.id)
     return user, token

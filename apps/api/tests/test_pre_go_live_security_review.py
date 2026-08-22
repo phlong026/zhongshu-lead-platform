@@ -154,9 +154,11 @@ def test_file_token_cannot_be_reused_by_second_user_in_same_company(api_client) 
 def test_invite_consumption_is_atomic_under_concurrent_callbacks(api_client) -> None:
     _, factory = api_client
     with factory() as db:
-        company = db.scalar(select(Company).where(Company.code == "SH-DEMO"))
-        assert company is not None
-        _, raw = create_company_invite(db, company.id, None, 24)
+        # SH-DEMO 已绑定主账号，改用未绑定的独立公司验证邀请一次性
+        company = Company(code="SEC-INVITE", name="邀请并发安全公司", status="ACTIVE")
+        db.add(company)
+        db.flush()
+        _, raw, _ = create_company_invite(db, company.id, None, 24)
         db.commit()
 
     def bind(index: int) -> tuple[str, str | None]:
