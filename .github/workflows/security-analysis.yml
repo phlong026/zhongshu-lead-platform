@@ -88,8 +88,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist/security
-          : > dist/security/semgrep.json
-          chmod 666 dist/security/semgrep.json
+          chmod 777 dist/security
           printf '%s\n' "$SEMGREP_IMAGE" > dist/security/semgrep-image-ref.txt
           set +e
           docker pull "$SEMGREP_IMAGE" > dist/security/semgrep-pull.txt 2>&1
@@ -100,7 +99,7 @@ jobs:
               -e SEMGREP_SEND_METRICS=off \
               -v "$PWD:/src:ro" \
               -v "$SEMGREP_RULES_DIR:/rules:ro" \
-              -v "$PWD/dist/security/semgrep.json:/tmp/semgrep.json:rw" \
+              -v "$PWD/dist/security:/out:rw" \
               "$SEMGREP_IMAGE" semgrep scan \
               --metrics off \
               --x-ignore-semgrepignore-files \
@@ -120,7 +119,7 @@ jobs:
               --exclude 'dist' \
               --exclude 'storage' \
               --json \
-              --output /tmp/semgrep.json \
+              --output /out/semgrep.json \
               . > dist/security/semgrep-console.txt 2>&1
             scan_code=$?
             docker run --rm "$SEMGREP_IMAGE" semgrep --version \
@@ -204,9 +203,8 @@ jobs:
             exit 0
           fi
 
-          : > dist/security/trivy-image.json
-          : > dist/security/sbom.cdx.json
-          chmod 666 dist/security/trivy-image.json dist/security/sbom.cdx.json
+          mkdir -p dist/security
+          chmod 777 dist/security
 
           set +e
           printf '%s\n' "$TRIVY_IMAGE" > dist/security/trivy-image-ref.txt
@@ -215,24 +213,24 @@ jobs:
           if [ "$pull_code" -eq 0 ]; then
             docker run --rm \
               -v "$PWD/dist/security/app-image.tar:/tmp/app-image.tar:ro" \
-              -v "$PWD/dist/security/trivy-image.json:/tmp/trivy-image.json:rw" \
+              -v "$PWD/dist/security:/out:rw" \
               "$TRIVY_IMAGE" image \
               --input /tmp/app-image.tar \
               --scanners vuln \
               --severity HIGH,CRITICAL \
               --list-all-pkgs \
               --format json \
-              --output /tmp/trivy-image.json \
+              --output /out/trivy-image.json \
               > dist/security/trivy-console.txt 2>&1
             vuln_code=$?
 
             docker run --rm \
               -v "$PWD/dist/security/app-image.tar:/tmp/app-image.tar:ro" \
-              -v "$PWD/dist/security/sbom.cdx.json:/tmp/sbom.cdx.json:rw" \
+              -v "$PWD/dist/security:/out:rw" \
               "$TRIVY_IMAGE" image \
               --input /tmp/app-image.tar \
               --format cyclonedx \
-              --output /tmp/sbom.cdx.json \
+              --output /out/sbom.cdx.json \
               >> dist/security/trivy-console.txt 2>&1
             sbom_code=$?
           else
