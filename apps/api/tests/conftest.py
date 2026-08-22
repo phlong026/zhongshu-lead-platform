@@ -12,6 +12,19 @@ from apps.api.src.core import auth_models, models  # noqa: F401
 from apps.api.src.services.rbac import seed_rbac
 
 
+@pytest.fixture(autouse=True)
+def _reset_process_local_rate_limiters():
+    """清空进程内限流/节流桶，避免同进程测试互相污染窗口计数（N8/N11）。"""
+
+    from apps.api.src.routers import auth as auth_router
+
+    auth_router._CONFIRM_START_BUCKETS.clear()
+    auth_router._CALLBACK_AUDIT_THROTTLE.clear()
+    yield
+    auth_router._CONFIRM_START_BUCKETS.clear()
+    auth_router._CALLBACK_AUDIT_THROTTLE.clear()
+
+
 @pytest.fixture()
 def db(tmp_path: Path) -> Session:
     engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}", connect_args={"check_same_thread": False})

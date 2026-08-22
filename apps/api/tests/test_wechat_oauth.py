@@ -981,3 +981,43 @@ def test_callback_rejections_leave_warning_log(api_client, monkeypatch, caplog) 
     assert warnings, "缺参拒绝必须留 warning 日志"
     assert warnings[0].reason_code == "AUTH_OAUTH_STATE_INVALID"
     assert warnings[0].flow == "unknown"
+
+
+def test_callback_failure_audit_is_throttled_per_ip_and_reason(api_client) -> None:
+    """N11：callback 失败审计按 IP+reason 节流——循环打坏 callback 不能把
+    审计表当垃圾场；首条审计必须落库，同键后续失败降级为日志留痕。"""
+
+    client, factory = api_client
+
+    # 同一客户端连打 5 次坏 state：state 验签失败，reason 恒定
+    for _ in range(5):
+        response = client.get(
+            "/api/v1/auth/wechat/callback",
+            params={"state": "garbage", "code": "x"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 302
+    with factory() as db:
+        rows = db.scalars(
+            select(AuditLog).where(AuditLog.action == "WECHAT_OAUTH_CALLBACK_FAILED")
+        ).all()
+        assert len(rows) == 1, "同 IP+同 reason 的重复失败只落首条审计"
+
+    # 不同 reason（有效 login state 但缺 code → AUTH_FAILED）是独立节流键
+    start = client.get("/api/v1/auth/wechat/start", follow_redirects=False)
+    valid_state = _state_from_authorization_url(start.headers["location"])
+    response = client.get(
+        "/api/v1/auth/wechat/callback",
+        params={"state": valid_state},
+        follow_redirects=False,
+    )
+    assert response.status_code == 302
+    with factory() as db:
+        rows = db.scalars(
+            select(AuditLog).where(AuditLog.action == "WECHAT_OAUTH_CALLBACK_FAILED")
+        ).all()
+        assert len(rows) == 2
+        assert {row.metadata_json.get("reason_code") for row in rows} == {
+            "AUTH_OAUTH_STATE_INVALID",
+            "AUTH_FAILED",
+        }

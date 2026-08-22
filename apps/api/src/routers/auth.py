@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 from datetime import datetime, timezone
@@ -37,33 +38,71 @@ logger = logging.getLogger("zhongshu.auth")
 
 
 def _request_ip(request: Request) -> str | None:
-    return request.headers.get("x-real-ip") or (request.client.host if request.client else None)
+    # N1：x-real-ip 只有在部署方显式声明"前方是会强制覆写该头的受信反代"
+    # 时才可信；默认取 TCP 对端地址，客户端伪造的头不能充当身份。
+    if settings.trust_proxy_headers:
+        forwarded = request.headers.get("x-real-ip")
+        if forwarded:
+            return forwarded
+    return request.client.host if request.client else None
 
 
 # I15：匿名 confirm-start 无认证无限流——持一条有效邀请即可循环刷审计写入
 # （审计表膨胀、写负载）。按 invite+IP 双键做进程内滑动窗口限流；短时重复
 # 确认的审计去重由该限流压制（每分钟至多 10 条），不再单独比对历史审计。
-_CONFIRM_START_BUCKETS: dict[tuple[str, str], list[float]] = {}
+# N8：键必须是定长哈希——原始 invite（16-128 字符垃圾串）直接作键会被
+# 桶容量攻击撑爆；清扫后仍达容量上限时 fail-closed 拒绝新键，窗口过期
+# 自动恢复，绝不让字典无界生长。
+_CONFIRM_START_BUCKETS: dict[str, list[float]] = {}
 _CONFIRM_START_WINDOW_SECONDS = 60.0
 _CONFIRM_START_MAX_PER_WINDOW = 10
+_CONFIRM_START_MAX_BUCKETS = 4096
 
 def _confirm_start_rate_limited(invite: str, ip: str | None) -> bool:
     now = time.monotonic()
-    # 惰性清理：桶数量越界时整体清扫过期项，避免长驻进程的键无限累积。
-    if len(_CONFIRM_START_BUCKETS) > 4096:
+    # 惰性清理：桶数量达上限时整体清扫过期项，避免长驻进程的键无限累积。
+    if len(_CONFIRM_START_BUCKETS) >= _CONFIRM_START_MAX_BUCKETS:
         for key, stamps in list(_CONFIRM_START_BUCKETS.items()):
             alive = [stamp for stamp in stamps if now - stamp < _CONFIRM_START_WINDOW_SECONDS]
             if alive:
                 _CONFIRM_START_BUCKETS[key] = alive
             else:
                 _CONFIRM_START_BUCKETS.pop(key, None)
-    key = (invite, ip or "unknown")
+        if len(_CONFIRM_START_BUCKETS) >= _CONFIRM_START_MAX_BUCKETS:
+            return True  # fail-closed：宁可短暂拒绝 confirm-start，也不无界扩张
+    key = hashlib.sha256(f"{invite}\x1f{ip or 'unknown'}".encode("utf-8")).hexdigest()
     hits = [stamp for stamp in _CONFIRM_START_BUCKETS.get(key, []) if now - stamp < _CONFIRM_START_WINDOW_SECONDS]
     if len(hits) >= _CONFIRM_START_MAX_PER_WINDOW:
         _CONFIRM_START_BUCKETS[key] = hits
         return True
     hits.append(now)
     _CONFIRM_START_BUCKETS[key] = hits
+    return False
+
+
+# N11：callback 失败审计按 IP+reason+根因异常类 节流——匿名 callback 无限
+# 流，攻击者循环打坏 state 可把审计表当垃圾场刷爆；首条审计落库，同键
+# 60s 内的重复失败降级为已有的 warning 日志（可观测不丢，写库有界）。
+# 根因异常类由服务端代码路径决定、客户端无法轮换；不同根因（如
+# IntegrityError 转译 vs 未知异常，均显示 AUTH_FAILED）各自保留审计。
+_CALLBACK_AUDIT_THROTTLE: dict[str, float] = {}
+_CALLBACK_AUDIT_THROTTLE_WINDOW_SECONDS = 60.0
+_CALLBACK_AUDIT_THROTTLE_MAX_KEYS = 4096
+
+def _callback_audit_throttled(ip: str | None, reason_code: str, exc: Exception) -> bool:
+    now = time.monotonic()
+    cause = type(exc.__cause__).__name__ if exc.__cause__ else "-"
+    key = hashlib.sha256(f"{ip or 'unknown'}\x1f{reason_code}\x1f{cause}".encode("utf-8")).hexdigest()
+    last = _CALLBACK_AUDIT_THROTTLE.get(key)
+    if last is not None and now - last < _CALLBACK_AUDIT_THROTTLE_WINDOW_SECONDS:
+        return True
+    if len(_CALLBACK_AUDIT_THROTTLE) >= _CALLBACK_AUDIT_THROTTLE_MAX_KEYS:
+        for stale_key, stamp in list(_CALLBACK_AUDIT_THROTTLE.items()):
+            if now - stamp >= _CALLBACK_AUDIT_THROTTLE_WINDOW_SECONDS:
+                _CALLBACK_AUDIT_THROTTLE.pop(stale_key, None)
+        if len(_CALLBACK_AUDIT_THROTTLE) >= _CALLBACK_AUDIT_THROTTLE_MAX_KEYS:
+            return False  # 审计是安全记录：键表满时宁可放行落库也不静默丢审计
+    _CALLBACK_AUDIT_THROTTLE[key] = now
     return False
 
 def _audit_unlock(db: Session, *, user_id: str | None, request: Request) -> None:
@@ -526,6 +565,9 @@ def _redirect_callback_failure(
     # 通道（含未配置）的故障，business 为绑定规则拒绝。
     try:
         db.rollback()
+        if _callback_audit_throttled(_request_ip(request), exc.code, exc):
+            # N11：同 IP+同 reason 的重复失败不重复落库，warning 日志已留痕。
+            return RedirectResponse(url=f"/h5/#/auth-error?code={error_code}", status_code=302)
         write_audit(
             db,
             principal=None,

@@ -573,22 +573,118 @@ def test_confirm_start_rate_limits_repeated_anonymous_requests(api_client) -> No
         db.commit()
         invite = raw
 
-    codes = [
+    responses = [
         client.post(
             "/api/v1/auth/invites/confirm-start",
             json={"invite": invite, "return_url": "/h5/#/home"},
             headers={"x-real-ip": "203.0.113.15"},
-        ).json()["code"]
+        )
         for _ in range(11)
     ]
-    # 前 10 次正常处理（本用例的邀请有效，应全部 OK），第 11 次触发限流
-    assert codes[:10] == ["OK"] * 10
-    assert codes[10] == "AUTH_RATE_LIMITED"
-    # 换源 IP 不受前一个桶拖累：限流键是 invite+IP 双键
-    fresh = client.post(
-        "/api/v1/auth/invites/confirm-start",
-        json={"invite": invite, "return_url": "/h5/#/home"},
-        headers={"x-real-ip": "203.0.113.99"},
-    )
-    assert fresh.json()["code"] == "OK"
+    # 前 10 次正常处理（本用例的邀请有效，应全部 OK），第 11 次触发限流；
+    # N11：限流必须是真 429，业务码不得挤进 200 信封。
+    assert [r.json()["code"] for r in responses[:10]] == ["OK"] * 10
+    assert responses[10].status_code == 429
+    assert responses[10].json()["code"] == "AUTH_RATE_LIMITED"
+
+
+def test_confirm_start_rate_limit_survives_x_real_ip_spoofing(api_client) -> None:
+    """N1：默认不信任代理头——轮换 x-real-ip 不能重置限流桶（真实直连场景）。"""
+
+    client, factory = api_client
+    with factory() as db:
+        company = create_company(db, _company_body("SH-N1-SPOOF"))
+        _, raw, _ = create_company_invite(db, company.id, None, 24)
+        db.commit()
+        invite = raw
+
+    for i in range(11):
+        resp = client.post(
+            "/api/v1/auth/invites/confirm-start",
+            json={"invite": invite, "return_url": "/h5/#/home"},
+            headers={"x-real-ip": f"198.51.100.{i}"},  # 每次伪造不同源 IP
+        )
+        if i < 10:
+            assert resp.json()["code"] == "OK"
+        else:
+            assert resp.status_code == 429, resp.text
+            assert resp.json()["code"] == "AUTH_RATE_LIMITED"
+
+
+def test_confirm_start_rate_limit_honors_proxy_ip_when_trusted(api_client, monkeypatch) -> None:
+    """N1：显式信任反代时，x-real-ip 才参与限流键（换头 = 换真实来源）。"""
+
+    import apps.api.src.routers.auth as auth_router
+
+    monkeypatch.setattr(auth_router.settings, "trust_proxy_headers", True)
+    client, factory = api_client
+    with factory() as db:
+        company = create_company(db, _company_body("SH-N1-TRUST"))
+        _, raw, _ = create_company_invite(db, company.id, None, 24)
+        db.commit()
+        invite = raw
+
+    def post(ip: str):
+        return client.post(
+            "/api/v1/auth/invites/confirm-start",
+            json={"invite": invite, "return_url": "/h5/#/home"},
+            headers={"x-real-ip": ip},
+        )
+
+    for _ in range(10):
+        assert post("203.0.113.15").json()["code"] == "OK"
+    assert post("203.0.113.15").status_code == 429
+    # 信任代理头时，反代注入的新 x-real-ip 是新桶，不受前一个 IP 拖累
+    assert post("203.0.113.99").json()["code"] == "OK"
+
+
+def test_confirm_start_rate_limit_recovers_after_window(api_client, monkeypatch) -> None:
+    """I15：滑窗过期后桶释放，正常请求恢复放行（限流不是永久封禁）。"""
+
+    import time as time_module
+
+    import apps.api.src.routers.auth as auth_router
+
+    monkeypatch.setattr(auth_router, "_CONFIRM_START_WINDOW_SECONDS", 3.0)
+    client, factory = api_client
+    with factory() as db:
+        company = create_company(db, _company_body("SH-I15-WIN"))
+        _, raw, _ = create_company_invite(db, company.id, None, 24)
+        db.commit()
+        invite = raw
+
+    def post():
+        return client.post(
+            "/api/v1/auth/invites/confirm-start",
+            json={"invite": invite, "return_url": "/h5/#/home"},
+        )
+
+    for _ in range(10):
+        assert post().json()["code"] == "OK"
+    assert post().status_code == 429
+    time_module.sleep(3.1)  # 越过被压缩的滑窗
+    assert post().json()["code"] == "OK"
+
+
+def test_confirm_start_buckets_are_bounded_and_fail_closed() -> None:
+    """N8：桶容量有硬上限，超限时 fail-closed 拒绝新键而不是无界扩张。"""
+
+    import time as time_module
+
+    import apps.api.src.routers.auth as auth_router
+
+    buckets = auth_router._CONFIRM_START_BUCKETS
+    buckets.clear()
+    try:
+        for i in range(auth_router._CONFIRM_START_MAX_BUCKETS):
+            buckets[f"filler:{i}"] = [time_module.monotonic()]
+        assert auth_router._confirm_start_rate_limited("fresh-invite-token-001", "203.0.113.7") is True
+        assert len(buckets) <= auth_router._CONFIRM_START_MAX_BUCKETS
+        # 桶内时间戳全部越过窗口后，清扫释放容量，新键恢复放行
+        stale = time_module.monotonic() - auth_router._CONFIRM_START_WINDOW_SECONDS - 1
+        for key in buckets:
+            buckets[key] = [stale]
+        assert auth_router._confirm_start_rate_limited("fresh-invite-token-001", "203.0.113.7") is False
+    finally:
+        buckets.clear()
 

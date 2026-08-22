@@ -68,6 +68,10 @@ class Settings(BaseSettings):
     legacy_write_enabled: bool = True
     first_followup_hours: int = 48
     trusted_hosts: str = "localhost,127.0.0.1,testserver"
+    # N1：仅当 API 确实部署在会强制覆写 x-real-ip 的受信反向代理之后时才
+    # 开启；默认关闭——直连或代理未覆写该头时，客户端伪造的头绝不能充当
+    # 客户端身份（限流键、审计 IP 均会被绕过/污染）。
+    trust_proxy_headers: bool = False
     auto_create_schema: bool = True
 
     @field_validator("object_storage_dir")
