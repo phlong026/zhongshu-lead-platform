@@ -85,8 +85,15 @@ def test_shared_primary_across_companies_is_reported(db) -> None:
     assert "SHARED_PRIMARY" in codes
     assert "PRIMARY_USER_COMPANY_MISMATCH" in codes
     assert not report.valid
-    shared = next(issue for issue in report.issues if issue["code"] == "SHARED_PRIMARY")
-    assert shared["details"]["company_ids"] == [first.id, second.id]
+    # group by 无 order by，company_ids 顺序不保证：按集合存在性断言，
+    # 不依赖返回顺序（合跑时 SQLite 查询计划与单跑不同）。
+    shared = [
+        issue
+        for issue in report.issues
+        if issue["code"] == "SHARED_PRIMARY"
+        and set(issue["details"]["company_ids"]) == {first.id, second.id}
+    ]
+    assert shared, "本测试造的跨公司共享主账号未被报告"
 
 
 def test_primary_without_identity_is_warning_only(db) -> None:
