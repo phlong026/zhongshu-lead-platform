@@ -798,7 +798,8 @@ def test_browser_entrypoints_load_safe_html_boundary_first() -> None:
         source = (root / relative).read_text(encoding="utf-8")
         assert source.count(sanitizer) == 1
         script_sources = re.findall(r'<script\b[^>]*\bsrc="([^"]+)"', source)
-        assert script_sources[0] == sanitizer
+        # P2-3：引用可带 ?v= 缓存版本参数——比较剥去版本后缀，递增不挂本测试。
+        assert script_sources[0].split("?")[0] == sanitizer
 
 
 def _write_cli_evidence(root: Path) -> tuple[list[str], Path]:

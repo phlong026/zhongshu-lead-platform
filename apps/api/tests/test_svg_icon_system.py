@@ -6,8 +6,8 @@ ADMIN = ROOT / "apps" / "admin" / "public"
 
 GLYPHS = set("⌂▤◈◉♙⇩☎✓↗♟⚙⌁＋≋↩◇◷!×‹›☰⌕?▶●↻▦→◆")
 ASSET_VERSION = "?v=20260820-clarity"
-# P2 整改批次递增的应用脚本缓存版本；svg-icon-system 共享资源未变更，保持原版本。
-APP_ASSET_VERSION = "?v=20260822-p2"
+# Phase03 整改批次（P3）递增的应用脚本缓存版本；svg-icon-system 共享资源未变更，保持原版本。
+APP_ASSET_VERSION = "?v=20260823-p3"
 COMPANY_PROFILE_ASSET_VERSION = "?v=20260820-company-profile"
 ADMIN_NAV_ASSET_VERSION = "?v=20260820-admin-nav"
 
