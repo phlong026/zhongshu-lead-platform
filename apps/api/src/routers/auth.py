@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Annotated
 
@@ -29,6 +30,7 @@ from ..services.notification_service import enqueue_outbox
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
+logger = logging.getLogger("zhongshu.auth")
 
 
 def _request_ip(request: Request) -> str | None:
@@ -99,6 +101,17 @@ def _resolve_binding_intent(state: str) -> tuple[str | None, str | None, str]:
 # I12：绑定预授权 state 的显式 TTL（分钟）。binding_confirmed state 是纯
 # bearer 令牌，不依赖 create_signed_state 的通用默认值，收紧签发窗口。
 _BINDING_STATE_TTL_MINUTES = 5
+
+# P2-5：callback 失败审计的分类口径。flow 区分这次失败发生在哪个环节
+# （bind=绑定意图、login=legacy 重登、unknown=state 未通过验签），
+# failure_class 区分失败性质（security=篡改/伪造、business=绑定规则、
+# upstream=微信侧 5xx），与 /auth/login 按 audit_action 分类的口径对齐。
+_CALLBACK_SECURITY_FAILURE_CODES = frozenset(
+    {
+        "AUTH_OAUTH_STATE_INVALID",
+        "AUTH_BINDING_CONFIRM_REQUIRED",
+    }
+)
 
 # P1-04：允许透传到 H5 状态页的错误码；白名单外的异常统一归并为
 # AUTH_FAILED，避免把任意错误细节拼进重定向 URL。
@@ -419,6 +432,11 @@ def wechat_callback(
     from ..core.errors import AppError
 
     # P1-04：绑定类失败 302 到 H5 状态页；微信浏览器上下文不应看到裸 JSON。
+    # P2-5：三个解析变量先置空——except 分支据此还原失败发生的环节
+    # （state 未验签 = unknown；验签后 invite_id 有值为 bind，否则 login）。
+    invite_id: str | None = None
+    expected_company_id: str | None = None
+    return_url: str | None = None
     try:
         invite_id, expected_company_id, return_url = _resolve_binding_intent(state)
         identity = WechatOAuthClient().exchange_code(code)
@@ -432,6 +450,58 @@ def wechat_callback(
         )
     except AppError as exc:
         error_code = exc.code if exc.code in _H5_AUTH_ERROR_CODES else "AUTH_FAILED"
+        # P2-5：callback 失败与 /auth/login 的失败审计口径对齐——state 篡改、
+        # 转发误绑、伪造意图等安全失败不能零痕迹，否则 P1-02 的追溯诉求只剩
+        # 成功路径半边。先 rollback 丢弃半途写入（隐式回滚只覆盖请求结束路
+        # 径），审计行携带 invite_id/company_id/flow/failure_class 供追溯链
+        # 关联；metadata 只落枚举与标量，不落 state/token/openid。flow 的
+        # unknown 涵盖一切未解析出可用意图的 state（验签失败、缺
+        # binding_confirmed 字段等）；failure_class 的 upstream 涵盖微信侧
+        # 与本机微信通道（含未配置）的故障，business 为绑定规则拒绝。
+        flow = "bind" if invite_id else ("login" if return_url else "unknown")
+        failure_class = (
+            "upstream"
+            if exc.status_code >= 500
+            else ("security" if exc.code in _CALLBACK_SECURITY_FAILURE_CODES else "business")
+        )
+        try:
+            db.rollback()
+            write_audit(
+                db,
+                principal=None,
+                action="WECHAT_OAUTH_CALLBACK_FAILED",
+                resource_type="wechat_bind",
+                resource_id=invite_id,
+                company_id=expected_company_id,
+                metadata={
+                    "reason_code": exc.code,
+                    "display_code": error_code,
+                    "status_code": exc.status_code,
+                    "flow": flow,
+                    "failure_class": failure_class,
+                },
+                request_id=request.state.request_id,
+                ip_address=_request_ip(request),
+                user_agent=request.headers.get("user-agent"),
+            )
+            db.commit()
+        except Exception:
+            # 审计持久化失败（含连接失效导致 rollback 本身抛错）不得反噬
+            # 302 契约：尽力 rollback 后以结构化日志兜底，让失败仍可观测
+            # （codex 评审 #1），页面行为维持 P1-04 的重定向语义。
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            logger.exception(
+                "wechat oauth callback failure audit fell back to log",
+                extra={
+                    "request_id": request.state.request_id,
+                    "reason_code": exc.code,
+                    "flow": flow,
+                    "failure_class": failure_class,
+                },
+            )
         return RedirectResponse(url=f"/h5/#/auth-error?code={error_code}", status_code=302)
     # I4：区分首次绑定与重登——绑定意图（signed bind state）记 WECHAT_BIND
     # 并保留 invite_id 追溯；legacy 普通登录记 WECHAT_OAUTH_LOGIN，与 mock 通道对齐。

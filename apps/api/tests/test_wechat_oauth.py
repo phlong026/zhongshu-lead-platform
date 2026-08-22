@@ -8,7 +8,7 @@ from jwt import InvalidTokenError
 from sqlalchemy import select
 
 from apps.api.src.core.errors import AppError
-from apps.api.src.core.models import AuditLog, Company, WechatIdentity
+from apps.api.src.core.models import AuditLog, Company, InviteToken, User, UserRole, WechatIdentity
 from apps.api.src.core.security import create_signed_state, decode_signed_state
 from apps.api.src.integrations.wechat import WechatOAuthClient, WechatOAuthIdentity
 from apps.api.src.schemas.company import CompanyCreateBody
@@ -500,6 +500,122 @@ def test_callback_audit_distinguishes_bind_from_relogin(api_client, monkeypatch)
         )
         assert login_log is not None
         assert login_log.user_agent == "i4-audit-h5"
+
+
+def test_callback_failure_writes_audit_and_discards_partial_writes(api_client, monkeypatch) -> None:
+    """P2-5：callback 失败不再零审计——WECHAT_OAUTH_CALLBACK_FAILED 落
+    reason_code/display_code/flow/failure_class 与 invite_id/company_id 追溯
+    关联；且落审计前先 rollback，占用主账号失败途中创建的 user/identity/
+    邀请消费不得随审计提交一起漏进库里（codex #5：孤儿 User/UserRole 与
+    成功审计也必须锁住）。"""
+
+    client, factory = api_client
+    with factory() as db:
+        company = _company(db)
+        invite, raw, _ = create_company_invite(db, company.id, None, 24)
+        invite_id = invite.id
+        company_id = company.id
+        # 基线计数：seed_demo 会给内部账号授予角色，以「前后计数不变」锁定
+        # 失败路径不新增任何角色授予。
+        baseline_roles = len(db.scalars(select(UserRole)).all())
+        # 直接占用主账号（模型为裸字符串无外键），制造「邀请有效但公司已绑定」：
+        # 失败发生在 add(user)/add(identity) 之后，正是 rollback 的守护点。
+        company.primary_user_id = "u-probe-taken-primary"
+        db.commit()
+    monkeypatch.setattr(
+        WechatOAuthClient,
+        "exchange_code",
+        lambda self, code: WechatOAuthIdentity(openid=f"p25-{code}", unionid=None, nickname="失败用户"),
+    )
+    confirm = client.post(
+        "/api/v1/auth/invites/confirm-start",
+        json={"invite": raw, "return_url": "/h5/#/home"},
+        headers={"user-agent": "p25-audit-h5"},
+    )
+    assert confirm.status_code == 200, confirm.text
+    bind_state = _state_from_authorization_url(confirm.json()["data"]["authorization_url"])
+
+    failed = client.get(
+        "/api/v1/auth/wechat/callback",
+        params={"code": "p25-fail", "state": bind_state},
+        follow_redirects=False,
+        headers={"user-agent": "p25-audit-h5"},
+    )
+    assert failed.status_code == 302, failed.text
+    assert failed.headers["location"] == "/h5/#/auth-error?code=AUTH_COMPANY_ALREADY_BOUND"
+
+    # codex #6：state 未通过验签的失败同样必须有审计，且 flow=unknown。
+    invalid = client.get(
+        "/api/v1/auth/wechat/callback",
+        params={"code": "p25-fail", "state": "garbage-state"},
+        follow_redirects=False,
+        headers={"user-agent": "p25-audit-h5"},
+    )
+    assert invalid.status_code == 302
+    assert invalid.headers["location"] == "/h5/#/auth-error?code=AUTH_OAUTH_STATE_INVALID"
+
+    with factory() as db:
+        bind_failed_rows = db.scalars(
+            select(AuditLog).where(AuditLog.action == "WECHAT_OAUTH_CALLBACK_FAILED")
+        ).all()
+        assert len(bind_failed_rows) == 2, "两类失败路径都必须留下审计行"
+        by_reason = {row.metadata_json.get("reason_code"): row for row in bind_failed_rows}
+        already_bound = by_reason["AUTH_COMPANY_ALREADY_BOUND"]
+        metadata = already_bound.metadata_json
+        assert metadata.get("display_code") == "AUTH_COMPANY_ALREADY_BOUND"
+        assert metadata.get("status_code") == 409
+        assert metadata.get("flow") == "bind"
+        assert metadata.get("failure_class") == "business"
+        assert already_bound.resource_id == invite_id, "失败审计须关联邀请"
+        assert already_bound.company_id == company_id, "失败审计须关联公司"
+        assert already_bound.user_agent == "p25-audit-h5"
+
+        state_invalid = by_reason["AUTH_OAUTH_STATE_INVALID"]
+        assert state_invalid.metadata_json.get("flow") == "unknown"
+        assert state_invalid.metadata_json.get("failure_class") == "security"
+        assert state_invalid.resource_id is None
+
+        # rollback 守护：半途写入不得入库。
+        leaked_identity = db.scalar(
+            select(WechatIdentity).where(WechatIdentity.openid == "p25-p25-fail")
+        )
+        assert leaked_identity is None, "失败的绑定不得残留微信身份"
+        leaked_users = db.scalars(select(User).where(User.company_id == company_id)).all()
+        assert leaked_users == [], "失败的绑定不得残留孤儿用户"
+        all_roles = db.scalars(select(UserRole)).all()
+        assert len(all_roles) == baseline_roles, "失败的绑定不得残留角色授予"
+        invite_after = db.get(InviteToken, invite_id)
+        assert invite_after.used_at is None, "失败的绑定不得消费邀请"
+        assert invite_after.revoked_at is None
+        success_logs = db.scalars(
+            select(AuditLog).where(AuditLog.action.in_(["WECHAT_BIND", "WECHAT_OAUTH_LOGIN"]))
+        ).all()
+        assert success_logs == [], "失败路径不得产生成功审计"
+
+
+def test_callback_failure_audit_persistence_failure_keeps_302(api_client, monkeypatch) -> None:
+    """P2-5/codex #1、#7：审计持久化自身失败（含 rollback 抛错）不得反噬
+    302 契约——兜底走结构化日志，H5 仍收到状态页重定向。"""
+
+    client, factory = api_client
+
+    def _broken_audit(*args, **kwargs):
+        raise RuntimeError("audit storage down")
+
+    monkeypatch.setattr("apps.api.src.routers.auth.write_audit", _broken_audit)
+    response = client.get(
+        "/api/v1/auth/wechat/callback",
+        params={"code": "p25-audit-down", "state": "garbage-state"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 302, response.text
+    assert response.headers["location"] == "/h5/#/auth-error?code=AUTH_OAUTH_STATE_INVALID"
+
+    with factory() as db:
+        rows = db.scalars(
+            select(AuditLog).where(AuditLog.action == "WECHAT_OAUTH_CALLBACK_FAILED")
+        ).all()
+        assert rows == [], "审计写入失败时不得留下半截审计行"
 
 
 def test_confirm_start_state_ttl_is_tightened(api_client) -> None:
