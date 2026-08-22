@@ -11,12 +11,14 @@ from apps.api.src.services.outbox_worker import process_outbox
 
 
 def test_outbox_without_recipient_is_retried(db) -> None:
+    """N7：无收件人是确定性失败——重试不可能让用户凭空绑定微信，
+    直接终态化 MANUAL_ACTION_REQUIRED；运营核实后经重试按钮手动重置。"""
     item=enqueue_outbox(db,event_key="test:event",event_type="ASSIGNMENT_DISPATCHED",aggregate_type="assignment",aggregate_id="a1",payload={})
     db.commit()
     result=process_outbox(db)
     db.commit()
-    assert result["failed"]==1
-    assert item.status=="FAILED"
+    assert result["manual"]==1
+    assert item.status=="MANUAL_ACTION_REQUIRED"
     assert item.attempts==1
 
 
@@ -85,20 +87,26 @@ def test_invite_outbox_delivers_through_dev_mock(api_client) -> None:
 
 
 def test_invite_outbox_real_mode_without_template_fails_clearly(api_client, monkeypatch) -> None:
-    """P2-03：真实通道未发布模板时明确失败，成为「渠道未接入」的可见信号。"""
+    """P2-03/N7：真实通道未发布模板是确定性配置错误——直接终态化
+    MANUAL_ACTION_REQUIRED 交运营兜底，不再空转 5 次退避重试。"""
 
     client, factory, invite_id, _ = _invite_outbox_setup(api_client, monkeypatch)
     with factory() as db:
         result = process_outbox(db)
         db.commit()
-        assert result["failed"] >= 1, result
+        assert result["manual"] >= 1, result
         item = db.scalar(select(NotificationOutbox).where(NotificationOutbox.event_type == "INVITE_CREATED"))
-        assert item is not None and item.status == "FAILED"
+        assert item is not None and item.status == "MANUAL_ACTION_REQUIRED"
         assert "TEMPLATE_NOT_CONFIGURED" in (item.last_error or "")
+        # 终态不再被下一轮处理扫描，attempts 不涨
+        process_outbox(db)
+        db.commit()
+        assert item.attempts == 1
 
 
 def test_invite_outbox_real_mode_with_template_reports_no_recipient(api_client, monkeypatch) -> None:
-    """S1：真实通道 + 已发布模板时，占位收件人快速失败为 NO_RECIPIENT。"""
+    """S1/N7：真实通道 + 已发布模板时占位收件人必败——NO_RECIPIENT 同样
+    终态化为 MANUAL_ACTION_REQUIRED，由运营经创建弹窗人工发送兜底。"""
 
     client, factory, invite_id, _ = _invite_outbox_setup(api_client, monkeypatch)
     with factory() as db:
@@ -113,9 +121,9 @@ def test_invite_outbox_real_mode_with_template_reports_no_recipient(api_client, 
         db.commit()
         result = process_outbox(db)
         db.commit()
-        assert result["failed"] >= 1, result
+        assert result["manual"] >= 1, result
         item = db.scalar(select(NotificationOutbox).where(NotificationOutbox.event_type == "INVITE_CREATED"))
-        assert item is not None and item.status == "FAILED"
+        assert item is not None and item.status == "MANUAL_ACTION_REQUIRED"
         assert "NO_RECIPIENT" in (item.last_error or "")
 
 
@@ -179,3 +187,34 @@ def test_failed_outbox_response_scrubs_legacy_poisoned_last_error(api_client) ->
     assert resp.status_code == 200, resp.text
     assert "RAW_SECRET_9f" not in resp.text
     assert "access_token" not in resp.text or "***" in resp.text
+
+
+def test_failed_outbox_panel_defaults_include_terminal_states(api_client) -> None:
+    """N7：失败面板默认必须涵盖 FAILED/DEAD/MANUAL_ACTION_REQUIRED——
+    DEAD 与人工终态从面板消失等于静默丢失运维信号。"""
+
+    client, factory = api_client
+    login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "Admin123!"})
+    assert login.status_code == 200, login.text
+    headers = {"Authorization": f"Bearer {login.cookies.get('access_token')}"}
+    with factory() as db:
+        for key, status in (
+            ("test:panel-failed", "FAILED"),
+            ("test:panel-dead", "DEAD"),
+            ("test:panel-manual", "MANUAL_ACTION_REQUIRED"),
+        ):
+            item = enqueue_outbox(
+                db, event_key=key, event_type="ASSIGNMENT_DISPATCHED", aggregate_type="a", aggregate_id="1", payload={}
+            )
+            item.status = status
+        db.commit()
+
+    resp = client.get("/api/v1/notifications/outbox/failed", headers=headers)
+    assert resp.status_code == 200, resp.text
+    statuses = {row["status"] for row in resp.json()["data"]}
+    assert statuses == {"FAILED", "DEAD", "MANUAL_ACTION_REQUIRED"}
+
+    # 显式过滤保留精确语义
+    resp = client.get("/api/v1/notifications/outbox/failed?status=FAILED", headers=headers)
+    assert resp.status_code == 200, resp.text
+    assert {row["status"] for row in resp.json()["data"]} == {"FAILED"}

@@ -13,6 +13,11 @@ from ..integrations.wechat import WechatOfficialAccountClient
 
 settings = get_settings()
 
+# N7：确定性投递失败（模板未发布、邀请对象无 openid）重试不可能自愈——
+# 直接终态化 MANUAL_ACTION_REQUIRED 交运营兜底，不空转 5 次退避重试污染
+# 失败率；运营修好配置/收件人后经重试按钮手动重置 PENDING。
+_MANUAL_ACTION_ERROR_CODES = frozenset({"TEMPLATE_NOT_CONFIGURED", "NO_RECIPIENT"})
+
 
 def _template_for_scene(db: Session, scene: str) -> str | None:
     config = db.scalar(select(SystemConfig).where(
@@ -30,7 +35,7 @@ def process_outbox(db: Session, limit: int = 100) -> dict[str, int]:
         or_(NotificationOutbox.next_attempt_at.is_(None), NotificationOutbox.next_attempt_at <= now),
     ).order_by(NotificationOutbox.created_at).limit(limit)).all()
     client = WechatOfficialAccountClient()
-    sent = failed = dead = 0
+    sent = failed = dead = manual = 0
     for item in rows:
         item.status = "PROCESSING"
         item.attempts += 1
@@ -39,6 +44,11 @@ def process_outbox(db: Session, limit: int = 100) -> dict[str, int]:
             if result["success"]:
                 item.status, item.sent_at, item.last_error = "SENT", now, None
                 sent += 1
+            elif result.get("error_code") in _MANUAL_ACTION_ERROR_CODES:
+                item.last_error = scrub_credentials(f"{result.get('error_code')}: {result.get('error_message')}")
+                item.status = "MANUAL_ACTION_REQUIRED"
+                item.next_attempt_at = None
+                manual += 1
             else:
                 item.last_error = scrub_credentials(f"{result.get('error_code')}: {result.get('error_message')}")
                 if item.attempts >= 5:
@@ -59,7 +69,7 @@ def process_outbox(db: Session, limit: int = 100) -> dict[str, int]:
                 item.status = "FAILED"
                 item.next_attempt_at = now + timedelta(minutes=min(60, 2**item.attempts))
                 failed += 1
-    return {"processed": len(rows), "sent": sent, "failed": failed, "dead": dead}
+    return {"processed": len(rows), "sent": sent, "failed": failed, "dead": dead, "manual": manual}
 
 
 def _send(db: Session, client: WechatOfficialAccountClient, outbox: NotificationOutbox) -> dict[str, Any]:

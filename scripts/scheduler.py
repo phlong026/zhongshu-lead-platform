@@ -50,6 +50,9 @@ def run_cycle(run_slow_jobs: bool, run_hourly_jobs: bool) -> bool:
     with SessionLocal() as db:
         try:
             outbox = process_outbox(db, limit=200)
+            # N10：outbox 进度先落库——慢/小时任务异常回滚时不得把已发送
+            # 状态一并回滚，否则下一轮会向用户重发同一条通知。
+            db.commit()
             metrics: dict[str, object] = {"outbox": outbox}
             if run_slow_jobs:
                 metrics.update(

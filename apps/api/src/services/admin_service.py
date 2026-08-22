@@ -290,7 +290,7 @@ def source_distribution(db: Session) -> list[dict[str, Any]]:
 
 def operational_alerts(db: Session) -> dict[str, Any]:
     return {
-        "failed_notifications": _count(db, NotificationOutbox, NotificationOutbox.status.in_(["FAILED", "DEAD"])),
+        "failed_notifications": _count(db, NotificationOutbox, NotificationOutbox.status.in_(["FAILED", "DEAD", "MANUAL_ACTION_REQUIRED"])),
         "import_errors": _count(db, Lead, Lead.status == LeadStatus.IMPORT_ERROR),
         "duplicate_reviews": _count(db, Lead, Lead.status == LeadStatus.DUPLICATE_REVIEW),
         "return_reviews": _count(db, ReturnRequest, ReturnRequest.status.in_([ReturnStatus.PENDING, ReturnStatus.NEED_MORE])),

@@ -54,10 +54,22 @@ def mark_read(notification_id: str, request: Request, principal: CurrentPrincipa
 
 
 @router.get("/outbox/failed")
-def failed_outbox(request: Request, principal=Depends(require_permissions("notification.retry")), db: Session = Depends(get_db), status: str = Query(default="FAILED")):
-    items = db.scalars(select(NotificationOutbox).where(NotificationOutbox.status == status).order_by(NotificationOutbox.created_at.desc()).limit(500)).all()
+def failed_outbox(
+    request: Request,
+    principal=Depends(require_permissions("notification.retry")),
+    db: Session = Depends(get_db),
+    status: str | None = Query(default=None),
+):
+    # N7：失败面板默认涵盖 FAILED/DEAD/MANUAL_ACTION_REQUIRED——转 DEAD 或
+    # 人工终态后从面板消失等于静默丢失运维信号；显式传 status 时保留精确过滤。
+    condition = (
+        NotificationOutbox.status.in_(["FAILED", "DEAD", "MANUAL_ACTION_REQUIRED"])
+        if status is None
+        else NotificationOutbox.status == status
+    )
+    items = db.scalars(select(NotificationOutbox).where(condition).order_by(NotificationOutbox.created_at.desc()).limit(500)).all()
     # N3：存量脏 last_error（脱敏上线前落库）出参前同样打码兜底。
-    return ok(request, [{"id": x.id, "event_type": x.event_type, "aggregate_id": x.aggregate_id, "attempts": x.attempts, "last_error": scrub_credentials(x.last_error), "next_attempt_at": x.next_attempt_at.isoformat() if x.next_attempt_at else None, "created_at": x.created_at.isoformat()} for x in items])
+    return ok(request, [{"id": x.id, "event_type": x.event_type, "aggregate_id": x.aggregate_id, "status": x.status, "attempts": x.attempts, "last_error": scrub_credentials(x.last_error), "next_attempt_at": x.next_attempt_at.isoformat() if x.next_attempt_at else None, "created_at": x.created_at.isoformat()} for x in items])
 
 
 @router.post("/outbox/{outbox_id}/retry")
