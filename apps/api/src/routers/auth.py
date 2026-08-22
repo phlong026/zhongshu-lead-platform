@@ -89,10 +89,10 @@ _CALLBACK_AUDIT_THROTTLE: dict[str, float] = {}
 _CALLBACK_AUDIT_THROTTLE_WINDOW_SECONDS = 60.0
 _CALLBACK_AUDIT_THROTTLE_MAX_KEYS = 4096
 
-def _callback_audit_throttled(ip: str | None, reason_code: str, exc: Exception) -> bool:
+def _callback_audit_throttled(ip: str | None, reason_code: str, exc: Exception, stage: str = "callback") -> bool:
     now = time.monotonic()
     cause = type(exc.__cause__).__name__ if exc.__cause__ else "-"
-    key = hashlib.sha256(f"{ip or 'unknown'}\x1f{reason_code}\x1f{cause}".encode("utf-8")).hexdigest()
+    key = hashlib.sha256(f"{ip or 'unknown'}\x1f{reason_code}\x1f{cause}\x1f{stage}".encode("utf-8")).hexdigest()
     last = _CALLBACK_AUDIT_THROTTLE.get(key)
     if last is not None and now - last < _CALLBACK_AUDIT_THROTTLE_WINDOW_SECONDS:
         return True
@@ -186,8 +186,8 @@ _CALLBACK_SECURITY_FAILURE_CODES = frozenset(
 # 302 状态页（微信浏览器不暴露裸 JSON），但携带具体码让 H5 给出「稍后
 # 重试」而非「重新获取邀请」的指引；可观测性由 P2-5 的失败审计
 # （failure_class=upstream）与下方结构化日志承载，不依赖响应码本身。
-# WECHAT_SCOPE_INVALID 只在 authorization_url（start 端点）抛出，到不了
-# callback 的 exchange_code 路径，故不入此白名单（codex 评审 #1）。
+# N6：WECHAT_SCOPE_INVALID 经 /wechat/start 的 302 收敛也会到达 H5
+# 状态页（codex 评审 #1 的旧结论随 start 端点接入收敛而失效）。
 _H5_AUTH_ERROR_CODES = frozenset(
     {
         "AUTH_OAUTH_STATE_INVALID",
@@ -201,17 +201,21 @@ _H5_AUTH_ERROR_CODES = frozenset(
         "WECHAT_NOT_CONFIGURED",
         "WECHAT_OAUTH_UNAVAILABLE",
         "WECHAT_OAUTH_FAILED",
+        "WECHAT_SCOPE_INVALID",
     }
 )
 
 # P2-1：微信通道故障码的显式集合——logger.error 的告警条件用它而非
 # 「任意 5xx」，避免内部未知 5xx 污染通道健康度指标（codex 评审 #2）；
 # 未知 5xx 仍由失败审计（failure_class=upstream）完整留痕。
+# N6：WECHAT_SCOPE_INVALID 是 authorization_url 的通道配置故障，经
+# /wechat/start 透传，与健康度告警同口径。
 _WECHAT_CHANNEL_FAILURE_CODES = frozenset(
     {
         "WECHAT_NOT_CONFIGURED",
         "WECHAT_OAUTH_UNAVAILABLE",
         "WECHAT_OAUTH_FAILED",
+        "WECHAT_SCOPE_INVALID",
     }
 )
 
@@ -401,6 +405,37 @@ def invite_confirm_start(
         purpose="wechat-oauth-bind",
         expires_minutes=_BINDING_STATE_TTL_MINUTES,
     )
+    # N6：先确认通道能产出授权 URL，再提交 INVITE_CONFIRM_START——顺序
+    # 颠倒会让配置故障留下「已开始」的成功审计。失败改记
+    # INVITE_CONFIRM_START_FAILED 并落通道告警，503 透传给前端状态页。
+    try:
+        authorization_url = WechatOAuthClient().authorization_url(state=state)
+    except AppError as exc:
+        logger.error(
+            "wechat oauth channel failure at confirm-start",
+            extra={
+                "request_id": request.state.request_id,
+                "reason_code": exc.code,
+                "flow": "bind",
+                "stage": "confirm-start",
+                "status_code": exc.status_code,
+            },
+        )
+        db.rollback()
+        write_audit(
+            db,
+            principal=None,
+            action="INVITE_CONFIRM_START_FAILED",
+            resource_type="invite",
+            resource_id=invite.id,
+            company_id=invite.company_id,
+            metadata={"reason_code": exc.code, "status_code": exc.status_code},
+            request_id=request.state.request_id,
+            ip_address=_request_ip(request),
+            user_agent=request.headers.get("user-agent"),
+        )
+        db.commit()
+        raise
     # I12：binding_confirmed state 是纯 bearer——预授权签发时记录客户端
     # IP 与 User-Agent，回调侧令牌异常时可对照审计定位挪用。
     write_audit(
@@ -420,7 +455,7 @@ def invite_confirm_start(
     return ok(
         request,
         {
-            "authorization_url": WechatOAuthClient().authorization_url(state=state),
+            "authorization_url": authorization_url,
             "expires_at": expires_at.isoformat(),
         },
     )
@@ -492,6 +527,7 @@ def wechat_mock_callback(body: WechatMockCallbackBody, request: Request, respons
 def wechat_start(
     request: Request,
     return_url: str = Query(default="/h5/#/home"),
+    db: Session = Depends(get_db),
 ):
     from fastapi.responses import RedirectResponse
 
@@ -504,7 +540,21 @@ def wechat_start(
         raise AppError("AUTH_INVITE_ENTRY_DEPRECATED", "邀请入口已更新，请从最新邀请链接重新进入", 400)
     return_url = _sanitize_return_url(return_url)
     state = create_signed_state({"return_url": return_url}, purpose="wechat-oauth")
-    authorization_url = WechatOAuthClient().authorization_url(state=state)
+    try:
+        authorization_url = WechatOAuthClient().authorization_url(state=state)
+    except AppError as exc:
+        # N6：start 是浏览器直接导航——通道故障必须与 callback 同口径
+        # （302 状态页 + 失败审计 + 通道告警），不能回裸 JSON。
+        return _redirect_callback_failure(
+            exc,
+            request=request,
+            db=db,
+            invite_id=None,
+            expected_company_id=None,
+            return_url=return_url,
+            action="WECHAT_OAUTH_START_FAILED",
+            stage="start",
+        )
     return RedirectResponse(url=authorization_url, status_code=302)
 
 
@@ -516,10 +566,13 @@ def _redirect_callback_failure(
     invite_id: str | None,
     expected_company_id: str | None,
     return_url: str | None,
+    action: str = "WECHAT_OAUTH_CALLBACK_FAILED",
+    stage: str = "callback",
 ):
     """P2-4/P2-5：callback 一切失败的统一收敛——302 状态页 + 失败审计 +
     分级结构化日志，任何入口（AppError/IntegrityError/未知异常转译后）
-    都不得让微信浏览器看到裸 JSON。"""
+    都不得让微信浏览器看到裸 JSON。N6：/wechat/start 的通道故障复用同一
+    收敛口径，经 action/stage 区分审计来源。"""
     from fastapi.responses import RedirectResponse
 
     error_code = exc.code if exc.code in _H5_AUTH_ERROR_CODES else "AUTH_FAILED"
@@ -536,11 +589,12 @@ def _redirect_callback_failure(
     # 仅对显式通道码告警，不污染通道指标。
     if exc.code in _WECHAT_CHANNEL_FAILURE_CODES:
         logger.error(
-            "wechat oauth channel failure at callback",
+            f"wechat oauth channel failure at {stage}",
             extra={
                 "request_id": request.state.request_id,
                 "reason_code": exc.code,
                 "flow": flow,
+                "stage": stage,
                 "status_code": exc.status_code,
             },
         )
@@ -565,13 +619,13 @@ def _redirect_callback_failure(
     # 通道（含未配置）的故障，business 为绑定规则拒绝。
     try:
         db.rollback()
-        if _callback_audit_throttled(_request_ip(request), exc.code, exc):
+        if _callback_audit_throttled(_request_ip(request), exc.code, exc, stage=stage):
             # N11：同 IP+同 reason 的重复失败不重复落库，warning 日志已留痕。
             return RedirectResponse(url=f"/h5/#/auth-error?code={error_code}", status_code=302)
         write_audit(
             db,
             principal=None,
-            action="WECHAT_OAUTH_CALLBACK_FAILED",
+            action=action,
             resource_type="wechat_bind",
             resource_id=invite_id,
             company_id=expected_company_id,
@@ -580,6 +634,7 @@ def _redirect_callback_failure(
                 "display_code": error_code,
                 "status_code": exc.status_code,
                 "flow": flow,
+                "stage": stage,
                 "failure_class": failure_class,
             },
             request_id=request.state.request_id,

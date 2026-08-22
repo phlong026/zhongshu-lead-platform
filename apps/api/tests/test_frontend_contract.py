@@ -258,14 +258,15 @@ def test_h5_auth_error_codes_stay_in_sync_with_backend_whitelist():
     # 安全失败分类口径必须是可透传集合的子集，两类白名单不允许单独漂移。
     assert _CALLBACK_SECURITY_FAILURE_CODES <= _H5_AUTH_ERROR_CODES
     # 微信通道故障码的 CTA 不得是「重新获取邀请」（邀请仍有效）——它们应出现在
-    # renderAuthError 的 noCta 集合中（WECHAT_SCOPE_INVALID 只往 start 端点抛，
-    # 不入 callback 白名单，前端自然也不该留它的文案）。
+    # renderAuthError 的 noCta 集合中（N6 后 WECHAT_SCOPE_INVALID 会经
+    # /wechat/start 的 302 透传到 H5 状态页，与 callback 通道码同口径）。
     fn = app.split("function renderAuthError", 1)[1]
     fn = fn.split("\nfunction ", 1)[0]
     for code in (
         "WECHAT_NOT_CONFIGURED",
         "WECHAT_OAUTH_UNAVAILABLE",
         "WECHAT_OAUTH_FAILED",
+        "WECHAT_SCOPE_INVALID",
     ):
         assert code in fn, f"{code} 应纳入 renderAuthError 的 CTA 分化集合"
 

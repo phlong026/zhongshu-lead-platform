@@ -45,6 +45,7 @@ const AUTH_ERROR_META={
   WECHAT_NOT_CONFIGURED:['微信登录暂不可用','平台的微信登录通道尚未就绪，请稍后通过原邀请链接重试。'],
   WECHAT_OAUTH_UNAVAILABLE:['微信登录暂不可用','微信登录通道暂时不可用，请稍后通过原邀请链接重试。'],
   WECHAT_OAUTH_FAILED:['微信授权失败','本次微信授权未能完成，请稍后通过原邀请链接重试。'],
+  WECHAT_SCOPE_INVALID:['微信登录暂不可用','平台的微信授权配置异常，请稍后通过原邀请链接重试；持续失败请联系平台处理。'],
   AUTH_FAILED:['绑定失败','绑定过程出现问题，请稍后重试；多次失败请联系平台重新获取邀请链接。']
 };
 // P1-04：绑定类失败统一落到 auth-error 状态页，只按错误码展示固定文案，
@@ -52,7 +53,7 @@ const AUTH_ERROR_META={
 function renderAuthError(){
   // P3-5：按错误类型分化 CTA——停用类错误只能线下联系平台解决，「重新获取邀请」
   // 是错误指引且点击会丢弃原 invite；已绑定类直接回首页重登。
-  const noCta=new Set(['AUTH_ACCOUNT_DISABLED','AUTH_COMPANY_DISABLED','WECHAT_NOT_CONFIGURED','WECHAT_OAUTH_UNAVAILABLE','WECHAT_OAUTH_FAILED']);const homeCta=new Set(['AUTH_COMPANY_ALREADY_BOUND']);
+  const noCta=new Set(['AUTH_ACCOUNT_DISABLED','AUTH_COMPANY_DISABLED','WECHAT_NOT_CONFIGURED','WECHAT_OAUTH_UNAVAILABLE','WECHAT_OAUTH_FAILED','WECHAT_SCOPE_INVALID']);const homeCta=new Set(['AUTH_COMPANY_ALREADY_BOUND']);
   const params=new URLSearchParams(location.hash.split('?')[1]||''); const code=params.get('code')||'AUTH_FAILED';
   const meta=AUTH_ERROR_META[code]||AUTH_ERROR_META.AUTH_FAILED;
   const cta=noCta.has(code)?'':homeCta.has(code)?'<button class="btn btn-primary btn-block" data-route="home">返回首页</button>':'<button class="btn btn-primary btn-block" data-route="login">重新获取邀请</button>';

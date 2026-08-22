@@ -1021,3 +1021,88 @@ def test_callback_failure_audit_is_throttled_per_ip_and_reason(api_client) -> No
             "AUTH_OAUTH_STATE_INVALID",
             "AUTH_FAILED",
         }
+
+
+def test_wechat_start_channel_failure_redirects_to_status_page(api_client, monkeypatch, caplog) -> None:
+    """N6：/wechat/start 是浏览器直接导航——通道故障（未配置/scope 非法）
+    不得回裸 JSON，必须 302 H5 状态页 + 失败审计 + 通道 error 告警。"""
+
+    import logging as _logging
+
+    import apps.api.src.integrations.wechat as wechat_module
+
+    client, factory = api_client
+
+    with caplog.at_level(_logging.ERROR, logger="zhongshu.auth"):
+        # 场景1：app_id 未配置
+        monkeypatch.setattr(wechat_module.settings, "wechat_app_id", "")
+        response = client.get("/api/v1/auth/wechat/start", follow_redirects=False)
+        assert response.status_code == 302, response.text
+        assert response.headers["location"] == "/h5/#/auth-error?code=WECHAT_NOT_CONFIGURED"
+
+        # 场景2：scope 配置非法
+        monkeypatch.setattr(wechat_module.settings, "wechat_app_id", "wx-test-only")
+        monkeypatch.setattr(wechat_module.settings, "wechat_oauth_scope", "snsapi_private")
+        response = client.get("/api/v1/auth/wechat/start", follow_redirects=False)
+        assert response.status_code == 302, response.text
+        assert response.headers["location"] == "/h5/#/auth-error?code=WECHAT_SCOPE_INVALID"
+
+    with factory() as db:
+        rows = db.scalars(
+            select(AuditLog).where(AuditLog.action == "WECHAT_OAUTH_START_FAILED")
+        ).all()
+        assert {row.metadata_json.get("reason_code") for row in rows} == {
+            "WECHAT_NOT_CONFIGURED",
+            "WECHAT_SCOPE_INVALID",
+        }
+    errors = [
+        record
+        for record in caplog.records
+        if record.levelno == _logging.ERROR and "channel failure" in record.message
+    ]
+    assert len(errors) == 2, "两个通道故障都必须落 error 级告警"
+
+
+def test_confirm_start_audit_follows_authorization_url_outcome(api_client, monkeypatch, caplog) -> None:
+    """N6：INVITE_CONFIRM_START 只能在 authorization_url 成功后落——通道
+    故障时不得留下「已开始」的成功审计，改记 INVITE_CONFIRM_START_FAILED
+    并以 503 透传给前端状态页。"""
+
+    import logging as _logging
+
+    client, factory = api_client
+    with factory() as db:
+        company = _company(db)
+        invite, raw, _ = create_company_invite(db, company.id, None, 24)
+        db.commit()
+        invite_id = invite.id
+
+    def raise_not_configured(self, *, state, scope=None):
+        raise AppError("WECHAT_NOT_CONFIGURED", "微信公众号尚未配置", 503)
+
+    monkeypatch.setattr(WechatOAuthClient, "authorization_url", raise_not_configured)
+    with caplog.at_level(_logging.ERROR, logger="zhongshu.auth"):
+        response = client.post(
+            "/api/v1/auth/invites/confirm-start",
+            json={"invite": raw, "return_url": "/h5/#/home"},
+        )
+    assert response.status_code == 503, response.text
+    assert response.json()["code"] == "WECHAT_NOT_CONFIGURED"
+
+    with factory() as db:
+        started = db.scalars(
+            select(AuditLog).where(AuditLog.action == "INVITE_CONFIRM_START")
+        ).all()
+        assert not started, "通道故障不得留下成功开始的审计"
+        failed = db.scalars(
+            select(AuditLog).where(AuditLog.action == "INVITE_CONFIRM_START_FAILED")
+        ).all()
+        assert len(failed) == 1
+        assert failed[0].metadata_json.get("reason_code") == "WECHAT_NOT_CONFIGURED"
+        assert failed[0].resource_id == invite_id
+    errors = [
+        record
+        for record in caplog.records
+        if record.levelno == _logging.ERROR and "channel failure" in record.message
+    ]
+    assert errors, "confirm-start 通道故障必须落 error 级告警"
