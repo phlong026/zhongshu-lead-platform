@@ -224,9 +224,12 @@ def test_h5_auth_error_status_page_covers_binding_failures():
     assert "重新获取" in app, "缺少重新获取邀请的引导文案"
     # P3-4：renderAuthError 注入机制统一，不得回退裸 innerHTML
     assert "innerHTML" not in fn, "renderAuthError 应统一走 zsSetSafeHtml 注入"
-    # P3-5：CTA 按错误类型分化——停用类无跳转引导，已绑定类返回首页
-    assert "AUTH_ACCOUNT_DISABLED" in fn and "AUTH_COMPANY_DISABLED" in fn, "停用类错误不得再共用重新获取邀请 CTA"
-    assert "AUTH_COMPANY_ALREADY_BOUND" in fn and 'data-route="home"' in fn, "已绑定类错误应引导返回首页"
+    # P3-5/N13：CTA 按错误类型分化并随文案同源（第三元素）——停用类无跳转
+    # 引导（''），已绑定类返回首页（'home'）；不再断言码名出现在函数体内
+    # （noCta 平行集合已并入 AUTH_ERROR_META）。
+    assert re.search(r"AUTH_ACCOUNT_DISABLED:\[[^\]]*,''\]", app), "账号停用错误不得再共用重新获取邀请 CTA"
+    assert re.search(r"AUTH_COMPANY_DISABLED:\[[^\]]*,''\]", app), "公司停用错误不得再共用重新获取邀请 CTA"
+    assert re.search(r"AUTH_COMPANY_ALREADY_BOUND:\[[^\]]*,'home'\]", app) and 'data-route="home"' in app, "已绑定类错误应引导返回首页"
 
 def test_admin_company_page_has_invite_records_modal():
     app = Path("apps/admin/public/app.js").read_text(encoding="utf-8")
@@ -242,7 +245,11 @@ def test_admin_company_page_has_invite_records_modal():
 def test_h5_auth_error_codes_stay_in_sync_with_backend_whitelist():
     """P3-1：后端可透传错误码与 H5 文案映射双向同步，加码漏改前端在此拦截。"""
 
-    from apps.api.src.routers.auth import _CALLBACK_SECURITY_FAILURE_CODES, _H5_AUTH_ERROR_CODES
+    from apps.api.src.routers.auth import (
+        _CALLBACK_SECURITY_FAILURE_CODES,
+        _H5_AUTH_ERROR_CODES,
+        _WECHAT_CHANNEL_FAILURE_CODES,
+    )
 
     app = Path("apps/h5/public/app.js").read_text(encoding="utf-8")
     block = app.split("const AUTH_ERROR_META={", 1)[1].split("};", 1)[0]
@@ -257,18 +264,18 @@ def test_h5_auth_error_codes_stay_in_sync_with_backend_whitelist():
     assert not extra, f"前端文案包含后端不会下发的码（误导用户）: {sorted(extra)}"
     # 安全失败分类口径必须是可透传集合的子集，两类白名单不允许单独漂移。
     assert _CALLBACK_SECURITY_FAILURE_CODES <= _H5_AUTH_ERROR_CODES
-    # 微信通道故障码的 CTA 不得是「重新获取邀请」（邀请仍有效）——它们应出现在
-    # renderAuthError 的 noCta 集合中（N6 后 WECHAT_SCOPE_INVALID 会经
-    # /wechat/start 的 302 透传到 H5 状态页，与 callback 通道码同口径）。
+    # N13：CTA 与文案同源——AUTH_ERROR_META 第三元素（'login'/'home'/''），
+    # 平行 noCta/homeCta 集合已消灭；断言由后端 _WECHAT_CHANNEL_FAILURE_CODES
+    # 驱动（消灭通道码清单的第四份拷贝）。通道故障码的 CTA 必须为空：
+    # 「重新获取邀请」对仍然有效的邀请是错误指引（P3-5/P2-1）。
+    for code in sorted(_WECHAT_CHANNEL_FAILURE_CODES):
+        assert re.search(
+            rf"^ +{code}:\[[^\]]*,''\],?$", block, re.M
+        ), f"{code} 的 AUTH_ERROR_META 第三元素（CTA）应为空"
     fn = app.split("function renderAuthError", 1)[1]
     fn = fn.split("\nfunction ", 1)[0]
-    for code in (
-        "WECHAT_NOT_CONFIGURED",
-        "WECHAT_OAUTH_UNAVAILABLE",
-        "WECHAT_OAUTH_FAILED",
-        "WECHAT_SCOPE_INVALID",
-    ):
-        assert code in fn, f"{code} 应纳入 renderAuthError 的 CTA 分化集合"
+    assert "noCta" not in fn and "homeCta" not in fn, "CTA 分化不得回退为平行 Set 集合"
+    assert "meta[2]" in fn, "renderAuthError 应从 AUTH_ERROR_META 第三元素读取 CTA"
 
 
 def test_admin_invite_actions_are_permission_gated():

@@ -381,32 +381,32 @@ def list_company_invites(db: Session, company_id: str) -> list[dict[str, Any]]:
     return items
 
 
+def _invite_matchers(raw_token: str | None, invite_id: str | None) -> list:
+    """I13/N13：双参 AND 语义的单一来源——raw_token 与 invite_id 同给时
+    必须指向同一条邀请（条件并列查询）；validate 与 consume 共用，
+    不得各自演化（I13 曾因双实现分裂而 raw 静默优先）。"""
+
+    matchers = []
+    if raw_token is not None:
+        matchers.append(InviteToken.token_hash == hash_token(raw_token))
+    if invite_id is not None:
+        matchers.append(InviteToken.id == invite_id)
+    return matchers
+
+
 def validate_invite(
     db: Session,
     *,
     raw_token: str | None = None,
     invite_id: str | None = None,
 ) -> InviteToken:
-    """Read-only invite validation without consuming it."""
+    """Read-only invite validation without consuming it.
 
-    invite = None
-    if raw_token is not None:
-        invite = db.scalar(
-            select(InviteToken).where(InviteToken.token_hash == hash_token(raw_token))
-        )
-        # I13：与 _consume_invite 的 AND 语义对齐——显式给出的 token 解析不到
-        # 邀请时直接拒绝，不得被 invite_id 兜底救回。
-        if invite is None:
-            raise AppError("AUTH_INVITE_INVALID", "邀请已失效，请联系平台", 400)
-    if invite_id is not None:
-        invite_by_id = db.get(InviteToken, invite_id)
-        # I13：双参同给时与 _consume_invite 的 AND 语义对齐——必须指向同一条
-        # 邀请，不再让 raw 静默优先（validate 与 consume 的双参行为不再分裂）。
-        if invite is not None:
-            if invite_by_id is None or invite_by_id.id != invite.id:
-                raise AppError("AUTH_INVITE_INVALID", "邀请已失效，请联系平台", 400)
-        else:
-            invite = invite_by_id
+    I13/N13：双参解析走 _invite_matchers 的 AND 语义，与 _consume_invite
+    完全同构——显式给出的参数解析不到同一条邀请即拒绝，无兜底。"""
+
+    matchers = _invite_matchers(raw_token, invite_id)
+    invite = db.scalar(select(InviteToken).where(*matchers)) if matchers else None
     now = utcnow()
     invite_expires_at = as_utc(invite.expires_at) if invite else None
     if not invite or invite.revoked_at or invite.used_at or not invite_expires_at or invite_expires_at <= now:
@@ -432,11 +432,7 @@ def _consume_invite(
     N9：used_by_user_id 同语句写回——归因与消费原子落库，不依赖事后补写。
     """
 
-    matchers = []
-    if raw_token is not None:
-        matchers.append(InviteToken.token_hash == hash_token(raw_token))
-    if invite_id is not None:
-        matchers.append(InviteToken.id == invite_id)
+    matchers = _invite_matchers(raw_token, invite_id)
     if not matchers:
         raise AppError("AUTH_INVITE_INVALID", "邀请已失效，请联系平台", 400)
     now = utcnow()

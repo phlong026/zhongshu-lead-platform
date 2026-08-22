@@ -3,22 +3,11 @@ from __future__ import annotations
 from sqlalchemy import select
 
 from apps.api.src.core.models import Company, WechatIdentity
-from apps.api.src.schemas.company import CompanyCreateBody
 from apps.api.src.services.auth_service import bind_wechat_by_invite, create_company_invite
 from apps.api.src.services.binding_integrity import audit_primary_binding_integrity
 from apps.api.src.services.company_service import create_company
-
-
-def _company_body(code: str, **overrides) -> CompanyCreateBody:
-    payload = {
-        "code": code,
-        "name": "上海测试加盟商",
-        "owner_name": "张老板",
-        "region_codes": ["310100"],
-        "capabilities": [{"category_code": "OLD_RENOVATION", "brand_code": None}],
-    }
-    payload.update(overrides)
-    return CompanyCreateBody(**payload)
+# I19/N13：建司样板与 test_auth_company 单一来源，不再整段复制。
+from test_auth_company import _company_body
 
 
 def _bind_owner(db, code: str, openid: str):

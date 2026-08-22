@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi.responses import RedirectResponse
+from jwt import InvalidTokenError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -19,6 +21,7 @@ from ..core.models import Company, InviteToken, User
 from ..core.responses import ok
 from ..core.security import create_signed_state, decode_signed_state
 from ..core.time import as_utc
+from ..integrations.wechat import WechatOAuthClient
 from ..schemas.auth import InviteConfirmStartBody, InviteCreateBody, LoginBody, WechatMockCallbackBody
 from ..services.audit import write_audit
 from ..services.auth_service import (
@@ -142,10 +145,6 @@ def _resolve_binding_intent(state: str) -> tuple[str | None, str | None, str]:
     legacy states only permit login of already-bound identities and never
     carry an invite reference.
     """
-
-    from jwt import InvalidTokenError
-
-
     try:
         bind_state = decode_signed_state(state, purpose="wechat-oauth-bind")
     except InvalidTokenError:
@@ -187,25 +186,6 @@ _CALLBACK_SECURITY_FAILURE_CODES = frozenset(
 # 302 状态页（微信浏览器不暴露裸 JSON），但携带具体码让 H5 给出「稍后
 # 重试」而非「重新获取邀请」的指引；可观测性由 P2-5 的失败审计
 # （failure_class=upstream）与下方结构化日志承载，不依赖响应码本身。
-# N6：WECHAT_SCOPE_INVALID 经 /wechat/start 的 302 收敛也会到达 H5
-# 状态页（codex 评审 #1 的旧结论随 start 端点接入收敛而失效）。
-_H5_AUTH_ERROR_CODES = frozenset(
-    {
-        "AUTH_OAUTH_STATE_INVALID",
-        "AUTH_BINDING_CONFIRM_REQUIRED",
-        "AUTH_WECHAT_NOT_BOUND",
-        "AUTH_WECHAT_BOUND_OTHER_COMPANY",
-        "AUTH_COMPANY_DISABLED",
-        "AUTH_COMPANY_ALREADY_BOUND",
-        "AUTH_INVITE_INVALID",
-        "AUTH_ACCOUNT_DISABLED",
-        "WECHAT_NOT_CONFIGURED",
-        "WECHAT_OAUTH_UNAVAILABLE",
-        "WECHAT_OAUTH_FAILED",
-        "WECHAT_SCOPE_INVALID",
-    }
-)
-
 # P2-1：微信通道故障码的显式集合——logger.error 的告警条件用它而非
 # 「任意 5xx」，避免内部未知 5xx 污染通道健康度指标（codex 评审 #2）；
 # 未知 5xx 仍由失败审计（failure_class=upstream）完整留痕。
@@ -219,6 +199,27 @@ _WECHAT_CHANNEL_FAILURE_CODES = frozenset(
         "WECHAT_SCOPE_INVALID",
     }
 )
+
+# AUTH_FAILED，避免把任意错误细节拼进重定向 URL。
+# P2-1：微信通道故障码（未配置/不可用/授权失败）显式入白名单——仍走
+# 302 状态页（微信浏览器不暴露裸 JSON），但携带具体码让 H5 给出「稍后
+# 重试」而非「重新获取邀请」的指引；可观测性由 P2-5 的失败审计
+# （failure_class=upstream）与结构化日志承载，不依赖响应码本身。
+# N6：WECHAT_SCOPE_INVALID 经 /wechat/start 的 302 收敛也会到达 H5
+# 状态页（codex 评审 #1 的旧结论随 start 端点接入收敛而失效）。
+# N13：通道码经并集纳入，与上方告警集合单一来源，不再整段重复枚举。
+_H5_AUTH_ERROR_CODES = frozenset(
+    {
+        "AUTH_OAUTH_STATE_INVALID",
+        "AUTH_BINDING_CONFIRM_REQUIRED",
+        "AUTH_WECHAT_NOT_BOUND",
+        "AUTH_WECHAT_BOUND_OTHER_COMPANY",
+        "AUTH_COMPANY_DISABLED",
+        "AUTH_COMPANY_ALREADY_BOUND",
+        "AUTH_INVITE_INVALID",
+        "AUTH_ACCOUNT_DISABLED",
+    }
+) | _WECHAT_CHANNEL_FAILURE_CODES
 
 
 def _sanitize_return_url(value: str) -> str:
@@ -391,8 +392,6 @@ def invite_confirm_start(
     if _confirm_start_rate_limited(body.invite, _request_ip(request)):
         raise AppError("AUTH_RATE_LIMITED", "操作过于频繁，请稍后再试", 429)
 
-    from ..integrations.wechat import WechatOAuthClient
-
     invite = validate_invite(db, raw_token=body.invite)
     return_url = _sanitize_return_url(body.return_url)
     # I12：绑定预授权 state 显式收紧 TTL，不依赖 create_signed_state 的通用默认值。
@@ -514,10 +513,6 @@ def wechat_start(
     return_url: str = Query(default="/h5/#/home"),
     db: Session = Depends(get_db),
 ):
-    from fastapi.responses import RedirectResponse
-
-    from ..integrations.wechat import WechatOAuthClient
-
     # Phase 3.5/H2：旧邀请入口显式拒绝。只删参数声明时 FastAPI 会忽略
     # 未声明的 query 参数并返回 200，旧链接会静默走完一次微信跳转。
     # 首次绑定必须经 /auth/invites/confirm-start 取得确认后的 signed state。
@@ -558,8 +553,6 @@ def _redirect_callback_failure(
     分级结构化日志，任何入口（AppError/IntegrityError/未知异常转译后）
     都不得让微信浏览器看到裸 JSON。N6：/wechat/start 的通道故障复用同一
     收敛口径，经 action/stage 区分审计来源。"""
-    from fastapi.responses import RedirectResponse
-
     error_code = exc.code if exc.code in _H5_AUTH_ERROR_CODES else "AUTH_FAILED"
     # P2-5：三个解析变量还原失败发生的环节（state 未验签 = unknown；
     # 验签后 invite_id 有值为 bind，否则 login）。
@@ -654,9 +647,6 @@ def wechat_callback(
     state: str = Query(default=""),
     db: Session = Depends(get_db),
 ):
-    from fastapi.responses import RedirectResponse
-    from ..integrations.wechat import WechatOAuthClient
-
     # P1-04：绑定类失败 302 到 H5 状态页；微信浏览器上下文不应看到裸 JSON。
     # P2-5：三个解析变量先置空——except 分支据此还原失败发生的环节
     # （state 未验签 = unknown；验签后 invite_id 有值为 bind，否则 login）。

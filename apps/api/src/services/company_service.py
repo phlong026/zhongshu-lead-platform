@@ -33,26 +33,6 @@ def company_to_dict(company: Company, include_finance: bool = False) -> dict:
     return data
 
 
-def find_company_by_contact_phone(db: Session, phone: str) -> Company | None:
-    """P2-02：按手机号 HMAC 匹配 ACTIVE 公司档案（本地能力，未接端点）。
-
-    邀请绑定的辅助匹配通道：手机号规范化后与 Company.contact_phone_hash
-    精确比对，命中即返回公司。**不得暴露为无凭证的公共端点**——那会把
-    「手机号是否注册公司」变成可枚举探测的公开事实；接入 H5 绑定流时
-    必须先叠加短信验证码等独立凭证。
-    """
-
-    digits = normalize_phone(phone)
-    if len(digits) != 11:
-        return None
-    return db.scalar(
-        select(Company).where(
-            Company.contact_phone_hash == hash_phone(digits),
-            Company.status == "ACTIVE",
-        )
-    )
-
-
 def create_company(db: Session, body: CompanyCreateBody) -> Company:
     if db.scalar(select(Company).where(Company.code == body.code)):
         raise AppError("COMPANY_CODE_EXISTS", "公司编码已存在", 409)

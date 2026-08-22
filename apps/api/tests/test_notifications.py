@@ -8,6 +8,8 @@ from apps.api.src.schemas.company import CompanyCreateBody
 from apps.api.src.services.company_service import create_company
 from apps.api.src.services.notification_service import enqueue_outbox
 from apps.api.src.services.outbox_worker import process_outbox
+# I19/N13：admin 登录头与 test_auth_company 单一来源，不再手写样板。
+from test_auth_company import _admin_headers
 
 
 def test_outbox_without_recipient_is_retried(db) -> None:
@@ -34,9 +36,7 @@ def _invite_outbox_setup(api_client, monkeypatch=None):
     client, factory = api_client
     if monkeypatch is not None:
         monkeypatch.setattr(wechat_module.settings, "wechat_dev_mock", False)
-    login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "Admin123!"})
-    assert login.status_code == 200, login.text
-    headers = {"Authorization": f"Bearer {login.cookies.get('access_token')}"}
+    headers = _admin_headers(client)
     with factory() as db:
         company = create_company(
             db,
@@ -166,9 +166,7 @@ def test_failed_outbox_response_scrubs_legacy_poisoned_last_error(api_client) ->
     """N3：存量脏 last_error 经 failed-outbox 出参时同样脱敏。"""
 
     client, factory = api_client
-    login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "Admin123!"})
-    assert login.status_code == 200, login.text
-    headers = {"Authorization": f"Bearer {login.cookies.get('access_token')}"}
+    headers = _admin_headers(client)
     with factory() as db:
         item = enqueue_outbox(
             db,
@@ -194,9 +192,7 @@ def test_failed_outbox_panel_defaults_include_terminal_states(api_client) -> Non
     DEAD 与人工终态从面板消失等于静默丢失运维信号。"""
 
     client, factory = api_client
-    login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "Admin123!"})
-    assert login.status_code == 200, login.text
-    headers = {"Authorization": f"Bearer {login.cookies.get('access_token')}"}
+    headers = _admin_headers(client)
     with factory() as db:
         for key, status in (
             ("test:panel-failed", "FAILED"),

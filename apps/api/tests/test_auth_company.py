@@ -34,6 +34,15 @@ def _company_body(code: str, **overrides) -> CompanyCreateBody:
     return CompanyCreateBody(**payload)
 
 
+def _expect_invite_invalid(fn) -> None:
+    """N13：非法邀请的一切入口（validate/consume/bind）必须同码拒绝——
+    raises+断言样板收敛到一处，不再逐处手抄。"""
+
+    with pytest.raises(AppError) as exc:
+        fn()
+    assert exc.value.code == "AUTH_INVITE_INVALID"
+
+
 def _legacy_invite(db, company_id: str, label: str) -> InviteToken:
     """Directly insert an invite, simulating rows created before P0-06 uniqueness."""
 
@@ -169,9 +178,7 @@ def test_second_invite_supersedes_previous_valid_invite(db) -> None:
     refreshed_first = db.get(InviteToken, first.id)
     assert refreshed_first.revoked_at is not None
     # 旧链接不能再完成绑定，错误统一为邀请失效，不泄露被哪条新邀请替换
-    with pytest.raises(AppError) as exc:
-        bind_wechat_by_invite(db, first_raw, "openid-superseded", "旧邀请")
-    assert exc.value.code == "AUTH_INVITE_INVALID"
+    _expect_invite_invalid(lambda: bind_wechat_by_invite(db, first_raw, "openid-superseded", "旧邀请"))
     db.rollback()
     # 新链接仍然有效
     user, _ = bind_wechat_by_invite(db, second_raw, "openid-fresh", "新负责人")
@@ -509,9 +516,7 @@ def test_list_company_invites_expired_boundary_matches_validation(api_client) ->
     assert [item["status"] for item in items] == ["EXPIRED"]
 
     with factory() as db:
-        with pytest.raises(AppError) as exc:
-            validate_invite(db, raw_token="list-boundary-expired")
-        assert exc.value.code == "AUTH_INVITE_INVALID"
+        _expect_invite_invalid(lambda: validate_invite(db, raw_token="list-boundary-expired"))
 
 
 def test_list_company_invites_attributes_primary_only_to_latest_used(api_client) -> None:
@@ -563,12 +568,8 @@ def test_validate_invite_rejects_mismatched_token_and_id(db) -> None:
     assert validate_invite(db, invite_id=first.id).id == first.id
     assert validate_invite(db, raw_token="i13-first-raw-token-0001", invite_id=first.id).id == first.id
     # 双参指向不同邀请：与 _consume_invite 的 AND 语义对齐，显式 AUTH_INVITE_INVALID
-    with pytest.raises(AppError) as exc:
-        validate_invite(db, raw_token="i13-first-raw-token-0001", invite_id=second.id)
-    assert exc.value.code == "AUTH_INVITE_INVALID"
-    with pytest.raises(AppError) as exc:
-        validate_invite(db, raw_token="not-a-real-token", invite_id=first.id)
-    assert exc.value.code == "AUTH_INVITE_INVALID"
+    _expect_invite_invalid(lambda: validate_invite(db, raw_token="i13-first-raw-token-0001", invite_id=second.id))
+    _expect_invite_invalid(lambda: validate_invite(db, raw_token="not-a-real-token", invite_id=first.id))
 
 
 def test_confirm_start_rate_limits_repeated_anonymous_requests(api_client) -> None:
