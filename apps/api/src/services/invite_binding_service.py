@@ -547,6 +547,7 @@ def bind_wechat_with_confirmation(
         if refreshed is None or refreshed.status != "ACTIVE":
             raise AppError("AUTH_COMPANY_UNAVAILABLE", "加盟商公司当前不可用", 403)
         raise AppError("AUTH_COMPANY_ALREADY_BOUND", "该公司已有主账号，不能重复绑定", 409)
+    company.primary_user_id = user_id
 
     user = User(
         id=user_id,
