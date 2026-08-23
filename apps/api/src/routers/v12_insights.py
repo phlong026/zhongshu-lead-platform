@@ -42,7 +42,7 @@ def _summary(db: Session, model, filters: list[Any]) -> dict[str, Any]:
 @router.get("/reports/overview")
 def overview(
     request: Request,
-    _principal=Depends(require_permissions("report.v12.read")),
+    principal=Depends(require_permissions("report.v12.read")),
     db: Session = Depends(get_db),
     created_from: datetime | None = Query(default=None),
     created_to: datetime | None = Query(default=None),
@@ -59,17 +59,21 @@ def overview(
         return_f.append(ReturnRequest.company_id == company_id)
         reward_f.append(or_(SupplierLeadReward.supplier_company_id == company_id, SupplierLeadReward.receiver_company_id == company_id))
         points_f.append(PointsLedger.company_id == company_id)
-    points = db.execute(select(func.count(PointsLedger.id), func.coalesce(func.sum(PointsLedger.delta), 0)).where(*points_f)).one()
     rewards = _summary(db, SupplierLeadReward, reward_f)
     rewards["points"] = int(db.scalar(select(func.coalesce(func.sum(SupplierLeadReward.reward_points), 0)).where(*reward_f)) or 0)
-    return ok(request, {
+    data = {
         "scope": {"company_id": company_id, "created_from": _iso(created_from), "created_to": _iso(created_to)},
         "leads": _summary(db, Lead, lead_f),
         "assignments": _summary(db, Assignment, assignment_f),
         "returns": _summary(db, ReturnRequest, return_f),
         "supplier_rewards": rewards,
-        "points_ledger": {"count": int(points[0]), "net_delta": int(points[1])},
-    })
+    }
+    if any(principal.can(code) for code in ("*", "points.read", "dashboard.finance.read")):
+        points = db.execute(
+            select(func.count(PointsLedger.id), func.coalesce(func.sum(PointsLedger.delta), 0)).where(*points_f)
+        ).one()
+        data["points_ledger"] = {"count": int(points[0]), "net_delta": int(points[1])}
+    return ok(request, data)
 
 
 @router.get("/reports/own")

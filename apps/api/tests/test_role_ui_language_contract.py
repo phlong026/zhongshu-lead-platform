@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 
@@ -72,7 +73,7 @@ def test_lead_entry_explains_outcomes_without_security_or_process_jargon() -> No
 
 def test_call_workbench_shows_chinese_role_and_plain_task_language() -> None:
     source = _read(CALL_H5, "app.js")
-    assert "const ROLE_LABEL=" in source
+    assert re.search(r"const\s+ROLE_LABEL\s*=", source)
     assert "me.roles.join('、')" not in source
     assert "事实后置核验" not in source
     assert "锁定给当前电销人员" not in source

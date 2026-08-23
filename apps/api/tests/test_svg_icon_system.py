@@ -3,6 +3,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 H5 = ROOT / "apps" / "h5" / "public"
 ADMIN = ROOT / "apps" / "admin" / "public"
+CALL = ROOT / "apps" / "call-h5" / "public"
 
 GLYPHS = set("⌂▤◈◉♙⇩☎✓↗♟⚙⌁＋≋↩◇◷!×‹›☰⌕?▶●↻▦→◆")
 ASSET_VERSION = "?v=20260820-clarity"
@@ -43,6 +44,25 @@ def test_all_admin_surfaces_reuse_same_local_svg_icon_system():
         assert f"/h5/svg-icon-system.js{ASSET_VERSION}" in index
         assert f"{application_script}{application_version}" in index
         assert index.index("/h5/svg-icon-system.js") < index.index(application_script)
+
+
+def test_call_h5_loads_shared_svg_icon_system_before_application():
+    index = (CALL / "index.html").read_text(encoding="utf-8")
+
+    assert f"/h5/svg-icon-system.css{ASSET_VERSION}" in index
+    assert f"/h5/svg-icon-system.js{ASSET_VERSION}" in index
+    assert f"./app.js{ROLE_UX_ASSET_VERSION}" in index
+    assert index.index("/h5/svg-icon-system.js") < index.index("./app.js")
+
+
+def test_call_h5_uses_named_svg_icons_instead_of_unicode_placeholders():
+    source = (CALL / "app.js").read_text(encoding="utf-8")
+
+    assert "window.ZSIconSystem?.svg" in source
+    for name in ("home", "phone", "user-check", "user", "rotate-ccw"):
+        assert f"'{name}'" in source
+    for glyph in "⌂▤◈◉♙⇩☎✓↗♟⚙⌁＋≋↩◇◷×‹›☰⌕▶●↻▦→◆":
+        assert glyph not in source
 
 
 def test_svg_icon_system_is_inline_accessible_and_has_no_remote_dependency():
