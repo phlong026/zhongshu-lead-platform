@@ -23,8 +23,8 @@ def test_calendar_page_uses_backend_effective_days_and_china_timezone() -> None:
     assert "item.is_override" in calendar
     assert "updated_by_name" in source
     assert "calendarFallbackWorkday" not in calendar
-    assert "DEFAULT_WEEKDAY" in source
-    assert "DEFAULT_WEEKEND" in source
+    assert "DEFAULT_WEEKDAY" not in source
+    assert "DEFAULT_WEEKEND" not in source
 
 
 def test_calendar_page_uses_default_rules_without_import_controls() -> None:
@@ -34,6 +34,8 @@ def test_calendar_page_uses_default_rules_without_import_controls() -> None:
     assert "calendar-new" in calendar
     assert "can('calendar.import')" not in calendar
     assert "calendar-import" not in calendar
+    assert "calendar-source" not in calendar
+    assert "calendar-version" not in calendar
     assert "\u65e0\u7ef4\u62a4\u6743\u9650" in calendar
 
 
@@ -48,5 +50,5 @@ def test_calendar_writes_are_idempotent_and_explain_impact_scope() -> None:
     assert "unchanged_count" not in calendar
     assert "\u53ea\u5f71\u54cd\u4fdd\u5b58\u540e\u65b0\u9886\u53d6\u6216\u5386\u53f2\u7f3a\u5931\u5b57\u6bb5\u8865\u7b97" in source
     assert "\u5df2\u56fa\u5316\u7684\u5386\u53f2\u622a\u6b62\u65f6\u95f4\u4e0d\u56de\u7b97" in source
-    assert "OFFICIAL" in source
-    assert "MANUAL" in source
+    assert "source:'MANUAL'" not in calendar
+    assert "version:item.version||1" not in calendar

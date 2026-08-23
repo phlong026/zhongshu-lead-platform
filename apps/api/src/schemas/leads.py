@@ -53,3 +53,4 @@ class DuplicateDecisionBody(BaseModel):
 class StagingCleanupBody(BaseModel):
     confirmed: bool = False
     expected_deletable_count: int = Field(ge=0)
+    cleanup_token: str = Field(min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$")

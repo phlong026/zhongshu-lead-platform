@@ -119,7 +119,7 @@ def staging_cleanup_preview(
         request,
         {
             **preview,
-            "scope": "仅清理飞书来源、仍处于暂存状态、且未进入核验/派发/退回/重复关系的客资",
+            "scope": "仅清理飞书来源、仍处于暂存状态、且未进入核验、派发或退回流程的客资",
         },
     )
 
@@ -133,21 +133,17 @@ def staging_cleanup(
 ):
     if not body.confirmed:
         raise AppError("STAGING_CLEANUP_CONFIRM_REQUIRED", "请先确认清理飞书暂存资料", 422)
-    preview = preview_feishu_staging_cleanup(db)
-    if preview["deletable_count"] != body.expected_deletable_count:
-        raise AppError(
-            "STAGING_CLEANUP_PREVIEW_STALE",
-            "暂存区数据已变化，请重新预览后再清理",
-            409,
-            {**preview, "expected_deletable_count": body.expected_deletable_count},
-        )
-    result = delete_feishu_staging_leads(db)
+    result = delete_feishu_staging_leads(
+        db,
+        expected_deletable_count=body.expected_deletable_count,
+        cleanup_token=body.cleanup_token,
+    )
     write_audit(
         db,
         principal=principal,
         action="FEISHU_STAGING_CLEANUP",
         resource_type="lead",
-        after={**preview, **result},
+        after=result,
         request_id=request.state.request_id,
     )
     db.commit()

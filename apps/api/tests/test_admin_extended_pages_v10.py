@@ -41,20 +41,28 @@ def test_admin_meta_rbac_and_company_detail(api_client):
     assert 'contact_phone' not in detail
 
 
-def test_verification_task_can_be_assigned_and_reclaimed(api_client):
+def test_legacy_verification_assignment_writes_stay_disabled(api_client, monkeypatch):
     client, _ = api_client
+    import apps.api.src.core.legacy_guard as legacy_guard
+
+    monkeypatch.setattr(legacy_guard.settings, 'legacy_write_enabled', False)
     admin = login(client, 'admin', 'Admin123!')
-    users = data(client.get('/api/v1/admin-meta/telesales-users', headers=admin))
-    telesales = users[0]
     tasks = data(client.get('/api/v1/verification/tasks?page=1&page_size=100', headers=admin))['items']
     task = next(item for item in tasks if item['status'] in {'PENDING', 'ASSIGNED'})
+    before = data(client.get(f"/api/v1/verification/tasks/{task['id']}", headers=admin))
 
-    data(client.post(f"/api/v1/verification/tasks/{task['id']}/assign", headers=admin, json={'assignee_user_id': telesales['id']}))
-    assigned = data(client.get(f"/api/v1/verification/tasks/{task['id']}", headers=admin))
-    assert assigned['status'] == 'ASSIGNED'
-    assert assigned['assignee_user_id'] == telesales['id']
+    assign = client.post(
+        f"/api/v1/verification/tasks/{task['id']}/assign",
+        headers=admin,
+        json={'assignee_user_id': 'legacy-write-must-stay-disabled'},
+    )
+    assert assign.status_code == 410
+    assert assign.json()['code'] == 'LEGACY_WRITE_DISABLED'
 
-    data(client.post(f"/api/v1/verification/tasks/{task['id']}/reclaim", headers=admin))
-    reclaimed = data(client.get(f"/api/v1/verification/tasks/{task['id']}", headers=admin))
-    assert reclaimed['status'] == 'PENDING'
-    assert reclaimed['assignee_user_id'] is None
+    reclaim = client.post(f"/api/v1/verification/tasks/{task['id']}/reclaim", headers=admin)
+    assert reclaim.status_code == 410
+    assert reclaim.json()['code'] == 'LEGACY_WRITE_DISABLED'
+
+    after = data(client.get(f"/api/v1/verification/tasks/{task['id']}", headers=admin))
+    assert after['status'] == before['status']
+    assert after['assignee_user_id'] == before['assignee_user_id']

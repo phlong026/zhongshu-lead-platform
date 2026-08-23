@@ -119,4 +119,3 @@ def test_simple_company_creation_rejects_region_outside_primary_city(api_client)
     )
     assert response.status_code == 422
     assert response.json()["code"] == "SERVICE_AREA_HIERARCHY_INVALID"
-

@@ -76,7 +76,9 @@ def test_admin_v10_extended_operational_pages():
     assert "/master-data/regions" in js
     assert "/admin-meta/rbac-matrix" not in js
     assert "adm-permission-matrix" not in js
-    assert "/admin-meta/telesales-users" in js
-    assert "/verification/tasks/${taskId}/reclaim" in js
+    assert "/admin-meta/telesales-users" not in js
+    assert "/verification/tasks/${taskId}/assign" not in js
+    assert "/verification/tasks/${taskId}/reclaim" not in js
+    assert "核验模板版本" not in js
     assert "/admin-meta/companies/${id}" in js
     assert "业务选项" in js

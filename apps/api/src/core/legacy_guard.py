@@ -18,23 +18,12 @@ LEGACY_WRITE_PREFIXES = (
     "/api/v1/returns",
 )
 LEGACY_WRITE_EXACT_EXEMPTIONS = {
-    "/api/v1/leads/staging-cleanup",
+    ("POST", "/api/v1/leads/staging-cleanup"),
 }
-VERIFICATION_TASK_ACTIONS = {"assign", "reclaim"}
-
-
-def _is_allowed_verification_task_action(path: str) -> bool:
-    prefix = "/api/v1/verification/tasks/"
-    if not path.startswith(prefix):
-        return False
-    parts = path.removeprefix(prefix).split("/")
-    return len(parts) == 2 and bool(parts[0]) and parts[1] in VERIFICATION_TASK_ACTIONS
-
-
 def is_legacy_write(method: str, path: str) -> bool:
     if method.upper() in SAFE_METHODS:
         return False
-    if path in LEGACY_WRITE_EXACT_EXEMPTIONS or _is_allowed_verification_task_action(path):
+    if (method.upper(), path) in LEGACY_WRITE_EXACT_EXEMPTIONS:
         return False
     return any(path == prefix or path.startswith(prefix + "/") for prefix in LEGACY_WRITE_PREFIXES)
 
