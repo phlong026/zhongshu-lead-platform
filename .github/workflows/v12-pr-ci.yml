@@ -180,6 +180,11 @@ jobs:
           python -m alembic -c alembic.ini downgrade 0001_initial
           python -m alembic -c alembic.ini upgrade head
 
+      - name: Verify invite-used-by migration symmetry on PostgreSQL
+        env:
+          INVITE_MIGRATION_POSTGRES_TEST_URL: ${{ env.DATABASE_URL }}
+        run: python -m pytest apps/api/tests/test_invite_used_by_migration_postgres.py -q
+
       - name: Verify H04 dataset creation on PostgreSQL
         env:
           H04_POSTGRES_DATASET_TEST_URL: ${{ env.DATABASE_URL }}
