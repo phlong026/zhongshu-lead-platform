@@ -155,7 +155,7 @@ def test_call_h5_uses_only_v12_return_verification_contract() -> None:
     assert "evidence_summary" in source
     assert "go('home');route()" not in source
     assert "go('tasks');route()" not in source
-    assert "app.js?v=20260820-call-v12" in index
+    assert "app.js?v=20260823-role-ux" in index
 
 
 def test_v12_call_flow_works_with_legacy_writes_disabled(api_client, monkeypatch) -> None:
