@@ -54,8 +54,6 @@ body{background:var(--zs-ivory);color:var(--zs-ink)}
 
 .zs-v13-point-card{isolation:isolate}
 .zs-v13-home .hero{margin:0;min-height:150px;padding:20px;border-radius:22px;background:linear-gradient(135deg,var(--zs-brand) 0%,var(--zs-brand-dark) 100%);box-shadow:var(--zs-shadow-md)}
-.zs-v13-home .hero:before{content:"";position:absolute;width:145px;height:145px;border-radius:50%;right:-46px;bottom:-70px;background:radial-gradient(circle,rgba(255,255,255,.14),rgba(255,255,255,0) 68%)}
-.zs-v13-home .hero:after{width:140px;height:140px;right:-50px;top:-60px;border-color:rgba(255,255,255,.10)}
 .zs-v13-home .hero .row{min-height:108px;align-items:center}
 .zs-v13-home .hero .eyebrow{font-size:12px;line-height:1.6;color:rgba(255,255,255,.82);opacity:1}
 .zs-v13-home .hero .balance{margin:4px 0 2px;font-size:36px;line-height:1.2;letter-spacing:0}

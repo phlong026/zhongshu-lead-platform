@@ -155,7 +155,7 @@ def test_call_h5_uses_only_v12_return_verification_contract() -> None:
     assert "evidence_summary" in source
     assert "go('home');route()" not in source
     assert "go('tasks');route()" not in source
-    assert "app.js?v=20260823-role-ux" in index
+    assert "app.js?v=20260823-flow-audit2" in index
 
 
 def test_call_h5_home_first_screen_has_personal_task_summary_without_team_finance() -> None:

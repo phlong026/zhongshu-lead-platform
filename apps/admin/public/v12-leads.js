@@ -1,5 +1,5 @@
 import {request,query} from './api.js';
-import {closeOverlay,esc,fmt,openDrawer,openModal,toast} from './ui.js';
+import {closeOverlay,esc,fmt,openDrawer,openModal,toast} from './ui.js?v=20260823-readable-fields2';
 
 const app=document.querySelector('#app');
 const state={
@@ -9,18 +9,33 @@ const state={
   supplierItems:[],
   cities:[],
   districts:[],
+  sourceOptions:[],
+  categoryOptions:[],
+  leadOptionsLoaded:false,
   platformStatus:'',
   supplierReviewStatus:'PENDING'
 };
 const can=code=>state.me?.permissions?.includes('*')||state.me?.permissions?.includes(code);
-const labels={DRAFT:'草稿',PENDING_REVIEW:'待资料初审',READY_DISPATCH:'待人工派发',DUPLICATE:'疑似重复',INVALID:'无效',CLOSED:'已关闭',APPROVED:'已通过',REJECTED:'已驳回',PENDING:'待审核',CLEAR:'无重复',HARD_DUPLICATE:'90天内已有相同客户',REWARD_DUPLICATE:'近期已发放奖励',HISTORICAL_SUSPECT:'历史记录疑似重复',OVERRIDDEN:'已确认不重复'};
+const labels={DRAFT:'草稿',PENDING_REVIEW:'待资料初审',READY_DISPATCH:'待人工派发',DUPLICATE:'疑似重复',INVALID:'无效',CLOSED:'已关闭',APPROVED:'已通过',REJECTED:'已驳回',PENDING:'待审核',CLEAR:'无重复',HARD_DUPLICATE:'90天内已有相同客户',REWARD_DUPLICATE:'近期已发放奖励',HISTORICAL_SUSPECT:'历史记录疑似重复',OVERRIDDEN:'已确认不重复',OLD_RENOVATION:'旧房改造',SELF_BUILD:'农村自建房',INTERIOR:'室内装修',PLATFORM_MANUAL:'平台录入',SUPPLIER_H5:'加盟商提交',MANUAL:'平台录入'};
+const TECHNICAL_CODE=/^(?:[A-Z][A-Z0-9_]{2,}|[a-z][a-z0-9]*|[a-z0-9]+(?:[_-][a-z0-9]+)+)$/;
+const readableLabel=(value,fallback='待确认')=>{const text=String(value??'').trim();if(!text)return fallback;return labels[text]||(TECHNICAL_CODE.test(text)?fallback:text)};
+const recordCode=(value,prefix='记录')=>{const text=String(value??'').replace(/-/g,'');return text?`${prefix}-${text.slice(-8).toUpperCase()}`:'--'};
 const statusClass=value=>({READY_DISPATCH:'ok',APPROVED:'ok',CLEAR:'ok',OVERRIDDEN:'blue',DRAFT:'',PENDING_REVIEW:'warn',PENDING:'warn',DUPLICATE:'warn',HARD_DUPLICATE:'bad',HISTORICAL_SUSPECT:'warn',INVALID:'bad',REJECTED:'bad'}[value]||'');
-const badge=value=>`<span class="v12-badge ${statusClass(value)}">${esc(labels[value]||value||'--')}</span>`;
+const badge=value=>`<span class="v12-badge ${statusClass(value)}">${esc(readableLabel(value))}</span>`;
 const icon=name=>window.ZSIconSystem?.svg?.(name)||'';
 const value=id=>document.querySelector(id)?.value?.trim()||'';
+const DEFAULT_SOURCE_OPTIONS=[{code:'MANUAL',label:'人工录入'},{code:'DOUYIN',label:'抖音/信息流'},{code:'WECHAT_VIDEO',label:'视频号'},{code:'XIAOHONGSHU',label:'小红书'}];
+const DEFAULT_CATEGORY_OPTIONS=[{code:'OLD_RENOVATION',label:'旧房改造'},{code:'SELF_BUILD',label:'农村自建房'},{code:'INTERIOR',label:'室内装修'}];
+
+function selectOptions(items,current,emptyLabel,legacyLabel){
+  const options=new Map();
+  items.forEach(item=>{if(item?.code&&!options.has(item.code))options.set(item.code,{code:item.code,label:item.label||readableLabel(item.code,legacyLabel)});});
+  if(current&&!options.has(current))options.set(current,{code:current,label:readableLabel(current,legacyLabel)});
+  return `<option value="">${esc(emptyLabel)}</option>`+[...options.values()].map(item=>`<option value="${esc(item.code)}" ${item.code===current?'selected':''}>${esc(item.label)}</option>`).join('');
+}
 
 function shell(content=''){
-  zsSetSafeHtml(app, `<div class="v12-shell"><header class="v12-topbar"><div class="v12-brand"><img src="./logo.png" alt="合家美宅"><div><strong>客资录入与初审</strong><small>平台录入 · 加盟商客资初审</small></div></div><div class="v12-top-actions"><a class="v12-btn" href="./#/dashboard">${icon('chevron-left')}返回工作台首页</a></div></header><main class="v12-main"><section class="v12-hero"><div class="v12-hero-icon">${icon('inbox')}</div><div><h1>录入客资，审核加盟商提交的信息</h1><p>系统会自动检查信息是否完整、已获得客户授权，以及是否存在重复记录。</p></div></section><nav class="v12-tabs">${can('lead.manual.manage')?`<button class="v12-tab ${state.tab==='platform'?'active':''}" data-tab="platform">${icon('inbox')}平台录入</button>`:''}${can('lead.supplier.review')?`<button class="v12-tab ${state.tab==='supplier'?'active':''}" data-tab="supplier">${icon('user-check')}加盟商客资初审</button>`:''}</nav><div id="workspace">${content}</div></main></div>`);
+  zsSetSafeHtml(app, `<div class="v12-shell"><header class="v12-topbar"><div class="v12-brand"><img src="./logo.png" alt="合家美宅"><div><strong>客资录入与初审</strong><small>平台录入 · 加盟商客资初审</small></div></div><div class="v12-top-actions"><a class="v12-btn" href="/admin/">${icon('chevron-left')}返回岗位首页</a></div></header><main class="v12-main"><section class="v12-hero"><div class="v12-hero-icon">${icon('inbox')}</div><div><h1>录入客资，审核加盟商提交的信息</h1><p>系统会自动检查信息是否完整、已获得客户授权，以及是否存在重复记录。</p></div></section><nav class="v12-tabs">${can('lead.manual.manage')?`<button class="v12-tab ${state.tab==='platform'?'active':''}" data-tab="platform">${icon('inbox')}平台录入</button>`:''}${can('lead.supplier.review')?`<button class="v12-tab ${state.tab==='supplier'?'active':''}" data-tab="supplier">${icon('user-check')}加盟商客资初审</button>`:''}</nav><div id="workspace">${content}</div></main></div>`);
   document.querySelectorAll('[data-tab]').forEach(button=>button.onclick=()=>{state.tab=button.dataset.tab;renderCurrent();});
 }
 
@@ -36,8 +51,8 @@ async function boot(){
     shell();
     await renderCurrent();
   }catch(error){
-    if(error.code==='AUTH_REQUIRED'||error.code==='AUTH_INVALID'){location.href='./#/dashboard';return;}
-    zsSetSafeHtml(app, `<main class="v12-main"><div class="v12-error">${esc(error.message||'无法进入工作台')}</div><p><a class="v12-btn" href="./#/dashboard">返回工作台首页</a></p></main>`);
+    if(error.code==='AUTH_REQUIRED'||error.code==='AUTH_INVALID'){location.replace('/admin/index.html');return;}
+    zsSetSafeHtml(app, `<main class="v12-main"><div class="v12-error">${esc(error.message||'无法进入工作台')}</div><p><a class="v12-btn" href="/admin/">返回岗位首页</a></p></main>`);
   }
 }
 
@@ -50,7 +65,7 @@ async function renderPlatformLeads(){
   const rows=state.platformItems.map(item=>{
     const ownsDraft=can('*')||item.submitter_user_id===state.me.id;
     const mutationActions=item.status==='DRAFT'&&ownsDraft?`<button class="v12-btn small" data-edit="${item.id}">编辑</button><button class="v12-btn small primary" data-submit="${item.id}">提交</button>`:'';
-    return `<tr><td class="v12-customer"><strong>${esc(item.customer_name)}</strong><span>${icon('phone')}${esc(item.phone_masked||'--')}</span></td><td>${esc(item.city||'--')} ${esc(item.district||'')}</td><td>${esc(item.source_channel||'--')}</td><td>${badge(item.status)}<div style="margin-top:6px">${badge(item.duplicate_status)}</div></td><td>${fmt(item.submitted_at||item.created_at)}</td><td><div class="v12-actions"><button class="v12-btn small" data-detail="${item.id}">详情</button>${mutationActions}</div></td></tr>`;
+    return `<tr><td class="v12-customer"><strong>${esc(item.customer_name)}</strong><span>${icon('phone')}${esc(item.phone_masked||'--')}</span></td><td>${esc(item.city||'--')} ${esc(item.district||'')}</td><td>${esc(readableLabel(item.source_channel,'未填写'))}</td><td>${badge(item.status)}<div style="margin-top:6px">${badge(item.duplicate_status)}</div></td><td>${fmt(item.submitted_at||item.created_at)}</td><td><div class="v12-actions"><button class="v12-btn small" data-detail="${item.id}">详情</button>${mutationActions}</div></td></tr>`;
   });
   zsSetSafeHtml(document.querySelector('#workspace'), `<section class="v12-summary"><div class="v12-stat"><i>${icon('list')}</i><span>当前结果</span><strong>${stats.all}</strong></div><div class="v12-stat"><i>${icon('file-text')}</i><span>草稿</span><strong>${stats.draft}</strong></div><div class="v12-stat"><i>${icon('hand-claim')}</i><span>待人工派发</span><strong>${stats.ready}</strong></div><div class="v12-stat"><i>${icon('alert-triangle')}</i><span>重复/疑似</span><strong>${stats.duplicate}</strong></div></section><section class="v12-panel"><div class="v12-toolbar"><div class="v12-toolbar-left"><h2>平台录入客资</h2><select class="v12-select" id="platform-status"><option value="">全部状态</option>${['DRAFT','READY_DISPATCH','DUPLICATE','INVALID','CLOSED'].map(option=>`<option value="${option}" ${state.platformStatus===option?'selected':''}>${esc(labels[option])}</option>`).join('')}</select><button class="v12-btn" id="platform-filter">${icon('search')}查询</button></div><div class="v12-toolbar-right"><button class="v12-btn primary" id="new-platform-lead">${icon('plus')}新建客资</button></div></div>${table(['客户','服务地区','来源渠道','状态/去重','提交时间','操作'],rows,'暂无平台手工录入客资')}</section>`);
   document.querySelector('#platform-filter').onclick=()=>{state.platformStatus=document.querySelector('#platform-status').value;renderPlatformLeads();};
@@ -61,20 +76,26 @@ async function renderPlatformLeads(){
 }
 
 function detailMarkup(item){
-  const fields={客户姓名:item.customer_name,联系电话:item.phone||item.phone_masked,服务地区:`${item.city||''} ${item.district||''}`,来源渠道:item.source_channel,客户咨询类别:item.category_code,客户需求:item.need_summary,预算下限:item.budget_min,预算上限:item.budget_max,客户授权:item.consent_confirmed?'已确认':'未确认',客资状态:labels[item.status]||item.status,资料初审:labels[item.review_status]||item.review_status,重复检查:labels[item.duplicate_status]||item.duplicate_status,待处理原因:item.pending_reason,平台说明:item.review_note,提交时间:fmt(item.submitted_at),更新时间:fmt(item.updated_at)};
+  const fields={客资编号:recordCode(item.id,'KZ'),客户姓名:item.customer_name,联系电话:item.phone||item.phone_masked,服务地区:`${item.city||''} ${item.district||''}`,来源渠道:readableLabel(item.source_channel,'未填写'),客户咨询类别:readableLabel(item.category_code,'其他咨询'),客户需求:item.need_summary,预算下限:item.budget_min,预算上限:item.budget_max,客户授权:item.consent_confirmed?'已确认':'未确认',客资状态:readableLabel(item.status),资料初审:readableLabel(item.review_status),重复检查:readableLabel(item.duplicate_status),待处理原因:readableLabel(item.pending_reason,'暂无'),平台说明:item.review_note,提交时间:fmt(item.submitted_at),更新时间:fmt(item.updated_at)};
   return `<dl class="v12-detail">${Object.entries(fields).map(([name,val])=>`<dt>${esc(name)}</dt><dd>${esc(val??'--')}</dd>`).join('')}</dl>`;
 }
 function showPlatformDetail(id){const item=state.platformItems.find(row=>row.id===id);if(item)openDrawer('平台客资详情',detailMarkup(item));}
 
 async function ensureCities(){if(!state.cities.length)state.cities=await request('/master-data/regions?level=CITY');return state.cities;}
 async function loadDistricts(cityCode){state.districts=cityCode?await request('/master-data/regions'+query({parent_code:cityCode,level:'DISTRICT'})):[];return state.districts;}
+async function ensureLeadOptions(){
+  if(state.leadOptionsLoaded)return;
+  const load=async(domain,fallback)=>{try{const items=await request(`/master-data/dictionaries/${domain}`);return items?.length?items:fallback;}catch(error){console.warn(`未能加载${domain}选项，已使用默认选项`,error);return fallback;}};
+  [state.sourceOptions,state.categoryOptions]=await Promise.all([load('source_channel',DEFAULT_SOURCE_OPTIONS),load('lead_category',DEFAULT_CATEGORY_OPTIONS)]);
+  state.leadOptionsLoaded=true;
+}
 
 async function openLeadForm(item){
-  await ensureCities();
+  await Promise.all([ensureCities(),ensureLeadOptions()]);
   const city=state.cities.find(row=>row.name===item?.city)||state.cities.find(row=>row.code===item?.region_code)||null;
   await loadDistricts(city?.code||'');
   const district=state.districts.find(row=>row.name===item?.district)||state.districts.find(row=>row.code===item?.region_code)||null;
-  const body=`<div class="v12-form-grid"><div class="v12-field"><label>客户姓名 *</label><input class="v12-input" id="lead-name" value="${esc(item?.customer_name==='未填写'?'':item?.customer_name||'')}"></div><div class="v12-field"><label>手机号 *</label><input class="v12-input" id="lead-phone" inputmode="tel" maxlength="32" value="${esc(item?.phone||'')}"></div><div class="v12-field"><label>城市 *</label><select class="v12-select" id="lead-city"><option value="">请选择城市</option>${state.cities.map(row=>`<option value="${row.code}" ${city?.code===row.code?'selected':''}>${esc(row.name)}</option>`).join('')}</select></div><div class="v12-field"><label>区县</label><select class="v12-select" id="lead-district"><option value="">全市范围</option>${state.districts.map(row=>`<option value="${row.code}" ${district?.code===row.code?'selected':''}>${esc(row.name)}</option>`).join('')}</select></div><div class="v12-field"><label>来源渠道</label><input class="v12-input" id="lead-source" value="${esc(item?.source_channel||'')}"></div><div class="v12-field"><label>客户咨询类别</label><input class="v12-input" id="lead-category" value="${esc(item?.category_code||'')}"></div><div class="v12-field"><label>预算下限（元）</label><input class="v12-input" id="lead-budget-min" type="number" min="0" value="${esc(item?.budget_min??'')}"></div><div class="v12-field"><label>预算上限（元）</label><input class="v12-input" id="lead-budget-max" type="number" min="0" value="${esc(item?.budget_max??'')}"></div><div class="v12-field full"><label>客户需求 *</label><textarea class="v12-textarea" id="lead-need">${esc(item?.need_summary||'')}</textarea></div><div class="v12-field full"><label class="v12-check"><input id="lead-consent" type="checkbox" ${item?.consent_confirmed?'checked':''}><span><b>已获得客户信息授权 *</b><div class="v12-help">只有确认客户授权后才能提交。平台会安全保存联系方式，并自动检查是否已有相同客户。</div></span></label></div></div>`;
+  const body=`<div class="v12-form-grid"><div class="v12-field"><label>客户姓名 *</label><input class="v12-input" id="lead-name" value="${esc(item?.customer_name==='未填写'?'':item?.customer_name||'')}"></div><div class="v12-field"><label>手机号 *</label><input class="v12-input" id="lead-phone" inputmode="tel" maxlength="32" value="${esc(item?.phone||'')}"></div><div class="v12-field"><label>城市 *</label><select class="v12-select" id="lead-city"><option value="">请选择城市</option>${state.cities.map(row=>`<option value="${row.code}" ${city?.code===row.code?'selected':''}>${esc(row.name)}</option>`).join('')}</select></div><div class="v12-field"><label>区县</label><select class="v12-select" id="lead-district"><option value="">全市范围</option>${state.districts.map(row=>`<option value="${row.code}" ${district?.code===row.code?'selected':''}>${esc(row.name)}</option>`).join('')}</select></div><div class="v12-field"><label>来源渠道</label><select class="v12-select" id="lead-source">${selectOptions(state.sourceOptions,item?.source_channel||'','请选择来源渠道','原有来源')}</select></div><div class="v12-field"><label>客户咨询类别</label><select class="v12-select" id="lead-category">${selectOptions(state.categoryOptions,item?.category_code||'','请选择客户咨询类别','原有类别')}</select></div><div class="v12-field"><label>预算下限（元）</label><input class="v12-input" id="lead-budget-min" type="number" min="0" value="${esc(item?.budget_min??'')}"></div><div class="v12-field"><label>预算上限（元）</label><input class="v12-input" id="lead-budget-max" type="number" min="0" value="${esc(item?.budget_max??'')}"></div><div class="v12-field full"><label>客户需求 *</label><textarea class="v12-textarea" id="lead-need">${esc(item?.need_summary||'')}</textarea></div><div class="v12-field full"><label class="v12-check"><input id="lead-consent" type="checkbox" ${item?.consent_confirmed?'checked':''}><span><b>已获得客户信息授权 *</b><div class="v12-help">只有确认客户授权后才能提交。平台会安全保存联系方式，并自动检查是否已有相同客户。</div></span></label></div></div>`;
   openModal(item?'编辑客资草稿':'新建平台客资',body,`<button data-close class="v12-btn">取消</button><button id="save-lead" class="v12-btn primary">保存草稿</button>`);
   document.querySelector('#lead-city').onchange=async event=>{await loadDistricts(event.target.value);const select=document.querySelector('#lead-district');zsSetSafeHtml(select, '<option value="">全市范围</option>'+state.districts.map(row=>`<option value="${row.code}">${esc(row.name)}</option>`).join(''));};
   document.querySelector('#save-lead').onclick=()=>saveLeadForm(item);
@@ -113,8 +134,8 @@ function supplierActions(item){
 async function renderSupplierQueue(){
   const data=await request('/v1.2/admin/supplier-leads'+query({page:1,page_size:200,review_status:state.supplierReviewStatus}));
   state.supplierItems=data.items||[];
-  const rows=state.supplierItems.map(item=>`<tr><td class="v12-customer"><strong>${esc(item.customer_name)}</strong><span>${icon('phone')}${esc(item.phone_masked||'--')}</span></td><td>${esc(item.city||'--')} ${esc(item.district||'')}</td><td>${esc(item.supplier_company_id||'--')}</td><td>${badge(item.review_status)}<div style="margin-top:6px">${badge(item.duplicate_status)}</div></td><td>${fmt(item.submitted_at||item.created_at)}</td><td><div class="v12-actions">${supplierActions(item)}</div></td></tr>`);
-  zsSetSafeHtml(document.querySelector('#workspace'), `<section class="v12-panel"><div class="v12-toolbar"><div class="v12-toolbar-left"><h2>供应商资料初审</h2><select class="v12-select" id="supplier-review-status"><option value="PENDING" ${state.supplierReviewStatus==='PENDING'?'selected':''}>待审核</option><option value="APPROVED" ${state.supplierReviewStatus==='APPROVED'?'selected':''}>已通过</option><option value="REJECTED" ${state.supplierReviewStatus==='REJECTED'?'selected':''}>已驳回</option><option value="" ${state.supplierReviewStatus===''?'selected':''}>全部</option></select><button class="v12-btn" id="supplier-filter">查询</button></div><div class="v12-toolbar-right"><span class="v12-help">资料初审仅核对字段、来源、授权和重复结论</span></div></div>${table(['客户','服务地区','供应商公司','初审/去重','提交时间','操作'],rows,'暂无供应商客资')}</section>`);
+  const rows=state.supplierItems.map(item=>`<tr><td class="v12-customer"><strong>${esc(item.customer_name)}</strong><span>${icon('phone')}${esc(item.phone_masked||'--')}</span></td><td>${esc(item.city||'--')} ${esc(item.district||'')}</td><td>${esc(recordCode(item.supplier_company_id,'加盟商'))}</td><td>${badge(item.review_status)}<div style="margin-top:6px">${badge(item.duplicate_status)}</div></td><td>${fmt(item.submitted_at||item.created_at)}</td><td><div class="v12-actions">${supplierActions(item)}</div></td></tr>`);
+  zsSetSafeHtml(document.querySelector('#workspace'), `<section class="v12-panel"><div class="v12-toolbar"><div class="v12-toolbar-left"><h2>加盟商客资初审</h2><select class="v12-select" id="supplier-review-status"><option value="PENDING" ${state.supplierReviewStatus==='PENDING'?'selected':''}>待审核</option><option value="APPROVED" ${state.supplierReviewStatus==='APPROVED'?'selected':''}>已通过</option><option value="REJECTED" ${state.supplierReviewStatus==='REJECTED'?'selected':''}>已驳回</option><option value="" ${state.supplierReviewStatus===''?'selected':''}>全部</option></select><button class="v12-btn" id="supplier-filter">查询</button></div><div class="v12-toolbar-right"><span class="v12-help">资料初审仅核对字段、来源、授权和重复结论</span></div></div>${table(['客户','服务地区','加盟商公司','初审/去重','提交时间','操作'],rows,'暂无加盟商客资')}</section>`);
   document.querySelector('#supplier-filter').onclick=()=>{state.supplierReviewStatus=document.querySelector('#supplier-review-status').value;renderSupplierQueue();};
   document.querySelectorAll('[data-supplier-detail]').forEach(button=>button.onclick=()=>showSupplierDetail(button.dataset.supplierDetail));
   document.querySelectorAll('[data-review-approve]').forEach(button=>button.onclick=()=>openSupplierReview(button.dataset.reviewApprove,true));
@@ -122,7 +143,7 @@ async function renderSupplierQueue(){
   document.querySelectorAll('[data-dedup-override]').forEach(button=>button.onclick=()=>openDedupOverride(button.dataset.dedupOverride));
 }
 
-async function showSupplierDetail(id){try{const item=await request(`/v1.2/admin/supplier-leads/${id}`);openDrawer('供应商客资详情',detailMarkup(item));}catch(error){toast(error.message,'error');}}
+async function showSupplierDetail(id){try{const item=await request(`/v1.2/admin/supplier-leads/${id}`);openDrawer('加盟商客资详情',detailMarkup(item));}catch(error){toast(error.message,'error');}}
 
 function openDedupOverride(id){
   const item=state.supplierItems.find(row=>row.id===id);if(!item)return;
@@ -132,7 +153,7 @@ function openDedupOverride(id){
 
 function openSupplierReview(id,approve){
   const item=state.supplierItems.find(row=>row.id===id);if(!item)return;
-  openModal(approve?'通过供应商客资':'驳回供应商客资',`${detailMarkup(item)}<div class="v12-field" style="margin-top:16px"><label>${approve?'审核说明':'驳回原因 *'}</label><textarea class="v12-textarea" id="review-note" placeholder="${approve?'可填写资料核验说明':'请明确告知供应商需要修正的内容'}"></textarea></div>`,`<button data-close class="v12-btn">取消</button><button id="confirm-review" class="v12-btn ${approve?'primary':'danger'}">确认${approve?'通过':'驳回'}</button>`);
+  openModal(approve?'通过加盟商客资':'驳回加盟商客资',`${detailMarkup(item)}<div class="v12-field" style="margin-top:16px"><label>${approve?'审核说明':'驳回原因 *'}</label><textarea class="v12-textarea" id="review-note" placeholder="${approve?'可填写资料核验说明':'请明确告知加盟商需要修正的内容'}"></textarea></div>`,`<button data-close class="v12-btn">取消</button><button id="confirm-review" class="v12-btn ${approve?'primary':'danger'}">确认${approve?'通过':'驳回'}</button>`);
   document.querySelector('#confirm-review').onclick=async()=>{const note=value('#review-note');if(!approve&&!note){toast('驳回时必须填写原因','error');return;}try{await request(`/v1.2/admin/supplier-leads/${id}/review`,{method:'POST',body:JSON.stringify({decision:approve?'APPROVE':'REJECT',note})});closeOverlay();toast('资料初审已完成');await renderSupplierQueue();}catch(error){toast(error.message,'error');}};
 }
 

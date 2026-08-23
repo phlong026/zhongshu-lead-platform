@@ -42,8 +42,9 @@ def test_production_frontend_static_assets_contain_no_demo_credentials() -> None
 
 def test_admin_login_and_user_creation_require_explicit_credentials() -> None:
     source = Path("apps/admin/public/app.js").read_text(encoding="utf-8")
-    assert "input('username','','text','请输入管理账号')" in source
-    assert "input('password','','password','请输入密码')" in source
+    assert 'id="admin-login-form"' in source
+    assert 'id="username" name="username" type="text" autocomplete="username"' in source
+    assert 'id="password" name="password" type="password" autocomplete="current-password"' in source
     assert "input('u-pass','','password','请设置高强度初始密码')" in source
     assert "request('/auth/login'" in source
 
@@ -60,8 +61,9 @@ def test_h5_login_is_wechat_only_without_demo_account_form() -> None:
 
 def test_call_h5_internal_login_requires_explicit_credentials() -> None:
     source = Path("apps/call-h5/public/app.js").read_text(encoding="utf-8")
-    assert 'id="user" class="input" autocomplete="username" placeholder="请输入电销账号"' in source
-    assert 'id="pass" class="input" type="password" autocomplete="current-password" placeholder="请输入密码"' in source
+    assert 'id="call-login-form"' in source
+    assert 'id="user" name="username" autocomplete="username" placeholder="请输入电销账号"' in source
+    assert 'id="pass" name="password" type="password" autocomplete="current-password" placeholder="请输入登录密码"' in source
     assert 'value="telesales"' not in source
     assert "Telesales123!" not in source
     assert "api('/auth/login'" in source

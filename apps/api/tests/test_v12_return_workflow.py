@@ -15,6 +15,7 @@ from apps.api.src.core.models import (
     PointsAccount,
     PointsLedger,
     ReturnEvidence,
+    ReturnRequest,
     User,
     VerificationTask,
 )
@@ -185,7 +186,7 @@ def _workflow_setup(db, *, lead_status: str = LeadV12Status.CLAIMED.value):
     "evidence_type",
     [EvidenceType.CHAT_SCREENSHOT.value, EvidenceType.CALL_RECORDING.value],
 )
-def test_single_screenshot_or_recording_is_enough_and_creates_post_call_task(db, evidence_type: str) -> None:
+def test_single_evidence_type_is_rejected(db, evidence_type: str) -> None:
     setup = _workflow_setup(db)
     principal = _principal(setup["receiver_user"], "return.own.manage")
     request = create_or_update_return_draft(
@@ -197,6 +198,28 @@ def test_single_screenshot_or_recording_is_enough_and_creates_post_call_task(db,
     )
     assert db.scalar(select(VerificationTask).where(VerificationTask.lead_id == setup["lead"].id)) is None
     _evidence(db, request, principal, evidence_type)
+    with pytest.raises(AppError) as exc_info:
+        submit_return_request(db, return_id=request.id, principal=principal)
+
+    assert exc_info.value.code == "RETURN_EVIDENCE_REQUIRED"
+    assert exc_info.value.details == {
+        "screenshot_count": 1 if evidence_type == EvidenceType.CHAT_SCREENSHOT.value else 0,
+        "recording_count": 1 if evidence_type == EvidenceType.CALL_RECORDING.value else 0,
+    }
+
+
+def test_screenshot_and_recording_create_post_call_task(db) -> None:
+    setup = _workflow_setup(db)
+    principal = _principal(setup["receiver_user"], "return.own.manage")
+    request = create_or_update_return_draft(
+        db,
+        assignment_id=setup["assignment"].id,
+        principal=principal,
+        reason_code="EMPTY_NUMBER",
+        description="多次联系后确认号码异常，需要申请退回",
+    )
+    _evidence(db, request, principal, EvidenceType.CHAT_SCREENSHOT.value)
+    _evidence(db, request, principal, EvidenceType.CALL_RECORDING.value)
     result = submit_return_request(db, return_id=request.id, principal=principal)
     db.commit()
 
@@ -246,6 +269,7 @@ def _submit_and_verify(db, setup, *, conclusion: str = "SUPPORT_RETURN"):
         description="客户号码经多次拨打确认为空号",
     )
     _evidence(db, request, owner, EvidenceType.CHAT_SCREENSHOT.value)
+    _evidence(db, request, owner, EvidenceType.CALL_RECORDING.value)
     submitted = submit_return_request(db, return_id=request.id, principal=owner)
     assert submitted.task is not None
     operator = _principal(setup["operator"], "verification.read")
@@ -294,6 +318,13 @@ def test_final_approve_refunds_once_recovers_lead_and_cancels_reward(db) -> None
     assert result.refund_ledger.delta == 100
     assert request.status == ReturnV12Status.APPROVED.value
     assert request.refund_points == 100
+    db.expire(request)
+    persisted_request = db.get(ReturnRequest, request.id)
+    assert persisted_request is not None
+    assert persisted_request.reviewed_by == reviewer.user_id
+    assert persisted_request.reviewed_at is not None
+    assert persisted_request.review_note == "证据和电销事实均支持退回"
+    assert persisted_request.final_decision_reason == "证据和电销事实均支持退回"
     assert setup["assignment"].status == AssignmentStatus.RETURNED.value
     assert setup["lead"].status == LeadV12Status.READY_DISPATCH.value
     assert setup["lead"].current_assignment_id is None
@@ -386,6 +417,7 @@ def test_final_review_requires_submitted_post_call_conclusion(db) -> None:
         description="客户实际建房地点不属于当前公司服务范围",
     )
     _evidence(db, request, owner, EvidenceType.CHAT_SCREENSHOT.value)
+    _evidence(db, request, owner, EvidenceType.CALL_RECORDING.value)
     submit_return_request(db, return_id=request.id, principal=owner)
     request.status = ReturnV12Status.REVIEWING.value
     reviewer = _principal(setup["reviewer"], "return.review")
@@ -411,6 +443,7 @@ def test_initial_submission_after_deadline_is_marked_expired(db) -> None:
         description="提交后发现客户已在本公司历史客户库中",
     )
     _evidence(db, request, owner, EvidenceType.CHAT_SCREENSHOT.value)
+    _evidence(db, request, owner, EvidenceType.CALL_RECORDING.value)
     request.appeal_deadline_at = datetime.now(timezone.utc) - timedelta(minutes=1)
     request.due_at = request.appeal_deadline_at
     result = submit_return_request(db, return_id=request.id, principal=owner)

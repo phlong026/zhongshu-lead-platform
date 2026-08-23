@@ -278,17 +278,17 @@ def submit_return_request(
         return ReturnSubmitResult(request=request, task=None, expired=True)
 
     counts = _evidence_summary(db, request.id)
-    evidence_count = counts.get(EvidenceType.CHAT_SCREENSHOT.value, 0) + counts.get(
-        EvidenceType.CALL_RECORDING.value, 0
-    )
-    if evidence_count < 1:
+    screenshot_count = counts.get(EvidenceType.CHAT_SCREENSHOT.value, 0)
+    recording_count = counts.get(EvidenceType.CALL_RECORDING.value, 0)
+    evidence_count = screenshot_count + recording_count
+    if screenshot_count < 1 or recording_count < 1:
         raise AppError(
             "RETURN_EVIDENCE_REQUIRED",
-            "请至少上传 1 张沟通截图或 1 份电话录音",
+            "请同时上传至少 1 张沟通截图和 1 份电话录音",
             422,
             {
-                "screenshot_count": counts.get(EvidenceType.CHAT_SCREENSHOT.value, 0),
-                "recording_count": counts.get(EvidenceType.CALL_RECORDING.value, 0),
+                "screenshot_count": screenshot_count,
+                "recording_count": recording_count,
             },
         )
 
@@ -507,6 +507,8 @@ def final_review_return(
         return ReturnFinalReviewResult(request=request, refund_ledger=None, idempotent=True)
     if request.status != ReturnV12Status.REVIEWING.value:
         raise AppError("RETURN_NOT_FINAL_REVIEWABLE", "退回申请当前不可终审", 409, {"status": request.status})
+    if normalized_decision not in {"APPROVE", "REJECT", "NEED_MORE"}:
+        raise AppError("RETURN_FINAL_DECISION_INVALID", "终审决定无效", 422)
 
     task = _current_verification_task(db, request)
     assignment = _get_assignment(db, request.assignment_id, lock=True)
@@ -521,6 +523,9 @@ def final_review_return(
     request.reviewed_at = now
     request.review_note = note.strip()
     request.final_decision_reason = note.strip()
+    # SQLite's points-account lock refreshes the session. Persist the review
+    # trail first so that refresh cannot discard the reviewer and decision note.
+    db.flush()
 
     if normalized_decision == "NEED_MORE":
         assert_return_transition(ReturnV12Status.REVIEWING, ReturnV12Status.NEED_MORE_EVIDENCE)
@@ -560,8 +565,6 @@ def final_review_return(
         db.flush()
         return ReturnFinalReviewResult(request=request, refund_ledger=None)
 
-    if normalized_decision != "APPROVE":
-        raise AppError("RETURN_FINAL_DECISION_INVALID", "终审决定无效", 422)
     if reward and reward.status == RewardStatus.SETTLED.value:
         raise AppError("REWARD_ALREADY_SETTLED", "供应商奖励已结算，需走异常冲正流程", 409)
     claim_ledger = _claim_ledger(db, request, assignment)

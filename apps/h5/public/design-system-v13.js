@@ -56,9 +56,10 @@ function zsPatchHome() {
 
   const originalTitle = zsText(title, '您好');
   const companyText = zsText(subtitle, '加盟商');
-  const levelMatch = companyText.match(/\bV\d\b/i);
-  const level = levelMatch ? levelMatch[0].toUpperCase() : 'V1';
-  const company = companyText.replace(/\s*[·•]\s*V\d\s*会员?/i, '').trim();
+  const levelName = companyText.match(/(?:普通|重点|核心)加盟商/)?.[0]
+    || ({ V1: '普通加盟商', V2: '重点加盟商', V3: '核心加盟商' }[companyText.match(/\bV[123]\b/i)?.[0]?.toUpperCase()])
+    || '普通加盟商';
+  const company = companyText.replace(/\s*[·•]\s*(?:(?:普通|重点|核心)加盟商|V[123]\s*会员?)/i, '').trim();
 
   const identity = document.createElement('section');
   identity.className = 'zs-v13-identity';
@@ -68,7 +69,7 @@ function zsPatchHome() {
       <h1>${originalTitle}</h1>
       <p>${company || '加盟商公司'}</p>
     </div>
-    <span class="zs-v13-level">${level} 战略合作</span>`);
+    <span class="zs-v13-level">${levelName}</span>`);
 
   const heroButton = hero.querySelector('[data-route="points"]');
   if (heroButton) heroButton.textContent = '去充值';

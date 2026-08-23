@@ -12,6 +12,9 @@ const state = {
   items: [],
   cities: [],
   districts: [],
+  sourceOptions: [],
+  categoryOptions: [],
+  leadOptionsLoaded: false,
   editing: null,
   listPage: 1,
   listPageSize: 20,
@@ -34,7 +37,68 @@ const labels = {
   REWARD_DUPLICATE: '已有相同客户记录',
   HISTORICAL_SUSPECT: '历史记录待确认',
   OVERRIDDEN: '已人工确认',
+  PENDING_CLAIM: '待领取',
+  CLAIMED: '已领取',
+  FOLLOWING: '跟进中',
+  RETURN_PENDING: '退回处理中',
+  RETURNED: '已退回',
+  RELEASED: '已释放',
+  EXPIRED: '已过期',
+  COMPLETED: '已完成',
+  OLD_RENOVATION: '旧房改造',
+  SELF_BUILD: '农村自建房',
+  INTERIOR: '室内装修',
+  MANUAL: '人工录入',
+  DOUYIN: '抖音/信息流',
+  WECHAT_VIDEO: '视频号',
+  XIAOHONGSHU: '小红书',
+  '供应商推荐': '加盟商推荐',
 };
+const TECHNICAL_CODE = /^(?:[A-Z][A-Z0-9_]{2,}|[a-z][a-z0-9]*|[a-z0-9]+(?:[_-][a-z0-9]+)+)$/;
+const readableLabel = (value, fallback = '待确认') => {
+  const text = String(value ?? '').trim();
+  if (!text) return fallback;
+  return labels[text] || (TECHNICAL_CODE.test(text) ? fallback : text);
+};
+const DEFAULT_SOURCE_OPTIONS = [
+  { code: '供应商推荐', label: '加盟商推荐' },
+  { code: 'DOUYIN', label: '抖音/信息流' },
+  { code: 'WECHAT_VIDEO', label: '视频号' },
+  { code: 'XIAOHONGSHU', label: '小红书' },
+  { code: 'MANUAL', label: '人工录入' },
+];
+const DEFAULT_CATEGORY_OPTIONS = [
+  { code: 'OLD_RENOVATION', label: '旧房改造' },
+  { code: 'SELF_BUILD', label: '农村自建房' },
+  { code: 'INTERIOR', label: '室内装修' },
+];
+
+function selectOptions(items, current, emptyLabel, legacyLabel) {
+  const options = new Map();
+  items.forEach((item) => {
+    if (item?.code && !options.has(item.code)) {
+      options.set(item.code, {
+        code: item.code,
+        label: item.label || readableLabel(item.code, legacyLabel),
+      });
+    }
+  });
+  if (current && !options.has(current)) {
+    options.set(current, {
+      code: current,
+      label: readableLabel(current, legacyLabel),
+    });
+  }
+  return (
+    `<option value="">${esc(emptyLabel)}</option>` +
+    [...options.values()]
+      .map(
+        (item) =>
+          `<option value="${esc(item.code)}" ${item.code === current ? 'selected' : ''}>${esc(item.label)}</option>`,
+      )
+      .join('')
+  );
+}
 
 const fieldControls = {
   customer_name: '#lead-name',
@@ -100,7 +164,7 @@ function statusClass(status) {
 
 function badge(status) {
   return `<span class="supplier-status ${statusClass(status)}">${esc(
-    labels[status] || status || '--',
+    readableLabel(status),
   )}</span>`;
 }
 
@@ -180,7 +244,7 @@ function capabilityBlock() {
   return `
     <div class="supplier-capability-copy">
       <b>先申请开通客资供应</b>
-      <span>平台确认供应商资质后即可上传</span>
+      <span>平台确认加盟商资质后即可上传</span>
     </div>
     <button class="supplier-btn gold small" id="request-capability">申请开通</button>
   `;
@@ -192,7 +256,7 @@ function header() {
       <div class="supplier-brand">
         <img src="./logo.png" alt="合家美宅">
         <div>
-          <strong>供应商工作台</strong>
+          <strong>加盟商供客工作台</strong>
           <small>客资上传与进度查询</small>
         </div>
       </div>
@@ -207,7 +271,7 @@ function hero() {
       <div class="supplier-hero-head">
         <div>
           <span class="supplier-eyebrow">当前账号：${esc(
-            state.me?.display_name || '供应商账号',
+            state.me?.display_name || '加盟商账号',
           )}</span>
           <h1>客资上传与审核进度</h1>
           <p>确认客户授权后提交资料。平台审核通过的客资会进入派发，奖励进度可单独查看。</p>
@@ -225,7 +289,7 @@ function shell(content, { showHero = state.tab === 'list' } = {}) {
     `${header()}
       <main class="supplier-main">
         ${showHero ? hero() : ''}
-        <nav class="supplier-tabs" aria-label="供应商客资操作">
+        <nav class="supplier-tabs" aria-label="加盟商客资操作">
           <button class="supplier-tab ${state.tab === 'list' ? 'active' : ''}" data-tab="list">
             我的客资
           </button>
@@ -295,7 +359,7 @@ async function boot() {
     state.me = await api('/auth/me');
     const permissions = state.me.permissions || [];
     if (!permissions.includes('*') && !permissions.includes('supplier.lead.manage')) {
-      throw new Error('当前账号没有供应商客资权限');
+      throw new Error('当前账号没有加盟商客资权限');
     }
     state.capabilities = await api('/v1.2/company/capabilities');
     await render();
@@ -590,6 +654,24 @@ async function loadDistricts(cityCode) {
   return state.districts;
 }
 
+async function ensureLeadOptions() {
+  if (state.leadOptionsLoaded) return;
+  const load = async (domain, fallback) => {
+    try {
+      const items = await api(`/master-data/dictionaries/${domain}`);
+      return items?.length ? items : fallback;
+    } catch (error) {
+      console.warn(`未能加载${domain}选项，已使用默认选项`, error);
+      return fallback;
+    }
+  };
+  [state.sourceOptions, state.categoryOptions] = await Promise.all([
+    load('source_channel', DEFAULT_SOURCE_OPTIONS),
+    load('lead_category', DEFAULT_CATEGORY_OPTIONS),
+  ]);
+  state.leadOptionsLoaded = true;
+}
+
 async function editLead(id) {
   try {
     state.editing = await api(`/v1.2/supplier/leads/${id}`);
@@ -614,7 +696,7 @@ async function renderUpload(item = null) {
     await renderList();
     return;
   }
-  await ensureCities();
+  await Promise.all([ensureCities(), ensureLeadOptions()]);
   const city =
     state.cities.find((row) => row.name === item?.city) ||
     state.cities.find((row) => row.code === item?.region_code) ||
@@ -728,23 +810,21 @@ async function renderUpload(item = null) {
             <div class="supplier-grid">
               <div class="supplier-field">
                 <label for="lead-source">获客来源</label>
-                <input
-                  class="supplier-input"
-                  id="lead-source"
-                  maxlength="64"
-                  placeholder="例如：老客户推荐"
-                  value="${esc(item?.source_channel || '供应商推荐')}"
-                >
+                <select class="supplier-select" id="lead-source">${selectOptions(
+                  state.sourceOptions,
+                  item?.source_channel || '供应商推荐',
+                  '请选择获客来源',
+                  '原有来源',
+                )}</select>
               </div>
               <div class="supplier-field">
                 <label for="lead-category">需求类型</label>
-                <input
-                  class="supplier-input"
-                  id="lead-category"
-                  maxlength="64"
-                  placeholder="例如：自建房、装修"
-                  value="${esc(item?.category_code || '')}"
-                >
+                <select class="supplier-select" id="lead-category">${selectOptions(
+                  state.categoryOptions,
+                  item?.category_code || '',
+                  '请选择需求类型',
+                  '原有类别',
+                )}</select>
               </div>
             </div>
             <div class="supplier-field">
@@ -1138,12 +1218,12 @@ async function showDetail(id) {
       ['客户姓名', item.customer_name === '未填写' ? '未填写' : item.customer_name],
       ['联系电话', item.phone || item.phone_masked],
       ['服务地区', `${item.city || ''} ${item.district || ''}`.trim()],
-      ['获客来源', item.source_channel],
-      ['需求类型', item.category_code],
+      ['获客来源', readableLabel(item.source_channel, '未填写')],
+      ['需求类型', readableLabel(item.category_code, '未填写')],
       ['客户需求', item.need_summary],
       ['授权确认', item.consent_confirmed ? '已确认' : '未确认'],
-      ['当前进度', labels[item.status] || item.status],
-      ['资料审核', labels[item.review_status] || item.review_status],
+      ['当前进度', readableLabel(item.status)],
+      ['资料审核', readableLabel(item.review_status)],
       ['重复情况', item.duplicate_status ? labels[item.duplicate_status] || '平台复核中' : null],
       ['提交时间', fmt(item.submitted_at)],
       ['最后更新', fmt(item.updated_at)],

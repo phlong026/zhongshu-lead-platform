@@ -39,7 +39,8 @@ def test_dedicated_v12_pages_are_self_contained() -> None:
 
 def test_admin_lead_supply_ui_uses_v12_flow_without_pre_verification() -> None:
     js = Path("apps/admin/public/v12-leads.js").read_text(encoding="utf-8")
-    assert "返回工作台首页" in js
+    assert "返回岗位首页" in js
+    assert "返回工作台首页" not in js
     assert "返回管理后台" not in js
     assert "/v1.2/platform/leads" in js
     assert "/v1.2/admin/supplier-leads" in js
@@ -58,7 +59,7 @@ def test_supplier_h5_supports_capability_upload_list_and_detail() -> None:
     assert "LEAD_SUPPLIER" in js
     assert "consent_confirmed" in js
     assert "save-submit" in js
-    assert "供应商工作台" in js
+    assert "加盟商供客工作台" in js
     assert "上传第一条客资" in js
     assert "手机号仅用于客资去重和业务联系" in js
     assert "重新编辑时请再次填写完整手机号" in js

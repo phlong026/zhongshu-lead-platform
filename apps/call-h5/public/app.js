@@ -42,6 +42,15 @@ const ROLE_LABEL = {
   TELESALES: '电销核验',
   SUPER_ADMIN: '平台管理员',
 };
+const TECHNICAL_CODE = /^(?:[A-Z][A-Z0-9_]{2,}|[a-z][a-z0-9]*|[a-z0-9]+(?:[_-][a-z0-9]+)+)$/;
+const readableLabel = (mapping, value, fallback = '待确认') => {
+  const text = String(value ?? '').trim();
+  if (!text) return fallback;
+  return mapping[text] || (TECHNICAL_CODE.test(text) ? fallback : text);
+};
+const statusLabel = (value) => readableLabel(statusLabels, value, '待确认');
+const reasonLabel = (value) => readableLabel(reasonLabels, value, '其他原因');
+const roleLabel = (value) => readableLabel(ROLE_LABEL, value, '内部账号');
 
 const esc = (value = '') =>
   String(value ?? '').replace(/[&<>'"]/g, (char) => ({
@@ -147,36 +156,51 @@ async function auth() {
 
 function renderLogin(message = '') {
   zsSetSafeHtml(app, `<section class="login">
-    <div class="logo">
+    <div class="login-brand">
+      <span class="login-kicker">合家美宅</span>
       <img src="./logo.png" alt="合家美宅">
-      <h1>合家美宅</h1>
-      <p class="muted">内部电销核验台，一键拨号并提交事实结论</p>
+      <h1>电销核验工作台</h1>
+      <p>任务、拨号和核验结果集中处理，今天的待办一眼看清。</p>
     </div>
-    <div class="panel">
+    <div class="panel login-card">
+      <div class="login-card-head">
+        <span>内部账号登录</span>
+        <h2>欢迎回来</h2>
+        <p>请使用平台分配的电销账号。</p>
+      </div>
       ${message ? `<p class="error-text">${esc(message)}</p>` : ''}
-      <div class="form">
-        <label>账号</label>
-        <input id="user" class="input" autocomplete="username" placeholder="请输入电销账号">
-      </div>
-      <div class="form">
-        <label>密码</label>
-        <input id="pass" class="input" type="password" autocomplete="current-password" placeholder="请输入密码">
-      </div>
-      <button id="login" class="btn primary block">登录工作台</button>
+      <form id="call-login-form" novalidate>
+        <div class="login-field">
+          <label for="user">登录账号</label>
+          <div class="login-input-wrap"><i aria-hidden="true">${icon('user')}</i><input id="user" name="username" autocomplete="username" placeholder="请输入电销账号" required></div>
+        </div>
+        <div class="login-field">
+          <label for="pass">登录密码</label>
+          <div class="login-input-wrap"><i aria-hidden="true">${icon('lock')}</i><input id="pass" name="password" type="password" autocomplete="current-password" placeholder="请输入登录密码" required></div>
+        </div>
+        <button id="login" class="btn primary block login-submit" type="submit">登录工作台</button>
+      </form>
+      <p class="login-security">完整客户电话仅在领取任务后显示，请妥善保管账号。</p>
     </div>
   </section>`);
 
-  document.querySelector('#login').onclick = async () => {
+  document.querySelector('#call-login-form').onsubmit = async (event) => {
+    event.preventDefault();
+    const button = document.querySelector('#login');
+    button.disabled = true;
+    button.textContent = '正在登录…';
     try {
       await api('/auth/login', {
         method: 'POST',
         body: JSON.stringify({
-          username: document.querySelector('#user').value,
+          username: document.querySelector('#user').value.trim(),
           password: document.querySelector('#pass').value,
         }),
       });
-      go('home');
+      location.replace('/admin/');
     } catch (error) {
+      button.disabled = false;
+      button.textContent = '登录工作台';
       toast(error.message, 'error');
     }
   };
@@ -192,11 +216,11 @@ function taskCard(task) {
   return `<article class="task" data-task="${task.id}" tabindex="0">
     <div class="row">
       <h3>${esc(lead.customer_name || '待核验客户')}</h3>
-      <span class="badge ${statusClass(task.status)}">${esc(statusLabels[task.status] || task.status)}</span>
+      <span class="badge ${statusClass(task.status)}">${esc(statusLabel(task.status))}</span>
     </div>
     <p class="task-meta">${esc(lead.city || '')} ${esc(lead.district || '')}</p>
     <dl class="task-facts">
-      <div><dt>退回原因</dt><dd>${esc(reasonLabels[request.reason_code] || request.reason_code || '待确认')}</dd></div>
+      <div><dt>退回原因</dt><dd>${esc(reasonLabel(request.reason_code))}</dd></div>
       <div><dt>证据</dt><dd>${evidenceCount(request)} 份</dd></div>
       <div><dt>期限</dt><dd>${fmt(request.appeal_deadline_at || task.due_at)}</dd></div>
     </dl>
@@ -297,7 +321,7 @@ async function task(id) {
       <div>
         <p class="eyebrow">核验详情</p>
         <h1>${esc(lead.customer_name || '待核验客户')}</h1>
-        <span class="badge ${statusClass(data.status)}">${esc(statusLabels[data.status] || data.status)}</span>
+        <span class="badge ${statusClass(data.status)}">${esc(statusLabel(data.status))}</span>
       </div>
       ${data.status === 'IN_PROGRESS' ? `<button id="dial" class="btn gold">${icon('phone')}<span>一键拨号</span></button>` : ''}
     </section>
@@ -310,7 +334,7 @@ async function task(id) {
       <dl class="detail">
         <div><dt>手机号</dt><dd><strong>${esc(lead.phone || lead.phone_masked || '--')}</strong></dd></div>
         <div><dt>地区</dt><dd>${esc(lead.city || '--')} ${esc(lead.district || '')}</dd></div>
-        <div><dt>退回原因</dt><dd>${esc(reasonLabels[request.reason_code] || request.reason_code || '--')}</dd></div>
+        <div><dt>退回原因</dt><dd>${esc(reasonLabel(request.reason_code))}</dd></div>
         <div><dt>证据数量</dt><dd>${evidenceCount(request)} 份</dd></div>
         <div><dt>处理期限</dt><dd>${fmt(request.appeal_deadline_at || data.due_at)}</dd></div>
         <div><dt>申诉说明</dt><dd>${esc(request.description || '--')}</dd></div>
@@ -359,8 +383,8 @@ function submittedResult(data) {
   return `<section class="card">
     <h2>已提交结论</h2>
     <dl class="detail">
-      <div><dt>联系结果</dt><dd>${esc(contactLabels[data.contact_result] || data.contact_result || '--')}</dd></div>
-      <div><dt>核验结论</dt><dd>${esc(conclusionLabels[data.conclusion] || data.conclusion || '--')}</dd></div>
+      <div><dt>联系结果</dt><dd>${esc(readableLabel(contactLabels, data.contact_result, '待确认'))}</dd></div>
+      <div><dt>核验结论</dt><dd>${esc(readableLabel(conclusionLabels, data.conclusion, '待确认'))}</dd></div>
     </dl>
     <div class="action-row">
       <button class="btn primary" data-route="tasks">继续下一条</button>
@@ -421,7 +445,7 @@ async function submit(id) {
 
 async function profile() {
   if (!await auth()) return;
-  const roles = me.roles.map((role) => ROLE_LABEL[role] || role).join('、');
+  const roles = me.roles.map(roleLabel).join('、');
   zsSetSafeHtml(app, shell(`
     <h1>我的工作台</h1>
     <section class="card">
@@ -442,7 +466,7 @@ async function profile() {
   document.querySelector('#logout').onclick = async () => {
     await api('/auth/logout', { method: 'POST' }).catch(() => {});
     me = null;
-    renderLogin();
+    location.replace('/admin/index.html');
   };
 }
 
