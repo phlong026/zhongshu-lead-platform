@@ -62,6 +62,106 @@
       "expires_on": "2026-09-07"
     },
     {
+      "scanner": "semgrep",
+      "id": "dangerous-subprocess-use-audit",
+      "scope": "apps/api/tests/test_run_v12_e2e.py",
+      "occurrence": "L31:C16-L31:C55",
+      "reason": "The test monkeypatches subprocess.run with a fake and merely constructs a CompletedProcess return value; no real process is spawned on this path.",
+      "owner": "platform-security",
+      "created_on": "2026-08-23",
+      "expires_on": "2026-09-22"
+    },
+    {
+      "scanner": "semgrep",
+      "id": "dangerous-subprocess-use-audit",
+      "scope": "apps/api/tests/test_run_v12_e2e.py",
+      "occurrence": "L63:C16-L63:C55",
+      "reason": "Test double construction after monkeypatching subprocess.run; the stale-evidence runner under test never spawns a real process here.",
+      "owner": "platform-security",
+      "created_on": "2026-08-23",
+      "expires_on": "2026-09-22"
+    },
+    {
+      "scanner": "semgrep",
+      "id": "dangerous-subprocess-use-audit",
+      "scope": "apps/api/tests/test_run_v12_e2e.py",
+      "occurrence": "L93:C20-L93:C87",
+      "reason": "Docker port probe stub returns a CompletedProcess object; subprocess.run itself is monkeypatched, so no process executes.",
+      "owner": "platform-security",
+      "created_on": "2026-08-23",
+      "expires_on": "2026-09-22"
+    },
+    {
+      "scanner": "semgrep",
+      "id": "dangerous-subprocess-use-audit",
+      "scope": "apps/api/tests/test_run_v12_e2e.py",
+      "occurrence": "L94:C16-L94:C80",
+      "reason": "Docker run stub returns a CompletedProcess object; subprocess.run itself is monkeypatched, so no process executes.",
+      "owner": "platform-security",
+      "created_on": "2026-08-23",
+      "expires_on": "2026-09-22"
+    },
+    {
+      "scanner": "semgrep",
+      "id": "dangerous-subprocess-use-audit",
+      "scope": "apps/api/tests/test_run_v12_e2e.py",
+      "occurrence": "L120:C16-L120:C80",
+      "reason": "Docker run stub returns a CompletedProcess object in the failure-cleanup test; subprocess.run itself is monkeypatched, so no process executes.",
+      "owner": "platform-security",
+      "created_on": "2026-08-23",
+      "expires_on": "2026-09-22"
+    },
+    {
+      "scanner": "semgrep",
+      "id": "dangerous-subprocess-use-audit",
+      "scope": "apps/api/tests/test_superadmin_bootstrap.py",
+      "occurrence": "L196:C5-L203:C6",
+      "reason": "The bootstrap test invokes the current Python interpreter with a fixed Alembic argv prefix against an isolated tmp_path SQLite database; no shell is enabled.",
+      "owner": "platform-security",
+      "created_on": "2026-08-23",
+      "expires_on": "2026-09-22"
+    },
+    {
+      "scanner": "semgrep",
+      "id": "dangerous-subprocess-use-audit",
+      "scope": "apps/api/tests/test_sync_rbac_cli.py",
+      "occurrence": "L134:C21-L147:C10",
+      "reason": "The CLI contract test invokes the current Python interpreter with a fixed sync_rbac.py argv against an isolated tmp_path SQLite database; the command never comes from CLI input and no shell is enabled.",
+      "owner": "platform-security",
+      "created_on": "2026-08-23",
+      "expires_on": "2026-09-22"
+    },
+    {
+      "scanner": "semgrep",
+      "id": "dangerous-subprocess-use-audit",
+      "scope": "apps/api/tests/test_v12_production_lifecycle_e2e.py",
+      "occurrence": "L60:C14-L67:C6",
+      "reason": "The lifecycle e2e invokes the current Python interpreter with a fixed Alembic argv prefix and a whitelisted environment (SAFE_SUBPROCESS_ENVIRONMENT_KEYS) against the disposable e2e database; no shell is enabled.",
+      "owner": "platform-security",
+      "created_on": "2026-08-23",
+      "expires_on": "2026-09-22"
+    },
+    {
+      "scanner": "semgrep",
+      "id": "dangerous-subprocess-use-audit",
+      "scope": "scripts/run_v12_e2e.py",
+      "occurrence": "L108:C12-L108:C66",
+      "reason": "The e2e orchestrator's generic runner receives only argv lists assembled in the same script from fixed docker and pytest entrypoints; shell execution is disabled and failures surface as RuntimeError with captured detail.",
+      "owner": "platform-security",
+      "created_on": "2026-08-23",
+      "expires_on": "2026-09-22"
+    },
+    {
+      "scanner": "semgrep",
+      "id": "dangerous-subprocess-use-audit",
+      "scope": "scripts/verify_infrastructure.py",
+      "occurrence": "L135:C16-L137:C10",
+      "reason": "The infrastructure verifier executes argv lists assembled by the same script from fixed docker and system tool entrypoints; output passes through the sensitive-value redaction filter and shell execution is disabled.",
+      "owner": "platform-security",
+      "created_on": "2026-08-23",
+      "expires_on": "2026-09-22"
+    },
+    {
       "scanner": "trivy",
       "id": "CVE-2026-53615",
       "scope": "bsdutils",
@@ -300,6 +400,106 @@
       "owner": "platform-security",
       "created_on": "2026-08-22",
       "expires_on": "2026-09-21"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-53613",
+      "scope": "bsdutils",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|1:2.38.1-5+deb12u3",
+      "reason": "Trivy reports no fixed Debian Bookworm version (mount TOCTOU via ancestor directory swap). The application performs no mount operations and production drops all capabilities, runs non-root, and mounts the root filesystem read-only. Replace the base before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-23",
+      "expires_on": "2026-09-22"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-53613",
+      "scope": "libblkid1",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|1:2.38.1-5+deb12u3",
+      "reason": "Trivy reports no fixed Debian Bookworm version (mount TOCTOU via ancestor directory swap). The application has no block-device access and production drops all capabilities, runs non-root, and mounts the root filesystem read-only. Replace the base before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-23",
+      "expires_on": "2026-09-22"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-53613",
+      "scope": "libmount1",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|1:2.38.1-5+deb12u3",
+      "reason": "Trivy reports no fixed Debian Bookworm version (mount TOCTOU via ancestor directory swap). The application performs no mount or partition operations and production drops all capabilities and runs non-root. Replace the base before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-23",
+      "expires_on": "2026-09-22"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-53613",
+      "scope": "libsmartcols1",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|1:2.38.1-5+deb12u3",
+      "reason": "Trivy reports no fixed Debian Bookworm version (mount TOCTOU via ancestor directory swap). The application does not parse block-device metadata and production drops capabilities, runs non-root, and uses a read-only root filesystem. Replace the base before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-23",
+      "expires_on": "2026-09-22"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-53613",
+      "scope": "libuuid1",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|1:2.38.1-5+deb12u3",
+      "reason": "Trivy reports no fixed Debian Bookworm version (mount TOCTOU via ancestor directory swap). The vulnerable mount path is not used by the application; production drops capabilities and runs non-root on a read-only root filesystem. Replace the base before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-23",
+      "expires_on": "2026-09-22"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-53613",
+      "scope": "mount",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|1:2.38.1-5+deb12u3",
+      "reason": "Trivy reports no fixed Debian Bookworm version (mount TOCTOU via ancestor directory swap). The application performs no mount or partition operations and production drops all capabilities and runs non-root. Replace the base before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-23",
+      "expires_on": "2026-09-22"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-53613",
+      "scope": "util-linux",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|1:2.38.1-5+deb12u3",
+      "reason": "Trivy reports no fixed Debian Bookworm version (mount TOCTOU via ancestor directory swap). The application has no block-device access and production drops all capabilities, runs non-root, and mounts the root filesystem read-only. Replace the base before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-23",
+      "expires_on": "2026-09-22"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-53613",
+      "scope": "util-linux-extra",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|1:2.38.1-5+deb12u3",
+      "reason": "Trivy reports no fixed Debian Bookworm version (mount TOCTOU via ancestor directory swap). The application has no block-device access and production drops all capabilities, runs non-root, and mounts the root filesystem read-only. Replace the base before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-23",
+      "expires_on": "2026-09-22"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-14456",
+      "scope": "libssl3",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|3.0.20-1~deb12u2",
+      "reason": "Trivy reports no fixed Debian Bookworm version (QUIC server unbounded memory growth). The containerized ASGI service terminates TLS at the edge reverse proxy and never enables a QUIC listener; production runs non-root with a read-only root filesystem. Replace the base before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-23",
+      "expires_on": "2026-09-22"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-14456",
+      "scope": "openssl",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|3.0.20-1~deb12u2",
+      "reason": "Trivy reports no fixed Debian Bookworm version (QUIC server unbounded memory growth). The containerized ASGI service terminates TLS at the edge reverse proxy and never enables a QUIC listener; production runs non-root with a read-only root filesystem. Replace the base before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-08-23",
+      "expires_on": "2026-09-22"
     }
   ]
 }
