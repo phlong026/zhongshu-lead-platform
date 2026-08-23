@@ -56,7 +56,7 @@ def test_user_pages_do_not_render_raw_json_or_internal_status_codes() -> None:
     assert '<select class="supplier-select" id="lead-source">' in supplier
     assert '<select class="supplier-select" id="lead-category">' in supplier
     assert "'供应商推荐': '加盟商推荐'" in supplier
-    assert "supplier.js?v=20260823-flow-audit2" in read(H5 / "supplier.html")
+    assert "supplier.js?v=20260823-client-unify1" in read(H5 / "supplier.html")
     assert "app.js?v=20260823-flow-audit2" in read(ADMIN / "index.html")
     assert "const packageDisplayName=" in admin
     assert "if(Array.isArray(value))" in read(ADMIN / "ui.js")
@@ -165,8 +165,8 @@ def test_login_and_role_heroes_do_not_use_corner_decoration_blocks() -> None:
     operations_css = read(ADMIN / "v12-operations.css")
 
     for source, fragments in (
-        (admin_css, (".login:before", ".login:after", ".stat:after")),
-        (call_css, (".login:before", ".login:after")),
+        (admin_css, (".login:before", ".login:after", ".login::before", ".login::after", ".stat:after")),
+        (call_css, (".login:before", ".login:after", ".login::before", ".login::after")),
         (legacy_h5_css, (".hero:after",)),
         (operations_css, (".ops-role-hero:after",)),
     ):
@@ -191,7 +191,7 @@ def test_company_profile_uses_business_names_instead_of_raw_codes_and_ids() -> N
     assert "account.level_code" not in legacy_h5
     assert "esc(state.me.company_id)" not in legacy_h5
     assert "const packageDisplayName=" in legacy_h5
-    assert "app.js?v=20260823-flow-audit2" in read(H5 / "index.html")
+    assert "app.js?v=20260824-client-unify2" in read(H5 / "index.html")
     assert "const readableLabel=" in workbench
     assert "const recordCode=" in workbench
     assert "const readableLabel=" in operations
@@ -293,7 +293,8 @@ def test_role_pages_use_franchise_business_wording_instead_of_supplier_copy() ->
         assert phrase not in entry
         assert phrase not in supplier_html
 
-    assert "加盟商供客工作台" in supplier
+    assert "<strong>合家美宅</strong>" in supplier
+    assert "加盟商供客" in supplier
     assert "加盟商客资初审" in leads
     assert "供客奖励" in operations
     assert "供客奖励" in workbench

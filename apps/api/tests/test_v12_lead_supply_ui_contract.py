@@ -59,7 +59,8 @@ def test_supplier_h5_supports_capability_upload_list_and_detail() -> None:
     assert "LEAD_SUPPLIER" in js
     assert "consent_confirmed" in js
     assert "save-submit" in js
-    assert "加盟商供客工作台" in js
+    assert "<strong>合家美宅</strong>" in js
+    assert "加盟商供客" in js
     assert "上传第一条客资" in js
     assert "手机号仅用于客资去重和业务联系" in js
     assert "重新编辑时请再次填写完整手机号" in js

@@ -13,9 +13,9 @@ SVG_LOGIN_VERSION = "?v=20260823-login-icon"
 
 def test_all_h5_surfaces_load_local_svg_icon_system_before_application():
     entries = {
-        "index.html": ("./app.js", "?v=20260823-flow-audit2", SVG_LOGIN_VERSION),
-        "supplier.html": ("./supplier.js", "?v=20260823-flow-audit2", SVG_BASE_VERSION),
-        "v12-workbench.html": ("./v12-workbench.js", "?v=20260823-flow-audit3", SVG_BASE_VERSION),
+        "index.html": ("./app.js", "?v=20260824-client-unify2", SVG_LOGIN_VERSION),
+        "supplier.html": ("./supplier.js", "?v=20260823-client-unify1", SVG_BASE_VERSION),
+        "v12-workbench.html": ("./v12-workbench.js", "?v=20260823-client-unify1", SVG_BASE_VERSION),
     }
     for filename, (application_script, application_version, svg_version) in entries.items():
         index = (H5 / filename).read_text(encoding="utf-8")
@@ -44,7 +44,7 @@ def test_call_h5_loads_shared_svg_icon_system_before_application():
 
     assert f"/h5/svg-icon-system.css{SVG_CSS_VERSION}" in index
     assert f"/h5/svg-icon-system.js{SVG_LOGIN_VERSION}" in index
-    assert "./app.js?v=20260823-flow-audit2" in index
+    assert "./app.js?v=20260824-login-unify1" in index
     assert index.index("/h5/svg-icon-system.js") < index.index("./app.js")
 
 
@@ -96,7 +96,7 @@ def test_admin_uses_named_svg_icons_instead_of_unicode_placeholders():
 def test_h5_composite_buttons_render_svg_directly():
     home = (H5 / "design-system-v13.js").read_text(encoding="utf-8")
     assert "window.ZSIconSystem?.svg" in home
-    assert "zsIcon('bell')" in home
+    assert "zsIcon('bell')" not in home
     assert "zsIcon('list')" in home
     assert "zsIcon('coins')" in home
     assert "zsIcon('clipboard-check')" in home

@@ -41,8 +41,8 @@ border-radius:12px;background:#fff;padding:11px 12px;color:var(--ink)}.wb-textar
 .wb-profile-grid{display:grid;grid-template-columns:1fr;gap:12px}.wb-choice{display:flex;align-items:center;gap:9px;padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:#fff;cursor:pointer}.wb-choice input{width:18px;height:18px;accent-color:var(--brand)}
 .wb-empty,.wb-loading,.wb-error{text-align:center;padding:30px 18px;color:var(--muted);border-radius:15px;background:rgba(255,255,255,.58)}.wb-error{color:var(--bad);background:#fff1f1}
 .wb-notice{padding:12px;border-radius:12px;background:#fff7e9;color:#7c581f;font-size:13px;line-height:1.6}
-.wb-bottom{position:fixed;left:50%;bottom:0;transform:translateX(-50%);z-index:30;width:min(760px,100%);display:grid;
-grid-template-columns:repeat(5,1fr);background:rgba(255,255,255,.96);backdrop-filter:blur(18px);border-top:1px solid var(--line);
+.wb-bottom{position:fixed;left:50%;bottom:0;transform:translateX(-50%);z-index:30;width:min(520px,100%);display:grid;
+grid-template-columns:repeat(4,1fr);background:rgba(255,255,255,.96);backdrop-filter:blur(18px);border-top:1px solid var(--line);
 padding:8px max(8px,env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left))}
 .wb-nav{border:0;background:transparent;color:var(--muted);display:grid;place-items:center;gap:3px;padding:5px 2px;font-size:11px;cursor:pointer}
 .wb-nav span:first-child{display:inline-flex;align-items:center;justify-content:center;line-height:0}.wb-nav .zs-svg-icon{width:21px;height:21px}.wb-nav.active{color:var(--brand);font-weight:700}.wb-nav.locked{opacity:.45}.workbench-toast{position:fixed;left:50%;bottom:100px;
@@ -54,5 +54,8 @@ transition:.2s;max-width:calc(100vw - 32px)}.workbench-toast.show{opacity:1;tran
 .wb-detail{padding:10px;background:var(--surface-2);border-radius:11px}.wb-detail small{display:block;color:var(--muted);margin-bottom:4px}.wb-detail b{font-size:13px;word-break:break-all}
 .wb-notification{cursor:pointer}.wb-notification.unread{border-left:4px solid var(--brand-2)}.wb-pager{display:flex;justify-content:space-between;align-items:center;margin-top:14px}
 .wb-ledger b{font-size:14px;white-space:nowrap}.wb-ledger b.plus{color:var(--ok)}.wb-ledger b.minus{color:var(--bad)}.wb-package-list{margin-top:12px}
+.wb-profile-message{display:grid;gap:10px;margin-bottom:12px;background:linear-gradient(180deg,#fffdf8,#faf5ec);border-color:#e9dccc;box-shadow:0 10px 28px rgba(57,44,29,.05)}
+.wb-profile-message .wb-btn{justify-content:space-between;width:100%;padding:12px 14px;min-height:46px;border-radius:14px}
+.wb-profile-message .wb-btn small{color:var(--brand-2);font-size:12px;font-weight:700}
 @media(min-width:640px){.wb-kpis{grid-template-columns:repeat(4,1fr)}.wb-grid{grid-template-columns:repeat(4,1fr)}.wb-profile-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
 @media(max-width:480px){.wb-row,.wb-detail-grid{grid-template-columns:1fr}.wb-main{padding:12px}.wb-header{padding:12px}.wb-card{padding:14px}.wb-header-actions .wb-icon-btn span{display:none}.wb-bottom{min-height:64px}.wb-hero{padding:18px;border-radius:20px}.wb-hero h1{font-size:21px}.wb-kpi b{font-size:20px}.wb-btn{min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis}.wb-item-top{gap:8px}.wb-ledger .wb-item-top{align-items:center}}

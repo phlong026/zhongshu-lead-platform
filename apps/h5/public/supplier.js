@@ -256,11 +256,11 @@ function header() {
       <div class="supplier-brand">
         <img src="./logo.png" alt="合家美宅">
         <div>
-          <strong>加盟商供客工作台</strong>
-          <small>客资上传与进度查询</small>
+          <strong>合家美宅</strong>
+          <small>${esc(state.me?.display_name || '加盟商')} · 加盟商供客</small>
         </div>
       </div>
-      <button class="supplier-back" id="back-h5">返回客资助手</button>
+      <button class="supplier-back" id="back-h5">返回工作台</button>
     </header>
   `;
 }
@@ -270,13 +270,10 @@ function hero() {
     <section class="supplier-hero">
       <div class="supplier-hero-head">
         <div>
-          <span class="supplier-eyebrow">当前账号：${esc(
-            state.me?.display_name || '加盟商账号',
-          )}</span>
-          <h1>客资上传与审核进度</h1>
-          <p>确认客户授权后提交资料。平台审核通过的客资会进入派发，奖励进度可单独查看。</p>
+          <h1>客资上传</h1>
+          <p>确认客户授权后提交资料，并在这里查看审核和派发进度。</p>
         </div>
-        <a class="supplier-reward-link" href="./v12-workbench.html?view=rewards">查看奖励进度</a>
+        <a class="supplier-reward-link" href="./v12-workbench.html?view=rewards">奖励进度</a>
       </div>
       <div class="supplier-capability">${capabilityBlock()}</div>
     </section>
@@ -310,7 +307,7 @@ function shell(content, { showHero = state.tab === 'list' } = {}) {
 function bindCommon() {
   const backButton = document.querySelector('#back-h5');
   if (backButton) backButton.onclick = () => {
-    location.href = './#/profile';
+    location.href = './v12-workbench.html?view=profile';
   };
   document.querySelectorAll('[data-tab]').forEach((button) => {
     button.onclick = () => {
@@ -376,7 +373,7 @@ async function boot() {
     );
     const backButton = document.querySelector('#back-h5');
     if (backButton) backButton.onclick = () => {
-      location.href = './#/profile';
+      location.href = './v12-workbench.html?view=profile';
     };
   }
 }
@@ -454,7 +451,7 @@ function leadProgress(item) {
   if (item.status === 'READY_DISPATCH') {
     return '资料已通过审核，正在等待人工派发。';
   }
-  return '可查看详情了解当前进度。';
+  return '';
 }
 
 function leadActions(item) {
@@ -518,6 +515,7 @@ async function renderList() {
   const rows = state.items.map((item) => {
     const timeLabel = item.status === 'DRAFT' ? '最后更新' : '提交时间';
     const timeValue = item.status === 'DRAFT' ? item.updated_at : item.submitted_at;
+    const progress = leadProgress(item);
     return `
       <article class="supplier-lead">
         <div class="supplier-lead-top">
@@ -529,7 +527,7 @@ async function renderList() {
           </div>
           ${badge(item.status)}
         </div>
-        <div class="supplier-lead-progress">${esc(leadProgress(item))}</div>
+        ${progress ? `<div class="supplier-lead-progress">${esc(progress)}</div>` : ''}
         <div class="supplier-lead-meta">
           <span>${timeLabel}：${fmt(timeValue)}</span>
           ${item.duplicate_status ? `<span>重复情况：${esc(labels[item.duplicate_status] || '平台复核中')}</span>` : ''}
@@ -559,7 +557,7 @@ async function renderList() {
     `
     : '';
   const pager =
-    state.listTotal > 0
+    totalPages > 1
       ? `
         <div class="supplier-pager">
           <button class="supplier-btn small" id="previous-page" ${state.listPage <= 1 ? 'disabled' : ''}>
@@ -577,8 +575,7 @@ async function renderList() {
     <section class="supplier-card">
       <div class="supplier-card-head">
         <div>
-          <h2>我的客资</h2>
-          <div class="supplier-muted">集中查看草稿、平台审核和派发进度</div>
+          <h2>客资进度</h2>
         </div>
         ${filter}
       </div>

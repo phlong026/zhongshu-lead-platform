@@ -46,13 +46,16 @@ def test_multi_role_home_priority_prefers_dedicated_mobile_workbenches() -> None
         assert body.index(left) < body.index(right)
 
 
-def test_franchise_home_contract_uses_fixed_five_tab_bottom_navigation() -> None:
+def test_franchise_home_contract_uses_fixed_four_tab_bottom_navigation() -> None:
     source = _read(FRANCHISE_H5)
 
     assert "FRANCHISE_HOME_CONTRACT" in source
-    assert "['home','leads','points','notifications','profile']" in source
-    for label in ("首页", "客资", "积分", "消息", "我的"):
+    assert "['home','leads','points','profile']" in source
+    assert "['home','leads','points','notifications','profile']" not in source
+    for label in ("首页", "客资", "积分", "我的"):
         assert label in source
+    assert "wb-profile-message" in source
+    assert 'data-go="notifications"' in source
     assert "公司资料与接单能力" in source
     assert "slice(0,5)" not in source
     assert "/points/accounts/" in source

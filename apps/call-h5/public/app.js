@@ -157,16 +157,16 @@ async function auth() {
 function renderLogin(message = '') {
   zsSetSafeHtml(app, `<section class="login">
     <div class="login-brand">
-      <span class="login-kicker">合家美宅</span>
+      <span class="login-kicker">合家美宅 · 内部登录</span>
       <img src="./logo.png" alt="合家美宅">
       <h1>电销核验工作台</h1>
-      <p>任务、拨号和核验结果集中处理，今天的待办一眼看清。</p>
+      <p>统一账号登录后，系统会按权限自动进入对应岗位页面，待办和核验结果都能一眼看清。</p>
     </div>
     <div class="panel login-card">
       <div class="login-card-head">
         <span>内部账号登录</span>
         <h2>欢迎回来</h2>
-        <p>请使用平台分配的电销账号。</p>
+        <p>请使用平台分配的账号和密码登录，系统会自动进入对应页面。</p>
       </div>
       ${message ? `<p class="error-text">${esc(message)}</p>` : ''}
       <form id="call-login-form" novalidate>

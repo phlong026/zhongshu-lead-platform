@@ -1,4 +1,5 @@
 const API='/api/v1';
+const workbenchEntryIcon=(name,className='zs-svg-icon')=>window.ZSIconSystem?.svg(name,className)||'';
 let permissions=[];
 let checking=false;
 let lastCheckedAt=0;
@@ -23,22 +24,13 @@ function allowed(){
 function openWorkbench(){location.href='./v12-workbench.html'}
 function injectEntry(){
   if(!allowed()){refreshPermissions();return}
-  const topbar=document.querySelector('.topbar');
-  if(topbar&&!document.querySelector('#v12-workbench-top')){
-    const button=document.createElement('button');
-    button.className='icon-btn';button.id='v12-workbench-top';button.type='button';
-    button.setAttribute('aria-label','客资工作台');button.textContent='链';
-    button.onclick=openWorkbench;
-    const notice=topbar.querySelector('[data-route="notifications"]');
-    topbar.insertBefore(button,notice||null);
-  }
   if(location.hash.startsWith('#/profile')&&!document.querySelector('#v12-workbench-profile')){
     const cards=[...document.querySelectorAll('.content .card')];
     const target=cards.find(card=>card.querySelector('#logout'))||cards[0];
     if(target){
       const button=document.createElement('button');
       button.className='btn btn-primary btn-block';button.id='v12-workbench-profile';button.type='button';
-      button.style.marginBottom='10px';button.textContent='进入客资工作台';button.onclick=openWorkbench;
+      zsSetSafeHtml(button,`<span class="zs-v13-profile-action-icon">${workbenchEntryIcon('home')}</span><span>进入客资工作台</span>`);button.onclick=openWorkbench;
       target.prepend(button);
     }
   }

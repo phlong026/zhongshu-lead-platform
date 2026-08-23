@@ -25,7 +25,7 @@ def test_v12_workbench_exposes_company_profile_flow() -> None:
     assert "company.profile.manage" in entry
     assert "points.own.read" in entry
     assert "followup.own.manage" not in entry
-    assert "v12-workbench.js?v=20260823-flow-audit3" in html
+    assert "v12-workbench.js?v=20260823-client-unify1" in html
 
 
 def test_v12_operations_exposes_company_review_queue() -> None:

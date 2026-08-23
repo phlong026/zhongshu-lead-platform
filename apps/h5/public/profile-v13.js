@@ -9,7 +9,9 @@ function zsPatchProfileActionIcons(actions){
 async function zsProfileJson(path){const r=await fetch(`/api/v1${path}`,{credentials:'include'});const p=await r.json().catch(()=>({}));if(!r.ok||p.code!=='OK')throw new Error(p.message||'请求失败');return p.data;}
 function zsMetric(label,value){const item=document.createElement('div');item.className='zs-v13-profile-metric';const span=document.createElement('span');span.textContent=label;const b=document.createElement('b');b.textContent=Number(value||0).toLocaleString('zh-CN');item.append(span,b);return item;}
 async function zsLoadProfileMetrics(card){
-  if(card.querySelector('.zs-v13-profile-metrics'))return;
+  if(card.querySelector('.zs-v13-profile-metrics')){card.dataset.zsProfileMetrics='done';return;}
+  if(card.dataset.zsProfileMetrics)return;
+  card.dataset.zsProfileMetrics='loading';
   try{
     const me=await zsProfileJson('/auth/me');
     const [account,ledgers]=await Promise.all([zsProfileJson(`/points/accounts/${encodeURIComponent(me.company_id)}`),zsProfileJson(`/points/ledgers?company_id=${encodeURIComponent(me.company_id)}&page=1&page_size=200`)]);
@@ -18,7 +20,8 @@ async function zsLoadProfileMetrics(card){
     const returned=rows.filter(x=>x.type==='RETURN'&&x.delta>0).reduce((sum,x)=>sum+Number(x.delta||0),0);
     const metrics=document.createElement('div');metrics.className='zs-v13-profile-metrics';metrics.append(zsMetric('当前积分',account.balance),zsMetric('累计消耗',consumed),zsMetric('退回积分',returned));card.appendChild(metrics);
     const brand=card.querySelector(':scope > .brand');if(brand&&!brand.querySelector('.zs-v13-profile-level')){const level=document.createElement('span');level.className='zs-v13-profile-level';level.textContent=zsProfileLevel(account.level_code);brand.appendChild(level);}
-  }catch{/* 主页面统一处理鉴权；统计增强失败不阻断。 */}
+    card.dataset.zsProfileMetrics='done';
+  }catch{delete card.dataset.zsProfileMetrics;/* 主页面统一处理鉴权；统计增强失败不阻断。 */}
 }
 function zsPatchProfile(){
   zsSyncProfileRouteClass();if(!zsProfileRouteActive())return;

@@ -56,7 +56,7 @@ def test_h5_login_is_wechat_only_without_demo_account_form() -> None:
     assert 'id="username"' not in source
     assert 'id="password"' not in source
     assert "demo-login" not in source
-    assert "登录方式</dt><dd>微信授权</dd>" in source
+    assert "登录方式</dt><dd>微信授权</dd>" not in source
 
 
 def test_call_h5_internal_login_requires_explicit_credentials() -> None:

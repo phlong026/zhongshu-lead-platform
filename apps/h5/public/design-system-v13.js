@@ -21,24 +21,17 @@ function zsPatchTopbar() {
     small?.remove();
     brandCopy.dataset.zsV13 = '1';
   }
-  const messageButton = document.querySelector('.topbar .icon-btn[data-route="notifications"]');
-  if (messageButton && messageButton.dataset.zsV13 !== '1') {
-    zsSetSafeHtml(messageButton, `${zsIcon('bell')}<span>消息</span>`);
-    messageButton.classList.add('zs-icon-label');
-    messageButton.dataset.zsV13 = '1';
-  }
 }
 
 function zsCreateQuickActions() {
   const section = document.createElement('section');
   section.className = 'zs-v13-quick';
   zsSetSafeHtml(section, `
-    <div class="zs-v13-section-head"><h3>快捷入口</h3><small>高频操作</small></div>
+    <div class="zs-v13-section-head"><h3>快捷入口</h3></div>
     <div class="zs-v13-actions">
       <button class="zs-v13-action" data-zs-route="leads"><i>${zsIcon('list')}</i><span>我的客资</span></button>
       <button class="zs-v13-action" data-zs-route="points"><i>${zsIcon('coins')}</i><span>积分中心</span></button>
       <button class="zs-v13-action" data-zs-route="leads?status=FOLLOWING"><i>${zsIcon('clipboard-check')}</i><span>跟进记录</span></button>
-      <button class="zs-v13-action" data-zs-route="notifications"><i>${zsIcon('bell')}</i><span>消息中心</span></button>
     </div>`);
   return section;
 }

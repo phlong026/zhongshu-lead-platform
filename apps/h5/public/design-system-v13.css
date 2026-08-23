@@ -98,3 +98,62 @@ body{background:var(--zs-ivory);color:var(--zs-ink)}
   .zs-v13-actions{gap:6px}
   .zs-v13-action{font-size:10px}
 }
+
+/* Shared client shell: keep all franchise H5 surfaces visually interchangeable. */
+:root{
+  --zs-client-max-width:520px;
+  --zs-font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Helvetica Neue","Microsoft YaHei",sans-serif;
+  --zs-page-gutter:16px;
+  --zs-section-gap:12px;
+  --zs-radius-card:18px;
+  --zs-radius-control:12px;
+  --zs-control-height:44px;
+  --zs-nav-height:68px;
+}
+html{-webkit-text-size-adjust:100%;background:var(--zs-ivory)}
+body,button,input,select,textarea{font-family:var(--zs-font-family)}
+body.supplier-body{font-family:var(--zs-font-family)}
+body{margin:0;line-height:1.5;background:var(--zs-ivory);color:var(--zs-ink)}
+.app-shell,.workbench-shell,.supplier-app{width:100%;max-width:var(--zs-client-max-width);margin:0 auto;background:var(--zs-ivory)}
+#app.workbench-shell{padding-bottom:0}
+.topbar,.wb-header,.supplier-header{min-height:68px;height:auto;padding:12px var(--zs-page-gutter);border-bottom:1px solid var(--zs-line);background:rgba(255,253,249,.96);backdrop-filter:blur(18px)}
+.content,.wb-main,.supplier-main{width:100%;max-width:var(--zs-client-max-width);margin:0 auto;padding:var(--zs-page-gutter)}
+.brand img,.wb-mark,.supplier-brand img{object-fit:contain}
+.wb-brand strong,.supplier-brand strong{color:var(--zs-brand);font-size:16px}
+.wb-brand small,.supplier-brand small{color:var(--zs-text-secondary);font-size:11px}
+.card,.wb-card,.supplier-card{border:1px solid var(--zs-line);border-radius:var(--zs-radius-card);background:var(--zs-paper);box-shadow:var(--zs-shadow-sm)}
+.btn,.wb-btn,.supplier-btn{min-height:var(--zs-control-height);border-radius:var(--zs-radius-control);font-size:14px}
+.input,.select,.textarea,.wb-input,.wb-select,.wb-textarea,.supplier-input,.supplier-select,.supplier-textarea{min-height:var(--zs-control-height);border-radius:var(--zs-radius-control);border-color:var(--zs-line);background:#fff;font-size:14px}
+.btn:focus-visible,.wb-btn:focus-visible,.supplier-btn:focus-visible,.nav-item:focus-visible,.wb-nav:focus-visible,.supplier-tab:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid rgba(200,169,106,.32);outline-offset:2px}
+.bottom-nav,.wb-bottom{width:min(var(--zs-client-max-width),100%);min-height:var(--zs-nav-height);grid-template-columns:repeat(4,1fr);padding:8px max(10px,env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left));border-top:1px solid var(--zs-line);background:rgba(255,253,249,.98)}
+.nav-item,.wb-nav{min-height:48px;color:var(--zs-caption);font-size:11px}
+.nav-item i,.wb-nav>span:first-child{width:32px;height:28px;border-radius:10px}
+.nav-item.active i,.wb-nav.active>span:first-child{background:var(--zs-gold-soft);color:var(--zs-brand)}
+.wb-nav.active,.nav-item.active{color:var(--zs-brand);font-weight:700}
+.wb-sheet{width:min(var(--zs-client-max-width),100%);background:var(--zs-ivory)}
+.wb-main{padding-bottom:calc(var(--zs-nav-height) + 28px + env(safe-area-inset-bottom))}
+.wb-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+.wb-profile-grid{grid-template-columns:1fr}
+.wb-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+.wb-home-hero .wb-kpi.main{grid-column:span 1}
+.wb-hero,.supplier-hero{border-radius:22px;background:linear-gradient(135deg,var(--zs-brand-dark),var(--zs-brand));box-shadow:var(--zs-shadow-md)}
+.wb-hero h1,.supplier-hero h1{font-size:22px;line-height:1.35}
+.wb-card-head h2,.supplier-card-head h2{font-size:18px}
+.wb-card-head p,.wb-muted,.supplier-muted,.supplier-help,.help{font-size:12px;line-height:1.6}
+.wb-profile-message{margin-bottom:var(--zs-section-gap)}
+.wb-profile-message .wb-card-head{align-items:center;margin-bottom:0}
+.zs-v13-actions{grid-template-columns:repeat(3,minmax(0,1fr))}
+.zs-v13-profile-metric span,.zs-v13-company-card>.brand small{font-size:11px}
+.zs-v13-company-card .detail-row dt,.zs-v13-company-card .detail-row dd{font-size:12px}
+.zs-v13-notifications-summary small{font-size:11px}
+.zs-v13-notification-card p{font-size:12px}
+.zs-v13-notification-card p:last-child{font-size:11px}
+.supplier-main{max-width:var(--zs-client-max-width)}
+.supplier-card,.supplier-hero{margin-bottom:var(--zs-section-gap)}
+
+@media(max-width:390px){
+  :root{--zs-page-gutter:14px}
+  .wb-header-actions{gap:6px}
+  .wb-header-actions .wb-icon-btn{padding-inline:10px}
+  .wb-profile-message .wb-card-head{align-items:stretch;flex-direction:column}
+}
