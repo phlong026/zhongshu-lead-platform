@@ -20,6 +20,7 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -71,6 +72,11 @@ def is_public_bind(address: str) -> bool:
     return address in {"0.0.0.0", "*", "::", "[::]"} or (
         address not in {"127.0.0.1", "::1"} and not address.startswith("127.")
     )
+
+
+def is_tencent_cos_endpoint(endpoint_url: str) -> bool:
+    hostname = urlparse(endpoint_url).hostname
+    return bool(hostname and hostname.endswith(".myqcloud.com"))
 
 
 def parse_timedatectl(text: str) -> dict[str, str]:
@@ -434,6 +440,7 @@ def _check_object_storage(
         "backend": env.get("OBJECT_STORAGE_BACKEND", "").strip() or "s3",
         "bucket": env.get("S3_BUCKET", "").strip(),
         "endpoint": env.get("S3_ENDPOINT_URL", "").strip(),
+        "region": env.get("S3_REGION", "").strip(),
     }
     has_creds = bool(env.get("S3_ACCESS_KEY_ID") and env.get("S3_SECRET_ACCESS_KEY"))
     result["credentials_configured"] = has_creds
@@ -445,6 +452,7 @@ def _check_object_storage(
         return result
     try:
         import boto3
+        from botocore.config import Config
         from botocore.exceptions import BotoCoreError, ClientError
     except ImportError:
         warnings.append("缺少 boto3，无法验证对象存储配置")
@@ -454,7 +462,11 @@ def _check_object_storage(
         aws_secret_access_key=env["S3_SECRET_ACCESS_KEY"],
         region_name=env.get("S3_REGION", "") or None,
     )
-    client = session.client("s3", endpoint_url=env.get("S3_ENDPOINT_URL") or None)
+    endpoint_url = env.get("S3_ENDPOINT_URL") or None
+    client_options: dict[str, object] = {"endpoint_url": endpoint_url}
+    if is_tencent_cos_endpoint(endpoint_url or ""):
+        client_options["config"] = Config(s3={"addressing_style": "virtual"})
+    client = session.client("s3", **client_options)
     checks: dict[str, object] = {}
     for name, method in (
         ("encryption", "get_bucket_encryption"),

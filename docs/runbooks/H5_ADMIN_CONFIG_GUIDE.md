@@ -34,7 +34,7 @@
 
 每个宽度都要确认：没有水平滚动条、底部导航完整、弹层不超屏、长文案不遮挡操作、数字卡可点击且能进入对应明细。
 
-## 3. 私有对象存储
+## 3. 腾讯云 COS 私有对象存储
 
 ### 3.1 开发环境
 
@@ -49,19 +49,22 @@ OBJECT_STORAGE_DIR=./storage
 
 ```dotenv
 OBJECT_STORAGE_BACKEND=s3
-S3_ENDPOINT_URL=https://s3-compatible.example.com
-S3_ACCESS_KEY_ID=replace-with-storage-access-key
-S3_SECRET_ACCESS_KEY=replace-with-storage-secret-key
-S3_BUCKET=hejiameizhai-private
-S3_REGION=replace-with-region
+S3_ENDPOINT_URL=https://cos.ap-shanghai.myqcloud.com
+S3_ACCESS_KEY_ID=replace-with-cos-secret-id
+S3_SECRET_ACCESS_KEY=replace-with-cos-secret-key
+S3_BUCKET=replace-with-bucket-name-appid
+S3_REGION=ap-shanghai
 ```
 
 说明：
 
-- 生产校验要求使用 `s3`，Bucket 必须是私有读写。
-- AWS S3 可按实际环境留空 `S3_ENDPOINT_URL`；COS、OSS 或其他 S3 兼容服务应填写 HTTPS Endpoint。
+- 当前生产方案固定使用腾讯云 COS 上海地域；代码继续使用现有 S3 兼容适配层，因此环境变量名称保留为 `S3_*`。
+- `S3_ACCESS_KEY_ID` 填腾讯云 CAM 子账号的 `SecretId`，`S3_SECRET_ACCESS_KEY` 填对应 `SecretKey`。
+- `S3_BUCKET` 必须填写控制台显示的完整 `BucketName-APPID`，不能只填写 BucketName。
+- Endpoint 使用地域服务地址 `https://cos.ap-shanghai.myqcloud.com`；客户端会以虚拟主机方式访问完整 Bucket 域名。
+- Bucket 必须保持私有读写，不得开启永久公开访问。
 - 服务账号至少需要 Bucket 可达检查，以及指定 Bucket/Prefix 下的 `PutObject`、`HeadObject`、`GetObject`、`DeleteObject` 权限。
-- 不要给 Bucket 开启公开读，不要把 Access Key 放进前端、Git 或截图。
+- 不要把 SecretId、SecretKey 放进前端、Git、截图或聊天记录。
 - 切换 Bucket 不会自动迁移旧文件。切换前应保留原 Bucket 和凭据，直到存量证据全部验收。
 
 ### 3.3 当前文件规则

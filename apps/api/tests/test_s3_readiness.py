@@ -42,6 +42,45 @@ def _storage(client: _S3Client) -> S3ObjectStorage:
     return storage
 
 
+def test_s3_client_uses_virtual_hosted_style_for_tencent_cos(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_client(service_name: str, **kwargs: object) -> _S3Client:
+        captured["service_name"] = service_name
+        captured.update(kwargs)
+        return _S3Client()
+
+    monkeypatch.setattr(storage_module.boto3, "client", fake_client)
+    monkeypatch.setattr(storage_module.settings, "s3_endpoint_url", "https://cos.ap-shanghai.myqcloud.com")
+    monkeypatch.setattr(storage_module.settings, "s3_access_key_id", "cos-secret-id")
+    monkeypatch.setattr(storage_module.settings, "s3_secret_access_key", "cos-secret-key")
+    monkeypatch.setattr(storage_module.settings, "s3_region", "ap-shanghai")
+
+    S3ObjectStorage()
+
+    assert captured["service_name"] == "s3"
+    assert captured["endpoint_url"] == "https://cos.ap-shanghai.myqcloud.com"
+    assert captured["region_name"] == "ap-shanghai"
+    assert captured["config"].s3 == {"addressing_style": "virtual"}
+
+
+def test_s3_client_keeps_default_addressing_for_non_cos_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_client(service_name: str, **kwargs: object) -> _S3Client:
+        captured["service_name"] = service_name
+        captured.update(kwargs)
+        return _S3Client()
+
+    monkeypatch.setattr(storage_module.boto3, "client", fake_client)
+    monkeypatch.setattr(storage_module.settings, "s3_endpoint_url", "https://s3.example.com")
+
+    S3ObjectStorage()
+
+    assert captured["service_name"] == "s3"
+    assert "config" not in captured
+
+
 def test_s3_readiness_only_checks_bucket_without_writing() -> None:
     client = _S3Client()
 

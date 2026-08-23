@@ -74,6 +74,54 @@ def test_production_validation_accepts_aws_s3_default_endpoint():
     assert not any("S3_ENDPOINT_URL" in error for error in result.errors)
 
 
+def test_production_validation_accepts_tencent_cos_shanghai():
+    result = validate_production_settings(
+        production_settings(
+            object_storage_backend="s3",
+            s3_endpoint_url="https://cos.ap-shanghai.myqcloud.com",
+            s3_access_key_id="cos-secret-id",
+            s3_secret_access_key=_secret("cos"),
+            s3_bucket="hejiameizhai-private-1250000000",
+            s3_region="ap-shanghai",
+        ),
+        _production_env(),
+    )
+    assert result.valid is True
+    assert not result.errors
+
+
+def test_production_validation_rejects_cos_bucket_without_appid():
+    result = validate_production_settings(
+        production_settings(
+            object_storage_backend="s3",
+            s3_endpoint_url="https://cos.ap-shanghai.myqcloud.com",
+            s3_access_key_id="cos-secret-id",
+            s3_secret_access_key=_secret("cos"),
+            s3_bucket="hejiameizhai-private",
+            s3_region="ap-shanghai",
+        ),
+        _production_env(),
+    )
+    assert result.valid is False
+    assert any("BucketName-APPID" in error for error in result.errors)
+
+
+def test_production_validation_rejects_cos_endpoint_region_mismatch():
+    result = validate_production_settings(
+        production_settings(
+            object_storage_backend="s3",
+            s3_endpoint_url="https://cos.ap-guangzhou.myqcloud.com",
+            s3_access_key_id="cos-secret-id",
+            s3_secret_access_key=_secret("cos"),
+            s3_bucket="hejiameizhai-private-1250000000",
+            s3_region="ap-shanghai",
+        ),
+        _production_env(),
+    )
+    assert result.valid is False
+    assert any("S3_REGION" in error for error in result.errors)
+
+
 def test_production_validation_rejects_insecure_custom_s3_endpoint():
     result = validate_production_settings(
         production_settings(

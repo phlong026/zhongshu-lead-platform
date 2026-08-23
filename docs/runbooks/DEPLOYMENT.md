@@ -12,7 +12,7 @@
 - API：FastAPI，托管加盟商 H5、内部电销 H5、管理后台和业务接口；
 - Scheduler：处理通知 Outbox、领取/跟进任务、低积分提醒和每小时供应奖励结算；
 - PostgreSQL 16：唯一生产主库；
-- 私有 S3/COS/OSS：保存聊天截图和电话录音；
+- 腾讯云 COS（上海 `ap-shanghai`）私有 Bucket：保存聊天截图和电话录音；
 - 日志与告警平台：采集 API、Scheduler、Nginx、数据库和备份任务；
 - 异地备份：保存 PostgreSQL 自定义格式备份及对象存储版本。
 
