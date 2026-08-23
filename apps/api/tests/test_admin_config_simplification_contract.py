@@ -16,9 +16,13 @@ def test_admin_configuration_uses_business_language_instead_of_developer_fields(
 
     for field_id in ("c-province", "c-city", "c-districts"):
         assert field_id in app
+    assert "/master-data/region-tree" in app
+    assert "PROVINCE_NAMES" not in app
+    assert "全国地区数据" in app
     for technical_field in (
         "field('c-code'",
         "field('c-region'",
+        "field('c-region-code'",
         "field('c-category'",
         "field('r-priority'",
         "field('cfg-domain'",

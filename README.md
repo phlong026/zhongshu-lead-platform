@@ -49,6 +49,12 @@ uvicorn apps.api.src.main:app --host 0.0.0.0 --port 8000 --reload
 
 演示账号只允许用于开发和自动验收，见 `docs/runbooks/DEMO_ACCOUNTS.md`。
 
+## 全国地区组件
+
+管理后台新建加盟商时通过 `GET /api/v1/master-data/region-tree` 获取省、市、区县三级下拉数据，用户无需填写地区编码。接口内置 2025 年中国大陆地区快照；只有实际选中的城市和区县会写入现有地区表并参与派发、积分与服务范围联动。
+
+快照来自开源项目 [xihan123/gb2260](https://github.com/xihan123/gb2260)，使用 CC0-1.0 许可，并非官方实时接口。更新快照时必须同步执行地区树、加盟商创建和派发范围回归测试。
+
 ## 自动质量门禁
 
 面向 `release/v1.2.0` 的 PR 和发布分支执行：

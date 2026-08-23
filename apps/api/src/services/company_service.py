@@ -12,6 +12,7 @@ from ..core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12
 from ..core.security import decrypt_text, encrypt_text, hash_phone, mask_phone
 from ..core.v12_enums import CompanyLeadCapabilityCode
 from ..schemas.company import CompanyCreateBody, CompanySimpleCreateBody, CompanyUpdateBody
+from .china_regions import city_by_code, district_by_code
 
 DEFAULT_RECEIVER_CATEGORIES = ("OLD_RENOVATION", "SELF_BUILD", "INTERIOR")
 
@@ -69,6 +70,7 @@ def _next_company_code(db: Session) -> str:
 
 
 def _simple_region_codes(db: Session, body: CompanySimpleCreateBody) -> dict[str, Region]:
+    _materialize_selected_regions(db, body)
     requested = [body.primary_city_code, *body.district_codes]
     if body.serve_all_districts:
         district_codes = db.scalars(
@@ -108,6 +110,47 @@ def _simple_region_codes(db: Session, body: CompanySimpleCreateBody) -> dict[str
             {"region_codes": sorted(invalid), "primary_city_code": body.primary_city_code},
         )
     return regions
+
+
+def _materialize_selected_regions(db: Session, body: CompanySimpleCreateBody) -> None:
+    """把用户从全国组件选中的地区接入现有派发地区模型。"""
+
+    city = city_by_code(body.primary_city_code)
+    if city is None:
+        return
+
+    if db.get(Region, city["code"]) is None:
+        db.add(
+            Region(
+                code=city["code"],
+                name=city["name"],
+                level="CITY",
+                parent_code=None,
+                aliases=[city["name"]],
+                active=True,
+            )
+        )
+
+    requested_district_codes = (
+        [district["code"] for district in city["districts"]]
+        if body.serve_all_districts
+        else body.district_codes
+    )
+    for code in dict.fromkeys(requested_district_codes):
+        district = district_by_code(city, code)
+        if district is None or db.get(Region, code) is not None:
+            continue
+        db.add(
+            Region(
+                code=district["code"],
+                name=district["name"],
+                level="DISTRICT",
+                parent_code=city["code"],
+                aliases=[district["name"]],
+                active=True,
+            )
+        )
+    db.flush()
 
 
 def create_simple_company(db: Session, body: CompanySimpleCreateBody, *, reviewed_by: str | None = None) -> tuple[Company, dict[str, str]]:

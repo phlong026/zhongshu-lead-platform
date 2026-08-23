@@ -8,6 +8,7 @@ from apps.api.src.core.models import (
     CompanyCapability,
     CompanyServiceRegion,
     PointsAccount,
+    Region,
 )
 from apps.api.src.core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12
 
@@ -61,7 +62,8 @@ def test_simple_company_creation_links_legacy_and_v12_dispatch_profiles(api_clie
                 )
             ).all()
         )
-        assert legacy_regions == {"310000", "310104", "310115"}
+        assert {"310000", "310104", "310115"}.issubset(legacy_regions)
+        assert len(legacy_regions) > 10
 
         legacy_capabilities = set(
             db.scalars(
@@ -119,3 +121,71 @@ def test_simple_company_creation_rejects_region_outside_primary_city(api_client)
     )
     assert response.status_code == 422
     assert response.json()["code"] == "SERVICE_AREA_HIERARCHY_INVALID"
+
+
+def test_simple_company_creation_materializes_selected_nationwide_regions(api_client) -> None:
+    client, factory = api_client
+    admin = _login_admin(client)
+
+    response = client.post(
+        "/api/v1/companies/simple",
+        headers=admin,
+        json={
+            "name": "广州测试加盟商",
+            "primary_city_code": "440100",
+            "district_codes": ["440106"],
+            "serve_all_districts": False,
+        },
+    )
+    assert response.status_code == 200, response.text
+    company_id = response.json()["data"]["id"]
+
+    with factory() as db:
+        city = db.get(Region, "440100")
+        district = db.get(Region, "440106")
+        assert city is not None
+        assert (city.name, city.level, city.parent_code) == ("广州市", "CITY", None)
+        assert district is not None
+        assert (district.name, district.level, district.parent_code) == (
+            "天河区",
+            "DISTRICT",
+            "440100",
+        )
+        assert set(
+            db.scalars(
+                select(CompanyServiceRegion.region_code).where(
+                    CompanyServiceRegion.company_id == company_id,
+                    CompanyServiceRegion.active.is_(True),
+                )
+            ).all()
+        ) == {"440100", "440106"}
+
+
+def test_simple_company_creation_materializes_all_city_districts(api_client) -> None:
+    client, factory = api_client
+    admin = _login_admin(client)
+
+    response = client.post(
+        "/api/v1/companies/simple",
+        headers=admin,
+        json={
+            "name": "广州全城加盟商",
+            "primary_city_code": "440100",
+            "district_codes": [],
+            "serve_all_districts": True,
+        },
+    )
+    assert response.status_code == 200, response.text
+    company_id = response.json()["data"]["id"]
+
+    with factory() as db:
+        service_codes = set(
+            db.scalars(
+                select(CompanyServiceRegion.region_code).where(
+                    CompanyServiceRegion.company_id == company_id,
+                    CompanyServiceRegion.active.is_(True),
+                )
+            ).all()
+        )
+        assert {"440100", "440103", "440106"}.issubset(service_codes)
+        assert len(service_codes) > 10
