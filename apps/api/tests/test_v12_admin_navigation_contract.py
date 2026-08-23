@@ -48,8 +48,8 @@ def test_v12_operations_exposes_permission_scoped_system_settings() -> None:
         assert permission in source
 
     assert "data-system-setting" in source
-    assert "旧业务写接口保持关闭" in source
-    assert "配置值与场景参数本轮不调整" in source
+    assert "旧业务写接口" not in source
+    assert "配置值与场景参数" not in source
 
 
 def test_v12_operations_does_not_use_the_authenticated_admin_redirect_as_back_link() -> None:

@@ -47,7 +47,8 @@ def test_admin_lead_supply_ui_uses_v12_flow_without_pre_verification() -> None:
     assert "READY_DISPATCH" in js
     assert "/verification/tasks" not in js
     assert "LEAD_VERIFY" not in js
-    assert "前置电销核验任务" in js
+    assert "前置电销核验任务" not in js
+    assert "疑似重复的客资会交由人工复核" in js
 
 
 def test_supplier_h5_supports_capability_upload_list_and_detail() -> None:
