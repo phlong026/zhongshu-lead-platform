@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class CompanyCreateBody(BaseModel):
@@ -13,6 +13,26 @@ class CompanyCreateBody(BaseModel):
     capabilities: list[dict[str, str | None]] = Field(default_factory=list)
     notes: str | None = Field(default=None, max_length=500)
 
+
+class CompanySimpleCreateBody(BaseModel):
+    name: str = Field(min_length=2, max_length=128)
+    owner_name: str | None = Field(default=None, max_length=64)
+    contact_phone: str | None = Field(default=None, max_length=32)
+    level_code: str = Field(default="V1", max_length=32)
+    primary_city_code: str = Field(min_length=1, max_length=32)
+    district_codes: list[str] = Field(default_factory=list)
+    serve_all_districts: bool = True
+    notes: str | None = Field(default=None, max_length=500)
+
+    @field_validator("primary_city_code")
+    @classmethod
+    def clean_primary_city_code(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("district_codes")
+    @classmethod
+    def clean_district_codes(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(code.strip() for code in value if code.strip()))
 
 class CompanyUpdateBody(BaseModel):
     name: str | None = Field(default=None, min_length=2, max_length=128)

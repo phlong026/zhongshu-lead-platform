@@ -11,9 +11,9 @@ from ..core.database import get_db
 from ..core.errors import AppError
 from ..core.models import Company
 from ..core.responses import ok, page
-from ..schemas.company import CompanyCreateBody, CompanyUpdateBody
+from ..schemas.company import CompanyCreateBody, CompanySimpleCreateBody, CompanyUpdateBody
 from ..services.audit import write_audit
-from ..services.company_service import company_to_dict, create_company, update_company
+from ..services.company_service import company_to_dict, create_company, create_simple_company, update_company
 
 router = APIRouter(prefix="/companies", tags=["companies"])
 
@@ -54,6 +54,40 @@ def create_company_endpoint(
     db.commit()
     db.refresh(company)
     return ok(request, {"id": company.id, "code": company.code, "name": company.name}, "创建成功")
+
+
+@router.post("/simple")
+def create_simple_company_endpoint(
+    body: CompanySimpleCreateBody,
+    request: Request,
+    principal=Depends(require_permissions("*")),
+    db: Session = Depends(get_db),
+):
+    company, readiness = create_simple_company(db, body, reviewed_by=principal.user_id)
+    write_audit(
+        db,
+        principal=principal,
+        action="COMPANY_SIMPLE_CREATE",
+        resource_type="company",
+        resource_id=company.id,
+        company_id=company.id,
+        after={
+            "code": company.code,
+            "name": company.name,
+            "primary_city_code": body.primary_city_code,
+            "district_codes": body.district_codes,
+            "serve_all_districts": body.serve_all_districts,
+            "readiness": readiness,
+        },
+        request_id=request.state.request_id,
+    )
+    db.commit()
+    db.refresh(company)
+    return ok(
+        request,
+        {"id": company.id, "code": company.code, "name": company.name, "readiness": readiness},
+        "创建成功",
+    )
 
 
 @router.patch("/{company_id}")

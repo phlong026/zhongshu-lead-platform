@@ -6,9 +6,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..core.errors import AppError
-from ..core.models import Company, Region
+from ..core.models import Company, CompanyCapability, CompanyServiceRegion, Region
 from ..core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12
 from ..core.v12_enums import CompanyLeadCapabilityCode
+from .company_service import default_receiver_categories
 
 
 VALID_CAPABILITIES = {item.value for item in CompanyLeadCapabilityCode}
@@ -108,8 +109,43 @@ def review_capability(
     item.reviewed_by = reviewed_by
     item.reviewed_at = datetime.now(timezone.utc)
     item.review_note = note.strip() if note else None
+    _sync_legacy_receiver_capability(db, item)
     db.flush()
     return item
+
+
+def _sync_legacy_receiver_capability(db: Session, item: CompanyLeadCapability) -> None:
+    if item.capability_code != CompanyLeadCapabilityCode.LEAD_RECEIVER.value:
+        return
+    existing = list(
+        db.scalars(
+            select(CompanyCapability).where(
+                CompanyCapability.company_id == item.company_id
+            )
+        ).all()
+    )
+    if item.review_status != "APPROVED" or not item.active:
+        for capability in existing:
+            capability.active = False
+        return
+    generic_by_category = {
+        capability.category_code: capability
+        for capability in existing
+        if capability.brand_code is None
+    }
+    for category_code in default_receiver_categories(db):
+        capability = generic_by_category.get(category_code)
+        if capability is None:
+            db.add(
+                CompanyCapability(
+                    company_id=item.company_id,
+                    category_code=category_code,
+                    brand_code=None,
+                    active=True,
+                )
+            )
+        else:
+            capability.active = True
 
 
 def list_service_areas(db: Session, company_id: str) -> list[CompanyServiceAreaV12]:
@@ -254,5 +290,28 @@ def review_service_area(
         item.review_note = clean_note
     item.reviewed_by = reviewed_by
     item.reviewed_at = datetime.now(timezone.utc)
+    _sync_legacy_service_area(db, item)
     db.flush()
     return item
+
+
+def _sync_legacy_service_area(db: Session, item: CompanyServiceAreaV12) -> None:
+    """Keep the legacy candidate path aligned with the approved V1.2 profile."""
+
+    legacy = db.scalar(
+        select(CompanyServiceRegion).where(
+            CompanyServiceRegion.company_id == item.company_id,
+            CompanyServiceRegion.region_code == item.region_code,
+        )
+    )
+    should_be_active = item.review_status == "APPROVED" and item.active
+    if legacy is None and should_be_active:
+        db.add(
+            CompanyServiceRegion(
+                company_id=item.company_id,
+                region_code=item.region_code,
+                active=True,
+            )
+        )
+    elif legacy is not None:
+        legacy.active = should_be_active

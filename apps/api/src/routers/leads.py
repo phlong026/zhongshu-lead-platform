@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Annotated
-
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -11,13 +9,14 @@ from ..core.config import get_settings
 from ..core.database import get_db
 from ..core.enums import LeadStatus
 from ..core.errors import AppError
-from ..core.models import Lead, LeadDuplicateRelation, LeadImportIssue, SyncBatch
+from ..core.models import Lead
 from ..core.responses import ok, page
 from ..integrations.feishu import FeishuClient, FeishuRecord
-from ..schemas.leads import DuplicateDecisionBody, FeishuMockSyncBody, LeadStagingUpdateBody
+from ..schemas.leads import DuplicateDecisionBody, FeishuMockSyncBody, LeadStagingUpdateBody, StagingCleanupBody
 from ..services.audit import write_audit
 from ..services.feishu_sync_service import configured_mapping, fetch_and_import_feishu, writeback_feishu_results
 from ..services.lead_service import import_records, lead_to_dict, update_staging_lead
+from ..services.staging_cleanup_service import delete_feishu_staging_leads, preview_feishu_staging_cleanup
 
 router = APIRouter(prefix="/leads", tags=["leads"])
 settings = get_settings()
@@ -107,6 +106,52 @@ def staging_list(
     total = db.scalar(count_stmt) or 0
     items = db.scalars(stmt.order_by(Lead.imported_at.desc()).offset((page_no - 1) * page_size).limit(page_size)).all()
     return ok(request, page([lead_to_dict(x, principal) for x in items], total, page_no, page_size))
+
+
+@router.get("/staging-cleanup-preview")
+def staging_cleanup_preview(
+    request: Request,
+    principal=Depends(require_permissions("*")),
+    db: Session = Depends(get_db),
+):
+    preview = preview_feishu_staging_cleanup(db)
+    return ok(
+        request,
+        {
+            **preview,
+            "scope": "仅清理飞书来源、仍处于暂存状态、且未进入核验/派发/退回/重复关系的客资",
+        },
+    )
+
+
+@router.post("/staging-cleanup")
+def staging_cleanup(
+    body: StagingCleanupBody,
+    request: Request,
+    principal=Depends(require_permissions("*")),
+    db: Session = Depends(get_db),
+):
+    if not body.confirmed:
+        raise AppError("STAGING_CLEANUP_CONFIRM_REQUIRED", "请先确认清理飞书暂存资料", 422)
+    preview = preview_feishu_staging_cleanup(db)
+    if preview["deletable_count"] != body.expected_deletable_count:
+        raise AppError(
+            "STAGING_CLEANUP_PREVIEW_STALE",
+            "暂存区数据已变化，请重新预览后再清理",
+            409,
+            {**preview, "expected_deletable_count": body.expected_deletable_count},
+        )
+    result = delete_feishu_staging_leads(db)
+    write_audit(
+        db,
+        principal=principal,
+        action="FEISHU_STAGING_CLEANUP",
+        resource_type="lead",
+        after={**preview, **result},
+        request_id=request.state.request_id,
+    )
+    db.commit()
+    return ok(request, result, "暂存区清理完成")
 
 
 @router.get("/{lead_id}")
