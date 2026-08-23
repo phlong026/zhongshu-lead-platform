@@ -29,6 +29,9 @@ services:
       RUN_DB_MIGRATIONS: "false"
       LEGACY_WRITE_ENABLED: "false"
       TRUSTED_PROXY_CIDR: ${TRUSTED_PROXY_CIDR:-127.0.0.1/32}
+      # 生产拓扑的 nginx 固定强制覆写 x-real-ip（见 production.conf.template），
+      # 故 api 必须信任该头；直连部署（无该反代）严禁沿用此值。
+      TRUST_PROXY_HEADERS: "true"
     logging: *json-logging
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]
@@ -57,6 +60,8 @@ services:
       APP_ENV: "production"
       AUTO_CREATE_SCHEMA: "false"
       LEGACY_WRITE_ENABLED: "false"
+      # 与 api 对齐：启动校验要求该开关显式声明，不依赖部署方记得写进 .env。
+      TRUST_PROXY_HEADERS: "true"
     logging: *json-logging
 
   nginx:

@@ -698,6 +698,54 @@ def test_confirm_start_buckets_are_bounded_and_fail_closed() -> None:
         buckets.clear()
 
 
+def test_confirm_start_ip_dimension_caps_bucket_creation() -> None:
+    """M-A：单 IP 用随机 invite 也撞不满桶表——IP 维度硬性封顶后仅拒绝该 IP
+    自己的后续请求，其他 IP 的真实用户不受任何拖累。"""
+
+    import apps.api.src.routers.auth as auth_router
+
+    buckets = auth_router._CONFIRM_START_BUCKETS
+    ip_buckets = auth_router._CONFIRM_START_IP_BUCKETS
+    buckets.clear()
+    ip_buckets.clear()
+    try:
+        for i in range(auth_router._CONFIRM_START_MAX_PER_IP_PER_WINDOW):
+            assert (
+                auth_router._confirm_start_rate_limited(f"ip-cap-invite-{i:04d}", "198.51.100.9")
+                is False
+            )
+        # 同一 IP 超过窗口内请求上限：拒绝，且无法再新建 invite 桶
+        assert auth_router._confirm_start_rate_limited("ip-cap-invite-overflow", "198.51.100.9") is True
+        # 其他 IP 不受拖累，真实用户仍可正常确认
+        assert auth_router._confirm_start_rate_limited("ip-cap-invite-other", "198.51.100.10") is False
+    finally:
+        buckets.clear()
+        ip_buckets.clear()
+
+
+def test_confirm_start_rate_limit_is_thread_safe() -> None:
+    """M-A：并发 burst 下同键窗口内放行数恰好等于上限——读改写整体持锁，
+    多线程不再同时通过计数检查让限流被绕过。"""
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    import apps.api.src.routers.auth as auth_router
+
+    buckets = auth_router._CONFIRM_START_BUCKETS
+    ip_buckets = auth_router._CONFIRM_START_IP_BUCKETS
+    buckets.clear()
+    ip_buckets.clear()
+    try:
+        def attempt(_: int) -> bool:
+            return auth_router._confirm_start_rate_limited("thread-safe-invite-0001", "203.0.113.77")
+
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            results = list(pool.map(attempt, range(60)))
+        allowed = sum(1 for limited in results if limited is False)
+        assert allowed == auth_router._CONFIRM_START_MAX_PER_WINDOW
+    finally:
+        buckets.clear()
+        ip_buckets.clear()
 
 def test_identity_hit_relogin_consumes_invite_with_real_user(db) -> None:
     """N9：已绑定身份带新邀请重登（防御路径）——消费同样写回真实使用者。"""

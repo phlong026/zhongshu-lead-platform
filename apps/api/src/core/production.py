@@ -103,6 +103,17 @@ def validate_production_settings(settings: Settings, environ: dict[str, str] | N
     trusted_proxy_cidr = env.get("TRUSTED_PROXY_CIDR", "127.0.0.1/32").strip()
     if not _valid_trusted_proxy_cidr(trusted_proxy_cidr):
         errors.append("TRUSTED_PROXY_CIDR 必须是单一、规范、非全网段的有效 CIDR，禁止额外指令或尾随内容")
+    # M-B：生产拓扑的 nginx 会强制覆写 x-real-ip；若部署方忘设该开关，API
+    # 会把所有请求的客户端 IP 记为反代内网地址——审计溯源全部失真且是静默
+    # 失败，必须显式声明并强制为 true（docker-compose.prod.yml 已固定注入）。
+    trust_proxy_headers = env.get("TRUST_PROXY_HEADERS", "").strip().lower()
+    if trust_proxy_headers not in {"true", "false"}:
+        errors.append("TRUST_PROXY_HEADERS 必须显式设置为 true/false，不得缺省")
+    elif trust_proxy_headers != "true":
+        errors.append(
+            "标准生产拓扑的 nginx 会强制覆写 x-real-ip，必须设置 TRUST_PROXY_HEADERS=true，"
+            "否则审计 IP 将恒为反代内网地址，安全事件无法溯源"
+        )
     database_password = env.get("POSTGRES_PASSWORD", "")
     if _unsafe_secret(database_password, minimum=16):
         errors.append("POSTGRES_PASSWORD 长度不足或仍为示例值")

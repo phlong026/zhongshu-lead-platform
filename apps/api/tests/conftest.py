@@ -19,9 +19,11 @@ def _reset_process_local_rate_limiters():
     from apps.api.src.routers import auth as auth_router
 
     auth_router._CONFIRM_START_BUCKETS.clear()
+    auth_router._CONFIRM_START_IP_BUCKETS.clear()
     auth_router._CALLBACK_AUDIT_THROTTLE.clear()
     yield
     auth_router._CONFIRM_START_BUCKETS.clear()
+    auth_router._CONFIRM_START_IP_BUCKETS.clear()
     auth_router._CALLBACK_AUDIT_THROTTLE.clear()
 
 

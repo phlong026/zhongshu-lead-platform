@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Annotated
@@ -57,13 +58,47 @@ def _request_ip(request: Request) -> str | None:
 # N8：键必须是定长哈希——原始 invite（16-128 字符垃圾串）直接作键会被
 # 桶容量攻击撑爆；清扫后仍达容量上限时 fail-closed 拒绝新键，窗口过期
 # 自动恢复，绝不让字典无界生长。
+# M-A：同步端点跑线程池，读-改-写必须整体持锁，否则并发 burst 下多线程
+# 同时通过计数检查，同键窗口内放行远超上限（限流被绕过）。
+_CONFIRM_START_LOCK = threading.Lock()
 _CONFIRM_START_BUCKETS: dict[str, list[float]] = {}
 _CONFIRM_START_WINDOW_SECONDS = 60.0
 _CONFIRM_START_MAX_PER_WINDOW = 10
 _CONFIRM_START_MAX_BUCKETS = 4096
+# M-A：单 IP 维度独立限流——invite 是请求体任意串，若仅有 invite+IP 桶，
+# 单 IP 用随机 invite 即可在窗口内撞满桶表让 fail-closed 拒绝所有真实用户
+# （全站 DoS）。IP 键空间由 TCP 对端或受信反代注入，无法凭请求体伪造；
+# 该层把单 IP 能创建的 invite 桶数量硬性封顶，分布式填桶需每 IP 都超限。
+_CONFIRM_START_IP_BUCKETS: dict[str, list[float]] = {}
+_CONFIRM_START_MAX_PER_IP_PER_WINDOW = 30
+_CONFIRM_START_MAX_IP_BUCKETS = 4096
 
 def _confirm_start_rate_limited(invite: str, ip: str | None) -> bool:
     now = time.monotonic()
+    with _CONFIRM_START_LOCK:
+        return _confirm_start_rate_limited_locked(invite=invite, ip=ip, now=now)
+
+def _confirm_start_rate_limited_locked(*, invite: str, ip: str | None, now: float) -> bool:
+    ip_key = hashlib.sha256((ip or "unknown").encode("utf-8")).hexdigest()
+    ip_hits = [
+        stamp
+        for stamp in _CONFIRM_START_IP_BUCKETS.get(ip_key, [])
+        if now - stamp < _CONFIRM_START_WINDOW_SECONDS
+    ]
+    if len(ip_hits) >= _CONFIRM_START_MAX_PER_IP_PER_WINDOW:
+        _CONFIRM_START_IP_BUCKETS[ip_key] = ip_hits
+        return True
+    if len(_CONFIRM_START_IP_BUCKETS) >= _CONFIRM_START_MAX_IP_BUCKETS:
+        for key, stamps in list(_CONFIRM_START_IP_BUCKETS.items()):
+            alive = [stamp for stamp in stamps if now - stamp < _CONFIRM_START_WINDOW_SECONDS]
+            if alive:
+                _CONFIRM_START_IP_BUCKETS[key] = alive
+            else:
+                _CONFIRM_START_IP_BUCKETS.pop(key, None)
+        if len(_CONFIRM_START_IP_BUCKETS) >= _CONFIRM_START_MAX_IP_BUCKETS:
+            return True  # fail-closed：与 invite 桶同策略，宁拒不膨胀
+    ip_hits.append(now)
+    _CONFIRM_START_IP_BUCKETS[ip_key] = ip_hits
     # 惰性清理：桶数量达上限时整体清扫过期项，避免长驻进程的键无限累积。
     if len(_CONFIRM_START_BUCKETS) >= _CONFIRM_START_MAX_BUCKETS:
         for key, stamps in list(_CONFIRM_START_BUCKETS.items()):
@@ -97,17 +132,20 @@ def _callback_audit_throttled(ip: str | None, reason_code: str, exc: Exception, 
     now = time.monotonic()
     cause = type(exc.__cause__).__name__ if exc.__cause__ else "-"
     key = hashlib.sha256(f"{ip or 'unknown'}\x1f{reason_code}\x1f{cause}\x1f{stage}".encode("utf-8")).hexdigest()
-    last = _CALLBACK_AUDIT_THROTTLE.get(key)
-    if last is not None and now - last < _CALLBACK_AUDIT_THROTTLE_WINDOW_SECONDS:
-        return True
-    if len(_CALLBACK_AUDIT_THROTTLE) >= _CALLBACK_AUDIT_THROTTLE_MAX_KEYS:
-        for stale_key, stamp in list(_CALLBACK_AUDIT_THROTTLE.items()):
-            if now - stamp >= _CALLBACK_AUDIT_THROTTLE_WINDOW_SECONDS:
-                _CALLBACK_AUDIT_THROTTLE.pop(stale_key, None)
+    # M-A 同源加固：同步端点跑线程池，读-改-写同样持锁串行化，避免并发
+    # burst 同键同时通过节流检查短时多写审计（fail-open 语义不变，仅收紧窗口）。
+    with _CONFIRM_START_LOCK:
+        last = _CALLBACK_AUDIT_THROTTLE.get(key)
+        if last is not None and now - last < _CALLBACK_AUDIT_THROTTLE_WINDOW_SECONDS:
+            return True
         if len(_CALLBACK_AUDIT_THROTTLE) >= _CALLBACK_AUDIT_THROTTLE_MAX_KEYS:
-            return False  # 审计是安全记录：键表满时宁可放行落库也不静默丢审计
-    _CALLBACK_AUDIT_THROTTLE[key] = now
-    return False
+            for stale_key, stamp in list(_CALLBACK_AUDIT_THROTTLE.items()):
+                if now - stamp >= _CALLBACK_AUDIT_THROTTLE_WINDOW_SECONDS:
+                    _CALLBACK_AUDIT_THROTTLE.pop(stale_key, None)
+            if len(_CALLBACK_AUDIT_THROTTLE) >= _CALLBACK_AUDIT_THROTTLE_MAX_KEYS:
+                return False  # 审计是安全记录：键表满时宁可放行落库也不静默丢审计
+        _CALLBACK_AUDIT_THROTTLE[key] = now
+        return False
 
 def _audit_unlock(db: Session, *, user_id: str | None, request: Request) -> None:
     if not user_id:

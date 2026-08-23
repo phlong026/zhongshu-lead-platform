@@ -45,6 +45,7 @@ def _production_env(**overrides: str) -> dict[str, str]:
         "POSTGRES_PASSWORD": "A-strong-production-password-2026",
         "SEED_DEMO": "false",
         "TRUSTED_PROXY_CIDR": "127.0.0.1/32",
+        "TRUST_PROXY_HEADERS": "true",
     }
     values.update(overrides)
     return values
@@ -153,6 +154,17 @@ def test_production_validation_rejects_untrusted_or_malformed_proxy_cidr():
         assert any("TRUSTED_PROXY_CIDR" in error for error in result.errors), value
 
 
+def test_production_validation_requires_explicit_trust_proxy_headers():
+    """M-B：nginx 生产拓扑会强制覆写 x-real-ip，忘设/误设开关会让审计 IP 全部
+    失真为反代内网地址且静默失败——必须显式设置为 true 才放行。"""
+
+    for bad in ("", "false", "yes", "1"):
+        overrides = {"TRUST_PROXY_HEADERS": bad}
+        result = validate_production_settings(production_settings(), _production_env(**overrides))
+        assert result.valid is False, repr(bad)
+        assert any("TRUST_PROXY_HEADERS" in error for error in result.errors), repr(bad)
+
+
 def test_production_validation_accepts_single_canonical_proxy_cidr():
     for value in ("127.0.0.1/32", "10.20.30.0/24", "2001:db8::/64"):
         result = validate_production_settings(
@@ -199,6 +211,9 @@ def test_production_deployment_files_enforce_tls_least_privilege_and_fail_closed
     assert "cap_drop:" in compose and "AUTO_CREATE_SCHEMA" in compose
     assert 'LEGACY_WRITE_ENABLED: "false"' in compose
     assert "TRUSTED_PROXY_CIDR" in compose
+    # M-B：生产拓扑 nginx 强制覆写 x-real-ip，api 服务必须固定注入信任开关，
+    # 否则审计 IP 恒为反代内网地址（静默失真）。
+    assert 'TRUST_PROXY_HEADERS: "true"' in compose
     assert "listen 443 ssl" in nginx and "return 301 https://" in nginx
     assert "client_max_body_size 25m" in nginx and "limit_req_zone" in nginx
     assert "set_real_ip_from ${TRUSTED_PROXY_CIDR};" in nginx

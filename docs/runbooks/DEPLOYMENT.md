@@ -39,6 +39,8 @@ python scripts/verify_production.py --env-file .env --require-certificates
 
 上述宿主机检查会在 `.env` 未显式提供 `DATABASE_URL` 时，按 `POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_DB` 生成 URL 编码后的 Compose 内部 PostgreSQL URL，仅用于配置一致性验证。API 与 Scheduler 容器启动时由 `docker/prepare-env.sh` 使用同一 URL 编码规则生成 `DATABASE_URL`，因此密码、用户名或数据库名包含 `/`、`#`、`@`、空格等保留字符时不会出现宿主机校验与容器实际连接语义不一致。
 
+`TRUST_PROXY_HEADERS` 必须在 `.env` 中显式声明为 `true`：本拓扑的 nginx 始终强制覆写 `x-real-ip`（`infra/nginx/production.conf.template`），API 信任该头后限流键与审计 IP 才能反映真实客户端地址；若缺失或设为 `false`，`validate_production_env.py` 会直接拒绝。生产校验一律要求 `true`；若确实要把 API 改为无反代直连部署，必须同步调整 `validate_production_settings` 的该校验，不允许仅改配置绕过。
+
 真正的数据库 revision 和业务对账必须在 Compose 网络内执行。
 
 飞书为显式可选能力：
