@@ -44,7 +44,7 @@ def test_user_pages_do_not_render_raw_json_or_internal_status_codes() -> None:
         assert raw_fragment not in admin
 
     leads = read(ADMIN / "v12-leads.js")
-    assert "v12-leads.js?v=20260823-flow-audit2" in read(ADMIN / "v12-leads.html")
+    assert "v12-leads.js?v=20260824-card-data1" in read(ADMIN / "v12-leads.html")
     assert '<input class="v12-input" id="lead-source"' not in leads
     assert '<input class="v12-input" id="lead-category"' not in leads
     assert '<select class="v12-select" id="lead-source">' in leads
@@ -56,8 +56,8 @@ def test_user_pages_do_not_render_raw_json_or_internal_status_codes() -> None:
     assert '<select class="supplier-select" id="lead-source">' in supplier
     assert '<select class="supplier-select" id="lead-category">' in supplier
     assert "'供应商推荐': '加盟商推荐'" in supplier
-    assert "supplier.js?v=20260823-client-unify1" in read(H5 / "supplier.html")
-    assert "app.js?v=20260823-flow-audit2" in read(ADMIN / "index.html")
+    assert "supplier.js?v=20260824-card-data1" in read(H5 / "supplier.html")
+    assert "app.js?v=20260824-card-data1" in read(ADMIN / "index.html")
     assert "const packageDisplayName=" in admin
     assert "if(Array.isArray(value))" in read(ADMIN / "ui.js")
     for mapping in (
@@ -191,7 +191,7 @@ def test_company_profile_uses_business_names_instead_of_raw_codes_and_ids() -> N
     assert "account.level_code" not in legacy_h5
     assert "esc(state.me.company_id)" not in legacy_h5
     assert "const packageDisplayName=" in legacy_h5
-    assert "app.js?v=20260824-client-unify2" in read(H5 / "index.html")
+    assert "app.js?v=20260824-card-data1" in read(H5 / "index.html")
     assert "const readableLabel=" in workbench
     assert "const recordCode=" in workbench
     assert "const readableLabel=" in operations

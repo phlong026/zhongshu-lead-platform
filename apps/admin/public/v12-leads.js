@@ -15,6 +15,18 @@ const state={
   platformStatus:'',
   supplierReviewStatus:'PENDING'
 };
+function syncStateFromUrl(){
+  const url=new URL(location.href);
+  state.platformStatus=url.searchParams.get('status')||'';
+  state.supplierReviewStatus=url.searchParams.get('review_status')||'PENDING';
+}
+function setPlatformStatus(status){
+  state.platformStatus=status;
+  const url=new URL(location.href);
+  status?url.searchParams.set('status',status):url.searchParams.delete('status');
+  history.pushState(null,'',url);
+  renderPlatformLeads();
+}
 const can=code=>state.me?.permissions?.includes('*')||state.me?.permissions?.includes(code);
 const labels={DRAFT:'草稿',PENDING_REVIEW:'待资料初审',READY_DISPATCH:'待人工派发',DUPLICATE:'疑似重复',INVALID:'无效',CLOSED:'已关闭',APPROVED:'已通过',REJECTED:'已驳回',PENDING:'待审核',CLEAR:'无重复',HARD_DUPLICATE:'90天内已有相同客户',REWARD_DUPLICATE:'近期已发放奖励',HISTORICAL_SUSPECT:'历史记录疑似重复',OVERRIDDEN:'已确认不重复',OLD_RENOVATION:'旧房改造',SELF_BUILD:'农村自建房',INTERIOR:'室内装修',PLATFORM_MANUAL:'平台录入',SUPPLIER_H5:'加盟商提交',MANUAL:'平台录入'};
 const TECHNICAL_CODE=/^(?:[A-Z][A-Z0-9_]{2,}|[a-z][a-z0-9]*|[a-z0-9]+(?:[_-][a-z0-9]+)+)$/;
@@ -47,6 +59,7 @@ async function boot(){
   try{
     state.me=await request('/auth/me');
     if(!can('lead.manual.manage')&&!can('lead.supplier.review'))throw new Error('当前账号无权访问客资供给工作台');
+    syncStateFromUrl();
     state.tab=can('lead.manual.manage')?'platform':'supplier';
     shell();
     await renderCurrent();
@@ -67,8 +80,9 @@ async function renderPlatformLeads(){
     const mutationActions=item.status==='DRAFT'&&ownsDraft?`<button class="v12-btn small" data-edit="${item.id}">编辑</button><button class="v12-btn small primary" data-submit="${item.id}">提交</button>`:'';
     return `<tr><td class="v12-customer"><strong>${esc(item.customer_name)}</strong><span>${icon('phone')}${esc(item.phone_masked||'--')}</span></td><td>${esc(item.city||'--')} ${esc(item.district||'')}</td><td>${esc(readableLabel(item.source_channel,'未填写'))}</td><td>${badge(item.status)}<div style="margin-top:6px">${badge(item.duplicate_status)}</div></td><td>${fmt(item.submitted_at||item.created_at)}</td><td><div class="v12-actions"><button class="v12-btn small" data-detail="${item.id}">详情</button>${mutationActions}</div></td></tr>`;
   });
-  zsSetSafeHtml(document.querySelector('#workspace'), `<section class="v12-summary"><div class="v12-stat"><i>${icon('list')}</i><span>当前结果</span><strong>${stats.all}</strong></div><div class="v12-stat"><i>${icon('file-text')}</i><span>草稿</span><strong>${stats.draft}</strong></div><div class="v12-stat"><i>${icon('hand-claim')}</i><span>待人工派发</span><strong>${stats.ready}</strong></div><div class="v12-stat"><i>${icon('alert-triangle')}</i><span>重复/疑似</span><strong>${stats.duplicate}</strong></div></section><section class="v12-panel"><div class="v12-toolbar"><div class="v12-toolbar-left"><h2>平台录入客资</h2><select class="v12-select" id="platform-status"><option value="">全部状态</option>${['DRAFT','READY_DISPATCH','DUPLICATE','INVALID','CLOSED'].map(option=>`<option value="${option}" ${state.platformStatus===option?'selected':''}>${esc(labels[option])}</option>`).join('')}</select><button class="v12-btn" id="platform-filter">${icon('search')}查询</button></div><div class="v12-toolbar-right"><button class="v12-btn primary" id="new-platform-lead">${icon('plus')}新建客资</button></div></div>${table(['客户','服务地区','来源渠道','状态/去重','提交时间','操作'],rows,'暂无平台手工录入客资')}</section>`);
-  document.querySelector('#platform-filter').onclick=()=>{state.platformStatus=document.querySelector('#platform-status').value;renderPlatformLeads();};
+  zsSetSafeHtml(document.querySelector('#workspace'), `<section class="v12-summary" aria-label="平台客资统计"><button type="button" class="v12-stat" data-platform-status="" aria-label="当前结果 ${stats.all} 条，查看全部"><i>${icon('list')}</i><span>当前结果</span><strong>${stats.all}</strong></button><button type="button" class="v12-stat" data-platform-status="DRAFT" aria-label="本页草稿 ${stats.draft} 条，筛选查看"><i>${icon('file-text')}</i><span>本页草稿</span><strong>${stats.draft}</strong></button><button type="button" class="v12-stat" data-platform-status="READY_DISPATCH" aria-label="本页待派发 ${stats.ready} 条，筛选查看"><i>${icon('hand-claim')}</i><span>本页待派发</span><strong>${stats.ready}</strong></button><button type="button" class="v12-stat" data-platform-status="DUPLICATE" aria-label="本页重复或疑似 ${stats.duplicate} 条，筛选查看"><i>${icon('alert-triangle')}</i><span>本页重复/疑似</span><strong>${stats.duplicate}</strong></button></section><section class="v12-panel"><div class="v12-toolbar"><div class="v12-toolbar-left"><h2>平台录入客资</h2><select class="v12-select" id="platform-status"><option value="">全部状态</option>${['DRAFT','READY_DISPATCH','DUPLICATE','INVALID','CLOSED'].map(option=>`<option value="${option}" ${state.platformStatus===option?'selected':''}>${esc(labels[option])}</option>`).join('')}</select><button class="v12-btn" id="platform-filter">${icon('search')}查询</button></div><div class="v12-toolbar-right"><button class="v12-btn primary" id="new-platform-lead">${icon('plus')}新建客资</button></div></div>${table(['客户','服务地区','来源渠道','状态/去重','提交时间','操作'],rows,'暂无平台手工录入客资')}</section>`);
+  document.querySelector('#platform-filter').onclick=()=>setPlatformStatus(document.querySelector('#platform-status').value);
+  document.querySelectorAll('[data-platform-status]').forEach(button=>button.onclick=()=>setPlatformStatus(button.dataset.platformStatus));
   document.querySelector('#new-platform-lead').onclick=()=>openLeadForm(null);
   document.querySelectorAll('[data-detail]').forEach(button=>button.onclick=()=>showPlatformDetail(button.dataset.detail));
   document.querySelectorAll('[data-edit]').forEach(button=>button.onclick=()=>openLeadForm(state.platformItems.find(item=>item.id===button.dataset.edit)));
@@ -157,4 +171,5 @@ function openSupplierReview(id,approve){
   document.querySelector('#confirm-review').onclick=async()=>{const note=value('#review-note');if(!approve&&!note){toast('驳回时必须填写原因','error');return;}try{await request(`/v1.2/admin/supplier-leads/${id}/review`,{method:'POST',body:JSON.stringify({decision:approve?'APPROVE':'REJECT',note})});closeOverlay();toast('资料初审已完成');await renderSupplierQueue();}catch(error){toast(error.message,'error');}};
 }
 
+window.addEventListener('popstate',()=>{syncStateFromUrl();renderCurrent();});
 boot();

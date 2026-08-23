@@ -11,6 +11,9 @@ from zoneinfo import ZoneInfo
 from playwright.sync_api import Browser, Page, sync_playwright
 
 
+MOBILE_WIDTHS = (320, 375, 390, 414)
+
+
 def _attach_pageerror_capture(page: Page, errors: list[str]) -> None:
     page.on("pageerror", lambda exc: errors.append(f"pageerror: {exc}"))
 
@@ -35,6 +38,34 @@ def _assert_no_visible_error(page: Page, selectors: tuple[str, ...]) -> None:
         if locator.count() and locator.first.is_visible():
             text = locator.first.inner_text().strip()
             raise AssertionError(f"visible error {selector}: {text}")
+
+
+def _assert_responsive_widths(
+    page: Page,
+    selectors: tuple[str, ...],
+) -> dict[str, dict[str, int]]:
+    results: dict[str, dict[str, int]] = {}
+    for width in MOBILE_WIDTHS:
+        page.set_viewport_size({"width": width, "height": 844})
+        page.wait_for_timeout(80)
+        for selector in selectors:
+            locator = page.locator(selector)
+            if not locator.count() or not locator.first.is_visible():
+                raise AssertionError(f"responsive element missing at {width}px: {selector}")
+        layout = page.evaluate(
+            """() => ({
+                viewportWidth: window.innerWidth,
+                documentWidth: document.documentElement.scrollWidth,
+                bodyWidth: document.body.scrollWidth,
+            })"""
+        )
+        if layout["documentWidth"] > layout["viewportWidth"] + 1:
+            raise AssertionError(
+                f"horizontal overflow at {width}px: document={layout['documentWidth']} "
+                f"viewport={layout['viewportWidth']}"
+            )
+        results[str(width)] = layout
+    return results
 
 
 def _assert_safe_html_boundary(page: Page) -> dict[str, bool]:
@@ -116,7 +147,7 @@ def _admin_smoke(
         page.locator("#password").fill("Admin123!")
         _attach_console_error_capture(page, errors)
         page.locator("#login-btn").click()
-        page.wait_for_selector(".layout", timeout=15000)
+        page.wait_for_selector(".ops-shell", timeout=15000)
         page.goto(f"{base_url}/admin/index.html#/users", wait_until="networkidle")
         page.wait_for_selector("#new-user", timeout=15000)
         internal_user_rows = page.locator("main.page table tbody tr").count()
@@ -322,12 +353,15 @@ def _h5_smoke(browser: Browser, base_url: str, output: Path, errors: list[str]) 
         title = page.title()
         if "客资工作台" not in title:
             raise AssertionError(f"unexpected H5 title: {title}")
+        responsive_widths = _assert_responsive_widths(page, (".wb-header", ".wb-bottom"))
+        page.set_viewport_size({"width": 390, "height": 844})
         screenshot = output / "v12-h5-home-mobile.png"
         page.screenshot(path=str(screenshot), full_page=True)
         return {
             "valid": True,
             "title": title,
             "nav_count": page.locator(".wb-nav").count(),
+            "responsive_widths": responsive_widths,
             "safe_html_boundary": safe_html_boundary,
             "screenshot": str(screenshot),
         }
@@ -373,6 +407,8 @@ def _call_smoke(
             empty_state = page.locator(".empty").inner_text()
             if "暂无待办任务" not in empty_state:
                 raise AssertionError(f"unexpected call empty state: {empty_state}")
+        responsive_widths = _assert_responsive_widths(page, (".top", ".bottom"))
+        page.set_viewport_size({"width": 390, "height": 844})
         screenshot = output / "v12-call-home-mobile.png"
         page.screenshot(path=str(screenshot), full_page=True)
         return {
@@ -380,6 +416,7 @@ def _call_smoke(
             "title": title,
             "task_count": task_count,
             "empty_state": empty_state,
+            "responsive_widths": responsive_widths,
             "screenshot": str(screenshot),
         }
     finally:

@@ -7,7 +7,7 @@ let me = null;
 const ROLE_HOME_CONTRACT = { TELESALES: '电话核验' };
 const ROLE_HOME_PRIORITY = ['TELESALES', 'FRANCHISE_OWNER'];
 const TELESALES_HOME_CONTRACT = {
-  metrics: ['待处理', '核验中', '已提交'],
+  metrics: ['待开始', '核验中', '已提交'],
   primaryActions: ['开始核验', '继续核验'],
   detail: ['一键拨号', '核验说明', '填写结果'],
 };
@@ -99,8 +99,8 @@ async function api(path, opts = {}) {
 function nav(active) {
   return `<nav class="bottom" aria-label="底部导航">${
     [
-      ['home', 'home', '工作台'],
-      ['tasks', 'user-check', '核验任务'],
+      ['home', 'home', '首页'],
+      ['tasks', 'phone', '核验'],
       ['profile', 'user', '我的'],
     ].map(([route, iconName, label]) => (
       `<button class="nav ${active === route ? 'active' : ''}" data-route="${route}">
@@ -231,7 +231,8 @@ function taskCard(task) {
 async function home() {
   if (!await auth()) return;
   const tasks = await api('/v1.2/return-verifications/tasks?mine=true&page=1&page_size=200');
-  const hasDoing = tasks.items.some((item) => item.status === 'IN_PROGRESS');
+  const actionableTasks = tasks.items.filter((item) => item.status !== 'SUBMITTED');
+  const hasDoing = actionableTasks.some((item) => item.status === 'IN_PROGRESS');
 
   zsSetSafeHtml(app, shell(`
     <section class="home-title">
@@ -241,23 +242,23 @@ async function home() {
     </section>
     <section class="hero">
       <div>
-        <small>个人任务</small>
-        <strong>${tasks.total || 0}</strong>
-        <span>待您处理的退回核验</span>
+        <small>当前待办</small>
+        <strong>${actionableTasks.length}</strong>
+        <span>待开始和核验中的任务</span>
       </div>
-      <button class="btn gold" data-route="tasks">${hasDoing ? '继续核验' : '开始核验'}</button>
+      <button class="btn gold" data-route="tasks">${icon(hasDoing ? 'user-check' : 'phone')}<span>${hasDoing ? '继续核验' : '开始核验'}</span></button>
     </section>
     <section class="metrics" aria-label="个人任务统计">
-      <div class="metric"><span>待处理</span><b>${metric(tasks.items, ['PENDING', 'ASSIGNED'])}</b></div>
-      <div class="metric"><span>核验中</span><b>${metric(tasks.items, ['IN_PROGRESS'])}</b></div>
-      <div class="metric"><span>已提交</span><b>${metric(tasks.items, ['SUBMITTED'])}</b></div>
+      <button type="button" class="metric" data-route="tasks?status=TODO" aria-label="待开始 ${metric(tasks.items, ['PENDING', 'ASSIGNED'])} 条，查看任务"><span>待开始</span><b>${metric(tasks.items, ['PENDING', 'ASSIGNED'])}</b></button>
+      <button type="button" class="metric" data-route="tasks?status=IN_PROGRESS" aria-label="核验中 ${metric(tasks.items, ['IN_PROGRESS'])} 条，查看任务"><span>核验中</span><b>${metric(tasks.items, ['IN_PROGRESS'])}</b></button>
+      <button type="button" class="metric" data-route="tasks?status=SUBMITTED" aria-label="已提交 ${metric(tasks.items, ['SUBMITTED'])} 条，查看任务"><span>已提交</span><b>${metric(tasks.items, ['SUBMITTED'])}</b></button>
     </section>
     <section class="card">
       <div class="row section-head">
         <h2>优先任务</h2>
         <button class="btn small outline" data-route="tasks">全部</button>
       </div>
-      ${tasks.items.length ? tasks.items.slice(0, 5).map(taskCard).join('') : emptyState('暂无待办任务', '退回申诉分配后会出现在这里。')}
+      ${actionableTasks.length ? actionableTasks.slice(0, 5).map(taskCard).join('') : emptyState('暂无待办任务', '新的退回申诉核验任务会出现在这里。')}
     </section>
   `, 'home'));
   bind();
@@ -268,21 +269,25 @@ async function tasks() {
   if (!await auth()) return;
   const query = new URLSearchParams(location.hash.split('?')[1] || '');
   const status = query.get('status') || '';
-  const data = await api(`/v1.2/return-verifications/tasks?mine=true&page=1&page_size=100${status ? `&status=${status}` : ''}`);
+  const apiStatus = status === 'TODO' ? '' : status;
+  const data = await api(`/v1.2/return-verifications/tasks?mine=true&page=1&page_size=100${apiStatus ? `&status=${encodeURIComponent(apiStatus)}` : ''}`);
+  const visibleItems = status === 'TODO'
+    ? data.items.filter((item) => ['PENDING', 'ASSIGNED'].includes(item.status))
+    : data.items;
 
   zsSetSafeHtml(app, shell(`
     <h1>核验任务</h1>
     <div class="filters" role="tablist">
       ${[
         ['', '全部'],
-        ['ASSIGNED', '待处理'],
+        ['TODO', '待开始'],
         ['IN_PROGRESS', '核验中'],
         ['SUBMITTED', '已提交'],
       ].map(([value, label]) => (
         `<button class="btn small ${status === value ? 'primary' : 'outline'}" data-filter="${value}">${label}</button>`
       )).join('')}
     </div>
-    ${data.items.length ? data.items.map(taskCard).join('') : emptyState('暂无符合条件的任务', '切换筛选或稍后刷新。')}
+    ${visibleItems.length ? visibleItems.map(taskCard).join('') : emptyState('暂无符合条件的任务', '切换筛选或稍后刷新。')}
   `, 'tasks', '核验任务'));
   bind();
   bindTaskCards();

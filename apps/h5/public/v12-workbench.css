@@ -15,20 +15,22 @@ border-bottom:1px solid rgba(111,90,67,.08);display:flex;align-items:center;just
 border-radius:12px;padding:9px 12px;cursor:pointer;transition:transform .14s ease,box-shadow .14s ease,border-color .14s ease,background .14s ease}.wb-btn.primary{background:var(--brand);border-color:var(--brand);color:#fff}
 .wb-icon-btn{display:inline-flex;align-items:center;gap:6px}.wb-icon-btn .zs-svg-icon{width:16px;height:16px}
 .wb-btn{white-space:nowrap}
-.wb-icon-btn:focus-visible,.wb-btn:focus-visible,.wb-nav:focus-visible,.wb-action-card:focus-visible{outline:3px solid rgba(169,129,79,.28);outline-offset:2px}
-.wb-icon-btn:active,.wb-btn:active,.wb-nav:active,.wb-action-card:active{transform:scale(.98)}
+.wb-icon-btn:focus-visible,.wb-btn:focus-visible,.wb-nav:focus-visible,.wb-action-card:focus-visible,.wb-kpi:focus-visible{outline:3px solid rgba(169,129,79,.38);outline-offset:2px}
+.wb-icon-btn:active,.wb-btn:active,.wb-nav:active,.wb-action-card:active,.wb-kpi:active{transform:scale(.98)}
 .wb-btn.gold{background:var(--brand-2);border-color:var(--brand-2);color:#fff}.wb-btn.danger{color:var(--bad);border-color:#e8c9c9}
 .wb-btn:disabled{opacity:.45;cursor:not-allowed}.wb-main{padding:16px}.wb-hero{padding:22px;border-radius:24px;
 background:linear-gradient(135deg,#3f3428,#7b6043);color:#fff;box-shadow:var(--shadow);margin-bottom:16px}
 .wb-hero h1{font-size:23px;margin:0 0 8px}.wb-hero p{margin:0;opacity:.8;line-height:1.7;font-size:14px}
 .wb-kpis{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:18px}
-.wb-kpi{background:rgba(255,255,255,.11);border:1px solid rgba(255,255,255,.16);border-radius:15px;padding:13px}
-.wb-kpi b{display:block;font-size:22px}.wb-kpi span{font-size:12px;opacity:.76}.wb-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.wb-kpi{position:relative;width:100%;min-height:78px;background:rgba(255,255,255,.11);border:1px solid rgba(255,255,255,.16);border-radius:15px;padding:13px 34px 13px 13px;color:inherit;font:inherit;text-align:left;cursor:default;transition:transform .14s ease,background .14s ease,border-color .14s ease,box-shadow .14s ease}
+.wb-kpi[data-go],.wb-kpi[data-scroll]{cursor:pointer}
+.wb-kpi b{display:block;font-size:22px}.wb-kpi span{font-size:12px;opacity:.82}.wb-kpi>i{position:absolute;right:10px;bottom:11px;display:grid;place-items:center;opacity:.64}.wb-kpi>i .zs-svg-icon{width:15px;height:15px}.wb-kpi:hover{background:rgba(255,255,255,.18)}.wb-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.wb-kpi[data-go]:hover,.wb-kpi[data-scroll]:hover{border-color:rgba(255,255,255,.28);box-shadow:0 10px 24px rgba(0,0,0,.08)}
 .wb-kpi.main{grid-column:span 2;background:rgba(255,255,255,.16)}.wb-primary-cta{width:100%;margin-top:14px;min-height:44px;font-weight:750}
 .wb-card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:16px;box-shadow:0 5px 20px rgba(57,44,29,.04)}
 .wb-card h2,.wb-card h3{margin:0}.wb-card-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:14px}
-.wb-card-head p,.wb-muted{color:var(--muted);font-size:13px;line-height:1.6}.wb-action-card{cursor:pointer;min-height:120px}
-.wb-action-card b{display:block;font-size:17px;margin:12px 0 5px}.wb-action-icon{width:42px;height:42px;border-radius:14px;background:var(--surface-2);
+.wb-card-head p,.wb-muted{color:var(--muted);font-size:13px;line-height:1.6}.wb-action-card{width:100%;min-height:132px;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.wb-action-card b{display:block;font-size:17px;margin:12px 0 4px}.wb-action-value{display:block;margin-bottom:5px;color:var(--brand);font-size:14px}.wb-action-icon{width:42px;height:42px;border-radius:14px;background:var(--surface-2);
 display:grid;place-items:center}.wb-action-icon .zs-svg-icon{width:22px;height:22px}.wb-list{display:grid;gap:10px}.wb-item{border:1px solid var(--line);background:var(--surface);
 border-radius:15px;padding:14px}.wb-item-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
 .wb-item h3{font-size:15px;margin:0 0 5px}.wb-item p{margin:5px 0;color:var(--muted);font-size:13px;line-height:1.55}

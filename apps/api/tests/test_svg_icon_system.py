@@ -13,9 +13,9 @@ SVG_LOGIN_VERSION = "?v=20260823-login-icon"
 
 def test_all_h5_surfaces_load_local_svg_icon_system_before_application():
     entries = {
-        "index.html": ("./app.js", "?v=20260824-client-unify2", SVG_LOGIN_VERSION),
-        "supplier.html": ("./supplier.js", "?v=20260823-client-unify1", SVG_BASE_VERSION),
-        "v12-workbench.html": ("./v12-workbench.js", "?v=20260823-client-unify1", SVG_BASE_VERSION),
+        "index.html": ("./app.js", "?v=20260824-card-data1", SVG_LOGIN_VERSION),
+        "supplier.html": ("./supplier.js", "?v=20260824-card-data1", SVG_BASE_VERSION),
+        "v12-workbench.html": ("./v12-workbench.js", "?v=20260824-card-data1", SVG_BASE_VERSION),
     }
     for filename, (application_script, application_version, svg_version) in entries.items():
         index = (H5 / filename).read_text(encoding="utf-8")
@@ -27,9 +27,9 @@ def test_all_h5_surfaces_load_local_svg_icon_system_before_application():
 
 def test_all_admin_surfaces_reuse_same_local_svg_icon_system():
     entries = {
-        "index.html": ("./app.js", "?v=20260823-flow-audit2", SVG_LOGIN_VERSION),
-        "v12-leads.html": ("./v12-leads.js", "?v=20260823-flow-audit2", SVG_BASE_VERSION),
-        "v12-operations.html": ("./v12-operations.js", "?v=20260823-flow-audit3", SVG_BASE_VERSION),
+        "index.html": ("./app.js", "?v=20260824-card-data1", SVG_LOGIN_VERSION),
+        "v12-leads.html": ("./v12-leads.js", "?v=20260824-card-data1", SVG_BASE_VERSION),
+        "v12-operations.html": ("./v12-operations.js", "?v=20260824-card-data1", SVG_BASE_VERSION),
     }
     for filename, (application_script, application_version, svg_version) in entries.items():
         index = (ADMIN / filename).read_text(encoding="utf-8")
@@ -44,7 +44,7 @@ def test_call_h5_loads_shared_svg_icon_system_before_application():
 
     assert f"/h5/svg-icon-system.css{SVG_CSS_VERSION}" in index
     assert f"/h5/svg-icon-system.js{SVG_LOGIN_VERSION}" in index
-    assert "./app.js?v=20260824-login-unify1" in index
+    assert "./app.js?v=20260824-card-data1" in index
     assert index.index("/h5/svg-icon-system.js") < index.index("./app.js")
 
 

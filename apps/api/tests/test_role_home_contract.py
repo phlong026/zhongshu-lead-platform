@@ -68,8 +68,8 @@ def test_telesales_home_contract_focuses_on_call_tasks_without_finance_copy() ->
 
     assert "TELESALES_HOME_CONTRACT" in source
     assert "page_size=200" in source
-    assert "items.slice(0, 5)" in source
-    for label in ("待处理", "核验中", "已提交", "开始核验", "优先任务"):
+    assert "actionableTasks.slice(0, 5)" in source
+    for label in ("待开始", "核验中", "已提交", "开始核验", "优先任务"):
         assert label in source
     for finance_copy in ("公司充值", "平台收入", "加盟商积分"):
         assert finance_copy not in source

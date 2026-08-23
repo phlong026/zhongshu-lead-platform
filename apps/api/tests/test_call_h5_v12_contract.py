@@ -155,14 +155,14 @@ def test_call_h5_uses_only_v12_return_verification_contract() -> None:
     assert "evidence_summary" in source
     assert "go('home');route()" not in source
     assert "go('tasks');route()" not in source
-    assert "app.js?v=20260824-login-unify1" in index
+    assert "app.js?v=20260824-card-data1" in index
 
 
 def test_call_h5_home_first_screen_has_personal_task_summary_without_team_finance() -> None:
     source = CALL_APP.read_text(encoding="utf-8")
 
     assert "TELESALES_HOME_CONTRACT" in source
-    for label in ("待处理", "核验中", "已提交", "开始核验", "继续核验", "优先任务"):
+    for label in ("待开始", "核验中", "已提交", "开始核验", "继续核验", "优先任务"):
         assert label in source
     for copy in ("团队排行", "公司充值", "平台收入", "加盟商积分"):
         assert copy not in source

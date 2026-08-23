@@ -117,6 +117,15 @@ h3{margin:0;font-size:15px;line-height:1.3}
   padding:12px 5px;
   text-align:center;
 }
+button.metric{
+  width:100%;
+  color:inherit;
+  font:inherit;
+  cursor:pointer;
+  transition:transform .16s ease,border-color .16s ease,box-shadow .16s ease;
+}
+button.metric:hover{border-color:var(--gold);box-shadow:0 10px 24px rgba(81,52,30,.10)}
+button.metric:focus-visible{outline:3px solid rgba(199,161,96,.32);outline-offset:2px}
 .metric b{display:block;font-size:23px;line-height:1.1}
 .metric span{display:block;color:var(--muted);font-size:11px;white-space:nowrap}
 .card{margin:12px 0;padding:15px}

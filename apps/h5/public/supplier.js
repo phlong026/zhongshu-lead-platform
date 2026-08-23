@@ -218,7 +218,7 @@ function capabilityBlock() {
     return `
       <div class="supplier-capability-copy">
         <b>现在可以上传客资</b>
-        <span>平台审核结果会在“我的客资”中更新</span>
+        <span>平台审核结果会在“供客进度”中更新</span>
       </div>
       <button class="supplier-btn gold small" id="hero-upload">上传新客资</button>
     `;
@@ -270,8 +270,8 @@ function hero() {
     <section class="supplier-hero">
       <div class="supplier-hero-head">
         <div>
-          <h1>客资上传</h1>
-          <p>确认客户授权后提交资料，并在这里查看审核和派发进度。</p>
+          <h1>供客进度</h1>
+          <p>集中查看已上传客资的资料审核、派发和奖励进度。</p>
         </div>
         <a class="supplier-reward-link" href="./v12-workbench.html?view=rewards">奖励进度</a>
       </div>
@@ -288,14 +288,14 @@ function shell(content, { showHero = state.tab === 'list' } = {}) {
         ${showHero ? hero() : ''}
         <nav class="supplier-tabs" aria-label="加盟商客资操作">
           <button class="supplier-tab ${state.tab === 'list' ? 'active' : ''}" data-tab="list">
-            我的客资
+            ${supplierIcon('list')}供客进度
           </button>
           <button
             class="supplier-tab ${state.tab === 'upload' ? 'active' : ''}"
             data-tab="upload"
             ${capabilityApproved() ? '' : 'disabled'}
           >
-            上传客资
+            ${supplierIcon('plus')}上传客资
           </button>
         </nav>
         ${content}
@@ -881,7 +881,7 @@ async function renderUpload(item = null) {
             </label>
             ${fieldError('consent_confirmed')}
             <div class="supplier-notice supplier-privacy">
-              平台会保护客户信息。相同手机号可能进入人工复核，是否通过及后续进度会在“我的客资”中更新。
+              平台会保护客户信息。相同手机号可能进入人工复核，是否通过及后续进度会在“供客进度”中更新。
             </div>
           </section>
 
