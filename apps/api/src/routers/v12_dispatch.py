@@ -15,6 +15,7 @@ from ..core.security import decrypt_text, mask_phone
 from ..core.v12_enums import LeadV12Status
 from ..schemas.v12_dispatch import ManualDispatchBody
 from ..services.audit import write_audit
+from ..services.claim_singleflight import run_claim_singleflight
 from ..services.dispatch_v12 import (
     CLAIMED_CONTACT_STATUSES,
     candidate_to_dict,
@@ -299,37 +300,38 @@ def claim_own_assignment(
     db: Session = Depends(get_db),
 ):
     company_id = _principal_company_id(principal)
-    result = claim_assignment(
-        db,
-        assignment_id=assignment_id,
-        company_id=company_id,
-        claimed_by=principal.user_id,
-    )
-    lead = get_dispatch_lead(db, result.assignment.lead_id)
-    write_audit(
-        db,
-        principal=principal,
-        action="V12_ASSIGNMENT_CLAIM",
-        resource_type="assignment",
-        resource_id=result.assignment.id,
-        company_id=company_id,
-        after={
-            "lead_id": lead.id,
-            "status": result.assignment.status,
-            "points": result.assignment.points_price,
-            "ledger_id": result.ledger.id,
-            "appeal_deadline_at": result.assignment.appeal_deadline_at.isoformat()
-            if result.assignment.appeal_deadline_at
-            else None,
-            "reward_id": result.reward.id if result.reward else None,
-            "idempotent": result.idempotent,
-        },
-        request_id=request.state.request_id,
-    )
-    db.commit()
-    return ok(
-        request,
-        {
+
+    def execute_claim() -> dict:
+        result = claim_assignment(
+            db,
+            assignment_id=assignment_id,
+            company_id=company_id,
+            claimed_by=principal.user_id,
+        )
+        lead = get_dispatch_lead(db, result.assignment.lead_id)
+        if not result.idempotent:
+            write_audit(
+                db,
+                principal=principal,
+                action="V12_ASSIGNMENT_CLAIM",
+                resource_type="assignment",
+                resource_id=result.assignment.id,
+                company_id=company_id,
+                after={
+                    "lead_id": lead.id,
+                    "status": result.assignment.status,
+                    "points": result.assignment.points_price,
+                    "ledger_id": result.ledger.id,
+                    "appeal_deadline_at": result.assignment.appeal_deadline_at.isoformat()
+                    if result.assignment.appeal_deadline_at
+                    else None,
+                    "reward_id": result.reward.id if result.reward else None,
+                    "idempotent": False,
+                },
+                request_id=request.state.request_id,
+            )
+        db.commit()
+        return {
             "assignment": _assignment_dict(result.assignment, lead, reveal_phone=True),
             "ledger": {
                 "id": result.ledger.id,
@@ -347,6 +349,27 @@ def claim_own_assignment(
             if result.reward
             else None,
             "idempotent": result.idempotent,
-        },
-        "领取成功" if not result.idempotent else "派发单已领取",
+        }
+
+    payload, coalesced = run_claim_singleflight(
+        f"{company_id}:{assignment_id}",
+        execute_claim,
+        before_wait=db.rollback,
     )
+    if coalesced:
+        payload["idempotent"] = True
+    if payload["idempotent"]:
+        # PII 访问留痕：重放/合并 follower 同样拿到明文手机号，
+        # 需可追溯“哪些账号看过该客资明文”（区别于业务事实审计，不产生通知投影）。
+        write_audit(
+            db,
+            principal=principal,
+            action="V12_ASSIGNMENT_CLAIM_REPLAY",
+            resource_type="assignment",
+            resource_id=assignment_id,
+            company_id=company_id,
+            metadata={"coalesced": bool(coalesced)},
+            request_id=request.state.request_id,
+        )
+        db.commit()
+    return ok(request, payload, "派发单已领取" if payload["idempotent"] else "领取成功")
