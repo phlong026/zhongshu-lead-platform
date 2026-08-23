@@ -58,5 +58,40 @@ def test_supplier_h5_supports_capability_upload_list_and_detail() -> None:
     assert "LEAD_SUPPLIER" in js
     assert "consent_confirmed" in js
     assert "save-submit" in js
-    assert "3 个工作日奖励观察期" in js
+    assert "供应商工作台" in js
+    assert "上传第一条客资" in js
+    assert "手机号仅用于客资去重和业务联系" in js
+    assert "重新编辑时请再次填写完整手机号" in js
+    assert "HMAC" not in js
+    assert "90/180/365" not in js
     assert "/verification/tasks" not in js
+
+
+def test_supplier_h5_validates_before_creating_a_submission_draft() -> None:
+    js = Path("apps/h5/public/supplier.js").read_text(encoding="utf-8")
+    save_form = js.split("async function saveForm", 1)[1].split("async function deleteDraft", 1)[0]
+
+    assert "validateSubmission(payload)" in save_form
+    assert save_form.index("validateSubmission(payload)") < save_form.index("api('/v1.2/supplier/leads'")
+    assert "form-error-summary" in js
+    assert "data-field-error" in js
+    assert "aria-invalid" in js
+    assert "normalizePhone" in js
+
+
+def test_supplier_h5_exposes_draft_cleanup_and_rejected_lead_revision() -> None:
+    js = Path("apps/h5/public/supplier.js").read_text(encoding="utf-8")
+    router = Path("apps/api/src/routers/v12_lead_supply.py").read_text(encoding="utf-8")
+
+    assert re.search(r"method:\s*['\"]DELETE['\"]", js)
+    assert "/revise" in js
+    assert '@router.delete("/supplier/leads/{lead_id}")' in router
+    assert '@router.post("/supplier/leads/{lead_id}/revise")' in router
+
+
+def test_supplier_workbench_uses_user_facing_reward_copy() -> None:
+    js = Path("apps/h5/public/v12-workbench.js").read_text(encoding="utf-8")
+
+    assert "奖励说明" in js
+    assert "领取时规则快照" not in js
+    assert "JSON.stringify(x.rule_snapshot" not in js

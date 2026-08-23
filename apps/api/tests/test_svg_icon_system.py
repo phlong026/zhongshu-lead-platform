@@ -9,12 +9,15 @@ ASSET_VERSION = "?v=20260820-clarity"
 # Phase03 整改批次（P3）递增的应用脚本缓存版本；svg-icon-system 共享资源未变更，保持原版本。
 APP_ASSET_VERSION = "?v=20260823-p3"
 ROLE_UX_ASSET_VERSION = "?v=20260823-role-ux"
+SUPPLIER_ASSET_VERSION = "?v=20260823-supplier-ux4"
+COMPANY_PROFILE_ASSET_VERSION = "?v=20260820-company-profile"
+ADMIN_NAV_ASSET_VERSION = "?v=20260820-admin-nav"
 
 
 def test_all_h5_surfaces_load_local_svg_icon_system_before_application():
     entries = {
         "index.html": ("./app.js", APP_ASSET_VERSION),
-        "supplier.html": ("./supplier.js", ASSET_VERSION),
+        "supplier.html": ("./supplier.js", SUPPLIER_ASSET_VERSION),
         "v12-workbench.html": ("./v12-workbench.js", ROLE_UX_ASSET_VERSION),
     }
     for filename, (application_script, application_version) in entries.items():
