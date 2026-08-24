@@ -48,9 +48,3 @@ class LeadStagingUpdateBody(BaseModel):
 class DuplicateDecisionBody(BaseModel):
     duplicate_lead_id: str
     decision: str = Field(pattern=r"^(CONFIRMED|NOT_DUPLICATE|KEEP_FIRST|KEEP_CURRENT)$")
-
-
-class StagingCleanupBody(BaseModel):
-    confirmed: bool = False
-    expected_deletable_count: int = Field(ge=0)
-    cleanup_token: str = Field(min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$")

@@ -186,7 +186,7 @@ def _workflow_setup(db, *, lead_status: str = LeadV12Status.CLAIMED.value):
     "evidence_type",
     [EvidenceType.CHAT_SCREENSHOT.value, EvidenceType.CALL_RECORDING.value],
 )
-def test_single_evidence_type_is_rejected(db, evidence_type: str) -> None:
+def test_single_evidence_type_creates_post_call_task(db, evidence_type: str) -> None:
     setup = _workflow_setup(db)
     principal = _principal(setup["receiver_user"], "return.own.manage")
     request = create_or_update_return_draft(
@@ -198,14 +198,32 @@ def test_single_evidence_type_is_rejected(db, evidence_type: str) -> None:
     )
     assert db.scalar(select(VerificationTask).where(VerificationTask.lead_id == setup["lead"].id)) is None
     _evidence(db, request, principal, evidence_type)
+    result = submit_return_request(db, return_id=request.id, principal=principal)
+    db.commit()
+
+    assert result.expired is False
+    assert result.task is not None
+    assert result.task.task_type == VerificationTaskType.RETURN_VERIFY.value
+    assert result.task.status == VerificationTaskStatus.PENDING.value
+    assert request.status == ReturnV12Status.VERIFYING.value
+
+
+def test_missing_return_evidence_is_rejected(db) -> None:
+    setup = _workflow_setup(db)
+    principal = _principal(setup["receiver_user"], "return.own.manage")
+    request = create_or_update_return_draft(
+        db,
+        assignment_id=setup["assignment"].id,
+        principal=principal,
+        reason_code="EMPTY_NUMBER",
+        description="多次联系后确认号码异常，需要申请退回",
+    )
+
     with pytest.raises(AppError) as exc_info:
         submit_return_request(db, return_id=request.id, principal=principal)
 
     assert exc_info.value.code == "RETURN_EVIDENCE_REQUIRED"
-    assert exc_info.value.details == {
-        "screenshot_count": 1 if evidence_type == EvidenceType.CHAT_SCREENSHOT.value else 0,
-        "recording_count": 1 if evidence_type == EvidenceType.CALL_RECORDING.value else 0,
-    }
+    assert exc_info.value.details == {"evidence_count": 0}
 
 
 def test_screenshot_and_recording_create_post_call_task(db) -> None:

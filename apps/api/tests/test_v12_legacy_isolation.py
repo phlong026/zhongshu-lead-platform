@@ -32,7 +32,7 @@ def test_legacy_write_classifier_blocks_only_legacy_mutations() -> None:
     assert is_legacy_write("POST", "/api/v1/auth/login") is False
     assert is_legacy_write("POST", "/api/v1/followups/assignments/a-1") is False
     assert is_legacy_write("POST", "/api/v1/points/recharge") is False
-    assert is_legacy_write("POST", "/api/v1/leads/staging-cleanup") is False
+    assert is_legacy_write("POST", "/api/v1/leads/staging-cleanup") is True
     assert is_legacy_write("PUT", "/api/v1/leads/staging-cleanup") is True
     assert is_legacy_write("DELETE", "/api/v1/leads/staging-cleanup") is True
     assert is_legacy_write("POST", "/api/v1/verification/tasks/task-1/assign") is True

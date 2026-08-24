@@ -1,8 +1,8 @@
 {
-  "product": "众墅之家客资审核、派发与积分管理平台",
-  "release": "V1.2.0",
+  "product": "合家美宅客资审核、派发与积分管理平台",
+  "release": "V1.2.1",
   "commit": "generated-by-scripts/package_release.py",
-  "branch": "release/v1.2.0",
+  "branch": "release/v1.2.1",
   "dirty_worktree": false,
   "generated_at_utc": "generated-at-package-time",
   "tracked_file_count": null,

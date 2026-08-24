@@ -45,6 +45,9 @@ def test_slow_job_failure_does_not_roll_back_outbox_progress(scheduler_session, 
     否则下一轮会向用户重发同一条通知。"""
 
     from apps.api.src.core.models import NotificationOutbox
+    from apps.api.src.integrations import wechat as wechat_module
+
+    monkeypatch.setattr(wechat_module.settings, "wechat_dev_mock", True)
 
     with scheduler_session() as db:
         item_id = _delivered_outbox(db)
@@ -87,3 +90,9 @@ def test_daily_binding_integrity_violations_raise_alert(scheduler_session, caplo
     alerts = [r for r in caplog.records if "binding integrity" in r.message]
     assert alerts, "绑定一致性违规必须落 error 级告警"
     assert "DANGLING_PRIMARY" in caplog.text
+
+
+def test_daily_binding_integrity_runs_once_per_real_day() -> None:
+    """scheduler 主循环每 30 秒 tick 一次，日检必须等于 24 小时。"""
+
+    assert scheduler.DAILY_JOB_TICKS == 24 * 60 * 2

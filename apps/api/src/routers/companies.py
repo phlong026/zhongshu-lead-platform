@@ -63,7 +63,7 @@ def create_simple_company_endpoint(
     principal=Depends(require_permissions("*")),
     db: Session = Depends(get_db),
 ):
-    company, readiness = create_simple_company(db, body, reviewed_by=principal.user_id)
+    company, readiness = create_simple_company(db, body)
     write_audit(
         db,
         principal=principal,

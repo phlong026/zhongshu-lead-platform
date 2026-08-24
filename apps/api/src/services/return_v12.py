@@ -281,15 +281,12 @@ def submit_return_request(
     screenshot_count = counts.get(EvidenceType.CHAT_SCREENSHOT.value, 0)
     recording_count = counts.get(EvidenceType.CALL_RECORDING.value, 0)
     evidence_count = screenshot_count + recording_count
-    if screenshot_count < 1 or recording_count < 1:
+    if evidence_count < 1:
         raise AppError(
             "RETURN_EVIDENCE_REQUIRED",
-            "请同时上传至少 1 张沟通截图和 1 份电话录音",
+            "请至少上传 1 张沟通截图或 1 份电话录音",
             422,
-            {
-                "screenshot_count": screenshot_count,
-                "recording_count": recording_count,
-            },
+            {"evidence_count": evidence_count},
         )
 
     assignment = _get_assignment(db, request.assignment_id, lock=True)

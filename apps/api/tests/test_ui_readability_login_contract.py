@@ -300,16 +300,24 @@ def test_role_pages_use_franchise_business_wording_instead_of_supplier_copy() ->
     assert "供客奖励" in workbench
 
 
-def test_return_evidence_ui_requires_both_files_and_supports_inline_review() -> None:
+def test_return_evidence_ui_accepts_either_file_and_supports_inline_review() -> None:
     workbench = read(H5 / "v12-workbench.js")
+    legacy = read(H5 / "app.js")
+    return_v13 = read(H5 / "return-v13.js")
     operations = read(ADMIN / "v12-operations.js")
 
-    assert "必须同时上传沟通截图和电话录音" in workbench
+    assert "截图或录音任一类型满足即可" in workbench
     assert 'name="chat_screenshots"' in workbench
     assert 'name="call_recording"' in workbench
     assert "CHAT_SCREENSHOT" in workbench
     assert "CALL_RECORDING" in workbench
-    assert "截图或录音任一类型满足即可" not in workbench
+    assert "必须同时上传沟通截图和电话录音" not in workbench
+    assert "截图或电话录音任一类型满足即可" in legacy
+    assert "!screenshots.length&&!audio" in legacy
+    assert "if(audio)" in legacy
+    assert "必须同时上传沟通截图和电话录音" not in legacy
+    assert "截图或电话录音任一类型满足即可" in return_v13
+    assert "截图和电话录音均为必传" not in return_v13
     assert "<img" in operations
     assert "<audio controls" in operations
     assert "在线查看截图" in operations

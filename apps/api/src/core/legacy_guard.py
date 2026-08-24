@@ -17,13 +17,8 @@ LEGACY_WRITE_PREFIXES = (
     "/api/v1/claims",
     "/api/v1/returns",
 )
-LEGACY_WRITE_EXACT_EXEMPTIONS = {
-    ("POST", "/api/v1/leads/staging-cleanup"),
-}
 def is_legacy_write(method: str, path: str) -> bool:
     if method.upper() in SAFE_METHODS:
-        return False
-    if (method.upper(), path) in LEGACY_WRITE_EXACT_EXEMPTIONS:
         return False
     return any(path == prefix or path.startswith(prefix + "/") for prefix in LEGACY_WRITE_PREFIXES)
 

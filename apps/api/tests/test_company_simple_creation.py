@@ -24,7 +24,7 @@ def _login_admin(client) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_simple_company_creation_links_legacy_and_v12_dispatch_profiles(api_client) -> None:
+def test_simple_company_creation_creates_pending_v12_dispatch_profile(api_client) -> None:
     client, factory = api_client
     admin = _login_admin(client)
 
@@ -45,8 +45,8 @@ def test_simple_company_creation_links_legacy_and_v12_dispatch_profiles(api_clie
     assert result["code"].startswith("JM-")
     assert result["readiness"] == {
         "points_account": "READY",
-        "receiver_capability": "APPROVED",
-        "service_areas": "APPROVED",
+        "receiver_capability": "PENDING_REVIEW",
+        "service_areas": "PENDING_REVIEW",
     }
 
     with factory() as db:
@@ -62,8 +62,7 @@ def test_simple_company_creation_links_legacy_and_v12_dispatch_profiles(api_clie
                 )
             ).all()
         )
-        assert {"310000", "310104", "310115"}.issubset(legacy_regions)
-        assert len(legacy_regions) > 10
+        assert legacy_regions == set()
 
         legacy_capabilities = set(
             db.scalars(
@@ -73,9 +72,7 @@ def test_simple_company_creation_links_legacy_and_v12_dispatch_profiles(api_clie
                 )
             ).all()
         )
-        assert {"OLD_RENOVATION", "SELF_BUILD", "INTERIOR"}.issubset(
-            legacy_capabilities
-        )
+        assert legacy_capabilities == set()
 
         receiver = db.scalar(
             select(CompanyLeadCapability).where(
@@ -84,16 +81,17 @@ def test_simple_company_creation_links_legacy_and_v12_dispatch_profiles(api_clie
             )
         )
         assert receiver is not None
-        assert receiver.active is True
-        assert receiver.review_status == "APPROVED"
+        assert receiver.active is False
+        assert receiver.review_status == "PENDING"
 
         service_areas = db.scalars(
             select(CompanyServiceAreaV12).where(
                 CompanyServiceAreaV12.company_id == company.id
             )
         ).all()
-        assert {item.region_code for item in service_areas} == legacy_regions
-        assert all(item.active and item.review_status == "APPROVED" for item in service_areas)
+        assert {"310000", "310104", "310115"}.issubset({item.region_code for item in service_areas})
+        assert len(service_areas) > 10
+        assert all(not item.active and item.review_status == "PENDING" for item in service_areas)
         assert next(item for item in service_areas if item.region_code == "310000").is_primary_city
 
         audit = db.scalar(
@@ -151,14 +149,17 @@ def test_simple_company_creation_materializes_selected_nationwide_regions(api_cl
             "DISTRICT",
             "440100",
         )
-        assert set(
-            db.scalars(
-                select(CompanyServiceRegion.region_code).where(
-                    CompanyServiceRegion.company_id == company_id,
-                    CompanyServiceRegion.active.is_(True),
-                )
-            ).all()
-        ) == {"440100", "440106"}
+        assert not db.scalars(
+            select(CompanyServiceRegion.region_code).where(
+                CompanyServiceRegion.company_id == company_id,
+                CompanyServiceRegion.active.is_(True),
+            )
+        ).all()
+        service_areas = db.scalars(
+            select(CompanyServiceAreaV12).where(CompanyServiceAreaV12.company_id == company_id)
+        ).all()
+        assert {item.region_code for item in service_areas} == {"440100", "440106"}
+        assert all(not item.active and item.review_status == "PENDING" for item in service_areas)
 
 
 def test_simple_company_creation_materializes_all_city_districts(api_client) -> None:
@@ -181,9 +182,10 @@ def test_simple_company_creation_materializes_all_city_districts(api_client) -> 
     with factory() as db:
         service_codes = set(
             db.scalars(
-                select(CompanyServiceRegion.region_code).where(
-                    CompanyServiceRegion.company_id == company_id,
-                    CompanyServiceRegion.active.is_(True),
+                select(CompanyServiceAreaV12.region_code).where(
+                    CompanyServiceAreaV12.company_id == company_id,
+                    CompanyServiceAreaV12.active.is_(False),
+                    CompanyServiceAreaV12.review_status == "PENDING",
                 )
             ).all()
         )

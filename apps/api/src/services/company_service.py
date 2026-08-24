@@ -1,13 +1,19 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from uuid import uuid4
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from ..core.errors import AppError
-from ..core.models import Company, CompanyCapability, CompanyServiceRegion, DictionaryItem, PointsAccount, Region
+from ..core.models import (
+    Company,
+    CompanyCapability,
+    CompanyServiceRegion,
+    DictionaryItem,
+    PointsAccount,
+    Region,
+)
 from ..core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12
 from ..core.security import decrypt_text, encrypt_text, hash_phone, mask_phone
 from ..core.v12_enums import CompanyLeadCapabilityCode
@@ -153,7 +159,10 @@ def _materialize_selected_regions(db: Session, body: CompanySimpleCreateBody) ->
     db.flush()
 
 
-def create_simple_company(db: Session, body: CompanySimpleCreateBody, *, reviewed_by: str | None = None) -> tuple[Company, dict[str, str]]:
+def create_simple_company(
+    db: Session,
+    body: CompanySimpleCreateBody,
+) -> tuple[Company, dict[str, str]]:
     regions = _simple_region_codes(db, body)
     company = Company(
         code=_next_company_code(db),
@@ -169,23 +178,15 @@ def create_simple_company(db: Session, body: CompanySimpleCreateBody, *, reviewe
     db.add(PointsAccount(company_id=company.id, balance=0, version=1))
 
     region_codes = sorted(regions)
-    replace_company_scope(
-        db,
-        company,
-        region_codes,
-        [{"category_code": code, "brand_code": None} for code in default_receiver_categories(db)],
-    )
-
-    now = datetime.now(timezone.utc)
     db.add(
         CompanyLeadCapability(
             company_id=company.id,
             capability_code=CompanyLeadCapabilityCode.LEAD_RECEIVER.value,
-            active=True,
-            review_status="APPROVED",
-            reviewed_by=reviewed_by,
-            reviewed_at=now,
-            review_note="后台创建加盟商时自动开通接单资格",
+            active=False,
+            review_status="PENDING",
+            reviewed_by=None,
+            reviewed_at=None,
+            review_note="后台创建加盟商后待审核接单资格",
         )
     )
     for code in region_codes:
@@ -196,29 +197,34 @@ def create_simple_company(db: Session, body: CompanySimpleCreateBody, *, reviewe
                 region_code=code,
                 region_level=region.level,
                 is_primary_city=code == body.primary_city_code,
-                active=True,
-                review_status="APPROVED",
-                reviewed_by=reviewed_by,
-                reviewed_at=now,
-                review_note="后台创建加盟商时自动确认服务地区",
+                active=False,
+                review_status="PENDING",
+                reviewed_by=None,
+                reviewed_at=None,
+                review_note="后台创建加盟商后待审核服务地区",
             )
         )
     db.flush()
     return company, {
         "points_account": "READY",
-        "receiver_capability": "APPROVED",
-        "service_areas": "APPROVED",
+        "receiver_capability": "PENDING_REVIEW",
+        "service_areas": "PENDING_REVIEW",
     }
 
 
 def default_receiver_categories(db: Session) -> tuple[str, ...]:
-    categories = tuple(dict.fromkeys(
-        db.scalars(
-            select(DictionaryItem.code)
-            .where(DictionaryItem.domain == "lead_category", DictionaryItem.active.is_(True))
-            .order_by(DictionaryItem.sort_order, DictionaryItem.code)
-        ).all()
-    ))
+    categories = tuple(
+        dict.fromkeys(
+            db.scalars(
+                select(DictionaryItem.code)
+                .where(
+                    DictionaryItem.domain == "lead_category",
+                    DictionaryItem.active.is_(True),
+                )
+                .order_by(DictionaryItem.sort_order, DictionaryItem.code)
+            ).all()
+        )
+    )
     return categories or DEFAULT_RECEIVER_CATEGORIES
 
 

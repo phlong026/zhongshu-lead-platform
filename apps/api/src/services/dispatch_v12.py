@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from ..core.config import get_settings
 from ..core.enums import ACTIVE_ASSIGNMENT_STATUSES, AssignmentStatus, PointsLedgerType
 from ..core.errors import AppError
-from ..core.models import Assignment, AssignmentEvent, Company, Lead, LeadPriceRule, PointsAccount, PointsLedger
+from ..core.models import Assignment, AssignmentEvent, Company, Lead, LeadPriceRule, PointsAccount, PointsLedger, Region
 from ..core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12, SupplierLeadReward
 from ..core.security import decrypt_text, mask_phone
 from ..core.time import as_utc
@@ -129,11 +129,19 @@ def _region_matches(db: Session, company_id: str, lead: Lead) -> bool:
     return db.scalar(
         select(CompanyServiceAreaV12.id).where(
             CompanyServiceAreaV12.company_id == company_id,
-            CompanyServiceAreaV12.region_code == lead.region_code,
+            _service_area_region_clause(lead.region_code),
             CompanyServiceAreaV12.active.is_(True),
             _service_area_dispatchable(),
         )
     ) is not None
+
+
+def _service_area_region_clause(lead_region_code: str):
+    parent_code = select(Region.parent_code).where(Region.code == lead_region_code).scalar_subquery()
+    return or_(
+        CompanyServiceAreaV12.region_code == lead_region_code,
+        CompanyServiceAreaV12.region_code == parent_code,
+    )
 
 
 def _service_area_dispatchable():
@@ -293,7 +301,7 @@ def list_candidates(db: Session, *, lead: Lead) -> list[CandidateResult]:
         region_companies = (
             select(CompanyServiceAreaV12.company_id)
             .where(
-                CompanyServiceAreaV12.region_code == lead.region_code,
+                _service_area_region_clause(lead.region_code),
                 CompanyServiceAreaV12.active.is_(True),
                 _service_area_dispatchable(),
             )

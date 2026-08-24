@@ -1,4 +1,4 @@
-# 合家美宅客资平台 V1.2 生产上线检查表
+# 合家美宅客资平台 V1.2.1 生产上线检查表
 
 所有 P0 项必须有证据并由责任人签字。任何一项失败均为 `NO-GO`。
 
@@ -6,10 +6,10 @@
 
 ## A. 版本和质量
 
-- [ ] 上线提交来自 `release/v1.2.0`，对应受保护的 V1.2 tag；
+- [ ] 上线提交来自 `release/v1.2.1`，对应受保护的 V1.2.1 tag；
 - [ ] PR 与 Release CI 的全量测试、PostgreSQL 迁移和 Chromium 浏览器任务全部通过；
 - [ ] PR 无未解决的 Critical/High/P1/P2 评审问题；
-- [ ] `APP_VERSION=1.2.x`，Dockerfile 默认 `APP_VERSION=1.2.0`；
+- [ ] `APP_VERSION=1.2.1`，Dockerfile 默认 `APP_VERSION=1.2.1`；
 - [ ] `APP_IMAGE` 采用 `repo:APP_VERSION@sha256:digest`，显式 tag 与 `APP_VERSION` 完全一致；
 - [ ] `docker image inspect` 的 OCI `org.opencontainers.image.version` 与 `APP_VERSION` 完全一致；
 - [ ] README、部署、迁移、回滚、UAT、测试、安全审计和发布说明均为 V1.2；
@@ -57,6 +57,7 @@
 - [ ] 有权限变化时存在 `SYSTEM_RBAC_SYNC` 审计，新增和移除映射与批准的代码矩阵一致；
 - [ ] 生产 API 在未同步 RBAC 差异时拒绝启动，不存在启动时静默回收权限；
 - [ ] `reconcile_v12.py` 返回 valid；
+- [ ] `scripts/check_binding_integrity.py` 返回 valid，且证据归档到上线包或 `dist/`；
 - [ ] `dist/v101-baseline-before.json`、RBAC 预览/应用/复查 JSON、`dist/v12-reconciliation-before-backfill.json`、`dist/v12-reconciliation-after.json` 和 `dist/v12-preflight.json` 已持久化到宿主机并归档；
 - [ ] 所有 JSON 证据通过 `python -m json.tool` 校验，未保存在 `run --rm` 容器临时目录；
 - [ ] 无未知历史状态、重复有效派发单或积分余额差异；

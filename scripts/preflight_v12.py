@@ -81,6 +81,13 @@ def _compose_python_command(env_file: Path, python_args: list[str]) -> list[str]
     ]
 
 
+def _binding_integrity_command(env_file: Path, *, compose_database: bool) -> list[str]:
+    command = ["scripts/check_binding_integrity.py"]
+    if compose_database:
+        return _compose_python_command(env_file, command)
+    return [sys.executable, *command]
+
+
 def _run(
     name: str,
     command: list[str],
@@ -185,6 +192,10 @@ def main() -> int:
         "scripts/reconcile_v12.py",
         *(["--allow-incomplete-backfill"] if args.allow_incomplete_backfill else []),
     ]
+    binding_integrity = _binding_integrity_command(
+        env_file,
+        compose_database=bool(args.compose_database),
+    )
 
     checks = [_run(name, command, env=env, sensitive_values=sensitive_values) for name, command in commands]
     if args.storage_canary:
@@ -210,6 +221,11 @@ def main() -> int:
                         ["docker", "compose", "<unavailable>"],
                         "docker CLI 不可用，无法在 Compose 网络内验证生产数据库",
                     ),
+                    _unavailable_check(
+                        "binding-integrity",
+                        ["docker", "compose", "<unavailable>"],
+                        "docker CLI 不可用，无法在 Compose 网络内验证生产数据库",
+                    ),
                 ]
             )
         else:
@@ -224,6 +240,12 @@ def main() -> int:
                     _run(
                         "v12-reconciliation",
                         _compose_python_command(env_file, reconciliation),
+                        env=env,
+                        sensitive_values=sensitive_values,
+                    ),
+                    _run(
+                        "binding-integrity",
+                        binding_integrity,
                         env=env,
                         sensitive_values=sensitive_values,
                     ),
@@ -244,6 +266,12 @@ def main() -> int:
                     env=env,
                     sensitive_values=sensitive_values,
                 ),
+                _run(
+                    "binding-integrity",
+                    binding_integrity,
+                    env=env,
+                    sensitive_values=sensitive_values,
+                ),
             ]
         )
     else:
@@ -252,6 +280,7 @@ def main() -> int:
             [
                 _unavailable_check("database-revision", [python, *database_revision], message),
                 _unavailable_check("v12-reconciliation", [python, *reconciliation], message),
+                _unavailable_check("binding-integrity", binding_integrity, message),
             ]
         )
 

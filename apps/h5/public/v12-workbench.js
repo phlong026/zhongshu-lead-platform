@@ -206,7 +206,7 @@ function evidence(returnId,summary={}){
   const uploadedTypes=new Set();
   if(Number(summary.CHAT_SCREENSHOT||0)>0)uploadedTypes.add('CHAT_SCREENSHOT');
   if(Number(summary.CALL_RECORDING||0)>0)uploadedTypes.add('CALL_RECORDING');
-  openSheet('上传证据并提交',`<div class="wb-notice"><b>必须同时上传沟通截图和电话录音。</b><br>截图用于确认沟通内容，录音用于后续电销和审核人员核实事实。</div><form class="wb-form" id="evidence-form"><div class="wb-field"><label>沟通截图 *</label><input class="wb-input" type="file" name="chat_screenshots" accept="image/jpeg,image/png,image/webp" multiple ${uploadedTypes.has('CHAT_SCREENSHOT')?'':'required'}><small class="wb-muted">支持 JPG、PNG、WEBP，可选择多张。</small></div><div class="wb-field"><label>电话录音 *</label><input class="wb-input" type="file" name="call_recording" accept="audio/mpeg,audio/wav,audio/mp4,audio/aac" ${uploadedTypes.has('CALL_RECORDING')?'':'required'}><small class="wb-muted">支持 MP3、WAV、M4A、AAC，最大 20MB。</small></div><button class="wb-btn" id="upload-evidence" type="submit">上传截图和录音</button></form><p class="wb-muted" id="evidence-progress" role="status">${uploadedTypes.size===2?'两类证据已上传，可以提交退回申请。':'请先完成两类证据上传。'}</p><button class="wb-btn primary" id="submit-return" style="margin-top:12px" ${uploadedTypes.size===2?'':'disabled'}>提交退回申请</button>`,()=>{
+  openSheet('上传证据并提交',`<div class="wb-notice"><b>截图或录音任一类型满足即可。</b><br>截图用于确认沟通内容，录音用于后续电销和审核人员核实事实。</div><form class="wb-form" id="evidence-form"><div class="wb-field"><label>沟通截图</label><input class="wb-input" type="file" name="chat_screenshots" accept="image/jpeg,image/png,image/webp" multiple><small class="wb-muted">支持 JPG、PNG、WEBP，可选择多张。</small></div><div class="wb-field"><label>电话录音</label><input class="wb-input" type="file" name="call_recording" accept="audio/mpeg,audio/wav,audio/mp4,audio/aac"><small class="wb-muted">支持 MP3、WAV、M4A、AAC，最大 20MB。</small></div><button class="wb-btn" id="upload-evidence" type="submit">上传证据</button></form><p class="wb-muted" id="evidence-progress" role="status">${uploadedTypes.size>0?'已有证据，可以提交退回申请。':'请至少上传一种证据。'}</p><button class="wb-btn primary" id="submit-return" style="margin-top:12px" ${uploadedTypes.size>0?'':'disabled'}>提交退回申请</button>`,()=>{
     const form=document.querySelector('#evidence-form');
     const uploadButton=document.querySelector('#upload-evidence');
     const submitButton=document.querySelector('#submit-return');
@@ -216,24 +216,23 @@ function evidence(returnId,summary={}){
       event.preventDefault();
       const screenshots=Array.from(form.elements.chat_screenshots.files||[]);
       const recording=form.elements.call_recording.files?.[0];
-      if(!uploadedTypes.has('CHAT_SCREENSHOT')&&!screenshots.length){toast('请选择至少一张沟通截图',true);return}
-      if(!uploadedTypes.has('CALL_RECORDING')&&!recording){toast('请选择电话录音',true);return}
+      if(uploadedTypes.size===0&&!screenshots.length&&!recording){toast('请至少上传沟通截图或电话录音',true);return}
       uploadButton.disabled=true;
       progress.textContent='正在上传证据，请不要关闭页面…';
       try{
-        if(!uploadedTypes.has('CHAT_SCREENSHOT')){for(const file of screenshots)await uploadFile(file,'CHAT_SCREENSHOT');uploadedTypes.add('CHAT_SCREENSHOT')}
-        if(!uploadedTypes.has('CALL_RECORDING')){await uploadFile(recording,'CALL_RECORDING');uploadedTypes.add('CALL_RECORDING')}
-        submitButton.disabled=uploadedTypes.size!==2;
-        progress.textContent='两类证据已上传，可以提交退回申请。';
+        if(screenshots.length){for(const file of screenshots)await uploadFile(file,'CHAT_SCREENSHOT');uploadedTypes.add('CHAT_SCREENSHOT')}
+        if(recording){await uploadFile(recording,'CALL_RECORDING');uploadedTypes.add('CALL_RECORDING')}
+        submitButton.disabled=uploadedTypes.size===0;
+        progress.textContent='已有证据，可以提交退回申请。';
         uploadButton.textContent='证据已上传';
-        toast('截图和录音已上传');
+        toast('证据已上传');
       }catch(err){
         uploadButton.disabled=false;
         progress.textContent='部分证据未上传成功，请检查文件后重试。';
         toast(err.message,true);
       }
     };
-    submitButton.onclick=async()=>{if(uploadedTypes.size!==2){toast('请先上传沟通截图和电话录音',true);return}submitButton.disabled=true;try{await api(`/v1.2/returns/${returnId}/submit`,{method:'POST'});toast('退回申请已提交，等待电销核验');closeSheet();go('returns')}catch(err){submitButton.disabled=false;toast(err.message,true)}};
+    submitButton.onclick=async()=>{if(uploadedTypes.size===0){toast('请先上传沟通截图或电话录音',true);return}submitButton.disabled=true;try{await api(`/v1.2/returns/${returnId}/submit`,{method:'POST'});toast('退回申请已提交，等待电销核验');closeSheet();go('returns')}catch(err){submitButton.disabled=false;toast(err.message,true)}};
   });
 }
 async function returns(){const d=await api(`/v1.2/returns?page=${S.page}&page_size=20`);const list=(d.items||[]).map(x=>item(`退回申诉 · ${readableLabel(x.reason_code,'其他原因')}`,x.status,`<p>提交时间 ${fmt(x.submitted_at||x.created_at)}</p><p>派发编号 ${esc(recordCode(x.assignment_id,'PF'))}</p>`,`<button class="wb-btn" data-return="${x.id}">查看进度</button>`)).join('');shell(`<div class="wb-card-head"><div><h2>退回申诉</h2><p>发起申诉后，平台会根据说明、证据和电话核验结果进行审核。</p></div></div><div class="wb-list">${list||'<div class="wb-empty">暂无退回申诉</div>'}</div>`);document.querySelectorAll('[data-return]').forEach(b=>b.onclick=()=>returnDetail(b.dataset.return));if(S.id){const id=S.id;S.id='';returnDetail(id)}}

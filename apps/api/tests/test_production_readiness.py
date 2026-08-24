@@ -13,7 +13,7 @@ def _secret(prefix: str, length: int = 40) -> str:
 def production_settings(**overrides) -> Settings:
     values = {
         "app_env": "production",
-        "app_version": "1.2.0",
+        "app_version": "1.2.1",
         "app_base_url": "https://app.zhongshu.example.cn",
         "database_url": "postgresql+psycopg://zhongshu:secret@db:5432/zhongshu",
         "jwt_secret": "J" * 48,
@@ -27,7 +27,7 @@ def production_settings(**overrides) -> Settings:
         "feishu_enabled": True,
         "feishu_app_id": "cli-production",
         "feishu_app_secret": _secret("feishu"),
-        "feishu_app_token": "bitable-token",
+        "feishu_app_token": "test-bitable-token",
         "feishu_table_id": "table-id",
         "feishu_dev_mock": False,
         "object_storage_backend": "local",
@@ -42,7 +42,7 @@ def production_settings(**overrides) -> Settings:
 
 def _production_env(**overrides: str) -> dict[str, str]:
     values = {
-        "POSTGRES_PASSWORD": "A-strong-production-password-2026",
+        "POSTGRES_PASSWORD": "test-strong-production-password-2026",
         "SEED_DEMO": "false",
         "TRUSTED_PROXY_CIDR": "127.0.0.1/32",
         "TRUST_PROXY_HEADERS": "true",

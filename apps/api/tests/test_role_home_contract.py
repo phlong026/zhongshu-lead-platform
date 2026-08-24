@@ -125,15 +125,18 @@ def test_v12_operations_replaces_browser_prompts_with_branded_forms() -> None:
         assert action in source
 
 
-def test_legacy_admin_danger_actions_use_branded_confirmations() -> None:
+def test_remaining_admin_danger_actions_use_branded_confirmations() -> None:
     source = _read(ADMIN_APP)
 
     assert "function confirmAction" in source
     assert "confirm(" not in source
     assert "modalRoot.appendChild(layer)" in source
     assert "layer.remove()" in source
-    for action in ("清理历史暂存", "撤销邀请", "停用账号"):
+    for action in ("撤销邀请", "停用账号"):
         assert action in source
+    assert "清理历史暂存" not in source
+    assert "cleanup-staging" not in source
+    assert "staging-cleanup',{method:'POST'" not in source
 
 
 def test_role_interfaces_keep_hejiameizhai_warm_visual_tokens_and_focus_states() -> None:

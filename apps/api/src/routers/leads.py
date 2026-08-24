@@ -12,11 +12,11 @@ from ..core.errors import AppError
 from ..core.models import Lead
 from ..core.responses import ok, page
 from ..integrations.feishu import FeishuClient, FeishuRecord
-from ..schemas.leads import DuplicateDecisionBody, FeishuMockSyncBody, LeadStagingUpdateBody, StagingCleanupBody
+from ..schemas.leads import DuplicateDecisionBody, FeishuMockSyncBody, LeadStagingUpdateBody
 from ..services.audit import write_audit
 from ..services.feishu_sync_service import configured_mapping, fetch_and_import_feishu, writeback_feishu_results
 from ..services.lead_service import import_records, lead_to_dict, update_staging_lead
-from ..services.staging_cleanup_service import delete_feishu_staging_leads, preview_feishu_staging_cleanup
+from ..services.staging_cleanup_service import preview_feishu_staging_cleanup
 
 router = APIRouter(prefix="/leads", tags=["leads"])
 settings = get_settings()
@@ -122,32 +122,6 @@ def staging_cleanup_preview(
             "scope": "仅清理飞书来源、仍处于暂存状态、且未进入核验、派发或退回流程的客资",
         },
     )
-
-
-@router.post("/staging-cleanup")
-def staging_cleanup(
-    body: StagingCleanupBody,
-    request: Request,
-    principal=Depends(require_permissions("*")),
-    db: Session = Depends(get_db),
-):
-    if not body.confirmed:
-        raise AppError("STAGING_CLEANUP_CONFIRM_REQUIRED", "请先确认清理飞书暂存资料", 422)
-    result = delete_feishu_staging_leads(
-        db,
-        expected_deletable_count=body.expected_deletable_count,
-        cleanup_token=body.cleanup_token,
-    )
-    write_audit(
-        db,
-        principal=principal,
-        action="FEISHU_STAGING_CLEANUP",
-        resource_type="lead",
-        after=result,
-        request_id=request.state.request_id,
-    )
-    db.commit()
-    return ok(request, result, "暂存区清理完成")
 
 
 @router.get("/{lead_id}")

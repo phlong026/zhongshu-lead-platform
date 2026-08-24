@@ -1,22 +1,17 @@
 from __future__ import annotations
 
-from hashlib import sha256
-
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..core.enums import LeadStatus
-from ..core.errors import AppError
 from ..core.models import (
     Assignment,
     Lead,
-    LeadDuplicateRelation,
-    LeadImportIssue,
     ReturnRequest,
     VerificationSubmission,
     VerificationTask,
 )
-from ..core.models_v12 import DedupOverride, LeadDedupEvent, SupplierLeadReward
+from ..core.models_v12 import SupplierLeadReward
 
 STAGING_CLEANUP_STATUSES = (
     LeadStatus.IMPORTED.value,
@@ -38,81 +33,14 @@ def _preview_for_lead_ids(db: Session, lead_ids: list[str]) -> dict:
         "deletable_count": len(deletable_ids),
         "blocked_count": len(blocked_ids),
         "blocked_reasons": _blocked_reason_counts(db, blocked_ids),
-        "cleanup_token": _cleanup_token(deletable_ids),
     }
 
 
-def _cleanup_token(lead_ids: list[str]) -> str:
-    payload = "\n".join(sorted(lead_ids)).encode("utf-8")
-    return sha256(payload).hexdigest()
-
-
-def delete_feishu_staging_leads(
-    db: Session,
-    *,
-    expected_deletable_count: int,
-    cleanup_token: str,
-) -> dict:
-    # Lock the exact candidate snapshot used for this destructive operation.
-    # New rows arriving later are not part of the locked id set and cannot be
-    # deleted accidentally.
-    lead_ids = _candidate_lead_ids(db, for_update=True)
-    preview = _preview_for_lead_ids(db, lead_ids)
-    if (
-        preview["deletable_count"] != expected_deletable_count
-        or preview["cleanup_token"] != cleanup_token
-    ):
-        raise AppError(
-            "STAGING_CLEANUP_PREVIEW_STALE",
-            "暂存区数据已变化，请重新预览后再清理",
-            409,
-            {**preview, "expected_deletable_count": expected_deletable_count},
-        )
-
-    blocked_ids = _blocked_lead_ids(db, lead_ids)
-    deletable_ids = [lead_id for lead_id in lead_ids if lead_id not in blocked_ids]
-    if not deletable_ids:
-        return {**preview, "deleted_count": 0}
-
-    db.execute(delete(LeadImportIssue).where(LeadImportIssue.lead_id.in_(deletable_ids)))
-    db.execute(
-        delete(LeadDuplicateRelation).where(
-            or_(
-                LeadDuplicateRelation.lead_id.in_(deletable_ids),
-                LeadDuplicateRelation.duplicate_lead_id.in_(deletable_ids),
-            )
-        )
-    )
-    db.execute(delete(DedupOverride).where(DedupOverride.lead_id.in_(deletable_ids)))
-    db.execute(delete(LeadDedupEvent).where(LeadDedupEvent.lead_id.in_(deletable_ids)))
-    db.execute(
-        update(LeadDedupEvent)
-        .where(LeadDedupEvent.matched_lead_id.in_(deletable_ids))
-        .values(matched_lead_id=None)
-    )
-    deleted = db.execute(
-        delete(Lead).where(
-            Lead.id.in_(deletable_ids),
-            Lead.source_type == "FEISHU",
-            Lead.status.in_(STAGING_CLEANUP_STATUSES),
-        )
-    )
-    if deleted.rowcount != len(deletable_ids):
-        raise AppError(
-            "STAGING_CLEANUP_CONFLICT",
-            "暂存区清理期间数据已变化，本次操作已取消",
-            409,
-        )
-    return {**preview, "deleted_count": deleted.rowcount}
-
-
-def _candidate_lead_ids(db: Session, *, for_update: bool = False) -> list[str]:
+def _candidate_lead_ids(db: Session) -> list[str]:
     statement = select(Lead.id).where(
         Lead.source_type == "FEISHU",
         Lead.status.in_(STAGING_CLEANUP_STATUSES),
     )
-    if for_update:
-        statement = statement.with_for_update()
     return list(db.scalars(statement).all())
 
 

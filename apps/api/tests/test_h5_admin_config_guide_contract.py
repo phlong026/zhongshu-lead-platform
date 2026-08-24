@@ -61,7 +61,7 @@ def test_example_env_files_keep_hejiameizhai_brand_and_current_version() -> None
 
     for text in (development, production):
         assert "APP_NAME=合家美宅客资平台" in text
-        assert "APP_VERSION=1.2.0" in text
+        assert "APP_VERSION=1.2.1" in text
         assert "APP_NAME=众墅之家客资平台" not in text
         assert "S3_ENDPOINT_URL=https://cos.ap-shanghai.myqcloud.com" in text
         assert "S3_REGION=ap-shanghai" in text

@@ -10,6 +10,7 @@ def test_release_quality_documents_exist():
         "docs/quality/TEST_REPORT.md",
         "docs/quality/SECURITY_AUDIT.md",
         "docs/traceability/IMPLEMENTATION_MATRIX.md",
+        "docs/release/RELEASE_NOTES_V1.2.1.md",
         "docs/release/RELEASE_NOTES_V1.2.0.md",
         "docs/reviews/INDEX_V1.2.md",
         "docs/reviews/53-v1.2-sprint6-comprehensive-final-review.md",
