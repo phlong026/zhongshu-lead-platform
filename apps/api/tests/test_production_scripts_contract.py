@@ -11,6 +11,8 @@ def test_production_verifier_covers_environment_compose_nginx_and_certificates()
     assert "--scan-subject requires --require-image-inspect" in script
     assert "runtime_image_identity_error" in script
     assert "accepted_image_ids" in script
+    assert "executable=docker" in script
+    assert "subprocess.run(command" not in script
     assert "docker" in script and "compose" in script and "config" in script
 
 

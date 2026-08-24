@@ -189,9 +189,11 @@ def test_scan_subject_image_id_is_strict_and_inspect_uses_docker_identity(
         stderr = ""
 
     seen: list[str] = []
+    seen_options: dict[str, object] = {}
 
-    def fake_run(command: list[str], **_: object) -> Result:
+    def fake_run(command: list[str], **options: object) -> Result:
         seen.extend(command)
+        seen_options.update(options)
         return Result()
 
     monkeypatch.setattr("scripts.verify_production.subprocess.run", fake_run)
@@ -204,6 +206,7 @@ def test_scan_subject_image_id_is_strict_and_inspect_uses_docker_identity(
     assert descriptor is None
     assert config is None
     assert seen[-1] == "{{json .}}"
+    assert seen_options["executable"] == "docker"
 
     def invalid_utf8(*_: object, **__: object) -> Result:
         raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")

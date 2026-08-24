@@ -64,7 +64,8 @@ def inspect_image_metadata(
 ) -> tuple[str | None, str | None, str | None, str | None, str | None]:
     try:
         result = subprocess.run(
-            [docker, "image", "inspect", reference, "--format", "{{json .}}"],
+            ["docker", "image", "inspect", reference, "--format", "{{json .}}"],
+            executable=docker,
             cwd=ROOT,
             text=True,
             encoding="utf-8",
@@ -283,19 +284,24 @@ def main() -> int:
             if marker not in content:
                 errors.append(f"生产 Nginx 缺少配置：{marker}")
     if docker and args.env_file.exists():
-        command = [
-            docker,
-            "compose",
-            "--env-file",
-            str(args.env_file),
-            "-f",
-            str(ROOT / "docker-compose.yml"),
-            "-f",
-            str(compose),
-            "config",
-            "--quiet",
-        ]
-        result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+        result = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "--env-file",
+                str(args.env_file),
+                "-f",
+                str(ROOT / "docker-compose.yml"),
+                "-f",
+                str(compose),
+                "config",
+                "--quiet",
+            ],
+            executable=docker,
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+        )
         if result.returncode:
             errors.append("docker compose config 校验失败：" + (result.stderr.strip() or result.stdout.strip()))
     else:
