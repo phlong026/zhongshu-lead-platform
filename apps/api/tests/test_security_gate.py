@@ -251,6 +251,8 @@ def _write_oci_image_archive(
     path: Path,
     *,
     link_manifest_config: bool = True,
+    duplicate_tagged_manifest: bool = False,
+    conflicting_tagged_config: bool = False,
     index_depth: int = 1,
     root_size_delta: int = 0,
     root_media_type: str | None = None,
@@ -259,6 +261,7 @@ def _write_oci_image_archive(
     config = CONFIG_BYTES
     config_digest = "sha256:" + hashlib.sha256(config).hexdigest()
     unlinked_config = b'{"unlinked":true}'
+    unlinked_config_digest = "sha256:" + hashlib.sha256(unlinked_config).hexdigest()
     manifest_config = config if link_manifest_config else unlinked_config
     manifest_config_digest = "sha256:" + hashlib.sha256(manifest_config).hexdigest()
 
@@ -282,6 +285,8 @@ def _write_oci_image_archive(
         "blobs/sha256/" + manifest_config_digest.removeprefix("sha256:"): manifest_config,
         "blobs/sha256/" + child_digest.removeprefix("sha256:"): child_payload,
     }
+    if conflicting_tagged_config:
+        blobs["blobs/sha256/" + unlinked_config_digest.removeprefix("sha256:")] = unlinked_config
     for _ in range(index_depth):
         child_payload = _json_bytes(
             {
@@ -318,6 +323,16 @@ def _write_oci_image_archive(
     )
     config_name = "blobs/sha256/" + manifest_config_digest.removeprefix("sha256:")
     manifest = [{"Config": config_name, "RepoTags": [IMAGE_REF], "Layers": []}]
+    if duplicate_tagged_manifest:
+        manifest.append({"Config": config_name, "RepoTags": [IMAGE_REF], "Layers": []})
+    if conflicting_tagged_config:
+        manifest.append(
+            {
+                "Config": "blobs/sha256/" + unlinked_config_digest.removeprefix("sha256:"),
+                "RepoTags": [IMAGE_REF],
+                "Layers": [],
+            }
+        )
     with tarfile.open(path, "w") as archive:
         _add_tar_bytes(archive, "manifest.json", _json_bytes(manifest))
         _add_tar_bytes(archive, "index.json", index)
@@ -684,6 +699,103 @@ def test_scan_subject_accepts_digest_linked_oci_archive(tmp_path: Path) -> None:
     assert subject["trivy_image_id"] == IMAGE_ID
 
 
+def test_scan_subject_v2_binds_runtime_manifest_to_canonical_config(tmp_path: Path) -> None:
+    archive = tmp_path / "app-image-oci-v2.tar"
+    digest, manifest_digest = _write_oci_image_archive(archive)
+
+    subject = validate_scan_subject(
+        {
+            "schema_version": 2,
+            "image_ref": IMAGE_REF,
+            "image_id": IMAGE_ID,
+            "runtime_image_id": manifest_digest,
+            "manifest_digest": manifest_digest,
+            "archive_sha256": digest,
+        },
+        archive_path=archive,
+    )
+
+    assert subject["schema_version"] == 2
+    assert subject["image_id"] == IMAGE_ID
+    assert subject["runtime_image_id"] == manifest_digest
+    assert subject["manifest_digest"] == manifest_digest
+    assert subject["trivy_image_id"] == IMAGE_ID
+
+
+def test_scan_subject_v2_allows_duplicate_tag_entries_for_same_config(tmp_path: Path) -> None:
+    archive = tmp_path / "app-image-oci-v2-duplicate-tag.tar"
+    digest, manifest_digest = _write_oci_image_archive(
+        archive,
+        duplicate_tagged_manifest=True,
+    )
+
+    subject = validate_scan_subject(
+        {
+            "schema_version": 2,
+            "image_ref": IMAGE_REF,
+            "image_id": IMAGE_ID,
+            "runtime_image_id": manifest_digest,
+            "manifest_digest": manifest_digest,
+            "archive_sha256": digest,
+        },
+        archive_path=archive,
+    )
+
+    assert subject["trivy_image_id"] == IMAGE_ID
+
+
+def test_scan_subject_v2_rejects_same_tag_with_conflicting_configs(tmp_path: Path) -> None:
+    archive = tmp_path / "app-image-oci-v2-conflicting-tag.tar"
+    digest, manifest_digest = _write_oci_image_archive(
+        archive,
+        conflicting_tagged_config=True,
+    )
+
+    with pytest.raises(RuntimeError, match="exactly one config identity"):
+        validate_scan_subject(
+            {
+                "schema_version": 2,
+                "image_ref": IMAGE_REF,
+                "image_id": IMAGE_ID,
+                "runtime_image_id": manifest_digest,
+                "manifest_digest": manifest_digest,
+                "archive_sha256": digest,
+            },
+            archive_path=archive,
+        )
+
+
+def test_scan_subject_v2_rejects_manifest_not_linked_to_config(tmp_path: Path) -> None:
+    archive = tmp_path / "app-image-oci-v2-wrong-manifest.tar"
+    digest, manifest_digest = _write_oci_image_archive(archive)
+
+    with pytest.raises(RuntimeError, match="manifest_digest"):
+        validate_scan_subject(
+            {
+                "schema_version": 2,
+                "image_ref": IMAGE_REF,
+                "image_id": IMAGE_ID,
+                "runtime_image_id": "sha256:" + "f" * 64,
+                "manifest_digest": "sha256:" + "f" * 64,
+                "archive_sha256": digest,
+            },
+            archive_path=archive,
+        )
+
+    with pytest.raises(RuntimeError, match="runtime_image_id"):
+        validate_scan_subject(
+            {
+                "schema_version": 2,
+                "image_ref": IMAGE_REF,
+                "image_id": IMAGE_ID,
+                "runtime_image_id": "sha256:" + "e" * 64,
+                "manifest_digest": manifest_digest,
+                "archive_sha256": digest,
+            },
+            archive_path=archive,
+        )
+
+
 def test_scan_subject_rejects_oci_config_not_linked_from_image_id(tmp_path: Path) -> None:
     archive = tmp_path / "app-image-oci-unlinked.tar"
     digest, image_id = _write_oci_image_archive(archive, link_manifest_config=False)
@@ -753,6 +865,16 @@ def test_security_workflow_scans_files_ignored_by_semgrep_defaults() -> None:
     source = workflow.read_text(encoding="utf-8")
 
     assert source.count("--x-ignore-semgrepignore-files") == 1
+
+
+def test_security_workflow_emits_v2_runtime_identity_subject() -> None:
+    workflow = Path(__file__).parents[3] / ".github" / "workflows" / "security-analysis.yml"
+    source = workflow.read_text(encoding="utf-8")
+
+    assert '"schema_version": 2' in source
+    assert '"runtime_image_id": runtime_image_id' in source
+    assert '"manifest_digest": manifest_digest' in source
+    assert "runtime_image_id not in {image_id, manifest_digest}" in source
 
 
 def test_security_workflow_pins_third_party_actions_to_full_commits() -> None:
@@ -1041,4 +1163,3 @@ def test_waiver_total_span_hard_cap_blocks_perpetual_renewal(tmp_path: Path) -> 
     _write_waivers(malformed, [_waiver_json(first_waived_on="not-a-date")])
     with pytest.raises(RuntimeError, match="first_waived_on must be YYYY-MM-DD"):
         load_waivers(malformed, today=date(2026, 8, 9))
-

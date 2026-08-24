@@ -112,11 +112,11 @@ Trivy 官方 archive 实现中，`--input /tmp/app-image.tar` 的 artifact name 
 
 身份闭环改为：
 
-1. `scan-subject.json` 记录预扫描的 `image_ref`、完整 Docker `ImageID`、archive SHA-256；
+1. `scan-subject.json` v2 记录 `image_ref`、canonical config `image_id`、Docker `runtime_image_id`、OCI `manifest_digest` 与 archive SHA-256；
 2. gate 自己打开 Docker tar 的 `manifest.json`，确认 RepoTags 精确包含 `image_ref`；
 3. legacy archive 要求 manifest `Config` 等于 subject ImageID 对应的 config 文件名，并校验 config 内容 digest；
-4. OCI archive 要求 `index.json` 唯一引用 subject ImageID，递归校验 index / manifest / config descriptor 的 digest 与 size，并要求 `manifest.json` 的 config blob 可由 subject ImageID 到达；
-5. gate 将上述闭环解析出的 config digest 作为 Trivy archive identity；legacy 模式下它与 subject ImageID 相同，OCI index 模式下允许二者按 OCI 语义不同；
+4. OCI archive 要求 `index.json` 唯一引用 `manifest_digest`，递归校验 index / manifest / config descriptor 的 digest 与 size，并要求该 descriptor 只到达 canonical config `image_id`；
+5. gate 仅在 `runtime_image_id` 等于已证明的 config 或 manifest digest 时接受；解析出的 config digest继续作为 Trivy archive identity；
 6. Trivy JSON `ArtifactName` 必须等于固定 scanner archive path `/tmp/app-image.tar`；
 7. Trivy JSON `Metadata.ImageID` 必须等于 gate 解析出的 Trivy archive identity；
 8. Trivy JSON `Metadata.RepoTags` 必须包含 subject image_ref；

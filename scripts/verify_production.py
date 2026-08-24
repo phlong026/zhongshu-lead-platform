@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,6 +42,13 @@ REQUIRED_FILES = (
 _IMAGE_ID_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
+@dataclass(frozen=True)
+class ScanSubjectIdentity:
+    schema_version: int
+    image_id: str
+    accepted_image_ids: frozenset[str]
+
+
 def image_tag(reference: str) -> str | None:
     """Return an explicit image tag without confusing a registry port for a tag."""
 
@@ -53,46 +61,115 @@ def image_tag(reference: str) -> str | None:
 
 def inspect_image_metadata(
     docker: str, reference: str
-) -> tuple[str | None, str | None, str | None]:
+) -> tuple[str | None, str | None, str | None, str | None, str | None]:
     try:
         result = subprocess.run(
-            [docker, "image", "inspect", reference, "--format", "{{json .}}"],
+            ["docker", "image", "inspect", reference, "--format", "{{json .}}"],
+            executable=docker,
             cwd=ROOT,
             text=True,
             encoding="utf-8",
             capture_output=True,
         )
     except UnicodeDecodeError as exc:
-        return None, None, f"docker image inspect returned invalid UTF-8: {exc}"
+        return None, None, None, None, f"docker image inspect returned invalid UTF-8: {exc}"
     if result.returncode:
         error = result.stderr.strip() or result.stdout.strip() or "docker image inspect failed"
-        return None, None, error
+        return None, None, None, None, error
     try:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
-        return None, None, f"docker image inspect returned invalid JSON: {exc}"
+        return None, None, None, None, f"docker image inspect returned invalid JSON: {exc}"
     if not isinstance(payload, dict):
-        return None, None, "docker image inspect result must be an object"
-    image_id = payload.get("Id")
-    if not isinstance(image_id, str) or not _IMAGE_ID_RE.fullmatch(image_id):
-        return None, None, f"docker image inspect returned invalid ImageID {image_id!r}"
+        return None, None, None, None, "docker image inspect result must be an object"
+    image_id, descriptor_digest, config_digest, identity_error = _inspect_image_identity(payload)
+    if identity_error is not None:
+        return None, None, None, None, identity_error
     config = payload.get("Config")
     labels = config.get("Labels") if isinstance(config, dict) else None
     version = labels.get("org.opencontainers.image.version") if isinstance(labels, dict) else None
-    return (version if isinstance(version, str) and version else None), image_id, None
+    return (
+        version if isinstance(version, str) and version else None,
+        image_id,
+        descriptor_digest,
+        config_digest,
+        None,
+    )
 
 
 def load_scan_subject_image_id(path: Path) -> str:
+    return load_scan_subject_identity(path).image_id
+
+
+def load_scan_subject_identity(path: Path) -> ScanSubjectIdentity:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"invalid scan subject {path}: {exc}") from exc
     if not isinstance(payload, dict):
         raise RuntimeError("scan subject must be a JSON object")
+    schema_version = payload.get("schema_version", 1)
+    if (
+        not isinstance(schema_version, int)
+        or isinstance(schema_version, bool)
+        or schema_version not in (1, 2)
+    ):
+        raise RuntimeError("scan subject schema_version must be 1 or 2")
     image_id = payload.get("image_id")
     if not isinstance(image_id, str) or not _IMAGE_ID_RE.fullmatch(image_id):
         raise RuntimeError("scan subject image_id must be sha256:<64 lowercase hex>")
-    return image_id
+    if schema_version == 1:
+        return ScanSubjectIdentity(1, image_id, frozenset({image_id}))
+
+    runtime_image_id = payload.get("runtime_image_id")
+    manifest_digest = payload.get("manifest_digest")
+    for field, value in (
+        ("runtime_image_id", runtime_image_id),
+        ("manifest_digest", manifest_digest),
+    ):
+        if not isinstance(value, str) or not _IMAGE_ID_RE.fullmatch(value):
+            raise RuntimeError(f"scan subject {field} must be sha256:<64 lowercase hex>")
+    if runtime_image_id not in {image_id, manifest_digest}:
+        raise RuntimeError(
+            "scan subject runtime_image_id must equal image_id or manifest_digest"
+        )
+    return ScanSubjectIdentity(
+        2,
+        image_id,
+        frozenset({image_id, runtime_image_id, manifest_digest}),
+    )
+
+
+def runtime_image_identity_error(
+    subject: ScanSubjectIdentity,
+    *,
+    image_id: str,
+    descriptor_digest: str | None,
+    config_digest: str | None,
+) -> str | None:
+    if subject.schema_version == 1:
+        if image_id == subject.image_id:
+            return None
+        return (
+            "APP_IMAGE Docker ImageID 与 Security Analysis 候选镜像不一致："
+            f"期望 {subject.image_id}，实际 {image_id}"
+        )
+    if image_id not in subject.accepted_image_ids:
+        return (
+            "APP_IMAGE Docker ImageID 不在 Security Analysis 已验证身份集合中："
+            f"期望 {sorted(subject.accepted_image_ids)}，实际 {image_id}"
+        )
+    if descriptor_digest is not None and descriptor_digest not in subject.accepted_image_ids:
+        return (
+            "APP_IMAGE OCI descriptor digest 不在 Security Analysis 已验证身份集合中："
+            f"期望 {sorted(subject.accepted_image_ids)}，实际 {descriptor_digest}"
+        )
+    if config_digest is not None and config_digest != subject.image_id:
+        return (
+            "APP_IMAGE OCI config digest 与 Security Analysis 候选镜像不一致："
+            f"期望 {subject.image_id}，实际 {config_digest}"
+        )
+    return None
 
 
 def main() -> int:
@@ -109,10 +186,10 @@ def main() -> int:
     args = parser.parse_args()
     errors: list[str] = []
     warnings: list[str] = []
-    expected_image_id: str | None = None
+    scan_subject_identity: ScanSubjectIdentity | None = None
     if args.scan_subject is not None:
         try:
-            expected_image_id = load_scan_subject_image_id(args.scan_subject)
+            scan_subject_identity = load_scan_subject_identity(args.scan_subject)
         except RuntimeError as exc:
             errors.append(str(exc))
         if not args.require_image_digest:
@@ -151,9 +228,13 @@ def main() -> int:
             if not docker:
                 errors.append("无法执行 docker image inspect，不能核验镜像 OCI 版本标签")
             else:
-                image_version, actual_image_id, inspect_error = inspect_image_metadata(
-                    docker, app_image
-                )
+                (
+                    image_version,
+                    actual_image_id,
+                    descriptor_digest,
+                    config_digest,
+                    inspect_error,
+                ) = inspect_image_metadata(docker, app_image)
                 if inspect_error:
                     errors.append("无法检查 APP_IMAGE OCI 标签/ImageID：" + inspect_error)
                 else:
@@ -162,11 +243,15 @@ def main() -> int:
                             f"APP_IMAGE OCI org.opencontainers.image.version 与 APP_VERSION 不一致："
                             f"期望 {settings.app_version}，实际 {image_version or '未设置'}"
                         )
-                    if expected_image_id is not None and actual_image_id != expected_image_id:
-                        errors.append(
-                            "APP_IMAGE Docker ImageID 与 Security Analysis 候选镜像不一致："
-                            f"期望 {expected_image_id}，实际 {actual_image_id}"
+                    if scan_subject_identity is not None and actual_image_id is not None:
+                        identity_error = runtime_image_identity_error(
+                            scan_subject_identity,
+                            image_id=actual_image_id,
+                            descriptor_digest=descriptor_digest,
+                            config_digest=config_digest,
                         )
+                        if identity_error:
+                            errors.append(identity_error)
 
     if args.require_certificates:
         for relative in ("infra/certs/fullchain.pem", "infra/certs/privkey.pem"):
@@ -199,19 +284,24 @@ def main() -> int:
             if marker not in content:
                 errors.append(f"生产 Nginx 缺少配置：{marker}")
     if docker and args.env_file.exists():
-        command = [
-            docker,
-            "compose",
-            "--env-file",
-            str(args.env_file),
-            "-f",
-            str(ROOT / "docker-compose.yml"),
-            "-f",
-            str(compose),
-            "config",
-            "--quiet",
-        ]
-        result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+        result = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "--env-file",
+                str(args.env_file),
+                "-f",
+                str(ROOT / "docker-compose.yml"),
+                "-f",
+                str(compose),
+                "config",
+                "--quiet",
+            ],
+            executable=docker,
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+        )
         if result.returncode:
             errors.append("docker compose config 校验失败：" + (result.stderr.strip() or result.stdout.strip()))
     else:
@@ -219,6 +309,43 @@ def main() -> int:
     payload = {"valid": not errors, "errors": errors, "warnings": warnings}
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0 if not errors else 2
+
+
+def _nested_string(payload: dict[str, object], path: tuple[str, str]) -> str | None:
+    current: object = payload
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current if isinstance(current, str) and current else None
+
+
+def _inspect_image_identity(
+    payload: dict[str, object],
+) -> tuple[str | None, str | None, str | None, str | None]:
+    image_id = payload.get("Id")
+    if not isinstance(image_id, str) or not _IMAGE_ID_RE.fullmatch(image_id):
+        return None, None, None, f"docker image inspect returned invalid ImageID {image_id!r}"
+    descriptor_digest = _nested_string(payload, ("Descriptor", "digest"))
+    if descriptor_digest is not None and not _IMAGE_ID_RE.fullmatch(descriptor_digest):
+        return None, None, None, (
+            f"docker image inspect returned invalid descriptor digest {descriptor_digest!r}"
+        )
+    paths = (
+        ("ConfigDescriptor", "digest"),
+        ("ConfigDescriptor", "Digest"),
+        ("ImageConfigDescriptor", "digest"),
+        ("ImageConfigDescriptor", "Digest"),
+    )
+    digests = {digest for path in paths if (digest := _nested_string(payload, path)) is not None}
+    invalid = sorted(digest for digest in digests if not _IMAGE_ID_RE.fullmatch(digest))
+    if invalid:
+        return None, None, None, (
+            f"docker image inspect returned invalid config descriptor digest {invalid[0]!r}"
+        )
+    if len(digests) > 1:
+        return None, None, None, "docker image inspect returned conflicting config descriptor digests"
+    return image_id, descriptor_digest, next(iter(digests), None), None
 
 
 if __name__ == "__main__":
