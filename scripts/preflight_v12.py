@@ -19,6 +19,7 @@ from scripts.validate_production_env import load_dotenv  # noqa: E402
 
 _SENSITIVE_KEY_MARKERS = ("SECRET", "PASSWORD", "TOKEN", "PRIVATE_KEY", "ACCESS_KEY")
 _SENSITIVE_EXACT_KEYS = {"DATABASE_URL"}
+_COMPOSE_CHECKS = {"database-revision", "v12-reconciliation", "binding-integrity"}
 
 
 def _sensitive_values(env: dict[str, str]) -> tuple[str, ...]:
@@ -88,6 +89,117 @@ def _binding_integrity_command(env_file: Path, *, compose_database: bool) -> lis
     return [sys.executable, *command]
 
 
+def _validated_command(name: str, command: list[str]) -> list[str]:
+    """Return a fail-closed argv copy for the fixed production checks."""
+
+    if not command or any(not isinstance(part, str) or "\0" in part for part in command):
+        raise ValueError(f"{name} 命令不允许为空或包含非法参数")
+
+    is_compose = command[0] != sys.executable
+    if is_compose:
+        docker = shutil.which("docker")
+        compose_shape = [
+            "-f",
+            str(ROOT / "docker-compose.yml"),
+            "-f",
+            str(ROOT / "docker-compose.prod.yml"),
+            "run",
+            "--rm",
+            "-T",
+            "-e",
+            "RUN_DB_MIGRATIONS=false",
+            "api",
+            "python",
+        ]
+        if (
+            name not in _COMPOSE_CHECKS
+            or not docker
+            or command[0] != docker
+            or len(command) < 16
+            or command[1:3] != ["compose", "--env-file"]
+            or command[4:15] != compose_shape
+        ):
+            raise ValueError(f"{name} 命令不允许使用未审查的 Compose 调用")
+        payload = command[15:]
+    else:
+        payload = command[1:]
+
+    if name == "production-environment":
+        valid = (
+            len(payload) == 3
+            and payload[:2] == ["scripts/validate_production_env.py", "--env-file"]
+        )
+    elif name == "deployment-prerequisites":
+        valid = bool(payload) and payload[0] == "scripts/verify_production.py"
+        allowed_flags = {
+            "--env-file": 1,
+            "--require-certificates": 0,
+            "--require-image-digest": 0,
+            "--require-image-inspect": 0,
+            "--scan-subject": 1,
+        }
+        index = 1
+        while valid and index < len(payload):
+            width = allowed_flags.get(payload[index])
+            if width is None or index + width >= len(payload):
+                valid = False
+                break
+            index += width + 1
+    elif name == "object-storage-canary":
+        valid = payload == ["scripts/check_object_storage.py", "--canary"]
+    elif name == "database-revision":
+        valid = payload == ["-m", "alembic", "-c", "alembic.ini", "current", "--check-heads"]
+    elif name == "v12-reconciliation":
+        valid = payload in (
+            ["scripts/reconcile_v12.py"],
+            ["scripts/reconcile_v12.py", "--allow-incomplete-backfill"],
+        )
+    elif name == "binding-integrity":
+        valid = payload == ["scripts/check_binding_integrity.py"]
+    else:
+        valid = False
+
+    if not valid:
+        raise ValueError(f"{name} 命令不允许执行未审查的参数组合")
+    return [*command]
+
+
+def _execute_validated_command(
+    name: str, command: list[str], *, env: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    executable = command[0]
+    options = {
+        "executable": executable,
+        "cwd": ROOT,
+        "env": env,
+        "text": True,
+        "capture_output": True,
+    }
+    if executable != sys.executable:
+        return subprocess.run(["docker", *command[1:]], **options)
+    if name == "production-environment":
+        return subprocess.run(
+            ["python", "scripts/validate_production_env.py", *command[2:]], **options
+        )
+    if name == "deployment-prerequisites":
+        return subprocess.run(
+            ["python", "scripts/verify_production.py", *command[2:]], **options
+        )
+    if name == "object-storage-canary":
+        return subprocess.run(
+            ["python", "scripts/check_object_storage.py", *command[2:]], **options
+        )
+    if name == "database-revision":
+        return subprocess.run(["python", "-m", *command[2:]], **options)
+    if name == "v12-reconciliation":
+        return subprocess.run(
+            ["python", "scripts/reconcile_v12.py", *command[2:]], **options
+        )
+    return subprocess.run(
+        ["python", "scripts/check_binding_integrity.py", *command[2:]], **options
+    )
+
+
 def _run(
     name: str,
     command: list[str],
@@ -96,8 +208,9 @@ def _run(
     sensitive_values: tuple[str, ...],
 ) -> dict[str, Any]:
     try:
-        result = subprocess.run(command, cwd=ROOT, env=env, text=True, capture_output=True)
-    except OSError as exc:
+        validated = _validated_command(name, command)
+        result = _execute_validated_command(name, validated, env=env)
+    except (OSError, ValueError) as exc:
         return {
             "name": name,
             "command": command,

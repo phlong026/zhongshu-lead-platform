@@ -10,8 +10,10 @@ from scripts.preflight_v12 import (
     _binding_integrity_command,
     _compose_python_command,
     _database_url_from_postgres,
+    _execute_validated_command,
     _redact,
     _sensitive_values,
+    _validated_command,
 )
 from scripts.validate_production_env import derive_compose_database_url
 from scripts.verify_production import image_tag, inspect_image_metadata, load_scan_subject_image_id
@@ -54,6 +56,61 @@ def test_preflight_redacts_injected_secrets_from_subprocess_output() -> None:
     assert "url-password" not in redacted
     assert "postgresql+psycopg://" not in redacted
     assert "public-value" in redacted
+
+
+def test_preflight_command_allowlist_rejects_arbitrary_python_execution() -> None:
+    with pytest.raises(ValueError, match="不允许"):
+        _validated_command(
+            "deployment-prerequisites",
+            [sys.executable, "-c", "print('unexpected')"],
+        )
+
+
+def test_preflight_command_allowlist_preserves_path_metacharacters_as_one_argument() -> None:
+    env_file = Path("/srv/app/$(touch should-not-run); production.env")
+    command = [
+        sys.executable,
+        "scripts/validate_production_env.py",
+        "--env-file",
+        str(env_file),
+    ]
+
+    assert _validated_command("production-environment", command) == command
+
+
+def test_preflight_executes_static_python_argv_with_current_interpreter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, object] = {}
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(command: list[str], **kwargs: object) -> Result:
+        seen["command"] = command
+        seen["executable"] = kwargs.get("executable")
+        return Result()
+
+    monkeypatch.setattr("scripts.preflight_v12.subprocess.run", fake_run)
+    env_file = "/srv/app/$(touch should-not-run); production.env"
+    command = [
+        sys.executable,
+        "scripts/validate_production_env.py",
+        "--env-file",
+        env_file,
+    ]
+
+    _execute_validated_command("production-environment", command, env={})
+
+    assert seen["command"] == [
+        "python",
+        "scripts/validate_production_env.py",
+        "--env-file",
+        env_file,
+    ]
+    assert seen["executable"] == sys.executable
 
 
 def test_compose_database_url_is_derived_from_postgres_settings_with_matching_encoding() -> None:
