@@ -23,7 +23,7 @@ router = APIRouter(prefix="/users", tags=["users"])
 
 class UserCreateBody(BaseModel):
     username: str = Field(min_length=2, max_length=64)
-    password: str | None = Field(default=None, min_length=12, max_length=128)
+    password: str | None = Field(default=None, min_length=8, max_length=128)
     display_name: str = Field(min_length=1, max_length=64)
     role_codes: list[str] | None = Field(default=None, min_length=1, max_length=7)
     role_code: str | None = None
