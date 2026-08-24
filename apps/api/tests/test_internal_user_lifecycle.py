@@ -7,7 +7,7 @@ from apps.api.src.core.security import verify_password
 
 
 STRONG_PASSWORD = "Internal-User9!"
-NEW_STRONG_PASSWORD = "Changed-User8!"
+NEW_PASSWORD = "aaaaaaaa"
 
 
 def _login(client, username: str, password: str) -> str:
@@ -137,12 +137,11 @@ def test_create_generates_initial_password_when_password_is_omitted(api_client) 
     initial_password = data["initial_password"]
     assert data["username"] == "generated_password"
     assert isinstance(initial_password, str)
-    assert 12 <= len(initial_password) <= 128
+    assert len(initial_password) == 18
     assert any(character.islower() for character in initial_password)
     assert any(character.isupper() for character in initial_password)
     assert any(character.isdigit() for character in initial_password)
     assert any(not character.isalnum() for character in initial_password)
-    assert "generated_password" not in initial_password.lower()
     assert response.headers["cache-control"] == "no-store"
 
     user = _user_by_username(factory, "generated_password")
@@ -218,7 +217,7 @@ def test_create_rejects_ambiguous_old_and_new_role_fields(api_client) -> None:
         assert db.scalar(select(User).where(User.username == "ambiguous_roles")) is None
 
 
-def test_internal_account_creation_rejects_franchise_company_and_weak_passwords(api_client) -> None:
+def test_internal_account_creation_rejects_franchise_company_and_short_passwords(api_client) -> None:
     client, factory = api_client
     admin_token = _login(client, "admin", "Admin123!")
     with factory() as db:
@@ -249,14 +248,32 @@ def test_internal_account_creation_rejects_franchise_company_and_weak_passwords(
     assert company_bound.status_code == 400
     assert company_bound.json()["code"] == "INTERNAL_COMPANY_FORBIDDEN"
 
-    weak_password = _create_user(
+    short_password = _create_user(
         client,
         admin_token,
-        username="weak_password",
-        password="password1234",
+        username="short_password",
+        password="short7",
     )
-    assert weak_password.status_code == 400
-    assert weak_password.json()["code"] == "PASSWORD_POLICY_INVALID"
+    assert short_password.status_code == 422
+    assert short_password.json()["code"] == "VALIDATION_ERROR"
+
+
+def test_internal_account_creation_accepts_eight_characters_without_composition(api_client) -> None:
+    client, factory = api_client
+    admin_token = _login(client, "admin", "Admin123!")
+
+    response = _create_user(
+        client,
+        admin_token,
+        username="simple_password",
+        password="aaaaaaaa",
+    )
+
+    user_id = _data(response)["id"]
+    user = _user_by_username(factory, "simple_password")
+    assert user.id == user_id
+    assert verify_password("aaaaaaaa", user.password_hash or "")
+    assert _login(client, "simple_password", "aaaaaaaa")
 
 
 def test_non_superadmin_cannot_manage_internal_accounts(api_client) -> None:
@@ -325,16 +342,16 @@ def test_password_reset_invalidates_sessions_and_never_audits_credentials(api_cl
     weak = client.post(
         f"/api/v1/users/{user_id}/reset-password",
         headers=_bearer(admin_token),
-        json={"new_password": "weak-password"},
+        json={"new_password": "short7"},
     )
-    assert weak.status_code == 400
-    assert weak.json()["code"] == "PASSWORD_POLICY_INVALID"
+    assert weak.status_code == 422
+    assert weak.json()["code"] == "VALIDATION_ERROR"
 
     _data(
         client.post(
             f"/api/v1/users/{user_id}/reset-password",
             headers=_bearer(admin_token),
-            json={"new_password": NEW_STRONG_PASSWORD},
+            json={"new_password": NEW_PASSWORD},
         )
     )
 
@@ -345,12 +362,12 @@ def test_password_reset_invalidates_sessions_and_never_audits_credentials(api_cl
         "/api/v1/auth/login",
         json={"username": "password_reset", "password": STRONG_PASSWORD},
     ).status_code == 401
-    assert _login(client, "password_reset", NEW_STRONG_PASSWORD)
+    assert _login(client, "password_reset", NEW_PASSWORD)
 
     actions, audit_text = _audit_text(factory, user_id)
     assert "USER_PASSWORD_RESET" in actions
     assert STRONG_PASSWORD not in audit_text
-    assert NEW_STRONG_PASSWORD not in audit_text
+    assert NEW_PASSWORD not in audit_text
     assert (before.password_hash or "") not in audit_text
     assert (after.password_hash or "") not in audit_text
 
@@ -455,7 +472,7 @@ def test_franchise_and_missing_users_cannot_enter_internal_management(api_client
         client.post(
             f"/api/v1/users/{franchise_id}/reset-password",
             headers=_bearer(admin_token),
-            json={"new_password": NEW_STRONG_PASSWORD},
+            json={"new_password": NEW_PASSWORD},
         ),
     ]
     assert all(response.status_code == 409 for response in attempts)
