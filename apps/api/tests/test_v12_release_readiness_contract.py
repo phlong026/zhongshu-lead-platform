@@ -206,6 +206,33 @@ def test_scan_subject_image_id_is_strict_and_inspect_uses_docker_identity(
     assert error and "invalid UTF-8" in error
 
 
+def test_docker29_inspect_uses_config_descriptor_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    config_digest = "sha256:" + "a" * 64
+    manifest_digest = "sha256:" + "b" * 64
+
+    class Result:
+        returncode = 0
+        stdout = json.dumps(
+            {
+                "Id": manifest_digest,
+                "Descriptor": {"digest": manifest_digest},
+                "ConfigDescriptor": {"digest": config_digest},
+                "Config": {"Labels": {"org.opencontainers.image.version": "1.2.1"}},
+            }
+        )
+        stderr = ""
+
+    monkeypatch.setattr("scripts.verify_production.subprocess.run", lambda *_, **__: Result())
+
+    version, actual, error = inspect_image_metadata(
+        "docker", "registry.example.com/app:1.2.1@sha256:digest"
+    )
+
+    assert error is None
+    assert version == "1.2.1"
+    assert actual == config_digest
+
+
 def test_deployment_persists_reconciliation_and_uses_compose_database_preflight() -> None:
     deployment = Path("docs/runbooks/DEPLOYMENT.md").read_text(encoding="utf-8")
     go_no_go = Path("docs/runbooks/V1.2_GO_NO_GO.md").read_text(encoding="utf-8")

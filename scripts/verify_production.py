@@ -73,9 +73,9 @@ def inspect_image_metadata(
         return None, None, f"docker image inspect returned invalid JSON: {exc}"
     if not isinstance(payload, dict):
         return None, None, "docker image inspect result must be an object"
-    image_id = payload.get("Id")
-    if not isinstance(image_id, str) or not _IMAGE_ID_RE.fullmatch(image_id):
-        return None, None, f"docker image inspect returned invalid ImageID {image_id!r}"
+    image_id, identity_error = _inspect_image_identity(payload)
+    if identity_error is not None:
+        return None, None, identity_error
     config = payload.get("Config")
     labels = config.get("Labels") if isinstance(config, dict) else None
     version = labels.get("org.opencontainers.image.version") if isinstance(labels, dict) else None
@@ -219,6 +219,34 @@ def main() -> int:
     payload = {"valid": not errors, "errors": errors, "warnings": warnings}
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0 if not errors else 2
+
+
+def _nested_string(payload: dict[str, object], path: tuple[str, str]) -> str | None:
+    current: object = payload
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current if isinstance(current, str) and current else None
+
+
+def _inspect_image_identity(payload: dict[str, object]) -> tuple[str | None, str | None]:
+    image_id = payload.get("Id")
+    if not isinstance(image_id, str) or not _IMAGE_ID_RE.fullmatch(image_id):
+        return None, f"docker image inspect returned invalid ImageID {image_id!r}"
+    paths = (
+        ("ConfigDescriptor", "digest"),
+        ("ConfigDescriptor", "Digest"),
+        ("ImageConfigDescriptor", "digest"),
+        ("ImageConfigDescriptor", "Digest"),
+    )
+    digests = {digest for path in paths if (digest := _nested_string(payload, path)) is not None}
+    invalid = sorted(digest for digest in digests if not _IMAGE_ID_RE.fullmatch(digest))
+    if invalid:
+        return None, f"docker image inspect returned invalid config descriptor digest {invalid[0]!r}"
+    if len(digests) > 1:
+        return None, "docker image inspect returned conflicting config descriptor digests"
+    return next(iter(digests), image_id), None
 
 
 if __name__ == "__main__":
