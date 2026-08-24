@@ -696,6 +696,110 @@ def _validate_oci_archive_identity(
     return config_digest
 
 
+def _validate_v2_archive_identity(
+    archive_path: Path,
+    *,
+    expected_image_ref: str,
+    expected_config_digest: str,
+    expected_manifest_digest: str,
+) -> str:
+    expected_legacy_config = expected_config_digest.removeprefix("sha256:") + ".json"
+    try:
+        with tarfile.open(archive_path, mode="r:*") as archive:
+            manifest = _read_archive_json(archive, "manifest.json")
+            if not isinstance(manifest, list) or not manifest:
+                raise RuntimeError("Docker archive manifest.json must be a non-empty array")
+            matches = []
+            for index, item in enumerate(manifest, start=1):
+                if not isinstance(item, dict):
+                    raise RuntimeError(f"Docker archive manifest entry #{index} must be an object")
+                repo_tags = item.get("RepoTags")
+                if repo_tags is None:
+                    continue
+                if not isinstance(repo_tags, list) or not all(isinstance(tag, str) for tag in repo_tags):
+                    raise RuntimeError(
+                        f"Docker archive manifest entry #{index} RepoTags must be a string array"
+                    )
+                if expected_image_ref in repo_tags:
+                    matches.append(item)
+            if not matches:
+                raise RuntimeError(
+                    f"Docker archive must contain a manifest entry for {expected_image_ref!r}"
+                )
+            config_names = {item.get("Config") for item in matches}
+            if len(config_names) != 1:
+                raise RuntimeError(
+                    f"Docker archive image_ref {expected_image_ref!r} must resolve to exactly one config identity"
+                )
+            config_name = next(iter(config_names))
+            if config_name == expected_legacy_config:
+                config_raw = _read_archive_member(archive, expected_legacy_config)
+                actual_config_digest = "sha256:" + hashlib.sha256(config_raw).hexdigest()
+                if actual_config_digest != expected_config_digest:
+                    raise RuntimeError(
+                        "Docker archive config content mismatch: "
+                        f"expected {expected_config_digest!r}, got {actual_config_digest!r}"
+                    )
+                if expected_manifest_digest != expected_config_digest:
+                    raise RuntimeError(
+                        "legacy Docker archive manifest_digest must equal image_id"
+                    )
+                return expected_config_digest
+
+            config_match = (
+                _OCI_CONFIG_PATH_RE.fullmatch(config_name)
+                if isinstance(config_name, str)
+                else None
+            )
+            if config_match is None:
+                raise RuntimeError(
+                    "Docker archive v2 Config path must be a legacy config or OCI SHA-256 blob"
+                )
+            config_digest = "sha256:" + config_match.group(1)
+            if config_digest != expected_config_digest:
+                raise RuntimeError(
+                    "Docker archive v2 config digest mismatch: "
+                    f"expected {expected_config_digest}, got {config_digest}"
+                )
+            config_raw = _read_archive_member(archive, config_name)
+            actual_config_digest = "sha256:" + hashlib.sha256(config_raw).hexdigest()
+            if actual_config_digest != expected_config_digest:
+                raise RuntimeError(
+                    "Docker archive OCI config digest mismatch: "
+                    f"expected {expected_config_digest}, got {actual_config_digest}"
+                )
+
+            index = _read_archive_json(archive, "index.json")
+            if not isinstance(index, dict) or index.get("schemaVersion") != 2:
+                raise RuntimeError("Docker archive index.json must be a schemaVersion 2 object")
+            descriptors = index.get("manifests")
+            if not isinstance(descriptors, list) or not descriptors:
+                raise RuntimeError("Docker archive index.json manifests must be a non-empty array")
+            descriptor_matches = [
+                item
+                for item in descriptors
+                if isinstance(item, dict) and item.get("digest") == expected_manifest_digest
+            ]
+            if len(descriptor_matches) != 1:
+                raise RuntimeError(
+                    "Docker OCI index must contain exactly one descriptor for manifest_digest "
+                    f"{expected_manifest_digest!r}"
+                )
+            reachable_configs = _reachable_oci_config_digests(
+                archive,
+                descriptor_matches[0],
+                label="Docker OCI runtime image",
+            )
+            if reachable_configs != {expected_config_digest}:
+                raise RuntimeError(
+                    "Docker OCI runtime descriptor must resolve only to image_id "
+                    f"{expected_config_digest!r}; got {sorted(reachable_configs)!r}"
+                )
+            return expected_config_digest
+    except (tarfile.TarError, KeyError, OSError) as exc:
+        raise RuntimeError(f"invalid Docker image archive: {exc}") from exc
+
+
 def _validate_docker_archive_identity(
     archive_path: Path,
     *,
@@ -750,10 +854,17 @@ def _validate_docker_archive_identity(
         raise RuntimeError(f"invalid Docker image archive: {exc}") from exc
 
 
-def validate_scan_subject(payload: dict[str, Any], *, archive_path: Path) -> dict[str, str]:
+def validate_scan_subject(payload: dict[str, Any], *, archive_path: Path) -> dict[str, Any]:
     image_ref = payload.get("image_ref")
     image_id = payload.get("image_id")
     archive_sha256 = payload.get("archive_sha256")
+    schema_version = payload.get("schema_version", 1)
+    if (
+        not isinstance(schema_version, int)
+        or isinstance(schema_version, bool)
+        or schema_version not in (1, 2)
+    ):
+        raise RuntimeError("scan subject schema_version must be 1 or 2")
     if not isinstance(image_ref, str) or not image_ref.strip():
         raise RuntimeError("scan subject missing image_ref")
     if not isinstance(image_id, str) or not _IMAGE_ID_RE.fullmatch(image_id):
@@ -767,14 +878,41 @@ def validate_scan_subject(payload: dict[str, Any], *, archive_path: Path) -> dic
         )
     resolved_ref = image_ref.strip()
     resolved_id = image_id.strip()
-    trivy_image_id = _validate_docker_archive_identity(
-        archive_path,
-        expected_image_ref=resolved_ref,
-        expected_image_id=resolved_id,
-    )
+    runtime_image_id = resolved_id
+    manifest_digest = resolved_id
+    if schema_version == 1:
+        trivy_image_id = _validate_docker_archive_identity(
+            archive_path,
+            expected_image_ref=resolved_ref,
+            expected_image_id=resolved_id,
+        )
+    else:
+        runtime_image_id = payload.get("runtime_image_id")
+        manifest_digest = payload.get("manifest_digest")
+        for field, value in (
+            ("runtime_image_id", runtime_image_id),
+            ("manifest_digest", manifest_digest),
+        ):
+            if not isinstance(value, str) or not _IMAGE_ID_RE.fullmatch(value):
+                raise RuntimeError(
+                    f"scan subject {field} must be sha256:<64 lowercase hex>"
+                )
+        if runtime_image_id not in {resolved_id, manifest_digest}:
+            raise RuntimeError(
+                "scan subject runtime_image_id must equal image_id or manifest_digest"
+            )
+        trivy_image_id = _validate_v2_archive_identity(
+            archive_path,
+            expected_image_ref=resolved_ref,
+            expected_config_digest=resolved_id,
+            expected_manifest_digest=manifest_digest,
+        )
     return {
+        "schema_version": schema_version,
         "image_ref": resolved_ref,
         "image_id": resolved_id,
+        "runtime_image_id": runtime_image_id,
+        "manifest_digest": manifest_digest,
         "trivy_image_id": trivy_image_id,
         "archive_sha256": archive_sha256,
         "trivy_artifact_name": TRIVY_INPUT_ARTIFACT_NAME,

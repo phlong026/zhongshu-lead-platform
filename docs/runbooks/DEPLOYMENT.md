@@ -64,7 +64,7 @@ python scripts/verify_production.py \
 docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml up -d db
 ```
 
-`verify_production.py` 直接从 `.env` 读取 `APP_IMAGE` 与 `APP_VERSION`，不会依赖宿主 shell 已导出同名变量；它会检查显式版本 tag、sha256 digest、实际拉取镜像的 OCI 版本标签，并要求 Docker ImageID 与 Security Analysis 产出的 `scan-subject.json` 完全一致。生产覆盖配置将 API 的 `RUN_DB_MIGRATIONS` 固定为 `false`，避免应用启动时隐式迁移或多个实例竞争执行迁移。
+`verify_production.py` 直接从 `.env` 读取 `APP_IMAGE` 与 `APP_VERSION`，不会依赖宿主 shell 已导出同名变量；它会检查显式版本 tag、sha256 digest、实际拉取镜像的 OCI 版本标签，并要求 Docker ImageID/Descriptor 落在 Security Analysis 已证明的 config/manifest 身份集合内。生产覆盖配置将 API 的 `RUN_DB_MIGRATIONS` 固定为 `false`，避免应用启动时隐式迁移或多个实例竞争执行迁移。
 
 ## 6. 备份、迁移和回填
 
@@ -156,7 +156,7 @@ python scripts/preflight_v12.py \
 - `APP_IMAGE` 的显式版本 tag 必须与 `APP_VERSION` 完全一致；
 - `APP_IMAGE` 必须包含 `@sha256:` digest；
 - 本机实际拉取镜像的 OCI `org.opencontainers.image.version` 必须与 `APP_VERSION` 一致；
-- 本机实际拉取镜像的 Docker ImageID 必须与 `scan-subject.json` 中 Security Analysis 候选镜像完全一致；
+- 本机实际拉取镜像的 Docker ImageID/Descriptor 必须属于 `scan-subject.json` 中 Security gate 已验证的身份集合；可用的 config descriptor 必须等于 canonical `image_id`；
 - Alembic revision 与 V1.2 数据对账必须通过一次性 API 容器在真实 `db:5432` Compose 网络内执行；
 - 没有显式可达 `DATABASE_URL` 且未使用 Compose 模式时直接失败，禁止误读本地 SQLite。
 

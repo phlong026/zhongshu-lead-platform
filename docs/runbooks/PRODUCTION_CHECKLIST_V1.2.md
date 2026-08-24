@@ -33,7 +33,7 @@
 ## C. 生产配置
 
 - [ ] `python scripts/validate_production_env.py --env-file .env` 返回 valid；
-- [ ] `python scripts/verify_production.py --env-file .env --require-certificates --require-image-digest --require-image-inspect --scan-subject scan-subject.json` 返回 valid，且回拉镜像 ImageID 与 Security Analysis 候选镜像一致；
+- [ ] `python scripts/verify_production.py --env-file .env --require-certificates --require-image-digest --require-image-inspect --scan-subject scan-subject.json` 返回 valid，且回拉镜像 ImageID/Descriptor 属于 Security gate 已验证身份集合；
 - [ ] `python scripts/preflight_v12.py --env-file .env --require-certificates --compose-database --scan-subject scan-subject.json --output dist/v12-preflight.json` 返回 valid；
 - [ ] 标准 Docker 部署的数据库 revision 和 V1.2 reconciliation 均在 Compose 网络内执行，未回退到本地 SQLite；
 - [ ] API/Scheduler 使用 `docker/prepare-env.sh` URL 编码后的 `DATABASE_URL`，特殊字符凭据已验证；
