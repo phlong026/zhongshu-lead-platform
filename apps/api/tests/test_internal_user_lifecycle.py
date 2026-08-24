@@ -119,6 +119,60 @@ def test_superadmin_creates_a_multi_role_internal_account_and_audits_it(api_clie
     assert (user.password_hash or "") not in audit_text
 
 
+def test_create_generates_initial_password_when_password_is_omitted(api_client) -> None:
+    client, factory = api_client
+    admin_token = _login(client, "admin", "Admin123!")
+
+    response = client.post(
+        "/api/v1/users",
+        headers=_bearer(admin_token),
+        json={
+            "username": "generated_password",
+            "display_name": "自动密码测试账号",
+            "role_codes": ["OPERATION"],
+        },
+    )
+
+    data = _data(response)
+    initial_password = data["initial_password"]
+    assert data["username"] == "generated_password"
+    assert isinstance(initial_password, str)
+    assert 12 <= len(initial_password) <= 128
+    assert any(character.islower() for character in initial_password)
+    assert any(character.isupper() for character in initial_password)
+    assert any(character.isdigit() for character in initial_password)
+    assert any(not character.isalnum() for character in initial_password)
+    assert "generated_password" not in initial_password.lower()
+    assert response.headers["cache-control"] == "no-store"
+
+    user = _user_by_username(factory, "generated_password")
+    assert verify_password(initial_password, user.password_hash or "")
+    assert _login(client, "generated_password", initial_password)
+
+    _, audit_text = _audit_text(factory, user.id)
+    assert initial_password not in audit_text
+    assert (user.password_hash or "") not in audit_text
+
+
+def test_generated_password_rejects_whitespace_only_username(api_client) -> None:
+    client, _ = api_client
+    admin_token = _login(client, "admin", "Admin123!")
+
+    response = client.post(
+        "/api/v1/users",
+        headers=_bearer(admin_token),
+        json={
+            "username": "  ",
+            "display_name": "空账号测试",
+            "role_codes": ["OPERATION"],
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "INTERNAL_IDENTITY_INVALID"
+    assert response.json()["message"] == "登录账号不能为空或包含首尾空格"
+
+
 def test_create_keeps_legacy_single_role_contract(api_client) -> None:
     client, factory = api_client
     admin_token = _login(client, "admin", "Admin123!")
@@ -134,7 +188,8 @@ def test_create_keeps_legacy_single_role_contract(api_client) -> None:
         },
     )
 
-    _data(response)
+    data = _data(response)
+    assert "initial_password" not in data
     user = _user_by_username(factory, "legacy_single_role")
     assert [role.code for role in user.roles] == ["OPERATION"]
 
@@ -156,6 +211,9 @@ def test_create_rejects_ambiguous_old_and_new_role_fields(api_client) -> None:
     )
 
     assert response.status_code == 422
+    assert response.json()["code"] == "VALIDATION_ERROR"
+    assert response.json()["message"] == "请求参数校验失败"
+    assert STRONG_PASSWORD not in response.text
     with factory() as db:
         assert db.scalar(select(User).where(User.username == "ambiguous_roles")) is None
 

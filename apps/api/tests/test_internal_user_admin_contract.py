@@ -46,6 +46,28 @@ def test_admin_user_page_calls_internal_lifecycle_apis() -> None:
     assert "new_password" in user_section
 
 
+def test_admin_user_creation_relies_on_generated_initial_password() -> None:
+    source = _source()
+    creation_section = source[source.index("function userModal") : source.index("function editUserRolesModal")]
+    credential_section = source[
+        source.index("function showCreatedUserCredentials") : source.index("function userModal")
+    ]
+
+    assert "u-pass" not in creation_section
+    assert "password:" not in creation_section
+    assert "initial_password" in credential_section
+    assert "copy-created-user-password" in credential_section
+    assert "复制账号与密码" in credential_section
+    assert "if(!password)" in credential_section
+    assert "账号已创建，但初始密码未返回" in credential_section
+    assert "请输入姓名" in creation_section
+    assert "登录账号至少输入2个字符" in creation_section
+    assert "至少选择一个角色" in creation_section
+    assert "value.trim()" in creation_section
+    assert creation_section.index("showCreatedUserCredentials(created)") < creation_section.index("await users()")
+    assert "账号已创建，但账号列表刷新失败" in creation_section
+
+
 def test_admin_user_actions_have_busy_state_and_error_feedback() -> None:
     source = _source()
     user_section = source[source.index("async function runUserAction") : source.index("async function configs")]
