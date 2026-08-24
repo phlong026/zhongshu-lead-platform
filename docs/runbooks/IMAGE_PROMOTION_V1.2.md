@@ -47,7 +47,7 @@ Docker build 可能受以下输入影响：
 
 - `valid == true`；
 - `blocking_count == 0`；
-- `scan_subject.image_ref` / `image_id` / `archive_sha256` 存在；
+- `scan_subject.schema_version == 2`，且 `image_ref` / `image_id` / `runtime_image_id` / `manifest_digest` / `archive_sha256` 存在；
 - 所有 active waiver 仍在有效期内。
 
 再核对 candidate artifact：
@@ -64,6 +64,7 @@ expected = subject['archive_sha256']
 assert actual == expected, (actual, expected)
 print('archive sha256 verified:', actual)
 print('expected image id:', subject['image_id'])
+print('verified runtime identities:', subject['runtime_image_id'], subject['manifest_digest'])
 print('scanned image ref:', subject['image_ref'])
 PY
 ```
@@ -76,13 +77,13 @@ SHA-256 不一致直接 `NO-GO`。
 docker load -i app-image.tar
 ```
 
-然后读取 `scan-subject.json` 中的 `image_ref` 和 `image_id`，核对：
+然后读取 `scan-subject.json` 中的已验证身份集合，核对：
 
 ```bash
 docker image inspect '<scan-subject.image_ref>' --format '{{.Id}}'
 ```
 
-实际 ImageID 必须与 `scan-subject.image_id` 完全一致。
+经典 Docker 的实际 ImageID 应等于 canonical config `image_id`；Docker 29 containerd 的 ImageID/Descriptor 可等于 `manifest_digest`。两者都必须属于 Security gate 已验证集合。
 
 同时检查 OCI 版本标签：
 
@@ -124,7 +125,7 @@ docker pull 'registry.example.com/zhongshu-lead-platform:1.2.1@sha256:<digest>'
 
 - OCI `org.opencontainers.image.version == APP_VERSION`；
 - 镜像可正常 inspect；
-- 回拉镜像的 `docker image inspect ... '{{.Id}}'` 必须与候选 artifact 中 `scan-subject.image_id` 完全一致；
+- 回拉镜像的 ImageID、Descriptor 与可用的 config descriptor 必须落在候选 artifact 的已验证身份集合内，config descriptor 必须等于 canonical `image_id`；
 - 以下命令必须通过：
 
 ```bash

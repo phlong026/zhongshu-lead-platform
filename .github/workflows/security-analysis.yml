@@ -163,19 +163,62 @@ jobs:
             set -e
             docker build --pull --build-arg APP_VERSION=1.2.1 -t "$APP_IMAGE" .
             docker save "$APP_IMAGE" -o dist/security/app-image.tar
-            image_id="$(docker image inspect "$APP_IMAGE" --format '{{.Id}}')"
+            runtime_image_id="$(docker image inspect "$APP_IMAGE" --format '{{.Id}}')"
             archive_sha256="$(sha256sum dist/security/app-image.tar | awk '{print $1}')"
-            python - "$APP_IMAGE" "$image_id" "$archive_sha256" <<'PY'
+            python - "$APP_IMAGE" "$runtime_image_id" "$archive_sha256" <<'PY'
           import json
+          import re
           import sys
+          import tarfile
           from pathlib import Path
 
-          image_ref, image_id, archive_sha256 = sys.argv[1:]
+          image_ref, runtime_image_id, archive_sha256 = sys.argv[1:]
+          digest_pattern = re.compile(r"^sha256:[0-9a-f]{64}$")
+          with tarfile.open("dist/security/app-image.tar", "r:*") as archive:
+              manifest = json.load(archive.extractfile("manifest.json"))
+              matches = [item for item in manifest if image_ref in (item.get("RepoTags") or [])]
+              if not matches:
+                  raise RuntimeError("candidate archive must contain image_ref in RepoTags")
+              config_names = {item.get("Config") for item in matches}
+              if len(config_names) != 1:
+                  raise RuntimeError("candidate image_ref must resolve to exactly one config identity")
+              config_name = next(iter(config_names))
+              legacy = re.fullmatch(r"([0-9a-f]{64})\.json", str(config_name))
+              oci = re.fullmatch(r"blobs/sha256/([0-9a-f]{64})", str(config_name))
+              if legacy:
+                  image_id = "sha256:" + legacy.group(1)
+                  manifest_digest = image_id
+              elif oci:
+                  image_id = "sha256:" + oci.group(1)
+                  index = json.load(archive.extractfile("index.json"))
+                  descriptors = index.get("manifests") if isinstance(index, dict) else None
+                  if not isinstance(descriptors, list) or not descriptors:
+                      raise RuntimeError("candidate OCI archive must contain root descriptors")
+                  descriptor_digests = {item.get("digest") for item in descriptors}
+                  if runtime_image_id in descriptor_digests:
+                      manifest_digest = runtime_image_id
+                  elif len(descriptor_digests) == 1:
+                      manifest_digest = next(iter(descriptor_digests))
+                  else:
+                      raise RuntimeError("candidate OCI runtime identity must select one root descriptor")
+              else:
+                  raise RuntimeError("candidate archive Config must be a SHA-256 identity")
+          if not digest_pattern.fullmatch(image_id):
+              raise RuntimeError("candidate config image_id must be a full SHA-256 digest")
+          if not isinstance(manifest_digest, str) or not digest_pattern.fullmatch(manifest_digest):
+              raise RuntimeError("candidate manifest_digest must be a full SHA-256 digest")
+          if not digest_pattern.fullmatch(runtime_image_id):
+              raise RuntimeError("docker inspect runtime_image_id must be a full SHA-256 digest")
+          if runtime_image_id not in {image_id, manifest_digest}:
+              raise RuntimeError("docker inspect identity is not the config or root manifest digest")
           Path("dist/security/scan-subject.json").write_text(
               json.dumps(
                   {
+                      "schema_version": 2,
                       "image_ref": image_ref,
                       "image_id": image_id,
+                      "runtime_image_id": runtime_image_id,
+                      "manifest_digest": manifest_digest,
                       "archive_sha256": archive_sha256,
                   },
                   indent=2,

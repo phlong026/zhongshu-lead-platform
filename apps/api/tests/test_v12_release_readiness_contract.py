@@ -16,7 +16,13 @@ from scripts.preflight_v12 import (
     _validated_command,
 )
 from scripts.validate_production_env import derive_compose_database_url
-from scripts.verify_production import image_tag, inspect_image_metadata, load_scan_subject_image_id
+from scripts.verify_production import (
+    image_tag,
+    inspect_image_metadata,
+    load_scan_subject_identity,
+    load_scan_subject_image_id,
+    runtime_image_identity_error,
+)
 
 
 def test_production_compose_requires_reviewed_image_and_disables_implicit_migration() -> None:
@@ -189,20 +195,24 @@ def test_scan_subject_image_id_is_strict_and_inspect_uses_docker_identity(
         return Result()
 
     monkeypatch.setattr("scripts.verify_production.subprocess.run", fake_run)
-    version, actual, error = inspect_image_metadata(
+    version, actual, descriptor, config, error = inspect_image_metadata(
         "docker", "registry.example.com/app:1.2.1@sha256:digest"
     )
     assert error is None
     assert version == "1.2.1"
     assert actual == expected
+    assert descriptor is None
+    assert config is None
     assert seen[-1] == "{{json .}}"
 
     def invalid_utf8(*_: object, **__: object) -> Result:
         raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
 
     monkeypatch.setattr("scripts.verify_production.subprocess.run", invalid_utf8)
-    version, actual, error = inspect_image_metadata("docker", "registry.example.com/app:1.2.1")
-    assert version is None and actual is None
+    version, actual, descriptor, config, error = inspect_image_metadata(
+        "docker", "registry.example.com/app:1.2.1"
+    )
+    assert version is None and actual is None and descriptor is None and config is None
     assert error and "invalid UTF-8" in error
 
 
@@ -224,13 +234,78 @@ def test_docker29_inspect_uses_config_descriptor_identity(monkeypatch: pytest.Mo
 
     monkeypatch.setattr("scripts.verify_production.subprocess.run", lambda *_, **__: Result())
 
-    version, actual, error = inspect_image_metadata(
+    version, actual, descriptor, config, error = inspect_image_metadata(
         "docker", "registry.example.com/app:1.2.1@sha256:digest"
     )
 
     assert error is None
     assert version == "1.2.1"
-    assert actual == config_digest
+    assert actual == manifest_digest
+    assert descriptor == manifest_digest
+    assert config == config_digest
+
+
+def test_scan_subject_v2_accepts_only_gate_proven_image_identities(tmp_path: Path) -> None:
+    config_digest = "sha256:" + "a" * 64
+    manifest_digest = "sha256:" + "b" * 64
+    subject = tmp_path / "scan-subject.json"
+    subject.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "image_id": config_digest,
+                "runtime_image_id": manifest_digest,
+                "manifest_digest": manifest_digest,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    identity = load_scan_subject_identity(subject)
+    assert identity.image_id == config_digest
+    assert identity.accepted_image_ids == frozenset({config_digest, manifest_digest})
+    assert (
+        runtime_image_identity_error(
+            identity,
+            image_id=manifest_digest,
+            descriptor_digest=manifest_digest,
+            config_digest=None,
+        )
+        is None
+    )
+    assert (
+        runtime_image_identity_error(
+            identity,
+            image_id=config_digest,
+            descriptor_digest=manifest_digest,
+            config_digest=config_digest,
+        )
+        is None
+    )
+    assert runtime_image_identity_error(
+        identity,
+        image_id="sha256:" + "c" * 64,
+        descriptor_digest=manifest_digest,
+        config_digest=None,
+    )
+
+
+def test_scan_subject_v2_rejects_unproven_runtime_identity(tmp_path: Path) -> None:
+    subject = tmp_path / "scan-subject.json"
+    subject.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "image_id": "sha256:" + "a" * 64,
+                "runtime_image_id": "sha256:" + "b" * 64,
+                "manifest_digest": "sha256:" + "c" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="runtime_image_id"):
+        load_scan_subject_identity(subject)
 
 
 def test_deployment_persists_reconciliation_and_uses_compose_database_preflight() -> None:

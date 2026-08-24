@@ -9,7 +9,8 @@ def test_production_verifier_covers_environment_compose_nginx_and_certificates()
     assert "--scan-subject" in script
     assert "--scan-subject requires --require-image-digest" in script
     assert "--scan-subject requires --require-image-inspect" in script
-    assert "actual_image_id != expected_image_id" in script
+    assert "runtime_image_identity_error" in script
+    assert "accepted_image_ids" in script
     assert "docker" in script and "compose" in script and "config" in script
 
 
