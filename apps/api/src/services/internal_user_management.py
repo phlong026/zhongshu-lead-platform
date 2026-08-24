@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import secrets
+import string
+
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session, selectinload
 
@@ -22,6 +25,7 @@ INTERNAL_ROLE_CODES = frozenset(
     }
 )
 _SUPERADMIN_LOCK_KEY = "zhongshu.internal-user.superadmin-roster"
+_PASSWORD_SYMBOLS = "!@#$%^&*()-_=+"
 
 
 def normalize_internal_roles(role_codes: list[str]) -> list[str]:
@@ -44,6 +48,35 @@ def validate_managed_password(password: str, username: str) -> None:
         validate_internal_password(password, username)
     except ValueError as exc:
         raise AppError("PASSWORD_POLICY_INVALID", str(exc), 400) from exc
+
+
+def generate_initial_password(username: str) -> str:
+    """Generate a one-time internal account password that satisfies policy."""
+
+    normalized_username = username.strip()
+    if not normalized_username:
+        raise AppError(
+            "INTERNAL_IDENTITY_INVALID",
+            "登录账号不能为空或包含首尾空格",
+            400,
+        )
+    alphabet = string.ascii_letters + string.digits + _PASSWORD_SYMBOLS
+    rng = secrets.SystemRandom()
+    while True:
+        characters = [
+            rng.choice(string.ascii_lowercase),
+            rng.choice(string.ascii_uppercase),
+            rng.choice(string.digits),
+            rng.choice(_PASSWORD_SYMBOLS),
+            *[rng.choice(alphabet) for _ in range(14)],
+        ]
+        rng.shuffle(characters)
+        password = "".join(characters)
+        try:
+            validate_internal_password(password, normalized_username)
+            return password
+        except ValueError:
+            continue
 
 
 def _validate_identity(username: str, display_name: str) -> tuple[str, str]:

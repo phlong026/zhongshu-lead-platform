@@ -40,12 +40,14 @@ def test_production_frontend_static_assets_contain_no_demo_credentials() -> None
     assert not violations, "production frontend exposes demo/default credentials:\n" + "\n".join(violations)
 
 
-def test_admin_login_and_user_creation_require_explicit_credentials() -> None:
+def test_admin_login_requires_credentials_and_user_creation_uses_one_time_password() -> None:
     source = Path("apps/admin/public/app.js").read_text(encoding="utf-8")
     assert 'id="admin-login-form"' in source
     assert 'id="username" name="username" type="text" autocomplete="username"' in source
     assert 'id="password" name="password" type="password" autocomplete="current-password"' in source
-    assert "input('u-pass','','password','请设置高强度初始密码')" in source
+    assert "u-pass" not in source
+    assert "initial_password" in source
+    assert "初始密码仅在本次创建后显示" in source
     assert "request('/auth/login'" in source
 
 

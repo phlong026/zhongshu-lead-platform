@@ -217,7 +217,43 @@ function calendarCellTone(item){if(item.is_override)return item.is_workday?'bord
 async function runCalendarAction(button,action){const old=button.textContent;button.disabled=true;button.textContent='处理中';try{const message=await action();toast(message||'操作完成');closeOverlay();await calendar()}catch(e){toast(e.message,'error')}finally{button.disabled=false;button.textContent=old}}
 async function runUserAction(button,action,success){const old=button.textContent;let completed=false;button.disabled=true;button.textContent='处理中';try{await action();completed=true;toast(success);closeOverlay();await users()}catch(e){if(completed&&(e.code==='AUTH_REQUIRED'||e.code==='AUTH_INVALID')){state.me=null;login();toast(`${success}，请重新登录`)}else{toast(e.message,'error')}}finally{button.disabled=false;button.textContent=old}}
 async function users(){const data=await request('/users');const internal=data.filter(x=>!x.company_id&&userRoles(x).length);const rows=internal.map(x=>{const roles=userRoles(x);const active=x.status==='ACTIVE';return `<tr><td>${esc(x.display_name)}</td><td>${esc(x.username||'--')}</td><td>${esc(roles.map(r=>roleLabels[r]||'其他岗位').join('、'))}</td><td>平台内部</td><td>${badge(x.status,statusType(x.status))}</td><td><button class="btn btn-small btn-outline" data-edit-user="${x.id}">编辑角色</button><button class="btn btn-small btn-outline" data-reset-user="${x.id}">重置密码</button>${active?`<button class="btn btn-small btn-danger" data-disable="${x.id}">停用</button>`:`<button class="btn btn-small btn-primary" data-enable="${x.id}">启用</button>`}</td></tr>`});shell(`${pageHead('账号与角色','仅管理平台内部账号；创建、改角色、启停和重置密码都会使相关会话失效。','<button id="new-user" class="btn btn-primary">新建内部账号</button>')}<section class="panel">${table(['姓名','账号','角色','归属','状态','操作'],rows,'暂无内部账号')}</section>`,'账号角色');document.querySelector('#new-user').onclick=userModal;document.querySelectorAll('[data-edit-user]').forEach(x=>x.onclick=()=>editUserRolesModal(internal.find(u=>u.id===x.dataset.editUser)));document.querySelectorAll('[data-reset-user]').forEach(x=>x.onclick=()=>resetUserPasswordModal(internal.find(u=>u.id===x.dataset.resetUser)));document.querySelectorAll('[data-disable]').forEach(x=>x.onclick=()=>{const id=x.dataset.disable;confirmAction({title:'停用账号',message:'停用后该账号的全部会话会立即失效。',submitLabel:'确认停用'},()=>runUserAction(x,()=>request(`/users/${id}/disable`,{method:'POST'}),'账号已停用'))});document.querySelectorAll('[data-enable]').forEach(x=>x.onclick=()=>{const id=x.dataset.enable;runUserAction(x,()=>request(`/users/${id}/enable`,{method:'POST'}),'账号已启用')})}
-function userModal(){openModal('新建内部账号',`${field('u-name','姓名',input('u-name'))}${field('u-user','登录账号',input('u-user'))}${field('u-pass','初始密码',input('u-pass','','password','请设置高强度初始密码'))}${field('u-roles','角色',`<div id="u-roles">${roleCheckboxes('u-role',['OPERATION'])}</div>`,'可多选，仅限平台内部角色。')}`,`<button data-close class="btn btn-outline">取消</button><button id="save-user" class="btn btn-primary">创建</button>`);document.querySelector('#save-user').onclick=x=>runUserAction(x.currentTarget,()=>request('/users',{method:'POST',body:JSON.stringify({username:document.querySelector('#u-user').value,password:document.querySelector('#u-pass').value,display_name:document.querySelector('#u-name').value,role_codes:selectedRoleCodes('u-role')})}),'账号已创建')}
+function showCreatedUserCredentials(user){
+  const password=user.initial_password||'';
+  const username=user.username||'';
+  if(!password){
+    openModal('内部账号已创建',`<p style="color:var(--danger);margin-top:0">账号已创建，但初始密码未返回。为避免该账号无法登录，请关闭后立即在账号列表中重置密码。</p><dl class="detail-grid"><dt>姓名</dt><dd>${esc(user.display_name||'--')}</dd><dt>登录账号</dt><dd><code style="user-select:all;word-break:break-all">${esc(username)}</code></dd></dl>`,`<button data-close class="btn btn-outline">我知道了</button>`);
+    return false;
+  }
+  const credentials=`登录账号：${username}\n初始密码：${password}`;
+  openModal('内部账号已创建',`<p style="color:var(--muted);margin-top:0">初始密码仅在本次创建后显示，请复制后交给本人首次登录。</p><dl class="detail-grid"><dt>姓名</dt><dd>${esc(user.display_name||'--')}</dd><dt>登录账号</dt><dd><code style="user-select:all;word-break:break-all">${esc(username)}</code></dd><dt>初始密码</dt><dd><code style="user-select:all;word-break:break-all;font-size:16px">${esc(password)}</code></dd></dl>`,`<button id="copy-created-user-password" class="btn btn-primary">复制初始密码</button><button id="copy-created-user-credentials" class="btn btn-outline">复制账号与密码</button><button data-close class="btn btn-outline">关闭</button>`);
+  document.querySelector('#copy-created-user-password').onclick=async()=>{const done=await copyToClipboard(password);toast(done?'初始密码已复制':'复制失败，请手动复制',done?'':'error')};
+  document.querySelector('#copy-created-user-credentials').onclick=async()=>{const done=await copyToClipboard(credentials);toast(done?'账号与密码已复制':'复制失败，请手动复制',done?'':'error')};
+  return true;
+}
+function userModal(){
+  openModal('新建内部账号',`${field('u-name','姓名',input('u-name','','text','例如：裴火荣'))}${field('u-user','登录账号',input('u-user','','text','例如：peihuorong'))}<p class="help">无需填写密码，系统会在创建时自动生成高强度初始密码。</p>${field('u-roles','角色',`<div id="u-roles">${roleCheckboxes('u-role',['OPERATION'])}</div>`,'可多选，仅限平台内部角色。')}`,`<button data-close class="btn btn-outline">取消</button><button id="save-user" class="btn btn-primary">创建</button>`);
+  document.querySelector('#save-user').onclick=async event=>{
+    const displayName=document.querySelector('#u-name').value.trim();
+    const username=document.querySelector('#u-user').value.trim();
+    const roleCodes=selectedRoleCodes('u-role');
+    if(!displayName){toast('请输入姓名','error');document.querySelector('#u-name').focus();return}
+    if(displayName.length>64){toast('姓名不能超过64个字符','error');document.querySelector('#u-name').focus();return}
+    if(username.length<2){toast('登录账号至少输入2个字符','error');document.querySelector('#u-user').focus();return}
+    if(username.length>64){toast('登录账号不能超过64个字符','error');document.querySelector('#u-user').focus();return}
+    if(!roleCodes.length){toast('至少选择一个角色','error');return}
+    const button=event.currentTarget;
+    const old=button.textContent;
+    button.disabled=true;
+    button.textContent='处理中';
+    try{
+      const created=await request('/users',{method:'POST',body:JSON.stringify({username,display_name:displayName,role_codes:roleCodes})});
+      const passwordReady=showCreatedUserCredentials(created);
+      toast(passwordReady?'账号已创建，请复制初始密码':'账号已创建，但需要立即重置密码',passwordReady?'':'error');
+      try{await users()}catch(refreshError){toast(`账号已创建，但账号列表刷新失败：${refreshError.message}`,'error')}
+    }catch(e){toast(e.message,'error')}
+    finally{if(button.isConnected){button.disabled=false;button.textContent=old}}
+  };
+}
 function editUserRolesModal(user){if(!user)return toast('账号不存在','error');openModal('编辑内部账号角色',`<p style="color:var(--muted);margin-top:0">${esc(user.display_name)} · ${esc(user.username||'--')}</p>${field('edit-roles','角色',`<div id="edit-roles">${roleCheckboxes('edit-role',userRoles(user))}</div>`,'保存后该账号现有会话立即失效。')}`,`<button data-close class="btn btn-outline">取消</button><button id="save-user-roles" class="btn btn-primary">保存角色</button>`);document.querySelector('#save-user-roles').onclick=x=>{const id=user.id;runUserAction(x.currentTarget,()=>request(`/users/${id}/roles`,{method:'PUT',body:JSON.stringify({role_codes:selectedRoleCodes('edit-role')})}),'角色已更新')}}
 function resetUserPasswordModal(user){if(!user)return toast('账号不存在','error');openModal('重置内部账号密码',`${field('reset-pass','新密码',input('reset-pass','','password','请输入至少12位的高强度密码'))}<p style="color:var(--muted)">保存后该账号现有会话立即失效。</p>`,`<button data-close class="btn btn-outline">取消</button><button id="reset-user-password" class="btn btn-danger">重置密码</button>`);document.querySelector('#reset-user-password').onclick=x=>{const id=user.id;runUserAction(x.currentTarget,()=>request(`/users/${id}/reset-password`,{method:'POST',body:JSON.stringify({new_password:document.querySelector('#reset-pass').value})}),'密码已重置')}}
 
