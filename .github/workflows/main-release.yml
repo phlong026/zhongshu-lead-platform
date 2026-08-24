@@ -121,31 +121,7 @@ jobs:
         run: git diff --check
 
       - name: Verify release metadata and main workflow contract
-        shell: bash
-        run: |
-          python - <<'PY'
-          import json
-          import re
-          from pathlib import Path
-
-          manifest_path = Path("RELEASE_MANIFEST.json")
-          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-
-          release = str(manifest.get("release") or "")
-          assert re.fullmatch(r"V\d+\.\d+\.\d+", release), release
-
-          expected_branch = f"release/v{release[1:]}"
-          assert manifest.get("branch") == expected_branch, manifest.get("branch")
-          assert manifest.get("dirty_worktree") is False
-
-          release_notes = Path("docs/release") / f"RELEASE_NOTES_{release}.md"
-          assert release_notes.is_file(), release_notes
-
-          legacy_workflow = Path(".github/workflows/v101-release.yml")
-          assert not legacy_workflow.exists(), "legacy V1.0.1 main packaging workflow must remain retired"
-
-          print(f"main release metadata verified: {release} from {expected_branch}")
-          PY
+        run: python scripts/check_release_metadata.py
 
   postgres-migration:
     runs-on: ubuntu-latest

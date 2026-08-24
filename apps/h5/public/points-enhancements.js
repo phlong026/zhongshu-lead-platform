@@ -5,6 +5,18 @@
   const escapeHtml = (value = '') => String(value ?? '').replace(/[&<>'"]/g, char => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
   }[char]));
+  const levelLabel = code => ({ V1: '普通加盟商', V2: '重点加盟商', V3: '核心加盟商' }[code] || '普通加盟商');
+  const ENTITLEMENT_LABELS = {
+    benefit_summary: '权益说明',
+    lead_discount: '客资折扣',
+    service_priority: '服务优先级',
+    monthly_limit: '月度额度',
+  };
+  const readableEntitlements = entitlements => Object.entries(entitlements || {}).flatMap(([name, value]) => {
+    const label = ENTITLEMENT_LABELS[name] || (/[㐀-鿿]/.test(name) ? name : '');
+    if (!label || value === null || value === undefined || typeof value === 'object') return [];
+    return [[label, String(value)]];
+  });
 
   async function getJson(path) {
     const response = await fetch(`${API_PREFIX}${path}`, { credentials: 'include' });
@@ -33,11 +45,11 @@
     if (!title) return;
     const hero = document.querySelector('main.content .hero');
     if (!hero) return;
-    const entries = Object.entries(account.level_entitlements || {});
+    const entries = readableEntitlements(account.level_entitlements);
     const card = document.createElement('section');
     card.className = 'card p1-entitlements-card';
     zsSetSafeHtml(card, `
-      <div class="card-title"><h3>${escapeHtml(account.level_code || 'V1')} 会员权益</h3><span class="badge badge-warning">档位 v${escapeHtml(account.level_package?.version || 1)}</span></div>
+      <div class="card-title"><h3>${escapeHtml(levelLabel(account.level_code))}权益</h3><span class="badge badge-warning">当前权益</span></div>
       ${entries.length ? `<div class="p1-entitlements-grid">${entries.map(([name, value]) => `<div><span>${escapeHtml(name)}</span><b>${escapeHtml(value)}</b></div>`).join('')}</div>` : '<p class="subtitle">当前等级暂无额外权益，具体权益由平台线下合作方案确定。</p>'}
       <p class="help">充值档位、赠送积分与会员权益均以平台已发布版本为准。</p>`);
     hero.insertAdjacentElement('afterend', card);

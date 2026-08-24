@@ -1,6 +1,6 @@
-# 合家美宅客资平台 V1.2
+# 合家美宅客资平台 V1.2.1
 
-合家美宅 V1.2 是客资供给、审核、人工派发、加盟商领取、退回申诉、供应奖励、通知、报表与审计的一体化生产候选版本。
+合家美宅 V1.2.1 是客资供给、审核、人工派发、加盟商领取、退回申诉、供应奖励、通知、报表与审计的一体化生产候选版本。
 
 > 交付状态分为 `代码完成`、`自动化通过`、`真实环境验收`。前两项不能替代真实微信、目标基础设施、生产数据、业务 UAT、灾备和灰度验收。
 
@@ -23,7 +23,7 @@ V1.2 不包含在线支付、自动派发、微信小程序、云外呼或 H5 �
 - PostgreSQL 16 生产主库，SQLite 仅用于本地开发和部分单元测试；
 - 加盟商微信 H5、内部电销 H5、平台管理后台；
 - API 与 Scheduler 分进程运行；
-- 私有 S3/COS/OSS 保存截图和录音；
+- 腾讯云 COS 上海地域私有 Bucket 保存截图和录音；
 - Nginx、HTTPS、RBAC、字段隔离、结构化日志、备份恢复和审计追踪。
 
 ## 本地开发
@@ -49,9 +49,15 @@ uvicorn apps.api.src.main:app --host 0.0.0.0 --port 8000 --reload
 
 演示账号只允许用于开发和自动验收，见 `docs/runbooks/DEMO_ACCOUNTS.md`。
 
+## 全国地区组件
+
+管理后台新建加盟商时通过 `GET /api/v1/master-data/region-tree` 获取省、市、区县三级下拉数据，用户无需填写地区编码。接口内置 2025 年中国大陆地区快照；只有实际选中的城市和区县会写入现有地区表并参与派发、积分与服务范围联动。
+
+快照来自开源项目 [xihan123/gb2260](https://github.com/xihan123/gb2260)，使用 CC0-1.0 许可，并非官方实时接口。更新快照时必须同步执行地区树、加盟商创建和派发范围回归测试。
+
 ## 自动质量门禁
 
-面向 `release/v1.2.0` 的 PR 和发布分支执行：
+面向 `release/v1.2.1` 的 PR 和发布分支执行：
 
 1. 全量 Python 测试、JavaScript 检查、密钥扫描、编译和空白检查；
 2. SQLite V1.0.1 → V1.2 升降级循环；
@@ -70,12 +76,18 @@ uvicorn apps.api.src.main:app --host 0.0.0.0 --port 8000 --reload
 cp .env.docker.example .env
 # 填写正式域名、独立随机密钥、微信、PostgreSQL、对象存储和不可变 APP_IMAGE
 python scripts/validate_production_env.py --env-file .env
-python scripts/verify_production.py --env-file .env --require-certificates
+python scripts/verify_production.py \
+  --env-file .env \
+  --require-certificates \
+  --require-image-digest \
+  --require-image-inspect \
+  --scan-subject scan-subject.json
 docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml up -d db
 python scripts/preflight_v12.py \
   --env-file .env \
   --require-certificates \
   --compose-database \
+  --scan-subject scan-subject.json \
   --output dist/v12-preflight.json
 ```
 
@@ -101,7 +113,8 @@ python scripts/preflight_v12.py \
 ## 发布打包
 
 ```bash
-python scripts/package_release.py --version V1.2.0 --output-dir dist/release
+python scripts/check_release_metadata.py
+python scripts/package_release.py --version V1.2.1 --output-dir dist/release
 ```
 
 源码包只包含 Git 已跟踪文件；`.env`、数据库、证据文件、备份和真实密钥不会进入交付包。

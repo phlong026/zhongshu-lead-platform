@@ -34,9 +34,11 @@ from ..services.company_profile_v12 import (
 from ..services.dedup_v12 import override_duplicate
 from ..services.lead_supply_v12 import (
     create_draft,
+    discard_draft,
     get_lead_or_404,
     lead_supply_to_dict,
     list_supplier_leads,
+    reopen_rejected_supplier_lead,
     review_supplier_lead,
     submit_draft,
     update_draft,
@@ -252,6 +254,55 @@ def update_supplier_lead(
     )
     db.commit()
     return ok(request, lead_supply_to_dict(lead, principal))
+
+
+@router.delete("/supplier/leads/{lead_id}")
+def delete_supplier_lead_draft(
+    lead_id: str,
+    request: Request,
+    principal=Depends(require_permissions("supplier.lead.manage")),
+    db: Session = Depends(get_db),
+):
+    lead = get_lead_or_404(db, lead_id)
+    before = lead_supply_to_dict(lead, principal)
+    discard_draft(db, lead=lead, principal=principal)
+    write_audit(
+        db,
+        principal=principal,
+        action="V12_SUPPLIER_LEAD_DRAFT_DELETE",
+        resource_type="lead",
+        resource_id=lead_id,
+        company_id=principal.company_id,
+        before=before,
+        request_id=request.state.request_id,
+    )
+    db.commit()
+    return ok(request, {"id": lead_id}, "草稿已删除")
+
+
+@router.post("/supplier/leads/{lead_id}/revise")
+def revise_rejected_supplier_lead(
+    lead_id: str,
+    request: Request,
+    principal=Depends(require_permissions("supplier.lead.manage")),
+    db: Session = Depends(get_db),
+):
+    lead = get_lead_or_404(db, lead_id)
+    before = lead_supply_to_dict(lead, principal)
+    reopen_rejected_supplier_lead(db, lead=lead, principal=principal)
+    write_audit(
+        db,
+        principal=principal,
+        action="V12_SUPPLIER_LEAD_REVISE",
+        resource_type="lead",
+        resource_id=lead.id,
+        company_id=principal.company_id,
+        before=before,
+        after=lead_supply_to_dict(lead, principal),
+        request_id=request.state.request_id,
+    )
+    db.commit()
+    return ok(request, lead_supply_to_dict(lead, principal), "请修改后重新提交")
 
 
 @router.post("/supplier/leads/{lead_id}/submit")

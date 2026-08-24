@@ -16,14 +16,9 @@ async function refreshPermissions(){
 function allowed(){return permissions.includes('*')||permissions.includes('supplier.lead.manage');}
 function injectEntry(){
   if(!allowed()){refreshPermissions();return;}
-  const topbar=document.querySelector('.topbar');
-  if(topbar&&!document.querySelector('#supplier-workspace-top')){
-    const button=document.createElement('button');button.className='icon-btn';button.id='supplier-workspace-top';button.type='button';button.setAttribute('aria-label','供应商客资');zsSetSafeHtml(button,supplierEntryIcon('plus'));button.onclick=()=>{location.href='./supplier.html';};
-    const notice=topbar.querySelector('[data-route="notifications"]');topbar.insertBefore(button,notice||null);
-  }
   if(location.hash.startsWith('#/profile')&&!document.querySelector('#supplier-workspace-profile')){
     const cards=[...document.querySelectorAll('.content .card')];const target=cards.find(card=>card.querySelector('#logout'))||cards[0];
-    if(target){const button=document.createElement('button');button.className='btn btn-primary btn-block';button.id='supplier-workspace-profile';button.type='button';button.style.marginBottom='10px';button.textContent='供应商客资上传';button.onclick=()=>{location.href='./supplier.html';};target.prepend(button);}
+    if(target){const button=document.createElement('button');button.className='btn btn-primary btn-block';button.id='supplier-workspace-profile';button.type='button';zsSetSafeHtml(button,`<span class="zs-v13-profile-action-icon">${supplierEntryIcon('plus')}</span><span>上传客资</span>`);button.onclick=()=>{location.href='./supplier.html';};target.prepend(button);}
   }
 }
 const observer=new MutationObserver(injectEntry);observer.observe(document.body,{childList:true,subtree:true});refreshPermissions();

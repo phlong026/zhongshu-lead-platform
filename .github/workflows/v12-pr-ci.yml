@@ -3,7 +3,7 @@ name: V1.2 Pull Request CI
 on:
   pull_request:
     branches:
-      - release/v1.2.0
+      - release/v1.2.1
     types:
       - opened
       - synchronize
@@ -86,6 +86,9 @@ jobs:
       - name: Check patch whitespace
         run: git diff --check
 
+      - name: Verify release metadata
+        run: python scripts/check_release_metadata.py
+
       - name: Verify V1.0.1 to V1.2 migration on SQLite
         shell: bash
         env:
@@ -106,7 +109,7 @@ jobs:
           fi
 
       - name: Build reviewed V1.2 release candidate package
-        run: python scripts/package_release.py --version V1.2.0-rc --output-dir dist/release
+        run: python scripts/package_release.py --version V1.2.1-rc --output-dir dist/release
 
       - name: Upload generated OpenAPI contract
         if: always()

@@ -1,7 +1,7 @@
 [project]
 name = "zhongshu-lead-platform"
-version = "1.2.0"
-description = "众墅之家客资审核、派发与积分管理平台"
+version = "1.2.1"
+description = "合家美宅客资审核、派发与积分管理平台"
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]

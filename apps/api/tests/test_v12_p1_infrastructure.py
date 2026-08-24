@@ -7,6 +7,7 @@ from scripts.verify_infrastructure import (
     check_env_isolation,
     days_until_expiry,
     is_public_bind,
+    is_tencent_cos_endpoint,
     load_dotenv,
     parse_meminfo,
     parse_ss_listeners,
@@ -44,6 +45,12 @@ def test_is_public_bind_classifies_wildcard_and_loopback() -> None:
     assert is_public_bind("10.0.0.5") is True
     assert is_public_bind("127.0.0.1") is False
     assert is_public_bind("::1") is False
+
+
+def test_is_tencent_cos_endpoint_only_matches_myqcloud_hosts() -> None:
+    assert is_tencent_cos_endpoint("https://cos.ap-shanghai.myqcloud.com") is True
+    assert is_tencent_cos_endpoint("https://s3.example.com") is False
+    assert is_tencent_cos_endpoint("") is False
 
 
 def test_parse_timedatectl_extracts_sync_state() -> None:

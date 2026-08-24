@@ -25,7 +25,7 @@ def test_v12_workbench_exposes_company_profile_flow() -> None:
     assert "company.profile.manage" in entry
     assert "points.own.read" in entry
     assert "followup.own.manage" not in entry
-    assert "v12-workbench.js?v=20260820-company-profile" in html
+    assert "v12-workbench.js?v=20260824-card-data1" in html
 
 
 def test_v12_operations_exposes_company_review_queue() -> None:
@@ -42,4 +42,4 @@ def test_v12_operations_exposes_company_review_queue() -> None:
     assert "company_name" in js
     assert "review_note" in js
     assert "review_status" in js
-    assert "v12-operations.js?v=20260820-admin-nav" in html
+    assert "v12-operations.js?v=20260824-card-data1" in html

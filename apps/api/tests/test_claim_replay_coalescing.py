@@ -21,9 +21,12 @@ from apps.api.src.core.security import encrypt_text, fingerprint_phone, hash_pho
 from apps.api.src.core.v12_enums import LeadSourceKind, LeadV12Status
 
 
-def _login(client, username: str, password: str) -> None:
+def _login(client, username: str, password: str) -> str:
     response = client.post("/api/v1/auth/login", json={"username": username, "password": password})
     assert response.status_code == 200
+    token = response.cookies.get("access_token")
+    assert token
+    return token
 
 
 def _prepare_claim(factory) -> tuple[str, str]:
@@ -114,12 +117,17 @@ def _prepare_claim(factory) -> tuple[str, str]:
 def test_concurrent_claim_replay_has_one_business_side_effect(api_client) -> None:
     client, factory = api_client
     assignment_id, company_id = _prepare_claim(factory)
-    _login(client, "franchise_demo", "Franchise123!")
+    token = _login(client, "franchise_demo", "Franchise123!")
 
     def claim_once(_: int):
-        return client.post(f"/api/v1/v1.2/assignments/{assignment_id}/claim")
+        return client.post(
+            f"/api/v1/v1.2/assignments/{assignment_id}/claim",
+            headers={"Authorization": f"Bearer {token}"},
+        )
 
-    with ThreadPoolExecutor(max_workers=20) as pool:
+    # Stay below the HTTP in-flight cap: this test targets claim coalescing,
+    # not middleware queue saturation, and TestClient uses per-thread loops.
+    with ThreadPoolExecutor(max_workers=10) as pool:
         responses = list(pool.map(claim_once, range(20)))
 
     assert all(response.status_code == 200 for response in responses), [response.text for response in responses]

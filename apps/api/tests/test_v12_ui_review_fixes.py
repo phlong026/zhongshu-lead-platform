@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -78,9 +79,10 @@ def test_admin_workspace_closes_codex_review_findings() -> None:
 
 def test_supplier_h5_has_real_pagination_controls() -> None:
     js = Path("apps/h5/public/supplier.js").read_text(encoding="utf-8")
-    assert "listPageSize:20" in js
-    assert "page:state.listPage" in js
+    compact = re.sub(r"\s+", "", js)
+    assert "listPageSize:20" in compact
+    assert "page:state.listPage" in compact
     assert "previous-page" in js
     assert "next-page" in js
     assert "第 ${state.listPage} / ${totalPages} 页" in js
-    assert "page:1,page_size:100" not in js
+    assert "page:1,page_size:100" not in compact

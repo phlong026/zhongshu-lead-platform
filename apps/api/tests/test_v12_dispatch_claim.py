@@ -150,6 +150,29 @@ def test_candidate_filter_blocks_self_supply_and_accepts_eligible_receiver(db, d
     assert receiver_result.points_available == 1000
 
 
+def test_city_service_area_covers_child_district_leads(db, dispatch_setup) -> None:
+    _, _, receiver, _, lead = dispatch_setup
+    district_area = db.scalar(
+        select(CompanyServiceAreaV12).where(
+            CompanyServiceAreaV12.company_id == receiver.id,
+            CompanyServiceAreaV12.region_code == "420106",
+        )
+    )
+    assert district_area is not None
+    district_area.region_code = "420100"
+    district_area.region_level = "CITY"
+    district_area.is_primary_city = True
+    db.commit()
+
+    result = evaluate_candidate(db, lead=lead, company=receiver)
+    assert result.region_match is True
+    assert result.eligible is True
+
+    listed = {item.company_id: item for item in list_candidates(db, lead=lead)}
+    assert listed[receiver.id].region_match is True
+    assert listed[receiver.id].eligible is True
+
+
 def test_candidate_list_matches_individual_evaluation_with_bounded_queries(db, dispatch_setup) -> None:
     supplier, _, receiver, _, lead = dispatch_setup
     expected = {

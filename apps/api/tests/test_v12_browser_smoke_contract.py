@@ -14,6 +14,8 @@ def test_browser_smoke_covers_admin_franchise_and_telesales_surfaces() -> None:
     assert 'results["call"]' in script
     assert "def _call_smoke(" in script
     assert 'page.goto(f"{base_url}/admin/index.html#/users"' in script
+    assert 'page.wait_for_selector(".ops-shell", timeout=15000)' in script
+    assert 'page.wait_for_selector(".layout", timeout=15000)' not in script
     assert 'page.goto(f"{base_url}/admin/index.html#/calendar"' in script
     assert 'input[name="u-role"]' in script
     assert 'input[value="FRANCHISE_OWNER"]' in script
@@ -50,3 +52,7 @@ def test_browser_smoke_covers_admin_franchise_and_telesales_surfaces() -> None:
     assert '"task_count"' in script
     assert "暂无待办任务" in script
     assert "_assert_no_visible_error(page" in script
+    assert "MOBILE_WIDTHS = (320, 375, 390, 414)" in script
+    assert "def _assert_responsive_widths(" in script
+    assert '"responsive_widths"' in script
+    assert "document.documentElement.scrollWidth" in script

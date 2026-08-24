@@ -17,8 +17,6 @@ LEGACY_WRITE_PREFIXES = (
     "/api/v1/claims",
     "/api/v1/returns",
 )
-
-
 def is_legacy_write(method: str, path: str) -> bool:
     if method.upper() in SAFE_METHODS:
         return False

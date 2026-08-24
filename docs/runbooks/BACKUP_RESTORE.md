@@ -61,7 +61,7 @@ docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml 
 
 ## 3. 对象存储
 
-生产优先使用私有 S3/COS/OSS，并启用：
+生产使用腾讯云 COS 上海地域私有 Bucket，并启用：
 
 - 服务端加密；
 - 版本控制或不可变备份；

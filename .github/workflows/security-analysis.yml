@@ -161,7 +161,7 @@ jobs:
           set +e
           (
             set -e
-            docker build --pull --build-arg APP_VERSION=1.2.0 -t "$APP_IMAGE" .
+            docker build --pull --build-arg APP_VERSION=1.2.1 -t "$APP_IMAGE" .
             docker save "$APP_IMAGE" -o dist/security/app-image.tar
             image_id="$(docker image inspect "$APP_IMAGE" --format '{{.Id}}')"
             archive_sha256="$(sha256sum dist/security/app-image.tar | awk '{print $1}')"

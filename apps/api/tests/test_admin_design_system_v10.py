@@ -74,8 +74,11 @@ def test_admin_v10_extended_operational_pages():
     js = (ADMIN / "admin-extended-pages-v10.js").read_text(encoding="utf-8")
     assert "./admin-extended-pages-v10.js" in index
     assert "/master-data/regions" in js
-    assert "/admin-meta/rbac-matrix" in js
-    assert "/admin-meta/telesales-users" in js
-    assert "/verification/tasks/${taskId}/reclaim" in js
+    assert "/admin-meta/rbac-matrix" not in js
+    assert "adm-permission-matrix" not in js
+    assert "/admin-meta/telesales-users" not in js
+    assert "/verification/tasks/${taskId}/assign" not in js
+    assert "/verification/tasks/${taskId}/reclaim" not in js
+    assert "核验模板版本" not in js
     assert "/admin-meta/companies/${id}" in js
-    assert "基础资料" in js
+    assert "业务选项" in js

@@ -4,7 +4,15 @@ from datetime import datetime, timezone
 
 from sqlalchemy import func, select
 
-from apps.api.src.core.models import AuditLog, Company, Lead, User
+from apps.api.src.core.models import (
+    AuditLog,
+    Company,
+    CompanyCapability,
+    CompanyServiceRegion,
+    Lead,
+    Region,
+    User,
+)
 from apps.api.src.core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12
 from apps.api.src.core.security import encrypt_text, fingerprint_phone, hash_phone
 from apps.api.src.core.v12_enums import LeadSourceKind, LeadV12Status
@@ -158,6 +166,20 @@ def test_capability_review_persists_reason_and_keeps_supplier_receiver_independe
     assert receiver["active"] is True
     assert receiver["review_status"] == "APPROVED"
     assert receiver["review_note"] == "接收团队与服务承诺已核验"
+    with factory() as db:
+        legacy_receiver_categories = {
+            item.category_code
+            for item in db.scalars(
+                select(CompanyCapability).where(
+                    CompanyCapability.company_id == company.id,
+                    CompanyCapability.brand_code.is_(None),
+                    CompanyCapability.active.is_(True),
+                )
+            ).all()
+        }
+        assert {"OLD_RENOVATION", "SELF_BUILD", "INTERIOR"}.issubset(
+            legacy_receiver_categories
+        )
 
     own = _data(
         client.get("/api/v1/v1.2/company/capabilities", headers=franchise)
@@ -176,6 +198,17 @@ def test_service_area_approval_and_removal_change_dispatch_eligibility_only_afte
 ) -> None:
     client, factory = api_client
     company = _company(factory)
+    with factory() as db:
+        db.add(
+            Region(
+                code="320100",
+                name="南京市",
+                level="CITY",
+                aliases=["南京", "南京市"],
+                active=True,
+            )
+        )
+        db.commit()
     franchise = _login(client, "franchise_demo", "Franchise123!")
     operation = _login(client, "operation", "Operation123!")
     admin = _login(client, "admin", "Admin123!")
@@ -213,6 +246,17 @@ def test_service_area_approval_and_removal_change_dispatch_eligibility_only_afte
 
     approved_candidate = _candidate(client, operation, lead_id, company.id)
     assert approved_candidate["eligible"] is True
+    with factory() as db:
+        legacy_regions = {
+            item.region_code: item.active
+            for item in db.scalars(
+                select(CompanyServiceRegion).where(
+                    CompanyServiceRegion.company_id == company.id
+                )
+            ).all()
+        }
+        assert legacy_regions["310000"] is True
+        assert legacy_regions["310115"] is True
 
     removal = _data(
         client.put(
@@ -246,17 +290,56 @@ def test_service_area_approval_and_removal_change_dispatch_eligibility_only_afte
     )
     assert removed["active"] is False
     assert removed["review_note"] == "同意停止浦东新区服务"
-    after_removal = _candidate(client, operation, lead_id, company.id)
-    assert after_removal["eligible"] is False
-    assert "SERVICE_REGION_MISMATCH" in after_removal["exclusion_reasons"]
+    after_district_removal = _candidate(client, operation, lead_id, company.id)
+    assert after_district_removal["eligible"] is True
+
+    city_removal = _data(
+        client.put(
+            "/api/v1/v1.2/company/service-areas",
+            headers=franchise,
+            json={"region_codes": ["320100"], "primary_city_code": "320100"},
+        )
+    )
+    shanghai = next(item for item in city_removal if item["region_code"] == "310000")
+    assert shanghai["review_status"] == "PENDING"
+    assert shanghai["active"] is True
+    assert _candidate(client, operation, lead_id, company.id)["eligible"] is True
+
+    removed_city = _data(
+        client.post(
+            f"/api/v1/v1.2/admin/service-areas/{shanghai['id']}/review",
+            headers=admin,
+            json={"decision": "APPROVE", "note": "同意停止上海市服务"},
+        )
+    )
+    assert removed_city["active"] is False
+    after_city_removal = _candidate(client, operation, lead_id, company.id)
+    assert after_city_removal["eligible"] is False
+    assert "SERVICE_REGION_MISMATCH" in after_city_removal["exclusion_reasons"]
 
     with factory() as db:
+        legacy_district = db.scalar(
+            select(CompanyServiceRegion).where(
+                CompanyServiceRegion.company_id == company.id,
+                CompanyServiceRegion.region_code == "310115",
+            )
+        )
+        assert legacy_district is not None
+        assert legacy_district.active is False
+        legacy_city = db.scalar(
+            select(CompanyServiceRegion).where(
+                CompanyServiceRegion.company_id == company.id,
+                CompanyServiceRegion.region_code == "310000",
+            )
+        )
+        assert legacy_city is not None
+        assert legacy_city.active is False
         assert db.scalar(
             select(func.count(AuditLog.id)).where(
                 AuditLog.company_id == company.id,
                 AuditLog.action == "V12_COMPANY_SERVICE_AREA_REVIEW",
             )
-        ) == 3
+        ) == 4
 
 
 def test_company_profile_endpoints_enforce_role_and_company_boundaries(api_client) -> None:
