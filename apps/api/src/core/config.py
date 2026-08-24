@@ -12,7 +12,7 @@ class Settings(BaseSettings):
 
     app_env: str = "development"
     app_name: str = "合家美宅客资平台"
-    app_version: str = "1.2.0"
+    app_version: str = "1.2.1"
     log_level: str = "INFO"
     log_json: bool = True
     app_base_url: str = "http://localhost:8000"
@@ -52,11 +52,11 @@ class Settings(BaseSettings):
     feishu_writeback_enabled: bool = True
     object_storage_backend: str = "local"
     object_storage_dir: str = "./storage"
-    s3_endpoint_url: str = ""
+    s3_endpoint_url: str = "https://cos.ap-shanghai.myqcloud.com"
     s3_access_key_id: str = ""
     s3_secret_access_key: str = ""
-    s3_bucket: str = "zhongshu-private"
-    s3_region: str = "ap-singapore-1"
+    s3_bucket: str = ""
+    s3_region: str = "ap-shanghai"
     cors_origins: str = "http://localhost:8000"
     low_points_warning_threshold: int = 1000
     assignment_reminder_hours: int = 24

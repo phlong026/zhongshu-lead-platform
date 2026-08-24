@@ -46,6 +46,7 @@ def api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from apps.api.src.core.database import get_db
     from apps.api.src.main import app, settings
     from apps.api.src.services.bootstrap import seed_demo
+    import apps.api.src.core.legacy_guard as legacy_guard_module
     import apps.api.src.integrations.wechat as wechat_module
     import apps.api.src.services.storage as storage_module
 
@@ -64,6 +65,12 @@ def api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             yield session
 
     app.dependency_overrides[get_db] = override_get_db
+    # Browser session tests must not inherit production Secure-cookie behavior
+    # from an operator's private .env.
+    monkeypatch.setattr(settings, "app_env", "test")
+    # Legacy HTTP regression tests must not inherit the operator's production
+    # .env. Tests for the production guard opt out explicitly per scenario.
+    monkeypatch.setattr(legacy_guard_module.settings, "legacy_write_enabled", True)
     monkeypatch.setattr(storage_module.settings, "object_storage_backend", "local")
     monkeypatch.setattr(storage_module.settings, "object_storage_dir", str(tmp_path / "private-storage"))
     # HTTP OAuth security tests need the authorization URL to be constructible,

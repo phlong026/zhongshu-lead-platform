@@ -7,9 +7,11 @@ import pathlib
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 
 import boto3
 import jwt
+from botocore.config import Config
 from jwt import InvalidTokenError
 
 from ..core.config import get_settings
@@ -17,6 +19,7 @@ from ..core.errors import AppError
 from ..core.security import ensure_canonical_jwt
 
 settings = get_settings()
+COS_CLIENT_CONFIG = Config(s3={"addressing_style": "virtual"})
 
 
 @dataclass(frozen=True)
@@ -95,12 +98,17 @@ class LocalObjectStorage(ObjectStorage):
 
 class S3ObjectStorage(ObjectStorage):
     def __init__(self) -> None:
+        endpoint_host = urlparse(settings.s3_endpoint_url).hostname
+        client_options: dict[str, object] = {}
+        if endpoint_host and endpoint_host.endswith(".myqcloud.com"):
+            client_options["config"] = COS_CLIENT_CONFIG
         self.client = boto3.client(
             "s3",
             endpoint_url=settings.s3_endpoint_url or None,
             aws_access_key_id=settings.s3_access_key_id or None,
             aws_secret_access_key=settings.s3_secret_access_key or None,
             region_name=settings.s3_region,
+            **client_options,
         )
 
     def save(self, content: bytes, *, prefix: str, filename: str, mime_type: str) -> StoredObject:

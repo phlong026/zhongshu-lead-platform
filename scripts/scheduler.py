@@ -24,6 +24,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger("scheduler")
 running = True
 DEFAULT_HEARTBEAT_FILE = "/tmp/zhongshu-scheduler-heartbeat"
+SLOW_JOB_TICKS = 10
+HOURLY_JOB_TICKS = 120
+DAILY_JOB_TICKS = 24 * 60 * 2
 
 
 def stop(*_: object) -> None:
@@ -102,9 +105,9 @@ def main() -> int:
     tick = 0
     while running:
         cycle_succeeded = run_cycle(
-            run_slow_jobs=tick % 10 == 0,
-            run_hourly_jobs=tick % 120 == 0,
-            run_daily_jobs=tick % 1440 == 0,
+            run_slow_jobs=tick % SLOW_JOB_TICKS == 0,
+            run_hourly_jobs=tick % HOURLY_JOB_TICKS == 0,
+            run_daily_jobs=tick % DAILY_JOB_TICKS == 0,
         )
         if cycle_succeeded:
             publish_heartbeat()

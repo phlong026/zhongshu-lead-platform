@@ -139,6 +139,13 @@ def validate_production_settings(settings: Settings, environ: dict[str, str] | N
             endpoint = urlparse(settings.s3_endpoint_url)
             if endpoint.scheme != "https" or not endpoint.netloc:
                 errors.append("S3_ENDPOINT_URL 自定义地址必须使用有效 HTTPS URL；AWS S3 可留空使用默认区域端点")
+            elif endpoint.hostname and endpoint.hostname.endswith(".myqcloud.com"):
+                expected_host = f"cos.{settings.s3_region}.myqcloud.com"
+                if endpoint.hostname != expected_host:
+                    errors.append("腾讯云 COS 的 S3_ENDPOINT_URL 必须与 S3_REGION 对应")
+                bucket_name, separator, app_id = settings.s3_bucket.rpartition("-")
+                if not separator or not bucket_name or not app_id.isdigit():
+                    errors.append("腾讯云 COS 的 S3_BUCKET 必须使用完整 BucketName-APPID")
     else:
         warnings.append("生产环境仍使用本地对象存储，正式全量前应切换私有 S3/COS/OSS 或完成异地备份与恢复演练")
     if not settings.trusted_host_list or "*" in settings.trusted_host_list:

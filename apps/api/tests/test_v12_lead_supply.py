@@ -4,7 +4,7 @@ import pytest
 
 from apps.api.src.core.auth import Principal
 from apps.api.src.core.errors import AppError
-from apps.api.src.core.models import Company, Region, User
+from apps.api.src.core.models import Company, Lead, Region, User
 from apps.api.src.core.models_v12 import CompanyLeadCapability
 from apps.api.src.core.security import fingerprint_phone
 from apps.api.src.core.v12_enums import DuplicateDecision, LeadSourceKind, LeadV12Status
@@ -15,7 +15,13 @@ from apps.api.src.services.company_profile_v12 import (
     review_service_area,
 )
 from apps.api.src.services.dedup_v12 import classify_age, override_duplicate
-from apps.api.src.services.lead_supply_v12 import create_draft, review_supplier_lead, submit_draft
+from apps.api.src.services.lead_supply_v12 import (
+    create_draft,
+    discard_draft,
+    reopen_rejected_supplier_lead,
+    review_supplier_lead,
+    submit_draft,
+)
 
 
 def _principal(user_id: str, company_id: str | None = None, *permissions: str) -> Principal:
@@ -48,6 +54,17 @@ def _valid_values(phone: str = "13800138000") -> dict:
         "need_summary": "计划建设一套两层乡墅",
         "consent_confirmed": True,
     }
+
+
+def _approve_supplier_capability(db, company: Company, user: User) -> None:
+    request_capability(db, company.id, "LEAD_SUPPLIER")
+    review_capability(
+        db,
+        company_id=company.id,
+        capability_code="LEAD_SUPPLIER",
+        approve=True,
+        reviewed_by=user.id,
+    )
 
 
 def test_phone_fingerprint_normalizes_country_code() -> None:
@@ -167,6 +184,140 @@ def test_supplier_upload_requires_approved_capability_and_review(db) -> None:
     assert review_result is not None
     assert lead.review_status == "APPROVED"
     assert lead.status == LeadV12Status.READY_DISPATCH.value
+
+
+def test_supplier_can_discard_own_draft(db) -> None:
+    company, user = _seed_identity(db, company_code="SUP-DISCARD")
+    _approve_supplier_capability(db, company, user)
+    principal = _principal(user.id, company.id, "supplier.lead.manage")
+    lead = create_draft(
+        db,
+        principal=principal,
+        source_kind=LeadSourceKind.SUPPLIER_H5,
+        values={"customer_name": "待确认客户"},
+    )
+    lead_id = lead.id
+
+    discard_draft(db, lead=lead, principal=principal)
+    db.flush()
+
+    assert db.get(Lead, lead_id) is None
+
+
+def test_supplier_cannot_discard_another_company_draft(db) -> None:
+    owner_company, owner_user = _seed_identity(db, company_code="SUP-OWNER")
+    other_company, other_user = _seed_identity(db, company_code="SUP-OTHER")
+    _approve_supplier_capability(db, owner_company, owner_user)
+    _approve_supplier_capability(db, other_company, other_user)
+    owner = _principal(owner_user.id, owner_company.id, "supplier.lead.manage")
+    other = _principal(other_user.id, other_company.id, "supplier.lead.manage")
+    lead = create_draft(
+        db,
+        principal=owner,
+        source_kind=LeadSourceKind.SUPPLIER_H5,
+        values={"customer_name": "归属公司一"},
+    )
+
+    with pytest.raises(AppError) as exc_info:
+        discard_draft(db, lead=lead, principal=other)
+
+    assert exc_info.value.code == "FORBIDDEN"
+
+
+def test_supplier_cannot_discard_submitted_lead(db) -> None:
+    db.add(Region(code="420100", name="武汉市", level="CITY", aliases=[], active=True))
+    company, user = _seed_identity(db, company_code="SUP-SUBMITTED")
+    _approve_supplier_capability(db, company, user)
+    principal = _principal(user.id, company.id, "supplier.lead.manage")
+    lead = create_draft(
+        db,
+        principal=principal,
+        source_kind=LeadSourceKind.SUPPLIER_H5,
+        values=_valid_values("13700137000"),
+    )
+    submit_draft(db, lead=lead, principal=principal)
+
+    with pytest.raises(AppError) as exc_info:
+        discard_draft(db, lead=lead, principal=principal)
+
+    assert exc_info.value.code == "LEAD_NOT_EDITABLE"
+
+
+def test_supplier_discard_rejects_platform_manual_draft(db) -> None:
+    company, user = _seed_identity(db, company_code="SUP-SOURCE")
+    principal = _principal(
+        user.id,
+        company.id,
+        "lead.manual.manage",
+        "supplier.lead.manage",
+    )
+    lead = create_draft(
+        db,
+        principal=principal,
+        source_kind=LeadSourceKind.PLATFORM_MANUAL,
+        values={"customer_name": "平台录入草稿"},
+    )
+
+    with pytest.raises(AppError) as exc_info:
+        discard_draft(db, lead=lead, principal=principal)
+
+    assert exc_info.value.code == "FORBIDDEN"
+
+
+def test_rejected_supplier_lead_can_be_revised_and_resubmitted(db) -> None:
+    db.add(Region(code="420100", name="武汉市", level="CITY", aliases=[], active=True))
+    company, user = _seed_identity(db, company_code="SUP-REVISE")
+    _approve_supplier_capability(db, company, user)
+    principal = _principal(user.id, company.id, "supplier.lead.manage")
+    lead = create_draft(
+        db,
+        principal=principal,
+        source_kind=LeadSourceKind.SUPPLIER_H5,
+        values=_valid_values("13600136000"),
+    )
+    submit_draft(db, lead=lead, principal=principal)
+    review_supplier_lead(
+        db,
+        lead=lead,
+        reviewer=principal,
+        approve=False,
+        note="请补充更具体的建房需求",
+    )
+    assert lead.status == LeadV12Status.INVALID.value
+
+    reopen_rejected_supplier_lead(db, lead=lead, principal=principal)
+
+    assert lead.status == LeadV12Status.DRAFT.value
+    assert lead.review_status == "DRAFT"
+    assert lead.review_note == "请补充更具体的建房需求"
+    assert lead.submitted_at is None
+    assert lead.reviewed_at is None
+
+    lead.need_summary = "计划在武汉建设两层自住房，近期确认设计方案"
+    submit_draft(db, lead=lead, principal=principal)
+
+    assert lead.status == LeadV12Status.PENDING_REVIEW.value
+    assert lead.review_status == "PENDING"
+    assert lead.review_note is None
+
+
+def test_supplier_cannot_revise_lead_before_platform_rejection(db) -> None:
+    db.add(Region(code="420100", name="武汉市", level="CITY", aliases=[], active=True))
+    company, user = _seed_identity(db, company_code="SUP-NOT-REJECTED")
+    _approve_supplier_capability(db, company, user)
+    principal = _principal(user.id, company.id, "supplier.lead.manage")
+    lead = create_draft(
+        db,
+        principal=principal,
+        source_kind=LeadSourceKind.SUPPLIER_H5,
+        values=_valid_values("13500135000"),
+    )
+    submit_draft(db, lead=lead, principal=principal)
+
+    with pytest.raises(AppError) as exc_info:
+        reopen_rejected_supplier_lead(db, lead=lead, principal=principal)
+
+    assert exc_info.value.code == "LEAD_REVISION_NOT_ALLOWED"
 
 
 def test_supplier_company_cannot_use_pending_capability(db) -> None:

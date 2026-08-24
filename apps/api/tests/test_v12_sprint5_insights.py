@@ -7,6 +7,17 @@ def login(client, username: str, password: str) -> None:
         json={"username": username, "password": password},
     )
     assert response.status_code == 200, response.text
+    token = response.cookies.get("access_token")
+    assert token
+    client.headers.update({"Authorization": f"Bearer {token}"})
+
+
+def _contains_key(value, names: set[str]) -> bool:
+    if isinstance(value, dict):
+        return any(key in names or _contains_key(item, names) for key, item in value.items())
+    if isinstance(value, list):
+        return any(_contains_key(item, names) for item in value)
+    return False
 
 
 def test_owner_can_read_v12_overview_and_audit(api_client):
@@ -29,6 +40,29 @@ def test_operation_can_read_report_and_audit_after_sprint5_rbac(api_client):
 
     assert client.get("/api/v1/v1.2/reports/overview").status_code == 200
     assert client.get("/api/v1/v1.2/audit-events").status_code == 200
+
+
+def test_operation_overview_hides_financial_projection(api_client):
+    client, _factory = api_client
+    login(client, "operation", "Operation123!")
+
+    response = client.get("/api/v1/v1.2/reports/overview")
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert "points_ledger" not in data
+    assert not _contains_key(data, {"net_delta", "balance", "recharge", "income", "revenue"})
+
+
+def test_finance_overview_keeps_points_ledger_projection(api_client):
+    client, _factory = api_client
+    login(client, "finance", "Finance123!")
+
+    response = client.get("/api/v1/v1.2/reports/overview")
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert {"count", "net_delta"} <= set(data["points_ledger"])
 
 
 def test_franchise_has_company_report_but_not_platform_overview(api_client):

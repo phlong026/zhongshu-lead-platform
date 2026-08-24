@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Annotated
-
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -11,13 +9,14 @@ from ..core.config import get_settings
 from ..core.database import get_db
 from ..core.enums import LeadStatus
 from ..core.errors import AppError
-from ..core.models import Lead, LeadDuplicateRelation, LeadImportIssue, SyncBatch
+from ..core.models import Lead
 from ..core.responses import ok, page
 from ..integrations.feishu import FeishuClient, FeishuRecord
 from ..schemas.leads import DuplicateDecisionBody, FeishuMockSyncBody, LeadStagingUpdateBody
 from ..services.audit import write_audit
 from ..services.feishu_sync_service import configured_mapping, fetch_and_import_feishu, writeback_feishu_results
 from ..services.lead_service import import_records, lead_to_dict, update_staging_lead
+from ..services.staging_cleanup_service import preview_feishu_staging_cleanup
 
 router = APIRouter(prefix="/leads", tags=["leads"])
 settings = get_settings()
@@ -107,6 +106,22 @@ def staging_list(
     total = db.scalar(count_stmt) or 0
     items = db.scalars(stmt.order_by(Lead.imported_at.desc()).offset((page_no - 1) * page_size).limit(page_size)).all()
     return ok(request, page([lead_to_dict(x, principal) for x in items], total, page_no, page_size))
+
+
+@router.get("/staging-cleanup-preview")
+def staging_cleanup_preview(
+    request: Request,
+    principal=Depends(require_permissions("*")),
+    db: Session = Depends(get_db),
+):
+    preview = preview_feishu_staging_cleanup(db)
+    return ok(
+        request,
+        {
+            **preview,
+            "scope": "仅清理飞书来源、仍处于暂存状态、且未进入核验、派发或退回流程的客资",
+        },
+    )
 
 
 @router.get("/{lead_id}")

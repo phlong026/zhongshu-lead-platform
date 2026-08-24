@@ -109,10 +109,9 @@ def submit_return(db: Session, request: ReturnRequest, principal: Principal) -> 
             .group_by(ReturnEvidence.evidence_type)
         ).all()
     )
-    if counts.get(EvidenceType.CHAT_SCREENSHOT, 0) < 1:
-        raise AppError("RETURN_SCREENSHOT_REQUIRED", "请至少上传1张沟通截图", 422)
-    if counts.get(EvidenceType.CALL_RECORDING, 0) < 1:
-        raise AppError("RETURN_RECORDING_REQUIRED", "请上传电话录音", 422)
+    evidence_count = counts.get(EvidenceType.CHAT_SCREENSHOT, 0) + counts.get(EvidenceType.CALL_RECORDING, 0)
+    if evidence_count < 1:
+        raise AppError("RETURN_EVIDENCE_REQUIRED", "请至少上传 1 张沟通截图或 1 份电话录音", 422)
     request.status = ReturnStatus.PENDING
     request.submitted_at = now
     assignment = db.get(Assignment, request.assignment_id)

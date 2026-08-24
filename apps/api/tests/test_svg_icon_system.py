@@ -3,44 +3,59 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 H5 = ROOT / "apps" / "h5" / "public"
 ADMIN = ROOT / "apps" / "admin" / "public"
+CALL = ROOT / "apps" / "call-h5" / "public"
 
 GLYPHS = set("⌂▤◈◉♙⇩☎✓↗♟⚙⌁＋≋↩◇◷!×‹›☰⌕?▶●↻▦→◆")
-ASSET_VERSION = "?v=20260820-clarity"
-# Phase03 整改批次（P3）递增的应用脚本缓存版本；svg-icon-system 共享资源未变更，保持原版本。
-APP_ASSET_VERSION = "?v=20260823-p3"
-COMPANY_PROFILE_ASSET_VERSION = "?v=20260820-company-profile"
-ADMIN_NAV_ASSET_VERSION = "?v=20260820-admin-nav"
+SVG_CSS_VERSION = "?v=20260820-clarity"
+SVG_BASE_VERSION = "?v=20260820-clarity"
+SVG_LOGIN_VERSION = "?v=20260823-login-icon"
 
 
 def test_all_h5_surfaces_load_local_svg_icon_system_before_application():
     entries = {
-        "index.html": ("./app.js", APP_ASSET_VERSION),
-        "supplier.html": ("./supplier.js", ASSET_VERSION),
-        "v12-workbench.html": ("./v12-workbench.js", COMPANY_PROFILE_ASSET_VERSION),
+        "index.html": ("./app.js", "?v=20260824-card-data1", SVG_LOGIN_VERSION),
+        "supplier.html": ("./supplier.js", "?v=20260824-card-data1", SVG_BASE_VERSION),
+        "v12-workbench.html": ("./v12-workbench.js", "?v=20260824-card-data1", SVG_BASE_VERSION),
     }
-    for filename, (application_script, application_version) in entries.items():
+    for filename, (application_script, application_version, svg_version) in entries.items():
         index = (H5 / filename).read_text(encoding="utf-8")
-        assert f"./svg-icon-system.css{ASSET_VERSION}" in index
-        assert f"./svg-icon-system.js{ASSET_VERSION}" in index
+        assert f"./svg-icon-system.css{SVG_CSS_VERSION}" in index
+        assert f"./svg-icon-system.js{svg_version}" in index
         assert f"{application_script}{application_version}" in index
         assert index.index("./svg-icon-system.js") < index.index(application_script)
 
 
 def test_all_admin_surfaces_reuse_same_local_svg_icon_system():
     entries = {
-        "index.html": ("./app.js", APP_ASSET_VERSION),
-        "v12-leads.html": "./v12-leads.js",
-        "v12-operations.html": ("./v12-operations.js", ADMIN_NAV_ASSET_VERSION),
+        "index.html": ("./app.js", "?v=20260824-card-data1", SVG_LOGIN_VERSION),
+        "v12-leads.html": ("./v12-leads.js", "?v=20260824-card-data1", SVG_BASE_VERSION),
+        "v12-operations.html": ("./v12-operations.js", "?v=20260824-card-data1", SVG_BASE_VERSION),
     }
-    for filename, application in entries.items():
-        application_script, application_version = (
-            application if isinstance(application, tuple) else (application, ASSET_VERSION)
-        )
+    for filename, (application_script, application_version, svg_version) in entries.items():
         index = (ADMIN / filename).read_text(encoding="utf-8")
-        assert f"/h5/svg-icon-system.css{ASSET_VERSION}" in index
-        assert f"/h5/svg-icon-system.js{ASSET_VERSION}" in index
+        assert f"/h5/svg-icon-system.css{SVG_CSS_VERSION}" in index
+        assert f"/h5/svg-icon-system.js{svg_version}" in index
         assert f"{application_script}{application_version}" in index
         assert index.index("/h5/svg-icon-system.js") < index.index(application_script)
+
+
+def test_call_h5_loads_shared_svg_icon_system_before_application():
+    index = (CALL / "index.html").read_text(encoding="utf-8")
+
+    assert f"/h5/svg-icon-system.css{SVG_CSS_VERSION}" in index
+    assert f"/h5/svg-icon-system.js{SVG_LOGIN_VERSION}" in index
+    assert "./app.js?v=20260824-card-data1" in index
+    assert index.index("/h5/svg-icon-system.js") < index.index("./app.js")
+
+
+def test_call_h5_uses_named_svg_icons_instead_of_unicode_placeholders():
+    source = (CALL / "app.js").read_text(encoding="utf-8")
+
+    assert "window.ZSIconSystem?.svg" in source
+    for name in ("home", "phone", "user-check", "user", "rotate-ccw"):
+        assert f"'{name}'" in source
+    for glyph in "⌂▤◈◉♙⇩☎✓↗♟⚙⌁＋≋↩◇◷×‹›☰⌕▶●↻▦→◆":
+        assert glyph not in source
 
 
 def test_svg_icon_system_is_inline_accessible_and_has_no_remote_dependency():
@@ -81,7 +96,7 @@ def test_admin_uses_named_svg_icons_instead_of_unicode_placeholders():
 def test_h5_composite_buttons_render_svg_directly():
     home = (H5 / "design-system-v13.js").read_text(encoding="utf-8")
     assert "window.ZSIconSystem?.svg" in home
-    assert "zsIcon('bell')" in home
+    assert "zsIcon('bell')" not in home
     assert "zsIcon('list')" in home
     assert "zsIcon('coins')" in home
     assert "zsIcon('clipboard-check')" in home

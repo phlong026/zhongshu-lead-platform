@@ -1,10 +1,10 @@
-# 合家美宅客资平台 V1.2 生产部署手册
+# 合家美宅客资平台 V1.2.1 生产部署手册
 
 > 本手册分别记录 `代码完成`、`自动化通过` 与 `真实环境验收`。代码或自动门禁通过只允许进入目标环境验证，不能直接标记生产上线。
 
 ## 1. 适用范围
 
-本手册用于将已评审的 V1.2 镜像部署到生产环境。真实服务号联调、业务 UAT 和灰度批准必须另行完成，代码通过不等于业务可以全量开放。
+本手册用于将已评审的 V1.2.1 镜像部署到生产环境。真实服务号联调、业务 UAT 和灰度批准必须另行完成，代码通过不等于业务可以全量开放。
 
 ## 2. 生产拓扑
 
@@ -12,14 +12,14 @@
 - API：FastAPI，托管加盟商 H5、内部电销 H5、管理后台和业务接口；
 - Scheduler：处理通知 Outbox、领取/跟进任务、低积分提醒和每小时供应奖励结算；
 - PostgreSQL 16：唯一生产主库；
-- 私有 S3/COS/OSS：保存聊天截图和电话录音；
+- 腾讯云 COS（上海 `ap-shanghai`）私有 Bucket：保存聊天截图和电话录音；
 - 日志与告警平台：采集 API、Scheduler、Nginx、数据库和备份任务；
 - 异地备份：保存 PostgreSQL 自定义格式备份及对象存储版本。
 
 ## 3. 生产前提
 
-1. `release/v1.2.0` 最新 CI 全绿，PR 无 Critical/High/P1/P2 未解决项；
-2. `APP_IMAGE` 使用 `仓库:APP_VERSION@sha256:digest` 形式，例如 `registry.example.com/zhongshu-lead-platform:1.2.0@sha256:...`；
+1. `release/v1.2.1` 最新 CI 全绿，PR 无 Critical/High/P1/P2 未解决项；
+2. `APP_IMAGE` 使用 `仓库:APP_VERSION@sha256:digest` 形式，例如 `registry.example.com/zhongshu-lead-platform:1.2.1@sha256:...`；
 3. 镜像 OCI `org.opencontainers.image.version` 与 `APP_VERSION` 完全一致；
 4. 正式域名、TLS、服务号授权域名和 OAuth 回调已配置；
 5. PostgreSQL、对象存储、日志、告警和备份已验收；
@@ -92,7 +92,7 @@ docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml 
 
 docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml \
   run --rm -T -e RUN_DB_MIGRATIONS=false api \
-  python scripts/sync_rbac.py --apply --source release_v1.2.0 \
+  python scripts/sync_rbac.py --apply --source release_v1.2.1 \
   > dist/v12-rbac-apply.json
 
 docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml \

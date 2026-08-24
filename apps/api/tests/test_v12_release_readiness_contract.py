@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
 
 from scripts.preflight_v12 import (
+    _binding_integrity_command,
     _compose_python_command,
     _database_url_from_postgres,
+    _execute_validated_command,
     _redact,
     _sensitive_values,
+    _validated_command,
 )
 from scripts.validate_production_env import derive_compose_database_url
 from scripts.verify_production import image_tag, inspect_image_metadata, load_scan_subject_image_id
@@ -30,37 +34,92 @@ def test_production_compose_requires_reviewed_image_and_disables_implicit_migrat
     assert "DATABASE_URL: postgresql" not in base_compose
     assert "POSTGRES_PASSWORD:" in base_compose
     assert "quote(os.environ" in prepare_env
-    assert "ARG APP_VERSION=1.2.0" in dockerfile
+    assert "ARG APP_VERSION=1.2.1" in dockerfile
 
 
 def test_preflight_redacts_injected_secrets_from_subprocess_output() -> None:
     env = {
-        "POSTGRES_PASSWORD": "database-password-value",
-        "WECHAT_APP_SECRET": "wechat-secret-value",
+        "POSTGRES_PASSWORD": "test-database-password-value",
+        "WECHAT_APP_SECRET": "test-wechat-secret-value",
         "DATABASE_URL": "postgresql+psycopg://user:url-password@db:5432/zhongshu",
         "NORMAL_VALUE": "public-value",
     }
     sensitive = _sensitive_values(env)
     redacted = _redact(
-        "database-password-value wechat-secret-value "
+        "test-database-password-value test-wechat-secret-value "
         "postgresql+psycopg://user:url-password@db:5432/zhongshu "
         "url-password public-value",
         sensitive,
     )
-    assert "database-password-value" not in redacted
-    assert "wechat-secret-value" not in redacted
+    assert "test-database-password-value" not in redacted
+    assert "test-wechat-secret-value" not in redacted
     assert "url-password" not in redacted
     assert "postgresql+psycopg://" not in redacted
     assert "public-value" in redacted
 
 
+def test_preflight_command_allowlist_rejects_arbitrary_python_execution() -> None:
+    with pytest.raises(ValueError, match="不允许"):
+        _validated_command(
+            "deployment-prerequisites",
+            [sys.executable, "-c", "print('unexpected')"],
+        )
+
+
+def test_preflight_command_allowlist_preserves_path_metacharacters_as_one_argument() -> None:
+    env_file = Path("/srv/app/$(touch should-not-run); production.env")
+    command = [
+        sys.executable,
+        "scripts/validate_production_env.py",
+        "--env-file",
+        str(env_file),
+    ]
+
+    assert _validated_command("production-environment", command) == command
+
+
+def test_preflight_executes_static_python_argv_with_current_interpreter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, object] = {}
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(command: list[str], **kwargs: object) -> Result:
+        seen["command"] = command
+        seen["executable"] = kwargs.get("executable")
+        return Result()
+
+    monkeypatch.setattr("scripts.preflight_v12.subprocess.run", fake_run)
+    env_file = "/srv/app/$(touch should-not-run); production.env"
+    command = [
+        sys.executable,
+        "scripts/validate_production_env.py",
+        "--env-file",
+        env_file,
+    ]
+
+    _execute_validated_command("production-environment", command, env={})
+
+    assert seen["command"] == [
+        "python",
+        "scripts/validate_production_env.py",
+        "--env-file",
+        env_file,
+    ]
+    assert seen["executable"] == sys.executable
+
+
 def test_compose_database_url_is_derived_from_postgres_settings_with_matching_encoding() -> None:
     env = {
         "POSTGRES_USER": "zhong shu",
-        "POSTGRES_PASSWORD": "p@ss/word#1",
+        "POSTGRES_PASSWORD": "test-p@ss/word#1",
         "POSTGRES_DB": "lead db",
     }
-    expected = "postgresql+psycopg://zhong%20shu:p%40ss%2Fword%231@db:5432/lead%20db"
+    expected = "postgresql+psycopg://zhong%20shu:test-p%40ss%2Fword%231@db:5432/lead%20db"
     assert derive_compose_database_url(env) == expected
     assert _database_url_from_postgres(env) == expected
     prepare_env = Path("docker/prepare-env.sh").read_text(encoding="utf-8")
@@ -80,8 +139,23 @@ def test_compose_database_preflight_runs_database_checks_inside_api_service(monk
     assert "RUN_DB_MIGRATIONS=false" in command
 
 
+def test_preflight_runs_binding_integrity_for_local_and_compose_database(monkeypatch) -> None:
+    monkeypatch.setattr("scripts.preflight_v12.shutil.which", lambda name: "/usr/bin/docker" if name == "docker" else None)
+
+    local = _binding_integrity_command(Path("/srv/app/.env"), compose_database=False)
+    compose = _binding_integrity_command(Path("/srv/app/.env"), compose_database=True)
+
+    assert local == [sys.executable, "scripts/check_binding_integrity.py"]
+    assert compose[:2] == ["/usr/bin/docker", "compose"]
+    assert compose[-2:] == ["python", "scripts/check_binding_integrity.py"]
+
+    preflight = Path("scripts/preflight_v12.py").read_text(encoding="utf-8")
+    assert '"binding-integrity"' in preflight
+    assert "checks.append" in preflight
+
+
 def test_image_reference_parser_requires_exact_version_tag() -> None:
-    assert image_tag("registry.example.com/app:1.2.0@sha256:" + "a" * 64) == "1.2.0"
+    assert image_tag("registry.example.com/app:1.2.1@sha256:" + "a" * 64) == "1.2.1"
     assert image_tag("registry.example.com:5000/team/app:1.2.9") == "1.2.9"
     assert image_tag("registry.example.com:5000/team/app@sha256:" + "a" * 64) is None
 
@@ -103,7 +177,7 @@ def test_scan_subject_image_id_is_strict_and_inspect_uses_docker_identity(
         stdout = json.dumps(
             {
                 "Id": expected,
-                "Config": {"Labels": {"org.opencontainers.image.version": "1.2.0"}},
+                "Config": {"Labels": {"org.opencontainers.image.version": "1.2.1"}},
             }
         )
         stderr = ""
@@ -116,10 +190,10 @@ def test_scan_subject_image_id_is_strict_and_inspect_uses_docker_identity(
 
     monkeypatch.setattr("scripts.verify_production.subprocess.run", fake_run)
     version, actual, error = inspect_image_metadata(
-        "docker", "registry.example.com/app:1.2.0@sha256:digest"
+        "docker", "registry.example.com/app:1.2.1@sha256:digest"
     )
     assert error is None
-    assert version == "1.2.0"
+    assert version == "1.2.1"
     assert actual == expected
     assert seen[-1] == "{{json .}}"
 
@@ -127,7 +201,7 @@ def test_scan_subject_image_id_is_strict_and_inspect_uses_docker_identity(
         raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
 
     monkeypatch.setattr("scripts.verify_production.subprocess.run", invalid_utf8)
-    version, actual, error = inspect_image_metadata("docker", "registry.example.com/app:1.2.0")
+    version, actual, error = inspect_image_metadata("docker", "registry.example.com/app:1.2.1")
     assert version is None and actual is None
     assert error and "invalid UTF-8" in error
 
@@ -171,6 +245,7 @@ def test_sprint6_runbooks_and_release_documents_exist() -> None:
         "docs/runbooks/V1.2_GO_NO_GO.md",
         "docs/runbooks/V1.2_ROLLBACK.md",
         "docs/runbooks/V1.2_POST_LAUNCH.md",
+        "docs/release/RELEASE_NOTES_V1.2.1.md",
         "docs/release/RELEASE_NOTES_V1.2.0.md",
     )
     for relative in required:
@@ -199,6 +274,7 @@ def test_ci_contains_postgres_browser_dependency_evidence_and_packaging_gates() 
         assert "v12-postgres-verification.json" in workflow
         assert "fetch-depth: 0" in workflow
         assert "scripts/package_release.py" in workflow
+        assert "scripts/check_release_metadata.py" in workflow
         assert "release-package-${{ github.run_id }}" in workflow
         assert "cat requirements.txt requirements-postgres.txt requirements-browser.txt" not in workflow
         assert workflow.count("printf '\\n'") >= 3
@@ -210,8 +286,8 @@ def test_ci_contains_postgres_browser_dependency_evidence_and_packaging_gates() 
         assert "dist/quality/migration-output.txt" in workflow
         assert "> pytest-output.txt" not in workflow
         assert "> migration-output.txt" not in workflow
-    assert "--version V1.2.0-rc" in pr_workflow
-    assert "--version V1.2.0" in release_workflow
+    assert "--version V1.2.1-rc" in pr_workflow
+    assert "--version V1.2.1" in release_workflow
 
 
 def test_postgres_ci_contract_runs_h04_dataset_integration() -> None:

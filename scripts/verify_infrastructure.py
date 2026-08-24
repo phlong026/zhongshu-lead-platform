@@ -20,11 +20,13 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 
 _SENSITIVE_KEY_MARKERS = ("SECRET", "PASSWORD", "TOKEN", "PRIVATE_KEY", "ACCESS_KEY", "CREDENTIAL")
 _SENSITIVE_EXACT_KEYS = {"DATABASE_URL"}
+_DOCKER_RESOURCE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
 def sensitive_values(env: dict[str, str]) -> tuple[str, ...]:
@@ -71,6 +73,11 @@ def is_public_bind(address: str) -> bool:
     return address in {"0.0.0.0", "*", "::", "[::]"} or (
         address not in {"127.0.0.1", "::1"} and not address.startswith("127.")
     )
+
+
+def is_tencent_cos_endpoint(endpoint_url: str) -> bool:
+    hostname = urlparse(endpoint_url).hostname
+    return bool(hostname and hostname.endswith(".myqcloud.com"))
 
 
 def parse_timedatectl(text: str) -> dict[str, str]:
@@ -128,14 +135,95 @@ def load_dotenv(path: Path) -> dict[str, str]:
     return values
 
 
+def _validated_command(command: list[str]) -> list[str]:
+    """Allow only the fixed host probes used by this verifier."""
+
+    if not command or any(not isinstance(part, str) or "\0" in part for part in command):
+        raise ValueError("基础设施检查命令不允许为空或包含非法参数")
+
+    static_commands = {
+        ("timedatectl", "show"),
+        ("chronyc", "tracking"),
+        ("date", "-u", "+%s"),
+        ("ss", "-tlnp"),
+    }
+    if tuple(command) in static_commands:
+        return [*command]
+    if (
+        len(command) == 6
+        and command[:3] == ["openssl", "x509", "-in"]
+        and command[4:] == ["-noout", "-enddate"]
+    ):
+        return [*command]
+
+    docker = shutil.which("docker")
+    if not docker or command[0] != docker:
+        raise ValueError("基础设施检查命令不允许使用未审查的可执行程序")
+
+    args = command[1:]
+    fixed_docker_commands = {
+        ("info", "--format", "{{.ServerVersion}}"),
+        ("compose", "version"),
+        ("ps", "--format", "{{.Names}}\t{{.Image}}\t{{.Ports}}"),
+        ("ps", "--format", "{{.Names}}\t{{.Image}}"),
+        ("images", "--format", "{{.Repository}}:{{.Tag}}"),
+    }
+    if tuple(args) in fixed_docker_commands:
+        return [*command]
+
+    resource: str | None = None
+    valid = False
+    if len(args) == 5 and args[:2] == ["volume", "inspect"]:
+        resource = args[2]
+        valid = args[3:] == ["--format", "{{.Mountpoint}}"]
+    elif len(args) == 4 and args[0] == "inspect":
+        resource = args[1]
+        valid = args[2:] == [
+            "--format",
+            "{{range .Mounts}}{{.Name}}|{{.Destination}}\\n{{end}}",
+        ]
+    elif len(args) == 5 and args[0] == "exec":
+        resource = args[1]
+        valid = args[2:] == ["date", "-u", "+%s"]
+
+    if not valid:
+        raise ValueError("基础设施检查命令不允许使用未审查的 Docker 参数")
+    if not resource or not _DOCKER_RESOURCE_NAME.fullmatch(resource):
+        raise ValueError("Docker 资源名包含不允许的字符")
+    return [*command]
+
+
+def _execute_validated_command(
+    command: list[str], *, timeout: int
+) -> subprocess.CompletedProcess[str]:
+    executable = command[0]
+    args = command[1:]
+    options = {
+        "text": True,
+        "capture_output": True,
+        "timeout": timeout,
+        "errors": "replace",
+    }
+    if executable == "timedatectl":
+        return subprocess.run(["timedatectl", *args], **options)
+    if executable == "chronyc":
+        return subprocess.run(["chronyc", *args], **options)
+    if executable == "date":
+        return subprocess.run(["date", *args], **options)
+    if executable == "ss":
+        return subprocess.run(["ss", *args], **options)
+    if executable == "openssl":
+        return subprocess.run(["openssl", *args], **options)
+    return subprocess.run(["docker", *args], executable=executable, **options)
+
+
 def run_capture(
     command: list[str], *, sensitive: tuple[str, ...], timeout: int = 30
 ) -> tuple[int, str, str]:
     try:
-        proc = subprocess.run(
-            command, text=True, capture_output=True, timeout=timeout, errors="replace"
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        validated = _validated_command(command)
+        proc = _execute_validated_command(validated, timeout=timeout)
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
         return 127, "", redact(str(exc), sensitive)
     return proc.returncode, redact(proc.stdout, sensitive), redact(proc.stderr, sensitive)
 
@@ -434,6 +522,7 @@ def _check_object_storage(
         "backend": env.get("OBJECT_STORAGE_BACKEND", "").strip() or "s3",
         "bucket": env.get("S3_BUCKET", "").strip(),
         "endpoint": env.get("S3_ENDPOINT_URL", "").strip(),
+        "region": env.get("S3_REGION", "").strip(),
     }
     has_creds = bool(env.get("S3_ACCESS_KEY_ID") and env.get("S3_SECRET_ACCESS_KEY"))
     result["credentials_configured"] = has_creds
@@ -445,6 +534,7 @@ def _check_object_storage(
         return result
     try:
         import boto3
+        from botocore.config import Config
         from botocore.exceptions import BotoCoreError, ClientError
     except ImportError:
         warnings.append("缺少 boto3，无法验证对象存储配置")
@@ -454,7 +544,11 @@ def _check_object_storage(
         aws_secret_access_key=env["S3_SECRET_ACCESS_KEY"],
         region_name=env.get("S3_REGION", "") or None,
     )
-    client = session.client("s3", endpoint_url=env.get("S3_ENDPOINT_URL") or None)
+    endpoint_url = env.get("S3_ENDPOINT_URL") or None
+    client_options: dict[str, object] = {"endpoint_url": endpoint_url}
+    if is_tencent_cos_endpoint(endpoint_url or ""):
+        client_options["config"] = Config(s3={"addressing_style": "virtual"})
+    client = session.client("s3", **client_options)
     checks: dict[str, object] = {}
     for name, method in (
         ("encryption", "get_bucket_encryption"),

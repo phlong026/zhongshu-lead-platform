@@ -12,11 +12,11 @@ def test_h5_points_enhancement_exposes_low_balance_and_level_entitlements():
     assert "points-enhancements.js" in index and "points-enhancements.css" in index
 
 
-def test_admin_points_enhancement_requires_recharge_confirmation_and_supports_versioned_entitlements():
+def test_admin_points_enhancement_requires_recharge_confirmation_without_developer_fields():
     script = Path("apps/admin/public/points-enhancements.js").read_text(encoding="utf-8")
     index = Path("apps/admin/public/index.html").read_text(encoding="utf-8")
     assert "body.confirmed = rechargeConfirmed" in script
-    assert "#p-entitlements" in script
-    assert "effective_at" in script and "expires_at" in script
+    assert "#p-entitlements" not in script
+    assert "等级权益（JSON）" not in script
     assert "points-enhancements.js" in index
     assert "微信支付" not in script and "支付宝支付" not in script

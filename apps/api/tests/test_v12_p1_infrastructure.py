@@ -3,10 +3,15 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from scripts.verify_infrastructure import (
+    _execute_validated_command,
+    _validated_command,
     check_env_isolation,
     days_until_expiry,
     is_public_bind,
+    is_tencent_cos_endpoint,
     load_dotenv,
     parse_meminfo,
     parse_ss_listeners,
@@ -46,6 +51,12 @@ def test_is_public_bind_classifies_wildcard_and_loopback() -> None:
     assert is_public_bind("::1") is False
 
 
+def test_is_tencent_cos_endpoint_only_matches_myqcloud_hosts() -> None:
+    assert is_tencent_cos_endpoint("https://cos.ap-shanghai.myqcloud.com") is True
+    assert is_tencent_cos_endpoint("https://s3.example.com") is False
+    assert is_tencent_cos_endpoint("") is False
+
+
 def test_parse_timedatectl_extracts_sync_state() -> None:
     text = "NTPSynchronized=yes\nTimeUSec=Wed 2026-08-12 10:00:00 CST\nLocalRTC=no\n"
     parsed = parse_timedatectl(text)
@@ -80,6 +91,61 @@ def test_sensitive_values_collects_secret_like_keys() -> None:
 def test_redact_replaces_all_sensitive_values() -> None:
     text = "db-pass and jwt-value and db-pass again"
     assert redact(text, ("db-pass", "jwt-value")) == "[REDACTED] and [REDACTED] and [REDACTED] again"
+
+
+def test_infrastructure_command_allowlist_rejects_shells() -> None:
+    with pytest.raises(ValueError, match="不允许"):
+        _validated_command(["sh", "-c", "id"])
+
+
+def test_infrastructure_command_allowlist_rejects_invalid_docker_resource_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "scripts.verify_infrastructure.shutil.which",
+        lambda name: "/usr/bin/docker" if name == "docker" else None,
+    )
+
+    with pytest.raises(ValueError, match="资源名"):
+        _validated_command(
+            ["/usr/bin/docker", "exec", "db;touch-pwned", "date", "-u", "+%s"]
+        )
+
+
+def test_infrastructure_command_allowlist_accepts_fixed_docker_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "scripts.verify_infrastructure.shutil.which",
+        lambda name: "/usr/bin/docker" if name == "docker" else None,
+    )
+    command = ["/usr/bin/docker", "ps", "--format", "{{.Names}}\t{{.Image}}"]
+
+    assert _validated_command(command) == command
+
+
+def test_infrastructure_executes_docker_probe_with_resolved_binary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, object] = {}
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(command: list[str], **kwargs: object) -> Result:
+        seen["command"] = command
+        seen["executable"] = kwargs.get("executable")
+        return Result()
+
+    monkeypatch.setattr("scripts.verify_infrastructure.subprocess.run", fake_run)
+    command = ["/usr/bin/docker", "ps", "--format", "{{.Names}}\t{{.Image}}"]
+
+    _execute_validated_command(command, timeout=30)
+
+    assert seen["command"] == ["docker", "ps", "--format", "{{.Names}}\t{{.Image}}"]
+    assert seen["executable"] == "/usr/bin/docker"
 
 
 def test_check_env_isolation_rejects_non_production_markers() -> None:

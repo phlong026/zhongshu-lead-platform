@@ -1,4 +1,14 @@
 const zsLeadListIcon = (name, className='zs-svg-icon') => window.ZSIconSystem?.svg(name, className) || '';
+const zsLeadLabels = {
+  OLD_RENOVATION: '旧房改造', SELF_BUILD: '农村自建房', INTERIOR: '室内装修',
+  PLATFORM_MANUAL: '平台录入', SUPPLIER_H5: '加盟商提交', MANUAL: '平台录入'
+};
+const zsLeadTechnicalCode = /^[A-Z][A-Z0-9_]{2,}$/;
+const zsLeadLabel = (value, fallback) => {
+  const text = String(value ?? '').trim();
+  if (!text) return fallback;
+  return zsLeadLabels[text] || (zsLeadTechnicalCode.test(text) ? fallback : text);
+};
 
 function zsEscape(value = '') {
   return String(value ?? '').replace(/[&<>"']/g, char => ({
@@ -60,7 +70,7 @@ function zsDecorateLeadCards(wrapper, assignments) {
     if (!item) return;
     const snapshot = item.lead_snapshot || {};
     const region = [snapshot.city, snapshot.district].filter(Boolean).join(' ');
-    const source = snapshot.source_channel || '其他来源';
+    const source = zsLeadLabel(snapshot.source_channel, '其他来源');
     if (region) regions.add(region);
     if (source) sources.add(source);
     card.dataset.region = region;
@@ -77,7 +87,7 @@ function zsDecorateLeadCards(wrapper, assignments) {
       const footer = card.querySelector('.line:last-child');
       card.insertBefore(need, footer || null);
     }
-    need.textContent = `${snapshot.category_code || '需求待核实'} · ${zsBudget(snapshot)}`;
+    need.textContent = `${zsLeadLabel(snapshot.category_code, '需求待核实')} · ${zsBudget(snapshot)}`;
     const time = card.querySelector('.zs-v13-assigned-time');
     if (!time) {
       const stamp = document.createElement('small');

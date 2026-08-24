@@ -26,16 +26,39 @@ def setup(db):
     db.commit();return company,lead,assignment
 
 
-def test_return_requires_both_evidence_and_refunds_once(db):
+@pytest.mark.parametrize(
+    ("evidence_type", "object_key", "mime_type", "duration_seconds"),
+    [
+        ("CHAT_SCREENSHOT", "evidence.png", "image/png", None),
+        ("CALL_RECORDING", "evidence.mp3", "audio/mpeg", 10),
+    ],
+)
+def test_return_accepts_either_evidence_and_refunds_once(
+    db,
+    evidence_type,
+    object_key,
+    mime_type,
+    duration_seconds,
+):
     company,lead,assignment=setup(db)
     owner=p("owner",company.id,"FRANCHISE_OWNER",{"return.own.manage"})
     reviewer=p("reviewer",None,"RETURN_REVIEWER",{"return.review"})
     item=create_or_update_return(db,assignment=assignment,principal=owner,reason_code="EMPTY_NUMBER",description="电话为空号")
     db.commit()
     with pytest.raises(AppError) as exc: submit_return(db,item,owner)
-    assert exc.value.code=="RETURN_SCREENSHOT_REQUIRED"
-    add_evidence(db,request=item,evidence_type="CHAT_SCREENSHOT",object_key="x.png",original_name="x.png",mime_type="image/png",file_size=1,sha256="a"*64,duration_seconds=None,uploaded_by="owner")
-    add_evidence(db,request=item,evidence_type="CALL_RECORDING",object_key="x.mp3",original_name="x.mp3",mime_type="audio/mpeg",file_size=1,sha256="b"*64,duration_seconds=10,uploaded_by="owner")
+    assert exc.value.code=="RETURN_EVIDENCE_REQUIRED"
+    add_evidence(
+        db,
+        request=item,
+        evidence_type=evidence_type,
+        object_key=object_key,
+        original_name=object_key,
+        mime_type=mime_type,
+        file_size=1,
+        sha256="a"*64,
+        duration_seconds=duration_seconds,
+        uploaded_by="owner",
+    )
     submit_return(db,item,owner)
     ledger=review_return(db,request=item,principal=reviewer,decision="APPROVE",note="证据有效")
     db.commit()

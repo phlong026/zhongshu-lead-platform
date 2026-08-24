@@ -1,12 +1,26 @@
 from __future__ import annotations
 
+from uuid import uuid4
+
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from ..core.errors import AppError
-from ..core.models import Company, CompanyCapability, CompanyServiceRegion, PointsAccount
-from ..core.security import decrypt_text, encrypt_text, hash_phone, mask_phone, normalize_phone
-from ..schemas.company import CompanyCreateBody, CompanyUpdateBody
+from ..core.models import (
+    Company,
+    CompanyCapability,
+    CompanyServiceRegion,
+    DictionaryItem,
+    PointsAccount,
+    Region,
+)
+from ..core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12
+from ..core.security import decrypt_text, encrypt_text, hash_phone, mask_phone
+from ..core.v12_enums import CompanyLeadCapabilityCode
+from ..schemas.company import CompanyCreateBody, CompanySimpleCreateBody, CompanyUpdateBody
+from .china_regions import city_by_code, district_by_code
+
+DEFAULT_RECEIVER_CATEGORIES = ("OLD_RENOVATION", "SELF_BUILD", "INTERIOR")
 
 
 def company_to_dict(company: Company, include_finance: bool = False) -> dict:
@@ -51,6 +65,167 @@ def create_company(db: Session, body: CompanyCreateBody) -> Company:
     db.add(PointsAccount(company_id=company.id, balance=0, version=1))
     replace_company_scope(db, company, body.region_codes, body.capabilities)
     return company
+
+
+def _next_company_code(db: Session) -> str:
+    for _ in range(5):
+        code = f"JM-{uuid4().hex[:10].upper()}"
+        if not db.scalar(select(Company.id).where(Company.code == code)):
+            return code
+    raise AppError("COMPANY_CODE_GENERATION_FAILED", "加盟商编码生成失败，请重试", 409)
+
+
+def _simple_region_codes(db: Session, body: CompanySimpleCreateBody) -> dict[str, Region]:
+    _materialize_selected_regions(db, body)
+    requested = [body.primary_city_code, *body.district_codes]
+    if body.serve_all_districts:
+        district_codes = db.scalars(
+            select(Region.code).where(
+                Region.parent_code == body.primary_city_code,
+                Region.level == "DISTRICT",
+                Region.active.is_(True),
+            )
+        ).all()
+        requested.extend(district_codes)
+    cleaned = list(dict.fromkeys(code.strip() for code in requested if code.strip()))
+    if not cleaned:
+        raise AppError("SERVICE_AREA_REQUIRED", "至少选择一个服务地区", 422)
+    regions = {
+        region.code: region
+        for region in db.scalars(
+            select(Region).where(Region.code.in_(cleaned), Region.active.is_(True))
+        ).all()
+    }
+    missing = sorted(set(cleaned) - set(regions))
+    if missing:
+        raise AppError("REGION_NOT_FOUND", "存在无效或停用的地区", 422, {"region_codes": missing})
+    primary = regions.get(body.primary_city_code)
+    if primary is None or primary.level != "CITY":
+        raise AppError("PRIMARY_CITY_LEVEL_INVALID", "服务城市必须选择城市级地区", 422)
+    invalid = [
+        code
+        for code, region in regions.items()
+        if code != body.primary_city_code
+        and (region.level != "DISTRICT" or region.parent_code != body.primary_city_code)
+    ]
+    if invalid:
+        raise AppError(
+            "SERVICE_AREA_HIERARCHY_INVALID",
+            "服务区县必须隶属于所选服务城市",
+            422,
+            {"region_codes": sorted(invalid), "primary_city_code": body.primary_city_code},
+        )
+    return regions
+
+
+def _materialize_selected_regions(db: Session, body: CompanySimpleCreateBody) -> None:
+    """把用户从全国组件选中的地区接入现有派发地区模型。"""
+
+    city = city_by_code(body.primary_city_code)
+    if city is None:
+        return
+
+    if db.get(Region, city["code"]) is None:
+        db.add(
+            Region(
+                code=city["code"],
+                name=city["name"],
+                level="CITY",
+                parent_code=None,
+                aliases=[city["name"]],
+                active=True,
+            )
+        )
+
+    requested_district_codes = (
+        [district["code"] for district in city["districts"]]
+        if body.serve_all_districts
+        else body.district_codes
+    )
+    for code in dict.fromkeys(requested_district_codes):
+        district = district_by_code(city, code)
+        if district is None or db.get(Region, code) is not None:
+            continue
+        db.add(
+            Region(
+                code=district["code"],
+                name=district["name"],
+                level="DISTRICT",
+                parent_code=city["code"],
+                aliases=[district["name"]],
+                active=True,
+            )
+        )
+    db.flush()
+
+
+def create_simple_company(
+    db: Session,
+    body: CompanySimpleCreateBody,
+) -> tuple[Company, dict[str, str]]:
+    regions = _simple_region_codes(db, body)
+    company = Company(
+        code=_next_company_code(db),
+        name=body.name,
+        owner_name=body.owner_name,
+        contact_phone_encrypted=encrypt_text(body.contact_phone) if body.contact_phone else None,
+        contact_phone_hash=hash_phone(body.contact_phone) if body.contact_phone else None,
+        level_code=body.level_code,
+        notes=body.notes,
+    )
+    db.add(company)
+    db.flush()
+    db.add(PointsAccount(company_id=company.id, balance=0, version=1))
+
+    region_codes = sorted(regions)
+    db.add(
+        CompanyLeadCapability(
+            company_id=company.id,
+            capability_code=CompanyLeadCapabilityCode.LEAD_RECEIVER.value,
+            active=False,
+            review_status="PENDING",
+            reviewed_by=None,
+            reviewed_at=None,
+            review_note="后台创建加盟商后待审核接单资格",
+        )
+    )
+    for code in region_codes:
+        region = regions[code]
+        db.add(
+            CompanyServiceAreaV12(
+                company_id=company.id,
+                region_code=code,
+                region_level=region.level,
+                is_primary_city=code == body.primary_city_code,
+                active=False,
+                review_status="PENDING",
+                reviewed_by=None,
+                reviewed_at=None,
+                review_note="后台创建加盟商后待审核服务地区",
+            )
+        )
+    db.flush()
+    return company, {
+        "points_account": "READY",
+        "receiver_capability": "PENDING_REVIEW",
+        "service_areas": "PENDING_REVIEW",
+    }
+
+
+def default_receiver_categories(db: Session) -> tuple[str, ...]:
+    categories = tuple(
+        dict.fromkeys(
+            db.scalars(
+                select(DictionaryItem.code)
+                .where(
+                    DictionaryItem.domain == "lead_category",
+                    DictionaryItem.active.is_(True),
+                )
+                .order_by(DictionaryItem.sort_order, DictionaryItem.code)
+            ).all()
+        )
+    )
+    return categories or DEFAULT_RECEIVER_CATEGORIES
 
 
 def update_company(db: Session, company: Company, body: CompanyUpdateBody) -> Company:

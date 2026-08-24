@@ -4,3 +4,7 @@
 .invite-qr-wrap #invite-qr{width:176px;height:176px;flex:none;background:#fff}
 .invite-qr-wrap #invite-qr img,.invite-qr-wrap #invite-qr canvas{display:block;width:176px;height:176px}
 .invite-qr-wrap .help{margin:0;color:var(--muted);font-size:12px;line-height:1.7}
+button.stat{width:100%;color:inherit;font:inherit;text-align:left;cursor:pointer;transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease}
+button.stat:hover{border-color:var(--gold);box-shadow:0 14px 32px rgba(70,44,25,.12);transform:translateY(-1px)}
+button.stat:active{transform:translateY(1px)}
+button.stat:focus-visible{outline:3px solid rgba(199,161,96,.38);outline-offset:2px}

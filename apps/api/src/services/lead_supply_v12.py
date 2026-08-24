@@ -127,6 +127,44 @@ def update_draft(
     return lead
 
 
+def discard_draft(
+    db: Session,
+    *,
+    lead: Lead,
+    principal: Principal,
+) -> None:
+    _assert_owner(lead, principal, supplier=True)
+    if lead.source_kind != LeadSourceKind.SUPPLIER_H5.value:
+        raise AppError("LEAD_SOURCE_INVALID", "仅供应商客资草稿支持在此删除", 409)
+    _assert_draft(lead)
+    db.delete(lead)
+    db.flush()
+
+
+def reopen_rejected_supplier_lead(
+    db: Session,
+    *,
+    lead: Lead,
+    principal: Principal,
+) -> Lead:
+    _assert_owner(lead, principal, supplier=True)
+    if lead.source_kind != LeadSourceKind.SUPPLIER_H5.value:
+        raise AppError("LEAD_SOURCE_INVALID", "仅供应商上传客资支持修改后重新提交", 409)
+    if (
+        lead.status != LeadV12Status.INVALID.value
+        or lead.review_status != LeadReviewStatus.REJECTED.value
+    ):
+        raise AppError("LEAD_REVISION_NOT_ALLOWED", "仅平台退回的客资支持修改后重新提交", 409)
+    lead.status = LeadV12Status.DRAFT.value
+    lead.review_status = LeadReviewStatus.DRAFT.value
+    lead.submitted_at = None
+    lead.reviewed_at = None
+    lead.duplicate_status = None
+    lead.pending_reason = None
+    db.flush()
+    return lead
+
+
 def _validate_submission(db: Session, lead: Lead) -> str:
     phone = normalize_phone(decrypt_text(lead.phone_encrypted) or "")
     errors: dict[str, str] = {}
@@ -164,6 +202,9 @@ def submit_draft(
     if supplier:
         require_lead_capability(db, principal.company_id, "LEAD_SUPPLIER")
     phone = _validate_submission(db, lead)
+    if supplier:
+        lead.review_note = None
+        lead.reviewed_at = None
     now = datetime.now(timezone.utc)
     lead.submitted_at = now
     lead.imported_at = lead.imported_at or now

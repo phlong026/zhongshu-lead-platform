@@ -10,6 +10,7 @@ from ..core.models import DictionaryItem, Region
 from ..core.responses import ok, page
 from ..schemas.company import DictionaryItemBody
 from ..services.audit import write_audit
+from ..services.china_regions import region_tree
 
 router = APIRouter(prefix="/master-data", tags=["master-data"])
 
@@ -23,6 +24,11 @@ def regions(request: Request, db: Session = Depends(get_db), parent_code: str | 
         stmt = stmt.where(Region.level == level)
     items = db.scalars(stmt.order_by(Region.code)).all()
     return ok(request, [{"code": x.code, "name": x.name, "level": x.level, "parent_code": x.parent_code, "aliases": x.aliases} for x in items])
+
+
+@router.get("/region-tree")
+def nationwide_region_tree(request: Request):
+    return ok(request, region_tree())
 
 
 @router.get("/dictionaries/{domain}")

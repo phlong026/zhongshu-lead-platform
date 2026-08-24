@@ -459,6 +459,13 @@ def _run_return_flow(
         files={"file": ("e2e-proof.png", b"\x89PNG\r\n\x1a\ne2e-proof", "image/png")},
     )
     assert _data(evidence)["type"] == "CHAT_SCREENSHOT"
+    recording = client.post(
+        f"/api/v1/v1.2/returns/{return_id}/evidence",
+        headers=receiver,
+        data={"evidence_type": "CALL_RECORDING"},
+        files={"file": ("e2e-call.mp3", b"ID3e2e-proof", "audio/mpeg")},
+    )
+    assert _data(recording)["type"] == "CALL_RECORDING"
     submitted = _data(
         client.post(f"/api/v1/v1.2/returns/{return_id}/submit", headers=receiver)
     )
@@ -493,6 +500,10 @@ def _run_return_flow(
         )
     )
     assert reviewed["status"] == ("APPROVED" if decision == "APPROVE" else "REJECTED")
+    assert reviewed["reviewed_by"]
+    assert reviewed["reviewed_at"]
+    assert reviewed["review_note"] == f"E2E 终审{decision}"
+    assert reviewed["final_decision_reason"] == f"E2E 终审{decision}"
     return return_id
 
 

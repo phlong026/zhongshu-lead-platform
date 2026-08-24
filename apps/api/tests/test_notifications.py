@@ -72,9 +72,10 @@ def test_create_invite_enqueues_outbox_event_without_raw_token(api_client) -> No
         assert raw_token not in json.dumps(item.payload, ensure_ascii=False)
 
 
-def test_invite_outbox_delivers_through_dev_mock(api_client) -> None:
+def test_invite_outbox_delivers_through_dev_mock(api_client, monkeypatch) -> None:
     """P2-03：dev mock 通道把邀请事件渲染成模板消息并标记 SENT。"""
 
+    monkeypatch.setattr(wechat_module.settings, "wechat_dev_mock", True)
     client, factory, invite_id, _ = _invite_outbox_setup(api_client)
     with factory() as db:
         result = process_outbox(db)
