@@ -144,6 +144,7 @@ WECHAT_DEV_MOCK=false
 - `domain`: `wechat_template`
 - `key`: 业务事件名
 - `value.template_id`: 微信公众平台中审核通过的模板 ID
+- `value.field_map`: 公众号模板字段名到平台业务值的映射；右侧仅可为 `title`、`scene`、`body`、`remark`
 - `publish_immediately`: `true`
 
 例如，为新客资派发事件 `V12_ASSIGNMENT_DISPATCHED` 发布模板：
@@ -153,13 +154,19 @@ WECHAT_DEV_MOCK=false
   "domain": "wechat_template",
   "key": "V12_ASSIGNMENT_DISPATCHED",
   "value": {
-    "template_id": "replace-with-approved-template-id"
+    "template_id": "replace-with-approved-template-id",
+    "field_map": {
+      "first": "title",
+      "keyword1": "scene",
+      "keyword2": "body",
+      "remark": "remark"
+    }
   },
   "publish_immediately": true
 }
 ```
 
-由超级管理员通过 `POST /api/v1/system-configs` 创建。当前适配器发送字段为 `first`、`keyword1`、`keyword2`、`remark`，微信平台中选用的模板必须与这组字段匹配。
+由超级管理员通过 `POST /api/v1/system-configs` 创建。`field_map` 左侧必须与微信「我的模板」中的字段名完全一致；未填写时，为兼容旧配置，适配器仍使用 `first`、`keyword1`、`keyword2`、`remark` 的默认映射。完整的公众号后台操作与首批场景见 `docs/runbooks/WECHAT_TEMPLATE_CONFIGURATION_CHECKLIST.md`。
 
 建议至少核对这些 V1.2 事件：
 

@@ -12,6 +12,80 @@ from apps.api.src.services.outbox_worker import process_outbox
 from test_auth_company import _admin_headers
 
 
+def test_official_account_client_uses_configured_template_field_map(monkeypatch) -> None:
+    """公众号模板字段由已发布配置决定，避免模板关键字名称不一致时盲发。"""
+
+    from apps.api.src.integrations.wechat import WechatOfficialAccountClient
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict[str, int]:
+            return {"errcode": 0, "msgid": 123}
+
+    sent: dict[str, object] = {}
+
+    def fake_post(url: str, *, json: dict[str, object], timeout: int):
+        sent.update({"url": url, "json": json, "timeout": timeout})
+        return _Response()
+
+    monkeypatch.setattr(wechat_module.settings, "wechat_dev_mock", False)
+    monkeypatch.setattr(wechat_module.httpx, "post", fake_post)
+    client = WechatOfficialAccountClient()
+    client._access_token = "test-access-token"
+    client._expires_at = (
+        wechat_module.datetime.now(wechat_module.timezone.utc)
+        + wechat_module.timedelta(hours=1)
+    )
+
+    result = client.send_scene_message(
+        openid="o-test-user",
+        scene="V12_ASSIGNMENT_DISPATCHED",
+        title="新客资已派发",
+        body="上海市浦东新区，领取截止 18:00",
+        url="https://zszhj.cn/h5/#/leads",
+        template_id="approved-template-id",
+        field_map={
+            "first": "title",
+            "keyword1": "scene",
+            "keyword2": "body",
+            "remark": "remark",
+        },
+    )
+
+    assert result.success is True
+    assert sent["json"] == {
+        "touser": "o-test-user",
+        "template_id": "approved-template-id",
+        "url": "https://zszhj.cn/h5/#/leads",
+        "data": {
+            "first": {"value": "新客资已派发"},
+            "keyword1": {"value": "V12_ASSIGNMENT_DISPATCHED"},
+            "keyword2": {"value": "上海市浦东新区，领取截止 18:00"},
+            "remark": {"value": "点击查看详情"},
+        },
+    }
+
+
+def test_official_account_client_rejects_unknown_template_field_source(monkeypatch) -> None:
+    from apps.api.src.integrations.wechat import WechatOfficialAccountClient
+
+    monkeypatch.setattr(wechat_module.settings, "wechat_dev_mock", False)
+    result = WechatOfficialAccountClient().send_scene_message(
+        openid="o-test-user",
+        scene="V12_ASSIGNMENT_DISPATCHED",
+        title="新客资已派发",
+        body="测试内容",
+        url="https://zszhj.cn/h5/#/leads",
+        template_id="approved-template-id",
+        field_map={"keyword1": "unsupported_source"},
+    )
+
+    assert result.success is False
+    assert result.error_code == "TEMPLATE_CONFIG_INVALID"
+
+
 def test_outbox_without_recipient_is_retried(db) -> None:
     """N7：无收件人是确定性失败——重试不可能让用户凭空绑定微信，
     直接终态化 MANUAL_ACTION_REQUIRED；运营核实后经重试按钮手动重置。"""
@@ -161,6 +235,42 @@ def test_outbox_failure_text_never_persists_credentials(db, monkeypatch) -> None
     assert "71_AbCdSECRET_TOKEN" not in (item.last_error or ""), item.last_error
     assert "access_token=***" in item.last_error, item.last_error  # 键名保留、值打码
     assert "RuntimeError" in item.last_error, "异常类名保留供排障"
+
+
+def test_outbox_invalid_template_field_map_requires_manual_action(db, monkeypatch) -> None:
+    """字段映射填错是确定性配置错误，不能消耗重试次数。"""
+
+    from apps.api.src.core.models import User, WechatIdentity
+
+    monkeypatch.setattr(wechat_module.settings, "wechat_dev_mock", False)
+    user = User(display_name="模板测试负责人", status="ACTIVE")
+    db.add(user)
+    db.flush()
+    db.add(WechatIdentity(openid="o-template-config", user_id=user.id))
+    db.add(
+        SystemConfig(
+            domain="wechat_template",
+            key="ASSIGNMENT_DISPATCHED",
+            status="PUBLISHED",
+            value_json={"template_id": "approved-template-id", "field_map": {"keyword1": "unknown"}},
+        )
+    )
+    item = enqueue_outbox(
+        db,
+        event_key="test:invalid-template-map",
+        event_type="ASSIGNMENT_DISPATCHED",
+        aggregate_type="assignment",
+        aggregate_id="a-template-map",
+        payload={"user_id": user.id},
+    )
+    db.commit()
+
+    result = process_outbox(db)
+    db.commit()
+
+    assert result["manual"] == 1
+    assert item.status == "MANUAL_ACTION_REQUIRED"
+    assert "TEMPLATE_CONFIG_INVALID" in (item.last_error or "")
 
 
 def test_failed_outbox_response_scrubs_legacy_poisoned_last_error(api_client) -> None:
