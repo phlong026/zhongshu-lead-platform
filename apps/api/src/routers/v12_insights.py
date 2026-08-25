@@ -12,9 +12,24 @@ from ..core import reward_models_v12 as _reward_models_v12  # noqa: F401
 from ..core.auth import CurrentPrincipal, require_permissions
 from ..core.database import get_db
 from ..core.errors import AppError
-from ..core.models import Assignment, AuditLog, Lead, Notification, NotificationOutbox, PointsLedger, ReturnRequest, VerificationTask
+from ..core.models import (
+    Assignment,
+    AuditLog,
+    Company,
+    FollowUp,
+    Lead,
+    Notification,
+    NotificationOutbox,
+    PointsLedger,
+    ReturnRequest,
+    User,
+    VerificationTask,
+)
 from ..core.models_v12 import SupplierLeadReward
 from ..core.responses import ok, page
+from ..core.security import decrypt_text, mask_phone
+from ..services.return_v12 import return_request_to_dict
+from ..services.storage import create_file_access_token
 
 router = APIRouter(prefix="/v1.2", tags=["v1.2-reports-audit"])
 
@@ -125,9 +140,10 @@ def own_report(request: Request, principal: CurrentPrincipal, db: Session = Depe
     })
 
 
-def _audit(item: AuditLog) -> dict[str, Any]:
+def _audit(item: AuditLog, *, actor_name: str | None = None) -> dict[str, Any]:
     return {
         "id": item.id, "request_id": item.request_id, "actor_user_id": item.actor_user_id,
+        "actor_name": actor_name or "系统自动处理",
         "actor_role_codes": list(item.actor_role_codes or []), "action": item.action,
         "resource_type": item.resource_type, "resource_id": item.resource_id,
         "company_id": item.company_id, "before": item.before_json, "after": item.after_json,
@@ -181,7 +197,13 @@ def audit_events(
     return ok(request, page([_audit(item) for item in items], total, page_no, page_size))
 
 
-def _trace(db: Session, business_id: str) -> dict[str, Any]:
+def _display_name(user: User | None) -> str | None:
+    if user is None:
+        return None
+    return user.display_name or user.username
+
+
+def _trace(db: Session, business_id: str, *, evidence_user_id: str | None = None) -> dict[str, Any]:
     lead = db.get(Lead, business_id)
     assignment = db.get(Assignment, business_id)
     return_request = db.get(ReturnRequest, business_id)
@@ -202,29 +224,169 @@ def _trace(db: Session, business_id: str) -> dict[str, Any]:
         ids.add(lead_id)
     for item in rewards:
         ids.update(value for value in (item.ledger_id, item.reversal_ledger_id) if value)
+    followups = db.scalars(
+        select(FollowUp).where(FollowUp.assignment_id.in_(assignment_ids)).order_by(FollowUp.created_at)
+    ).all() if assignment_ids else []
+    ledgers = db.scalars(
+        select(PointsLedger)
+        .where(or_(PointsLedger.business_id.in_(ids), PointsLedger.id.in_(ids)))
+        .order_by(PointsLedger.created_at)
+    ).all() if ids else []
     audits = db.scalars(select(AuditLog).where(or_(AuditLog.resource_id.in_(ids), AuditLog.request_id == business_id)).order_by(AuditLog.created_at)).all()
     outboxes = db.scalars(select(NotificationOutbox).where(NotificationOutbox.aggregate_id.in_(ids)).order_by(NotificationOutbox.created_at)).all()
     notification_ids = {str(item.payload.get("notification_id")) for item in outboxes if item.payload.get("notification_id")}
     notifications = db.scalars(select(Notification).where(Notification.id.in_(notification_ids)).order_by(Notification.created_at)).all() if notification_ids else []
-    timeline = [{"at": item.created_at.isoformat(), "kind": "AUDIT", "id": item.id, "action": item.action, "resource_type": item.resource_type, "resource_id": item.resource_id, "request_id": item.request_id} for item in audits]
-    timeline += [{"at": item.created_at.isoformat(), "kind": "NOTIFICATION", "id": item.id, "action": item.scene, "resource_type": "notification", "resource_id": item.id, "deep_link": item.deep_link, "status": item.status} for item in notifications]
-    timeline.sort(key=lambda item: (item["at"], item["kind"], item["id"]))
     resolved_lead = db.get(Lead, lead_id) if lead_id else None
+    user_ids = {
+        value
+        for value in (
+            resolved_lead.submitter_user_id if resolved_lead else None,
+            *(item.assigned_by for item in assignments),
+            *(item.internal_assignee_user_id for item in assignments),
+            *(item.submitted_by for item in returns),
+            *(item.reviewed_by for item in returns),
+            *(item.assignee_user_id for item in tasks),
+            *(item.created_by for item in followups),
+            *(item.created_by for item in ledgers),
+            *(item.actor_user_id for item in audits),
+        )
+        if value
+    }
+    users = {
+        item.id: item
+        for item in db.scalars(select(User).where(User.id.in_(user_ids))).all()
+    } if user_ids else {}
+    company_ids = {
+        value
+        for value in (
+            resolved_lead.supplier_company_id if resolved_lead else None,
+            *(item.company_id for item in assignments),
+            *(item.supplier_company_id for item in assignments),
+            *(item.receiver_company_id for item in assignments),
+            *(item.company_id for item in returns),
+            *(item.supplier_company_id for item in rewards),
+            *(item.receiver_company_id for item in rewards),
+            *(item.company_id for item in ledgers),
+        )
+        if value
+    }
+    companies = {
+        item.id: item
+        for item in db.scalars(select(Company).where(Company.id.in_(company_ids))).all()
+    } if company_ids else {}
+    audit_events = [_audit(item, actor_name=_display_name(users.get(item.actor_user_id))) for item in audits]
+    timeline = [
+        {
+            "at": item["created_at"],
+            "kind": "AUDIT",
+            "id": item["id"],
+            "action": item["action"],
+            "resource_type": item["resource_type"],
+            "resource_id": item["resource_id"],
+            "actor_name": item["actor_name"],
+            "summary": str((item["metadata"] or {}).get("reason") or "已完成本次处理"),
+        }
+        for item in audit_events
+    ]
+    timeline += [
+        {
+            "at": item.created_at.isoformat(),
+            "kind": "NOTIFICATION",
+            "id": item.id,
+            "action": item.scene,
+            "resource_type": "notification",
+            "resource_id": item.id,
+            "status": item.status,
+            "summary": item.title,
+        }
+        for item in notifications
+    ]
+    timeline.sort(key=lambda item: (item["at"], item["kind"], item["id"]))
+    trace_returns = []
+    for item in returns:
+        data = return_request_to_dict(db, item, include_evidence=True)
+        data["company_name"] = companies.get(item.company_id).name if item.company_id in companies else None
+        data["submitted_by_name"] = _display_name(users.get(item.submitted_by))
+        data["reviewed_by_name"] = _display_name(users.get(item.reviewed_by))
+        if evidence_user_id:
+            for evidence in data.get("evidences", []):
+                evidence["access_token"] = create_file_access_token(evidence["id"], evidence_user_id)
+        trace_returns.append(data)
     return {
         "business_id": business_id, "linked_ids": sorted(ids),
-        "lead": {"id": resolved_lead.id, "status": resolved_lead.status, "source_kind": resolved_lead.source_kind, "supplier_company_id": resolved_lead.supplier_company_id} if resolved_lead else None,
-        "assignments": [{"id": item.id, "lead_id": item.lead_id, "supplier_company_id": item.supplier_company_id, "receiver_company_id": item.receiver_company_id, "status": item.status, "assigned_at": _iso(item.assigned_at), "claimed_at": _iso(item.claimed_at)} for item in assignments],
-        "returns": [{"id": item.id, "assignment_id": item.assignment_id, "lead_id": item.lead_id, "company_id": item.company_id, "status": item.status, "verification_task_id": item.verification_task_id, "submitted_at": _iso(item.submitted_at), "reviewed_at": _iso(item.reviewed_at)} for item in returns],
-        "supplier_rewards": [{"id": item.id, "assignment_id": item.assignment_id, "lead_id": item.lead_id, "supplier_company_id": item.supplier_company_id, "receiver_company_id": item.receiver_company_id, "status": item.status, "reward_points": int(item.reward_points), "reward_due_at": _iso(item.reward_due_at), "settled_at": _iso(item.settled_at), "ledger_id": item.ledger_id, "reversal_ledger_id": item.reversal_ledger_id} for item in rewards],
-        "verification_tasks": [{"id": item.id, "lead_id": item.lead_id, "assignment_id": item.assignment_id, "return_request_id": item.return_request_id, "task_type": item.task_type, "status": item.status, "assignee_user_id": item.assignee_user_id, "created_at": _iso(item.created_at), "submitted_at": _iso(item.submitted_at)} for item in tasks],
+        "lead": {
+            "id": resolved_lead.id,
+            "customer_name": resolved_lead.customer_name,
+            "phone_masked": mask_phone(decrypt_text(resolved_lead.phone_encrypted)),
+            "status": resolved_lead.status,
+            "source_kind": resolved_lead.source_kind,
+            "source_channel": resolved_lead.source_channel,
+            "review_status": resolved_lead.review_status,
+            "review_note": resolved_lead.review_note,
+            "duplicate_status": resolved_lead.duplicate_status,
+            "city": resolved_lead.city,
+            "district": resolved_lead.district,
+            "need_summary": resolved_lead.need_summary,
+            "submitted_at": _iso(resolved_lead.submitted_at),
+            "created_at": _iso(resolved_lead.created_at),
+            "supplier_company_id": resolved_lead.supplier_company_id,
+            "supplier_company_name": companies.get(resolved_lead.supplier_company_id).name if resolved_lead.supplier_company_id in companies else None,
+            "submitter_name": _display_name(users.get(resolved_lead.submitter_user_id)),
+        } if resolved_lead else None,
+        "assignments": [{
+            "id": item.id, "lead_id": item.lead_id, "company_id": item.company_id,
+            "company_name": companies.get(item.company_id).name if item.company_id in companies else None,
+            "supplier_company_id": item.supplier_company_id,
+            "supplier_company_name": companies.get(item.supplier_company_id).name if item.supplier_company_id in companies else None,
+            "receiver_company_id": item.receiver_company_id,
+            "receiver_company_name": companies.get(item.receiver_company_id).name if item.receiver_company_id in companies else None,
+            "status": item.status, "current_follow_status": resolved_lead.current_follow_status if resolved_lead else None,
+            "points_price": item.points_price, "claim_points": item.claim_points,
+            "assigned_at": _iso(item.assigned_at), "claimed_at": _iso(item.claimed_at),
+            "assigned_by_name": _display_name(users.get(item.assigned_by)),
+            "internal_assignee_name": _display_name(users.get(item.internal_assignee_user_id)),
+        } for item in assignments],
+        "returns": trace_returns,
+        "supplier_rewards": [{
+            "id": item.id, "assignment_id": item.assignment_id, "lead_id": item.lead_id,
+            "supplier_company_id": item.supplier_company_id,
+            "supplier_company_name": companies.get(item.supplier_company_id).name if item.supplier_company_id in companies else None,
+            "receiver_company_id": item.receiver_company_id,
+            "receiver_company_name": companies.get(item.receiver_company_id).name if item.receiver_company_id in companies else None,
+            "status": item.status, "claim_points": int(item.claim_points), "reward_points": int(item.reward_points),
+            "reward_due_at": _iso(item.reward_due_at), "settled_at": _iso(item.settled_at),
+            "ledger_id": item.ledger_id, "reversal_ledger_id": item.reversal_ledger_id,
+            "exception_reason": item.exception_reason,
+        } for item in rewards],
+        "verification_tasks": [{
+            "id": item.id, "lead_id": item.lead_id, "assignment_id": item.assignment_id,
+            "return_request_id": item.return_request_id, "task_type": item.task_type,
+            "status": item.status, "assignee_user_id": item.assignee_user_id,
+            "assignee_name": _display_name(users.get(item.assignee_user_id)),
+            "contact_result": item.contact_result, "conclusion": item.verification_conclusion,
+            "created_at": _iso(item.created_at), "assigned_at": _iso(item.assigned_at),
+            "started_at": _iso(item.started_at), "submitted_at": _iso(item.submitted_at),
+        } for item in tasks],
+        "followups": [{
+            "id": item.id, "assignment_id": item.assignment_id, "status": item.status,
+            "note": item.note, "next_followup_at": _iso(item.next_followup_at),
+            "created_at": _iso(item.created_at), "created_by_name": _display_name(users.get(item.created_by)),
+        } for item in followups],
+        "points_ledgers": [{
+            "id": item.id, "company_id": item.company_id,
+            "company_name": companies.get(item.company_id).name if item.company_id in companies else None,
+            "ledger_type": item.ledger_type, "delta": int(item.delta), "balance_after": int(item.balance_after),
+            "business_type": item.business_type, "business_id": item.business_id,
+            "created_at": _iso(item.created_at), "created_by_name": _display_name(users.get(item.created_by)),
+        } for item in ledgers],
         "notifications": [{"id": item.id, "scene": item.scene, "title": item.title, "deep_link": item.deep_link, "status": item.status, "read_at": _iso(item.read_at), "created_at": _iso(item.created_at)} for item in notifications],
-        "audit_events": [_audit(item) for item in audits], "timeline": timeline,
+        "audit_events": audit_events, "timeline": timeline,
     }
 
 
 @router.get("/trace/{business_id}")
-def business_trace(business_id: str, request: Request, _principal=Depends(require_permissions("audit.read")), db: Session = Depends(get_db)):
-    data = _trace(db, business_id)
+def business_trace(business_id: str, request: Request, principal=Depends(require_permissions("audit.read")), db: Session = Depends(get_db)):
+    data = _trace(db, business_id, evidence_user_id=principal.user_id)
     if len(data["linked_ids"]) == 1 and not data["audit_events"] and not data["notifications"] and data["lead"] is None:
         raise AppError("BUSINESS_TRACE_NOT_FOUND", "未找到该业务 ID", 404)
     return ok(request, data)

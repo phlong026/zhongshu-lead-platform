@@ -820,9 +820,17 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
         client.get(f"/api/v1/v1.2/trace/{lead_two}", headers=operation)
     )
     assert trace["lead"]["id"] == lead_two
+    assert trace["lead"]["customer_name"]
+    assert trace["lead"]["phone_masked"]
     assert assignment_two in {item["id"] for item in trace["assignments"]}
     assert return_approved in {item["id"] for item in trace["returns"]}
     assert reward_two in {item["id"] for item in trace["supplier_rewards"]}
+    assert trace["assignments"][0]["receiver_company_name"]
+    assert trace["returns"][0]["description"]
+    assert "evidence_summary" in trace["returns"][0]
+    assert "followups" in trace
+    assert all("actor_name" in item for item in trace["audit_events"])
+    assert all("summary" in item for item in trace["timeline"])
 
     with factory() as db:
         reward_rows = {

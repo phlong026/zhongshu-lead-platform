@@ -99,6 +99,39 @@ def _admin_smoke(browser: Browser, base_url: str, output: Path, errors: list[str
                 raise AssertionError(f"super admin is missing {view} navigation")
         overview_screenshot = output / "v12-admin-overview.png"
         page.screenshot(path=str(overview_screenshot), full_page=True)
+        created = page.evaluate(
+            """async () => {
+              const response = await fetch('/api/v1/v1.2/platform/leads', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                credentials: 'include',
+                body: JSON.stringify({
+                  customer_name: '浏览器验收客户',
+                  phone: '13900001234',
+                  province: '广东省',
+                  city: '广州市',
+                  district: '天河区',
+                  need_summary: '用于确认客资详情页面的客户信息和处理进度。',
+                  consent_confirmed: true
+                })
+              });
+              return {status: response.status, payload: await response.json()};
+            }"""
+        )
+        if created["status"] != 200 or created["payload"].get("code") != "OK":
+            raise AssertionError(f"unable to create isolated V1.2 lead: {created}")
+        lead_id = created["payload"]["data"]["id"]
+        page.locator('.ops-menu [data-view="leads"]').click()
+        page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=leads")
+        detail_button = page.locator(f'[data-platform-detail="{lead_id}"]')
+        detail_button.wait_for(timeout=15000)
+        detail_button.click()
+        page.wait_for_selector("#trace", timeout=15000)
+        page.locator("#trace").click()
+        page.wait_for_selector(".ops-trace-layout", timeout=15000)
+        _assert_no_visible_error(page, (".ops-error",))
+        trace_screenshot = output / "v12-full-process-detail.png"
+        page.screenshot(path=str(trace_screenshot), full_page=True)
         page.locator('.ops-menu [data-view="companies"]').click()
         page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=companies")
         page.wait_for_selector(".company-review", timeout=15000)
@@ -108,8 +141,8 @@ def _admin_smoke(browser: Browser, base_url: str, output: Path, errors: list[str
             page.wait_for_selector("#company-account-create", timeout=15000)
             page.locator("#modal-close").click()
         page.evaluate("history.back()")
-        page.wait_for_url(f"{base_url}/admin/v12-operations.html")
-        page.wait_for_selector(".ops-role-hero", timeout=15000)
+        page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=trace&id={lead_id}")
+        page.wait_for_selector(".ops-trace-layout", timeout=15000)
         page.evaluate("history.forward()")
         page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=companies")
         page.locator('.ops-menu [data-view="finance"]').click()
@@ -120,6 +153,7 @@ def _admin_smoke(browser: Browser, base_url: str, output: Path, errors: list[str
             "title": page.title(),
             "navigation_count": page.locator(".ops-menu [data-view]").count(),
             "overview_screenshot": str(overview_screenshot),
+            "trace_screenshot": str(trace_screenshot),
             "browser_history_valid": True,
         }
     finally:
