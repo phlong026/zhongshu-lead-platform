@@ -160,18 +160,34 @@ def _platform_h5_smoke(browser: Browser, base_url: str, output: Path, errors: li
         page = context.new_page()
         _attach_errors(page, errors)
         page.goto(f"{base_url}/h5/admin/", wait_until="networkidle")
-        page.wait_for_selector(".ops-shell", timeout=15000)
-        _assert_no_visible_error(page, (".ops-error",))
-        if page.locator('.ops-menu [data-view="finance"]').count():
+        page.wait_for_selector(".platform-shell", timeout=15000)
+        _assert_no_visible_error(page, (".error",))
+        if page.locator('[data-go="funds"]').count():
             raise AssertionError("operation H5 can see finance navigation")
-        responsive_widths = _assert_responsive_widths(page, (".ops-top", ".ops-menu"))
+        operation_nav_count = page.locator(".nav").count()
+        if operation_nav_count != 5:
+            raise AssertionError("operation H5 must keep five focused bottom tabs")
+        responsive_widths = _assert_responsive_widths(page, (".platform-top", ".platform-bottom"))
+        safe_html_boundary = _assert_safe_html_boundary(page)
         page.set_viewport_size({"width": 390, "height": 844})
         screenshot = output / "v12-platform-h5-home-mobile.png"
         page.screenshot(path=str(screenshot), full_page=True)
+        context.request.post(f"{base_url}/api/v1/auth/logout")
+        _login(context, base_url, "admin", "Admin123!")
+        page.goto(f"{base_url}/h5/admin/?role=superadmin#/funds", wait_until="networkidle")
+        page.wait_for_selector(".platform-shell", timeout=15000)
+        page.wait_for_selector('[data-go="funds"].active', timeout=15000)
+        _assert_no_visible_error(page, (".error",))
+        if page.locator(".nav").count() != 4:
+            raise AssertionError("super admin H5 must keep four focused bottom tabs")
+        if not page.get_by_role("heading", name="资金").count():
+            raise AssertionError("super admin H5 fund workbench is missing")
         return {
             "valid": True,
-            "nav_count": page.locator(".ops-menu [data-view]").count(),
+            "nav_count": operation_nav_count,
+            "superadmin_nav_count": page.locator(".nav").count(),
             "responsive_widths": responsive_widths,
+            "safe_html_boundary": safe_html_boundary,
             "screenshot": str(screenshot),
         }
     finally:

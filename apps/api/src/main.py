@@ -202,21 +202,6 @@ def h5_entry(
     )
 
 
-@app.get("/h5/admin", include_in_schema=False)
-@app.get("/h5/admin/", include_in_schema=False)
-def h5_admin_entry(
-    access_token: str | None = Cookie(default=None),
-    db: Session = Depends(get_db),
-) -> RedirectResponse:
-    role_code = _web_entry_role(db, access_token)
-    if role_code is None:
-        return RedirectResponse(url="/admin/v12-operations.html", status_code=302)
-    if role_code in {"SUPER_ADMIN", "OPERATION"}:
-        # 复用唯一的 V1.2 平台壳；该壳已具备移动响应式布局，避免复制一套后台。
-        return RedirectResponse(url="/admin/v12-operations.html", status_code=302)
-    return RedirectResponse(url=_role_entry_target(role_code, surface="mobile"), status_code=302)
-
-
 @app.get("/h5/call", include_in_schema=False)
 @app.get("/h5/call/", include_in_schema=False)
 def h5_call_entry(
@@ -284,6 +269,7 @@ def admin_lead_legacy_entry(request: Request) -> RedirectResponse:
 
 for route, directory, name in [
     ("/h5/call", ROOT / "apps" / "call-h5" / "public", "h5-call"),
+    ("/h5/admin", ROOT / "apps" / "admin" / "public" / "h5", "h5-admin"),
     ("/h5", ROOT / "apps" / "h5" / "public", "h5"),
     ("/admin", ROOT / "apps" / "admin" / "public", "admin"),
 ]:
