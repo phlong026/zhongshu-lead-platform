@@ -32,7 +32,11 @@ def test_deployment_files_exist():
 
 
 def test_nginx_reuses_upstream_connections_for_capacity() -> None:
-    for config_path in ("infra/nginx/default.conf", "infra/nginx/production.conf.template"):
+    for config_path in (
+        "infra/nginx/default.conf",
+        "infra/nginx/production.conf.template",
+        "infra/nginx/baota-proxy.conf.template",
+    ):
         config = Path(config_path).read_text(encoding="utf-8")
         assert "upstream zhongshu_api" in config
         assert "keepalive 256;" in config
@@ -48,6 +52,17 @@ def test_nginx_template_mount_leaves_envsubst_destination_writable() -> None:
     template_target = "/etc/nginx/templates/default.conf.template:ro"
     assert template_target in base_compose
     assert template_target in production_compose
+
+
+def test_production_compose_uses_loopback_baota_gateway() -> None:
+    base_compose = Path("docker-compose.yml").read_text(encoding="utf-8")
+    production_compose = Path("docker-compose.prod.yml").read_text(encoding="utf-8")
+
+    assert "127.0.0.1:${HTTP_PORT:-8080}:80" in base_compose
+    assert "127.0.0.1:${HTTP_PORT:-80}:80" in production_compose
+    assert "HTTPS_PORT" not in production_compose
+    assert "./infra/nginx/baota-proxy.conf.template" in production_compose
+    assert "./infra/certs" not in production_compose
 
 
 def test_container_shell_scripts_are_checked_out_with_linux_line_endings():

@@ -85,7 +85,9 @@ services:
     depends_on:
       - api
     ports:
-      - "${HTTP_PORT:-8080}:80"
+      # The gateway is only for local development or a host reverse proxy.
+      # Do not expose the container directly on every network interface.
+      - "127.0.0.1:${HTTP_PORT:-8080}:80"
     volumes:
       # The official entrypoint renders templates into conf.d.  Mounting the
       # source there makes production envsubst fail on a read-only file.
