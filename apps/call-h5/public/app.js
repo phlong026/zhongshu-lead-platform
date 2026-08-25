@@ -139,8 +139,10 @@ function taskDescription(task) {
 function taskCard(task) {
   const lead = task.lead || {};
   const request = task.return_request || {};
+  const overdue = Boolean(task.is_overdue);
   const typeFact = task.task_kind === 'RETURN' ? `退回原因：${returnReasonLabels[request.reason_code] || '待确认'} · 证据 ${evidenceCount(request)} 份` : '资料不全，等待电话事实核验';
-  return `<article class="task" data-task-kind="${task.task_kind}" data-task="${task.id}" tabindex="0"><div class="row"><h3>${esc(lead.customer_name || '待核验客户')}</h3><span class="badge ${statusClass(task.status)}">${esc(statusLabel(task.status))}</span></div><p class="task-meta">${esc(TASK_KIND[task.task_kind].label)} · ${esc(lead.city || '')} ${esc(lead.district || '')}</p><dl class="task-facts"><div><dt>任务说明</dt><dd>${esc(typeFact)}</dd></div><div><dt>派发时间</dt><dd>${fmt(task.assigned_at)}</dd></div></dl><p>${esc(taskDescription(task))}</p></article>`;
+  const deadline = task.due_at || request.appeal_deadline_at;
+  return `<article class="task" data-task-kind="${task.task_kind}" data-task="${task.id}" tabindex="0"><div class="row"><h3>${esc(lead.customer_name || '待核验客户')}</h3><span class="badge ${statusClass(task.status)}">${esc(overdue ? '已超时' : statusLabel(task.status))}</span></div><p class="task-meta">${esc(TASK_KIND[task.task_kind].label)} · ${esc(lead.city || '')} ${esc(lead.district || '')}</p><dl class="task-facts"><div><dt>任务说明</dt><dd>${esc(typeFact)}</dd></div><div><dt>处理期限</dt><dd>${fmt(deadline)}</dd></div></dl><p>${esc(overdue ? '已超时，运营人员会重新安排核验。' : taskDescription(task))}</p></article>`;
 }
 
 function bindTaskCards() {
@@ -182,9 +184,9 @@ async function records() {
 
 function taskFacts(kind, data) {
   const lead = data.lead || {};
-  if (kind === 'PRE_DISPATCH') return [['任务类型', '前置核验'], ['客户需求', lead.need_summary || '--'], ['下一步', data.status === 'SUBMITTED' ? '等待运营处置' : '完成电话事实核验']];
+  if (kind === 'PRE_DISPATCH') return [['任务类型', '前置核验'], ['处理期限', fmt(data.due_at)], ['客户需求', lead.need_summary || '--'], ['下一步', data.status === 'SUBMITTED' ? '等待运营处置' : '完成电话事实核验']];
   const request = data.return_request || {};
-  return [['任务类型', '退回核验'], ['退回原因', returnReasonLabels[request.reason_code] || '待确认'], ['证据数量', `${evidenceCount(request)} 份`], ['下一步', data.status === 'SUBMITTED' ? '等待运营终审' : '完成退回事实核验']];
+  return [['任务类型', '退回核验'], ['处理期限', fmt(data.due_at)], ['退回原因', returnReasonLabels[request.reason_code] || '待确认'], ['证据数量', `${evidenceCount(request)} 份`], ['下一步', data.status === 'SUBMITTED' ? '等待运营终审' : '完成退回事实核验']];
 }
 
 function taskForm(kind) {
@@ -197,8 +199,9 @@ async function task(kind, id) {
   const data = await api(taskPath(kind, id));
   const lead = data.lead || {};
   const details = taskFacts(kind, data).map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join('');
-  const action = data.status === 'ASSIGNED' ? `<section class="card"><h2>开始核验</h2><p class="muted">该任务已由运营派发给您。开始后可查看完整手机号；这不是自主领取。</p><button class="btn primary block" id="start">开始核验</button></section>` : data.status === 'IN_PROGRESS' ? taskForm(kind) : `<section class="card"><h2>已提交结论</h2><dl class="detail"><div><dt>联系结果</dt><dd>${esc(contactLabels[data.contact_result] || '待确认')}</dd></div><div><dt>事实结论</dt><dd>${esc(TASK_KIND[kind].conclusions[data.conclusion] || '待确认')}</dd></div></dl><p class="muted">结论已经提交运营人员处置，不能由电销人员直接改变客资状态。</p></section>`;
-  zsSetSafeHtml(app, shell(`<button class="btn small outline" data-history-back>返回</button><section class="detail-hero"><div><p class="eyebrow">${esc(TASK_KIND[kind].label)}</p><h1>${esc(lead.customer_name || '待核验客户')}</h1><span class="badge ${statusClass(data.status)}">${esc(statusLabel(data.status))}</span></div>${data.status === 'IN_PROGRESS' ? `<button id="dial" class="btn gold">${icon('phone')}<span>一键拨号</span></button>` : ''}</section>${data.status === 'IN_PROGRESS' ? '<section class="quick-guide"><b>核验说明</b><span>拨号由您主动确认，只提交事实结论，不决定派发、退款或终审。</span><a href="#result-form">填写结果</a></section>' : ''}<section class="card compact"><dl class="detail"><div><dt>手机号</dt><dd><strong>${esc(lead.phone || lead.phone_masked || '--')}</strong></dd></div><div><dt>地区</dt><dd>${esc(lead.city || '--')} ${esc(lead.district || '')}</dd></div>${details}</dl></section>${action}`, data.status === 'SUBMITTED' ? 'records' : 'verify', '核验详情'));
+  const overdue = Boolean(data.is_overdue);
+  const action = overdue ? '<section class="card"><h2>任务已超时</h2><p class="muted">为保证核验结论有效，本任务不能继续处理。请等待运营人员改派。</p></section>' : data.status === 'ASSIGNED' ? `<section class="card"><h2>开始核验</h2><p class="muted">该任务已由运营派发给您。开始后可查看完整手机号；这不是自主领取。</p><button class="btn primary block" id="start">开始核验</button></section>` : data.status === 'IN_PROGRESS' ? taskForm(kind) : `<section class="card"><h2>已提交结论</h2><dl class="detail"><div><dt>联系结果</dt><dd>${esc(contactLabels[data.contact_result] || '待确认')}</dd></div><div><dt>事实结论</dt><dd>${esc(TASK_KIND[kind].conclusions[data.conclusion] || '待确认')}</dd></div></dl><p class="muted">结论已经提交运营人员处置，不能由电销人员直接改变客资状态。</p></section>`;
+  zsSetSafeHtml(app, shell(`<button class="btn small outline" data-history-back>返回</button><section class="detail-hero"><div><p class="eyebrow">${esc(TASK_KIND[kind].label)}</p><h1>${esc(lead.customer_name || '待核验客户')}</h1><span class="badge ${statusClass(data.status)}">${esc(overdue ? '已超时' : statusLabel(data.status))}</span></div>${data.status === 'IN_PROGRESS' && !overdue ? `<button id="dial" class="btn gold">${icon('phone')}<span>一键拨号</span></button>` : ''}</section>${data.status === 'IN_PROGRESS' && !overdue ? '<section class="quick-guide"><b>核验说明</b><span>拨号由您主动确认，只提交事实结论，不决定派发、退款或终审。</span><a href="#result-form">填写结果</a></section>' : ''}<section class="card compact"><dl class="detail"><div><dt>手机号</dt><dd><strong>${esc(lead.phone || lead.phone_masked || '--')}</strong></dd></div><div><dt>地区</dt><dd>${esc(lead.city || '--')} ${esc(lead.district || '')}</dd></div>${details}</dl></section>${action}`, data.status === 'SUBMITTED' ? 'records' : 'verify', '核验详情'));
   bind();
   bindTaskActions(kind, id);
 }

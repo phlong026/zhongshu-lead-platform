@@ -35,6 +35,7 @@ from apps.api.src.services.return_v12 import (
     claim_return_verification_task,
     create_or_update_return_draft,
     final_review_return,
+    return_verification_task_to_dict,
     submit_return_request,
     submit_return_verification,
 )
@@ -235,6 +236,79 @@ def test_telesales_cannot_start_an_unassigned_return_verification_task(db) -> No
         )
 
     assert exc_info.value.code == "RETURN_VERIFY_TASK_NOT_ASSIGNED"
+
+
+def test_overdue_return_verification_blocks_telesales_and_allows_operation_reassignment(db) -> None:
+    setup = _workflow_setup(db)
+    owner = _principal(setup["receiver_user"], "return.own.manage")
+    request = create_or_update_return_draft(
+        db,
+        assignment_id=setup["assignment"].id,
+        principal=owner,
+        reason_code="EMPTY_NUMBER",
+        description="需要在处理期限内完成退回事实核验",
+    )
+    _evidence(db, request, owner, EvidenceType.CHAT_SCREENSHOT.value)
+    submitted = submit_return_request(db, return_id=request.id, principal=owner)
+    assert submitted.task is not None
+
+    operator = _principal(setup["operator"], "verification.read")
+    assignment = assign_return_verification_task(
+        db,
+        task_id=submitted.task.id,
+        assignee_user_id=setup["telesales"].id,
+        assigned_by=operator.user_id,
+        reason="运营派发退回事实核验",
+    )
+    task = assignment.task
+    assert task.due_at is not None
+    task.due_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    telesales = _principal(
+        setup["telesales"],
+        "verification.task.start",
+        "verification.submit",
+        "lead.phone.read",
+    )
+    overdue_detail = return_verification_task_to_dict(db, task, telesales, include_phone=True)
+    assert overdue_detail["is_overdue"] is True
+    assert overdue_detail["lead"]["phone"] is None
+    with pytest.raises(AppError) as start_after_due:
+        claim_return_verification_task(db, task_id=task.id, principal=telesales)
+    assert start_after_due.value.code == "RETURN_VERIFY_TASK_OVERDUE"
+
+    assignment = assign_return_verification_task(
+        db,
+        task_id=task.id,
+        assignee_user_id=setup["telesales"].id,
+        assigned_by=operator.user_id,
+        reason="原核验任务超时，重新指定期限",
+    )
+    task = assignment.task
+    claim_return_verification_task(db, task_id=task.id, principal=telesales)
+    task.due_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    db.flush()
+
+    with pytest.raises(AppError) as submit_after_due:
+        submit_return_verification(
+            db,
+            task_id=task.id,
+            principal=telesales,
+            contact_result="EMPTY_NUMBER",
+            conclusion="SUPPORT_RETURN",
+            note="超时后不得提交退回核验结论",
+        )
+    assert submit_after_due.value.code == "RETURN_VERIFY_TASK_OVERDUE"
+
+    reassigned = assign_return_verification_task(
+        db,
+        task_id=task.id,
+        assignee_user_id=setup["telesales"].id,
+        assigned_by=operator.user_id,
+        reason="原核验任务超时，改派其他电销人员",
+    )
+    assert reassigned.task.status == VerificationTaskStatus.ASSIGNED.value
+    assert reassigned.task.started_at is None
+    assert reassigned.task.due_at > datetime.now(timezone.utc)
 
 
 def test_missing_return_evidence_is_rejected(db) -> None:

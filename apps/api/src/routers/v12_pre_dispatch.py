@@ -22,6 +22,8 @@ from ..services.audit import write_audit
 from ..services.pre_dispatch_v12 import (
     assign_pre_dispatch_task,
     decide_pre_dispatch_disposition,
+    is_pre_dispatch_task_overdue,
+    require_pre_dispatch_task_not_overdue,
     start_pre_dispatch_task,
     submit_pre_dispatch_verification,
 )
@@ -44,12 +46,14 @@ def _task_or_raise(db: Session, task_id: str) -> VerificationTask:
 
 def _task_to_dict(db: Session, task: VerificationTask, principal: CurrentPrincipal, *, include_phone: bool = False) -> dict:
     lead = db.get(Lead, task.lead_id)
+    is_overdue = is_pre_dispatch_task_overdue(task)
     can_view_phone = bool(
         include_phone
         and principal.has_any_role("TELESALES")
         and task.assignee_user_id == principal.user_id
         and task.status == VerificationTaskStatus.IN_PROGRESS.value
         and principal.can("lead.phone.read")
+        and not is_overdue
     )
     phone = decrypt_text(lead.phone_encrypted) if lead and can_view_phone else None
     return {
@@ -59,6 +63,8 @@ def _task_to_dict(db: Session, task: VerificationTask, principal: CurrentPrincip
         "lead_id": task.lead_id,
         "assignee_user_id": task.assignee_user_id,
         "assigned_at": task.assigned_at.isoformat() if task.assigned_at else None,
+        "due_at": task.due_at.isoformat() if task.due_at else None,
+        "is_overdue": is_overdue,
         "started_at": task.started_at.isoformat() if task.started_at else None,
         "submitted_at": task.submitted_at.isoformat() if task.submitted_at else None,
         "contact_result": task.contact_result,
@@ -71,7 +77,7 @@ def _task_to_dict(db: Session, task: VerificationTask, principal: CurrentPrincip
             "district": lead.district if lead else None,
             "need_summary": lead.need_summary if lead else None,
             "status": lead.status if lead else None,
-            "next_owner": "OPERATION" if lead and task.status == VerificationTaskStatus.SUBMITTED.value else "TELESALES",
+            "next_owner": "OPERATION" if lead and (is_overdue or task.status == VerificationTaskStatus.SUBMITTED.value) else "TELESALES",
         },
     }
 
@@ -89,7 +95,7 @@ def assign_pre_dispatch_verification(
     principal=Depends(require_permissions("lead.supplier.review")),
     db: Session = Depends(get_db),
 ):
-    task = assign_pre_dispatch_task(
+    assignment = assign_pre_dispatch_task(
         db,
         lead_id=lead_id,
         assignee_user_id=body.assignee_user_id,
@@ -97,13 +103,15 @@ def assign_pre_dispatch_verification(
         reason=body.reason,
         template_code=body.template_code,
     )
+    task = assignment.task
     write_audit(
         db,
         principal=principal,
         action="V12_PRE_DISPATCH_VERIFY_ASSIGN",
         resource_type="verification_task",
         resource_id=task.id,
-        after={"lead_id": task.lead_id, "assignee_user_id": task.assignee_user_id, "status": task.status},
+        before=assignment.before,
+        after=assignment.after,
         reason=body.reason,
         request_id=request.state.request_id,
     )
@@ -189,6 +197,7 @@ def dial_pre_dispatch_verification(
     task = _task_or_raise(db, task_id)
     if task.assignee_user_id != principal.user_id or task.status != VerificationTaskStatus.IN_PROGRESS.value:
         raise AppError("PRE_DISPATCH_TASK_NOT_OWNED", "仅进行中的本人任务可拨号", 409)
+    require_pre_dispatch_task_not_overdue(task)
     payload = _task_to_dict(db, task, principal, include_phone=True)
     phone = payload["lead"]["phone"]
     write_audit(

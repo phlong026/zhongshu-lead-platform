@@ -481,6 +481,7 @@ def _run_return_flow(
         )
     )
     assert assigned["status"] == "ASSIGNED"
+    assert assigned["due_at"] is not None
     started = _data(
         client.post(
             f"/api/v1/v1.2/return-verifications/tasks/{task_id}/start",

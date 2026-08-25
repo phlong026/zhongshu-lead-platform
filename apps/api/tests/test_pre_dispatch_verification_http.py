@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from sqlalchemy import select
 
-from apps.api.src.core.models import Lead, Notification, User
+from apps.api.src.core.models import AuditLog, Lead, Notification, User, VerificationTask
 from apps.api.src.core.security import encrypt_text, hash_phone
 from apps.api.src.core.v12_enums import LeadV12Status
 from apps.api.src.services.auth_service import create_internal_user
@@ -76,6 +78,7 @@ def test_pre_dispatch_http_flow_never_allows_telesales_to_self_assign(api_client
     )
     task_id = assigned["id"]
     assert assigned["lead"]["phone"] is None
+    assert assigned["due_at"] is not None
     with factory() as db:
         notification = db.scalar(
             select(Notification).where(
@@ -129,3 +132,112 @@ def test_pre_dispatch_http_flow_never_allows_telesales_to_self_assign(api_client
     )
     assert disposition["status"] == LeadV12Status.READY_DISPATCH.value
     assert other_id != telesales_id
+
+
+def test_overdue_pre_dispatch_task_cannot_be_dialed(api_client) -> None:
+    client, factory = api_client
+    with factory() as db:
+        operation = db.scalar(select(User).where(User.username == "operation"))
+        telesales = db.scalar(select(User).where(User.username == "telesales"))
+        assert operation is not None and telesales is not None
+        replacement = create_internal_user(
+            db,
+            username="pre-overdue-replacement",
+            password="simple88",
+            display_name="超时接手电销",
+            role_code="TELESALES",
+        )
+        lead = Lead(
+            source_type="SUPPLIER_H5",
+            source_kind="SUPPLIER_H5",
+            customer_name="拨号超时客户",
+            phone_encrypted=encrypt_text("13900139012"),
+            phone_hash=hash_phone("13900139012"),
+            city="上海市",
+            region_code="310000",
+            category_code="OLD_RENOVATION",
+            need_summary="超时后不得继续拨打",
+            consent_confirmed=True,
+            status=LeadV12Status.PENDING_REVIEW.value,
+            review_status="PENDING",
+            duplicate_status="CLEAR",
+            raw_payload={},
+        )
+        db.add(lead)
+        publish_template(db, code="PRE_DIAL_OVERDUE", name="拨号超时核验", schema={"fields": []})
+        db.commit()
+        lead_id = lead.id
+        telesales_id = telesales.id
+        replacement_id = replacement.id
+
+    operation_headers = _login(client, "operation", "Operation123!")
+    telesales_headers = _login(client, "telesales", "Telesales123!")
+    task = _data(
+        client.post(
+            f"/api/v1/v1.2/admin/leads/{lead_id}/pre-dispatch-verification",
+            headers=operation_headers,
+            json={
+                "assignee_user_id": telesales_id,
+                "reason": "请在期限内确认客户资料",
+                "template_code": "PRE_DIAL_OVERDUE",
+            },
+        )
+    )
+    task_id = task["id"]
+    _data(
+        client.post(
+            f"/api/v1/v1.2/pre-dispatch-verifications/tasks/{task_id}/start",
+            headers=telesales_headers,
+        )
+    )
+    with factory() as db:
+        overdue_task = db.get(VerificationTask, task_id)
+        assert overdue_task is not None
+        overdue_task.due_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        db.commit()
+
+    detail = _data(
+        client.get(
+            f"/api/v1/v1.2/pre-dispatch-verifications/tasks/{task_id}",
+            headers=telesales_headers,
+        )
+    )
+    assert detail["is_overdue"] is True
+    assert detail["lead"]["next_owner"] == "OPERATION"
+    assert detail["lead"]["phone"] is None
+    dial = client.post(
+        f"/api/v1/v1.2/pre-dispatch-verifications/tasks/{task_id}/dial",
+        headers=telesales_headers,
+    )
+    assert dial.status_code == 409
+    assert dial.json()["code"] == "PRE_DISPATCH_TASK_OVERDUE"
+
+    reassigned = _data(
+        client.post(
+            f"/api/v1/v1.2/admin/leads/{lead_id}/pre-dispatch-verification",
+            headers=operation_headers,
+            json={
+                "assignee_user_id": replacement_id,
+                "reason": "原电销任务超时，运营重新安排核验",
+                "template_code": "PRE_DIAL_OVERDUE",
+            },
+        )
+    )
+    assert reassigned["assignee_user_id"] == replacement_id
+    with factory() as db:
+        audit = db.scalar(
+            select(AuditLog)
+            .where(
+                AuditLog.action == "V12_PRE_DISPATCH_VERIFY_ASSIGN",
+                AuditLog.resource_id == task_id,
+            )
+            .order_by(AuditLog.created_at.desc())
+        )
+        assert audit is not None
+        assert audit.before_json is not None
+        assert audit.before_json["assignee_user_id"] == telesales_id
+        assert audit.before_json["status"] == "IN_PROGRESS"
+        assert audit.before_json["due_at"] is not None
+        assert audit.after_json["assignee_user_id"] == replacement_id
+        assert audit.after_json["status"] == "ASSIGNED"
+        assert audit.after_json["due_at"] is not None

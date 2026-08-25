@@ -30,6 +30,7 @@ from ..services.return_v12 import (
     final_review_return,
     return_request_to_dict,
     return_verification_task_to_dict,
+    require_return_verification_task_not_overdue,
     submit_return_request,
     submit_return_verification,
 )
@@ -381,33 +382,22 @@ def assign_return_verification(
     principal=Depends(require_permissions("verification.read")),
     db: Session = Depends(get_db),
 ):
-    current = db.get(VerificationTask, task_id)
-    if current is None or current.task_type != VerificationTaskType.RETURN_VERIFY.value:
-        raise AppError("RETURN_VERIFY_TASK_NOT_FOUND", "退回核验任务不存在", 404)
-    before = {
-        "assignee_user_id": current.assignee_user_id,
-        "status": current.status,
-        "assigned_at": current.assigned_at.isoformat() if current.assigned_at else None,
-    }
-    task = assign_return_verification_task(
+    assignment = assign_return_verification_task(
         db,
         task_id=task_id,
         assignee_user_id=body.assignee_user_id,
         assigned_by=principal.user_id,
         reason=body.reason,
     )
+    task = assignment.task
     write_audit(
         db,
         principal=principal,
         action="V12_RETURN_VERIFY_ASSIGN",
         resource_type="verification_task",
         resource_id=task.id,
-        before=before,
-        after={
-            "assignee_user_id": task.assignee_user_id,
-            "status": task.status,
-            "assigned_at": task.assigned_at.isoformat() if task.assigned_at else None,
-        },
+        before=assignment.before,
+        after=assignment.after,
         reason=body.reason,
         request_id=request.state.request_id,
     )
@@ -460,6 +450,7 @@ def dial_return_verification(
         or task.status != VerificationTaskStatus.IN_PROGRESS.value
     ):
         raise AppError("FORBIDDEN", "无权拨打该退回核验电话", 403)
+    require_return_verification_task_not_overdue(task)
     data = return_verification_task_to_dict(db, task, principal, include_phone=True)
     phone = data["lead"]["phone"]
     write_audit(

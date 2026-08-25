@@ -1,16 +1,20 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..core import models_v12 as _models_v12  # noqa: F401
 from ..core.auth import Principal
+from ..core.config import get_settings
 from ..core.enums import VerificationTaskStatus
 from ..core.errors import AppError
 from ..core.models import Lead, Role, User, VerificationSubmission, VerificationTask
 from ..core.state_machine_v12 import assert_lead_transition
+from ..core.time import as_utc
 from ..core.v12_enums import LeadSourceKind, LeadV12Status, VerificationTaskType
 from .verification_service import latest_published_template
 
@@ -21,6 +25,36 @@ _ACTIVE_TASK_STATUSES = {
 }
 _CONCLUSIONS = {"QUALIFIED", "INFO_INCOMPLETE", "UNVERIFIABLE", "INVALID", "DUPLICATE"}
 _DISPOSITIONS = {"APPROVE_POOL", "RETURN_REWORK", "DUPLICATE", "CLOSE"}
+
+
+@dataclass(frozen=True, slots=True)
+class PreDispatchAssignmentResult:
+    task: VerificationTask
+    before: dict[str, Any] | None
+    after: dict[str, Any]
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _due_at(now: datetime) -> datetime:
+    return now + timedelta(hours=get_settings().pre_dispatch_verification_hours)
+
+
+def is_pre_dispatch_task_overdue(task: VerificationTask) -> bool:
+    due_at = as_utc(task.due_at)
+    return due_at is not None and due_at <= _now()
+
+
+def _require_not_overdue(task: VerificationTask) -> None:
+    if is_pre_dispatch_task_overdue(task):
+        raise AppError("PRE_DISPATCH_TASK_OVERDUE", "前置电销核验任务已超时，请联系运营人员改派", 409)
+
+
+def require_pre_dispatch_task_not_overdue(task: VerificationTask) -> None:
+    """Keep every executable pre-dispatch action behind the same deadline rule."""
+    _require_not_overdue(task)
 
 
 def _lead_or_raise(db: Session, lead_id: str, *, lock: bool = False) -> Lead:
@@ -57,6 +91,20 @@ def _task_or_raise(db: Session, task_id: str, *, lock: bool = False) -> Verifica
     return task
 
 
+def _assignment_snapshot(task: VerificationTask) -> dict[str, Any]:
+    return {
+        "lead_id": task.lead_id,
+        "assignee_user_id": task.assignee_user_id,
+        "assigned_by": task.assigned_by,
+        "assigned_at": task.assigned_at.isoformat() if task.assigned_at else None,
+        "due_at": task.due_at.isoformat() if task.due_at else None,
+        "started_at": task.started_at.isoformat() if task.started_at else None,
+        "submitted_at": task.submitted_at.isoformat() if task.submitted_at else None,
+        "status": task.status,
+        "lock_version": task.lock_version,
+    }
+
+
 def assign_pre_dispatch_task(
     db: Session,
     *,
@@ -65,7 +113,7 @@ def assign_pre_dispatch_task(
     assigned_by: str,
     reason: str,
     template_code: str = "PRE_DISPATCH",
-) -> VerificationTask:
+) -> PreDispatchAssignmentResult:
     normalized_reason = reason.strip()
     if not normalized_reason:
         raise AppError("PRE_DISPATCH_REASON_REQUIRED", "派发前置核验必须填写原因", 422)
@@ -85,16 +133,29 @@ def assign_pre_dispatch_task(
         )
         .with_for_update()
     )
+    now = _now()
     if active is not None:
-        if active.assignee_user_id == assignee_user_id:
-            return active
-        if active.status == VerificationTaskStatus.IN_PROGRESS.value:
+        before = _assignment_snapshot(active)
+        if active.assignee_user_id == assignee_user_id and not is_pre_dispatch_task_overdue(active):
+            return PreDispatchAssignmentResult(task=active, before=before, after=before)
+        if active.status == VerificationTaskStatus.IN_PROGRESS.value and not is_pre_dispatch_task_overdue(active):
             raise AppError("PRE_DISPATCH_TASK_IN_PROGRESS", "核验已开始，不能直接改派", 409)
         active.assignee_user_id = assignee_user_id
         active.assigned_by = assigned_by
-        active.assigned_at = datetime.now(timezone.utc)
+        active.assigned_at = now
+        active.started_at = None
+        active.due_at = _due_at(now)
+        active.contact_result = None
+        active.verification_conclusion = None
+        active.submitted_at = None
+        active.status = VerificationTaskStatus.ASSIGNED.value
         active.lock_version += 1
-        return active
+        db.flush()
+        return PreDispatchAssignmentResult(
+            task=active,
+            before=before,
+            after=_assignment_snapshot(active),
+        )
     template = latest_published_template(db, template_code)
     task = VerificationTask(
         lead_id=lead.id,
@@ -104,18 +165,24 @@ def assign_pre_dispatch_task(
         status=VerificationTaskStatus.ASSIGNED.value,
         assignee_user_id=assignee_user_id,
         assigned_by=assigned_by,
-        assigned_at=datetime.now(timezone.utc),
+        assigned_at=now,
+        due_at=_due_at(now),
     )
     db.add(task)
     assert_lead_transition(lead.status, LeadV12Status.PENDING_TELESALES_VERIFY)
     lead.status = LeadV12Status.PENDING_TELESALES_VERIFY.value
     lead.pending_reason = normalized_reason
     db.flush()
-    return task
+    return PreDispatchAssignmentResult(
+        task=task,
+        before=None,
+        after=_assignment_snapshot(task),
+    )
 
 
 def start_pre_dispatch_task(db: Session, *, task_id: str, principal: Principal) -> VerificationTask:
     task = _task_or_raise(db, task_id, lock=True)
+    _require_not_overdue(task)
     if task.status == VerificationTaskStatus.IN_PROGRESS.value and task.assignee_user_id == principal.user_id:
         return task
     if task.status != VerificationTaskStatus.ASSIGNED.value or task.assignee_user_id is None:
@@ -123,7 +190,7 @@ def start_pre_dispatch_task(db: Session, *, task_id: str, principal: Principal) 
     if task.assignee_user_id != principal.user_id:
         raise AppError("FORBIDDEN", "任务已派发给其他电销人员", 403)
     task.status = VerificationTaskStatus.IN_PROGRESS.value
-    task.started_at = task.started_at or datetime.now(timezone.utc)
+    task.started_at = task.started_at or _now()
     task.lock_version += 1
     db.flush()
     return task
@@ -153,6 +220,7 @@ def submit_pre_dispatch_verification(
         )
         if submission is not None:
             return submission
+    _require_not_overdue(task)
     if task.status != VerificationTaskStatus.IN_PROGRESS.value or task.assignee_user_id != principal.user_id:
         raise AppError("PRE_DISPATCH_TASK_NOT_OWNED", "任务不属于当前电销人员或尚未开始", 409)
     lead = _lead_or_raise(db, task.lead_id, lock=True)
@@ -161,7 +229,7 @@ def submit_pre_dispatch_verification(
     task.contact_result = contact_result.strip().upper()
     task.verification_conclusion = normalized_conclusion
     task.status = VerificationTaskStatus.SUBMITTED.value
-    task.submitted_at = datetime.now(timezone.utc)
+    task.submitted_at = _now()
     task.lock_version += 1
     assert_lead_transition(lead.status, LeadV12Status.PENDING_OPERATION_DISPOSITION)
     lead.status = LeadV12Status.PENDING_OPERATION_DISPOSITION.value
@@ -228,6 +296,6 @@ def decide_pre_dispatch_disposition(
     assert_lead_transition(lead.status, target)
     lead.status = target.value
     lead.review_note = normalized_note
-    lead.reviewed_at = datetime.now(timezone.utc)
+    lead.reviewed_at = _now()
     db.flush()
     return lead

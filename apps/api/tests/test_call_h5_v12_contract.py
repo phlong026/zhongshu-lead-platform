@@ -11,6 +11,7 @@ from apps.api.src.core.enums import AssignmentStatus, VerificationTaskStatus
 from apps.api.src.core.models import (
     Assignment,
     AssignmentEvent,
+    AuditLog,
     Company,
     Lead,
     Notification,
@@ -181,6 +182,7 @@ def test_call_h5_task_detail_first_screen_exposes_dial_rules_and_result_entry() 
         assert label in source
     for forbidden in ("自动录音", "云外呼", "在线支付"):
         assert forbidden not in source
+    assert source.count("['处理期限', fmt(data.due_at)]") >= 2
 
 
 def test_call_h5_route_awaits_async_views_so_failures_reach_the_error_state() -> None:
@@ -221,6 +223,7 @@ def test_v12_call_flow_works_with_legacy_writes_disabled(api_client, monkeypatch
     )
     assert assigned["status"] == VerificationTaskStatus.ASSIGNED.value
     assert assigned["assignee_user_id"] == telesales_id
+    assert assigned["due_at"] is not None
     assert decrypt_calls == []
     with factory() as db:
         notification = db.scalar(
@@ -231,6 +234,18 @@ def test_v12_call_flow_works_with_legacy_writes_disabled(api_client, monkeypatch
         )
         assert notification is not None
         assert notification.deep_link == "/h5/call/#/verify"
+        audit = db.scalar(
+            select(AuditLog)
+            .where(
+                AuditLog.action == "V12_RETURN_VERIFY_ASSIGN",
+                AuditLog.resource_id == task_id,
+            )
+            .order_by(AuditLog.created_at.desc())
+        )
+        assert audit is not None
+        assert audit.before_json["status"] == VerificationTaskStatus.PENDING.value
+        assert audit.after_json["assignee_user_id"] == telesales_id
+        assert audit.after_json["due_at"] is not None
 
     legacy_claim = client.post(
         f"/api/v1/verification/tasks/{task_id}/claim",
