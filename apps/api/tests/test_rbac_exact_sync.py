@@ -20,7 +20,6 @@ MINIMUM_ROLE_PERMISSIONS = {
         "lead.dispatch",
         "company.profile.review",
         "verification.read",
-        "notification.retry",
         "calendar.read",
         "return.review",
     },
@@ -247,6 +246,7 @@ def test_fixed_role_matrix_is_the_confirmed_five_role_contract(db: Session) -> N
     assert "verification.task.start" in _role_permission_codes(db, "TELESALES")
     assert "return.review" in _role_permission_codes(db, "OPERATION")
     assert "points.recharge" not in _role_permission_codes(db, "OPERATION")
+    assert "notification.retry" not in _role_permission_codes(db, "OPERATION")
 
 
 def test_critical_role_permissions_cannot_be_removed_silently(db: Session) -> None:

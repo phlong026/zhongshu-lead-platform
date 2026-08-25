@@ -5,6 +5,7 @@ from sqlalchemy import select
 import apps.api.src.integrations.wechat as wechat_module
 from apps.api.src.core.models import NotificationOutbox, SystemConfig
 from apps.api.src.schemas.company import CompanyCreateBody
+from apps.api.src.services.auth_service import create_internal_user
 from apps.api.src.services.company_service import create_company
 from apps.api.src.services.notification_service import enqueue_outbox
 from apps.api.src.services.outbox_worker import process_outbox
@@ -325,3 +326,28 @@ def test_failed_outbox_panel_defaults_include_terminal_states(api_client) -> Non
     resp = client.get("/api/v1/notifications/outbox/failed?status=FAILED", headers=headers)
     assert resp.status_code == 200, resp.text
     assert {row["status"] for row in resp.json()["data"]} == {"FAILED"}
+
+
+def test_operation_cannot_review_or_retry_failed_outbox(api_client) -> None:
+    client, factory = api_client
+    with factory() as db:
+        create_internal_user(
+            db,
+            username="notification-operation",
+            password="Operation123!",
+            display_name="通知运营",
+            role_code="OPERATION",
+        )
+        db.commit()
+
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "notification-operation", "password": "Operation123!"},
+    )
+    assert login.status_code == 200, login.text
+    token = login.cookies.get("access_token")
+    assert token
+    headers = {"Authorization": f"Bearer {token}"}
+
+    assert client.get("/api/v1/notifications/outbox/failed", headers=headers).status_code == 403
+    assert client.post("/api/v1/notifications/outbox/not-a-real-id/retry", headers=headers).status_code == 403

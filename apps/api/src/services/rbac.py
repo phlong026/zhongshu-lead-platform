@@ -34,7 +34,6 @@ ROLE_PERMISSION_MATRIX: dict[str, tuple[str, list[str]]] = {
             "return.review",
             "return.evidence.read",
             "reward.read",
-            "notification.retry",
             "dashboard.operation.read",
             "audit.read",
             "report.v12.read",
