@@ -72,8 +72,13 @@ docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml 
 首先进入维护窗口并停止业务写入：
 
 ```bash
+mkdir -p dist
+python scripts/export_five_role_migration_snapshot.py \
+  --output "dist/five-role-migration-snapshot-$(date +%Y%m%d-%H%M%S).json"
 ENV_FILE=.env BACKUP_RETENTION_DAYS=30 sh scripts/backup_postgres.sh
 ```
+
+快照只用于五角色迁移前的关联核对，不包含密码、邀请令牌、完整手机号或原始客资；该文件默认权限为 `0600`，不得提交或外发。
 
 显式执行 Alembic：
 
