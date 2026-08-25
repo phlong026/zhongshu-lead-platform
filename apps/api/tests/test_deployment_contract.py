@@ -65,6 +65,14 @@ def test_production_compose_uses_loopback_baota_gateway() -> None:
     assert "./infra/certs" not in production_compose
 
 
+def test_baota_health_checks_forward_the_public_host() -> None:
+    config = Path("infra/nginx/baota-proxy.conf.template").read_text(encoding="utf-8")
+
+    for location in ("/health/live", "/health/ready"):
+        block = config.split(f"location = {location} {{", maxsplit=1)[1].split("}", maxsplit=1)[0]
+        assert "proxy_set_header Host $host;" in block
+
+
 def test_container_shell_scripts_are_checked_out_with_linux_line_endings():
     attributes = Path('.gitattributes').read_text(encoding='utf-8')
     assert '*.sh text eol=lf' in attributes
