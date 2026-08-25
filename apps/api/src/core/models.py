@@ -114,6 +114,30 @@ class Company(Base, TimestampMixin):
     points_account: Mapped[PointsAccount | None] = relationship(back_populates="company", uselist=False, cascade="all, delete-orphan")
 
 
+class CompanyAccountRequest(Base, TimestampMixin):
+    """A franchise owner's employee-account request, decided by platform staff."""
+
+    __tablename__ = "company_account_requests"
+    __table_args__ = (
+        Index("ix_company_account_requests_company_status", "company_id", "status"),
+        Index("ix_company_account_requests_target_status", "target_user_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    company_id: Mapped[str] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True)
+    request_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="PENDING", nullable=False, index=True)
+    requested_by: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
+    target_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    requested_username: Mapped[str | None] = mapped_column(String(64))
+    requested_display_name: Mapped[str | None] = mapped_column(String(64))
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    decision_reason: Mapped[str | None] = mapped_column(Text)
+    decided_by: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    executed_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
+
+
 class CompanyServiceRegion(Base, TimestampMixin):
     __tablename__ = "company_service_regions"
     __table_args__ = (UniqueConstraint("company_id", "region_code", name="uq_company_region"),)
