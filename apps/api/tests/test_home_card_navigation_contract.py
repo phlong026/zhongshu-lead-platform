@@ -16,19 +16,16 @@ def read(path: Path) -> str:
 def test_franchise_home_metrics_open_existing_business_details() -> None:
     workbench = read(H5 / "v12-workbench.js")
 
-    assert "leads:['客资','list']" in workbench
+    assert "leads:['供资','plus']" in workbench
     for route in ("points", "assignments", "returns"):
         assert f"view:'{route}'" in workbench
-    assert 'data-go="leads" data-id="supply"' in workbench
-    assert "wb-action-value" in workbench
-    assert "const heroMetrics=[]" in workbench
-    assert "main:heroMetrics.length===0" in workbench
-    assert "if(heroMetrics.length>4)heroMetrics.length=4" in workbench
+    assert "const followView='followups'" in workbench
+    assert "view:'leads'" in workbench
+    assert "franchiseHomeMetrics" in workbench
+    assert "franchiseHomeHero" in workbench
+    assert "homeTaskList" in workbench
     assert "account?.available_for_dispatch??account?.balance" in workbench
-    assert "const rewardAttention=" in workbench
-    assert "const rewardTotal=" in workbench
-    assert "d.supplier_rewards?.points" not in workbench
-    assert "const assignmentMetricTarget=canView('assignments')" in workbench
+    assert "const taskView=owner&&waitingClaim?'assignments':followView" in workbench
 
 
 
@@ -56,8 +53,8 @@ def test_telesales_home_uses_actionable_count_and_clear_mobile_navigation() -> N
         assert nav_item in source
     assert "const actionable = tasks.filter" in source
     assert "actionable.length" in source
-    assert "actionable.slice(0, 5)" in source
-    assert 'data-route="verify?status=ASSIGNED"' in source
+    assert "tasks.slice(0, 3).map(homeTaskRow)" in source
+    assert "['待开始', metric(tasks, ['ASSIGNED']), 'verify?status=ASSIGNED']" in source
     assert "status === 'ASSIGNED'" in source
     assert "['ASSIGNED', '待开始']" in source
 

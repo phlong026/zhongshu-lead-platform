@@ -40,6 +40,10 @@ const fmt = (value) => value ? new Date(value).toLocaleString('zh-CN', { month: 
 const statusLabel = (value) => statusLabels[value] || '待确认';
 const statusClass = (value) => value === 'SUBMITTED' ? 'done' : value === 'IN_PROGRESS' ? 'doing' : 'pending';
 const evidenceCount = (request = {}) => Object.values(request.evidence_summary || {}).reduce((sum, count) => sum + Number(count || 0), 0);
+const greetingName = (value) => {
+  const name = String(value || '').trim();
+  return name.length > 6 ? `${name.slice(0, 6)}…` : name;
+};
 
 function toast(message, type = '') {
   toastEl.textContent = message;
@@ -145,6 +149,32 @@ function taskCard(task) {
   return `<article class="task" data-task-kind="${task.task_kind}" data-task="${task.id}" tabindex="0"><div class="row"><h3>${esc(lead.customer_name || '待核验客户')}</h3><span class="badge ${statusClass(task.status)}">${esc(overdue ? '已超时' : statusLabel(task.status))}</span></div><p class="task-meta">${esc(TASK_KIND[task.task_kind].label)} · ${esc(lead.city || '')} ${esc(lead.district || '')}</p><dl class="task-facts"><div><dt>任务说明</dt><dd>${esc(typeFact)}</dd></div><div><dt>处理期限</dt><dd>${fmt(deadline)}</dd></div></dl><p>${esc(overdue ? '已超时，运营人员会重新安排核验。' : taskDescription(task))}</p></article>`;
 }
 
+function callHomeGreeting() {
+  const name = String(me?.display_name || '电销人员').trim();
+  return `<section class="call-home-greeting"><div><p>内部电销工作台</p><h1>${esc(greetingName(name))}，上午好</h1></div><div class="call-home-avatar" aria-label="${esc(name)}">${esc(name.slice(0, 1))}</div></section>`;
+}
+
+function callHomeHero({ value, actionLabel, hasDoing }) {
+  return `<section class="hero callHomeHero"><div><small>今日待核验</small><strong>${Number(value || 0)}</strong><span>运营派发的本人任务</span></div><button class="btn gold" data-route="verify">${icon(hasDoing ? 'user-check' : 'phone')}<span>${esc(actionLabel)}</span></button></section>`;
+}
+
+function callHomeMetrics(items) {
+  return `<section class="metrics callHomeMetrics" aria-label="个人任务统计">${items.map(([labelText, value, route]) => `<button type="button" class="metric" data-route="${route}"><span>${esc(labelText)}</span><b>${Number(value || 0)}</b></button>`).join('')}</section>`;
+}
+
+function homeTaskRow(task) {
+  const lead = task.lead || {};
+  const customer = lead.customer_name || '待核验客户';
+  const place = [lead.city, lead.district].filter(Boolean).join(' · ') || '地区待补充';
+  const overdue = Boolean(task.is_overdue);
+  return `<article class="home-task-row" data-task-kind="${task.task_kind}" data-task="${task.id}" tabindex="0"><span class="home-task-avatar">${esc(String(customer).slice(0, 1))}</span><span class="home-task-copy"><b>${esc(customer)}</b><small>${esc(place)} · ${esc(TASK_KIND[task.task_kind].label)}</small></span><span class="badge ${statusClass(task.status)}">${esc(overdue ? '已超时' : statusLabel(task.status))}</span>${icon('chevron-right')}</article>`;
+}
+
+function homeTaskList(tasks) {
+  if (!tasks.length) return '';
+  return `<section class="card home-task-section"><div class="row section-head"><h2>最近任务</h2><button class="btn small outline" data-route="verify">查看全部</button></div><div class="home-task-list">${tasks.slice(0, 3).map(homeTaskRow).join('')}</div></section>`;
+}
+
 function bindTaskCards() {
   document.querySelectorAll('[data-task]').forEach((node) => {
     const open = () => go(`task/${node.dataset.taskKind}/${node.dataset.task}`);
@@ -158,7 +188,7 @@ async function home() {
   const tasks = await loadTasks();
   const actionable = tasks.filter((item) => item.status !== 'SUBMITTED');
   const hasDoing = actionable.some((item) => item.status === 'IN_PROGRESS');
-  zsSetSafeHtml(app, shell(`<section class="home-title"><p class="eyebrow">个人任务工作台</p><h1>您好，${esc(me.display_name)}</h1><p class="muted">待办仅来自运营派发；您提交事实结论后，由运营决定后续处理。</p></section><section class="hero"><div><small>当前待办</small><strong>${actionable.length}</strong><span>待开始和核验中的本人任务</span></div><button class="btn gold" data-route="verify">${icon(hasDoing ? 'user-check' : 'phone')}<span>${hasDoing ? '继续核验' : '开始核验'}</span></button></section><section class="metrics" aria-label="个人任务统计"><button type="button" class="metric" data-route="verify?status=ASSIGNED"><span>待开始</span><b>${metric(tasks, ['ASSIGNED'])}</b></button><button type="button" class="metric" data-route="verify?status=IN_PROGRESS"><span>核验中</span><b>${metric(tasks, ['IN_PROGRESS'])}</b></button><button type="button" class="metric" data-route="records"><span>已提交</span><b>${metric(tasks, ['SUBMITTED'])}</b></button></section><section class="card"><div class="row section-head"><h2>待办</h2><button class="btn small outline" data-route="verify">全部</button></div>${actionable.length ? actionable.slice(0, 5).map(taskCard).join('') : emptyState('暂无待办任务', '运营派发新的核验任务后会显示在这里。')}</section>`));
+  zsSetSafeHtml(app, shell(`${callHomeGreeting()}${callHomeHero({ value: actionable.length, actionLabel: hasDoing ? '继续核验' : '开始核验', hasDoing })}${callHomeMetrics([['待开始', metric(tasks, ['ASSIGNED']), 'verify?status=ASSIGNED'], ['核验中', metric(tasks, ['IN_PROGRESS']), 'verify?status=IN_PROGRESS'], ['已提交', metric(tasks, ['SUBMITTED']), 'records']])}${homeTaskList(actionable)}`));
   bind();
   bindTaskCards();
 }

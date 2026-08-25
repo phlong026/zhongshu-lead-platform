@@ -161,6 +161,8 @@ def _platform_h5_smoke(browser: Browser, base_url: str, output: Path, errors: li
         _attach_errors(page, errors)
         page.goto(f"{base_url}/h5/admin/", wait_until="networkidle")
         page.wait_for_selector(".platform-shell", timeout=15000)
+        page.wait_for_selector(".platformHomeHero", timeout=15000)
+        page.wait_for_selector(".platformHomeMetrics", timeout=15000)
         _assert_no_visible_error(page, (".error",))
         if page.locator('[data-go="funds"]').count():
             raise AssertionError("operation H5 can see finance navigation")
@@ -174,12 +176,20 @@ def _platform_h5_smoke(browser: Browser, base_url: str, output: Path, errors: li
         page.screenshot(path=str(screenshot), full_page=True)
         context.request.post(f"{base_url}/api/v1/auth/logout")
         _login(context, base_url, "admin", "Admin123!")
-        page.goto(f"{base_url}/h5/admin/?role=superadmin#/funds", wait_until="networkidle")
+        page.goto(f"{base_url}/h5/admin/?role=superadmin#/home", wait_until="networkidle")
         page.wait_for_selector(".platform-shell", timeout=15000)
-        page.wait_for_selector('[data-go="funds"].active', timeout=15000)
+        page.wait_for_selector(".platformHomeHero", timeout=15000)
+        if not page.get_by_text("风险待办", exact=True).count():
+            raise AssertionError("super admin H5 must prioritize risk work on the home screen")
         _assert_no_visible_error(page, (".error",))
         if page.locator(".nav").count() != 4:
             raise AssertionError("super admin H5 must keep four focused bottom tabs")
+        superadmin_home_screenshot = output / "v12-platform-h5-superadmin-home-mobile.png"
+        page.screenshot(path=str(superadmin_home_screenshot), full_page=True)
+        page.locator('[data-go="funds"]').click()
+        page.wait_for_url(f"{base_url}/h5/admin/?role=superadmin#/funds")
+        page.wait_for_selector('[data-go="funds"].active', timeout=15000)
+        page.get_by_role("heading", name="资金").wait_for(timeout=15000)
         if not page.get_by_role("heading", name="资金").count():
             raise AssertionError("super admin H5 fund workbench is missing")
         return {
@@ -189,6 +199,7 @@ def _platform_h5_smoke(browser: Browser, base_url: str, output: Path, errors: li
             "responsive_widths": responsive_widths,
             "safe_html_boundary": safe_html_boundary,
             "screenshot": str(screenshot),
+            "superadmin_home_screenshot": str(superadmin_home_screenshot),
         }
     finally:
         context.close()
@@ -203,13 +214,38 @@ def _h5_smoke(browser: Browser, base_url: str, output: Path, errors: list[str]) 
         page.goto(f"{base_url}/h5/v12-workbench.html?view=home", wait_until="networkidle")
         page.wait_for_selector(".wb-header", timeout=15000)
         page.wait_for_selector(".wb-hero", timeout=15000)
+        page.wait_for_selector(".franchiseHomeHero", timeout=15000)
         _assert_no_visible_error(page, (".wb-error",))
+        owner_nav_count = page.locator(".wb-nav").count()
+        if owner_nav_count != 5:
+            raise AssertionError("franchise owner H5 must keep five focused bottom tabs")
+        if page.locator(".wb-nav").evaluate_all("nodes => new Set(nodes.map(node => Math.round(node.getBoundingClientRect().top))).size") != 1:
+            raise AssertionError("franchise owner H5 bottom navigation must stay on one row")
+        if not page.locator('[data-nav="assignments"]').count() or not page.locator('[data-nav="followups"]').count():
+            raise AssertionError("franchise owner H5 must expose receive and follow-up entries")
         responsive_widths = _assert_responsive_widths(page, (".wb-header", ".wb-bottom"))
         safe_html_boundary = _assert_safe_html_boundary(page)
         page.set_viewport_size({"width": 390, "height": 844})
         screenshot = output / "v12-h5-home-mobile.png"
         page.screenshot(path=str(screenshot), full_page=True)
-        return {"valid": True, "title": page.title(), "nav_count": page.locator(".wb-nav").count(), "responsive_widths": responsive_widths, "safe_html_boundary": safe_html_boundary, "screenshot": str(screenshot)}
+        context.request.post(f"{base_url}/api/v1/auth/logout")
+        _login(context, base_url, "franchise_employee_demo", "Employee123!")
+        page.goto(f"{base_url}/h5/v12-workbench.html?view=home", wait_until="networkidle")
+        page.wait_for_selector(".wb-header", timeout=15000)
+        page.wait_for_selector(".franchiseHomeHero", timeout=15000)
+        _assert_no_visible_error(page, (".wb-error",))
+        employee_nav_count = page.locator(".wb-nav").count()
+        if employee_nav_count != 4:
+            raise AssertionError("franchise employee H5 must keep four focused bottom tabs")
+        if page.locator(".wb-nav").evaluate_all("nodes => new Set(nodes.map(node => Math.round(node.getBoundingClientRect().top))).size") != 1:
+            raise AssertionError("franchise employee H5 bottom navigation must stay on one row")
+        if page.locator('[data-nav="assignments"]').count() or page.locator('[data-nav="points"]').count():
+            raise AssertionError("franchise employee H5 can see an owner-only entry")
+        if not page.locator('[data-nav="followups"]').count() or not page.locator('[data-nav="leads"]').count():
+            raise AssertionError("franchise employee H5 is missing follow-up or supply entry")
+        employee_screenshot = output / "v12-h5-employee-home-mobile.png"
+        page.screenshot(path=str(employee_screenshot), full_page=True)
+        return {"valid": True, "title": page.title(), "owner_nav_count": owner_nav_count, "employee_nav_count": employee_nav_count, "responsive_widths": responsive_widths, "safe_html_boundary": safe_html_boundary, "screenshot": str(screenshot), "employee_screenshot": str(employee_screenshot)}
     finally:
         context.close()
 
@@ -222,9 +258,16 @@ def _call_smoke(browser: Browser, base_url: str, output: Path, errors: list[str]
         _attach_errors(page, errors)
         page.goto(f"{base_url}/h5/call/", wait_until="networkidle")
         page.wait_for_selector(".shell", timeout=15000)
+        page.wait_for_selector(".callHomeHero", timeout=15000)
+        page.wait_for_selector(".callHomeMetrics", timeout=15000)
         _assert_no_visible_error(page, (".toast.show.error",))
         if page.locator(".nav").count() != 4:
             raise AssertionError("telesales H5 must keep four focused bottom tabs")
+        if page.locator(".nav").evaluate_all("nodes => new Set(nodes.map(node => Math.round(node.getBoundingClientRect().top))).size") != 1:
+            raise AssertionError("telesales H5 bottom navigation must stay on one row")
+        primary_action_color = page.locator(".callHomeHero .btn span").evaluate("node => getComputedStyle(node).color")
+        if primary_action_color != "rgb(99, 68, 45)":
+            raise AssertionError("telesales primary action must keep contrast")
         responsive_widths = _assert_responsive_widths(page, (".top", ".bottom"))
         page.set_viewport_size({"width": 390, "height": 844})
         screenshot = output / "v12-call-home-mobile.png"

@@ -16,7 +16,7 @@ def extract_design_system_version(html: str) -> str:
     return m.group(1) or ""
 
 
-def test_h5_bottom_nav_has_four_core_tabs_without_standalone_message_tab() -> None:
+def test_h5_bottom_nav_keeps_each_franchise_role_on_its_focused_workflow() -> None:
     app = read(H5 / "app.js")
     workbench = read(H5 / "v12-workbench.js")
 
@@ -25,11 +25,14 @@ def test_h5_bottom_nav_has_four_core_tabs_without_standalone_message_tab() -> No
     assert "['points','coins','积分']" in app
     assert "['notifications','bell','消息']" not in app
     assert "['notifications','bell','消息']" not in workbench
-    m = re.search(r"FRANCHISE_HOME_CONTRACT\s*=\{\s*tabs:\s*(\[[^\]]+\])", workbench)
+    m = re.search(r"const FRANCHISE_NAV=(\{.*?\});\nconst VIEWS", workbench, re.S)
     assert m is not None
-    assert "notifications" not in m.group(1)
-    assert "['home','leads','points','notifications','profile']" not in workbench
-    assert "['home','leads','points','profile']" in workbench
+    nav = m.group(1)
+    assert "notifications" not in nav
+    assert "FRANCHISE_OWNER" in nav
+    assert "FRANCHISE_EMPLOYEE" in nav
+    assert "['home','home','首页'],['assignments','hand-claim','接收'],['leads','plus','供资'],['followups','clipboard-check','跟进'],['profile','user','我的']" in nav
+    assert "['home','home','首页'],['followups','clipboard-check','跟进'],['leads','plus','供资'],['profile','user','我的']" in nav
 
 
 def test_both_profile_pages_have_message_entry_and_unread_prompts() -> None:

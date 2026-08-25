@@ -80,15 +80,37 @@ def overview(
 def own_report(request: Request, principal: CurrentPrincipal, db: Session = Depends(get_db)):
     if not principal.company_id:
         raise AppError("COMPANY_CONTEXT_REQUIRED", "当前账号未绑定公司", 403)
-    if not any(principal.can(code) for code in ("*", "assignment.own.read", "supplier.lead.manage", "supplier.reward.own.read", "points.own.read")):
+    if not any(principal.can(code) for code in ("*", "assignment.own.read", "assignment.employee.read", "supplier.lead.manage", "supplier.reward.own.read", "points.own.read")):
         raise AppError("FORBIDDEN", "无权查看公司业务报表", 403)
     company_id = principal.company_id
-    lead_f = [Lead.supplier_company_id == company_id]
-    assignment_f = [or_(Assignment.company_id == company_id, Assignment.receiver_company_id == company_id)]
-    return_f = [ReturnRequest.company_id == company_id]
-    reward_f = [SupplierLeadReward.supplier_company_id == company_id]
-    rewards = _summary(db, SupplierLeadReward, reward_f)
-    rewards["points"] = int(db.scalar(select(func.coalesce(func.sum(SupplierLeadReward.reward_points), 0)).where(*reward_f)) or 0)
+    employee_scope = principal.has_any_role("FRANCHISE_EMPLOYEE") and principal.can("assignment.employee.read")
+    if employee_scope:
+        assignment_ids = select(Assignment.id).where(
+            Assignment.company_id == company_id,
+            Assignment.internal_assignee_user_id == principal.user_id,
+        )
+        lead_f = [
+            Lead.supplier_company_id == company_id,
+            Lead.submitter_user_id == principal.user_id,
+        ]
+        assignment_f = [
+            Assignment.company_id == company_id,
+            Assignment.internal_assignee_user_id == principal.user_id,
+        ]
+        return_f = [
+            ReturnRequest.company_id == company_id,
+            ReturnRequest.assignment_id.in_(assignment_ids),
+        ]
+        rewards = {"total": 0, "by_status": {}, "points": 0}
+    else:
+        lead_f = [Lead.supplier_company_id == company_id]
+        assignment_f = [or_(Assignment.company_id == company_id, Assignment.receiver_company_id == company_id)]
+        return_f = [ReturnRequest.company_id == company_id]
+        reward_f = [SupplierLeadReward.supplier_company_id == company_id]
+        rewards = _summary(db, SupplierLeadReward, reward_f)
+        rewards["points"] = int(
+            db.scalar(select(func.coalesce(func.sum(SupplierLeadReward.reward_points), 0)).where(*reward_f)) or 0
+        )
     unread = db.scalar(select(func.count(Notification.id)).where(
         or_(Notification.user_id == principal.user_id, (Notification.user_id.is_(None)) & (Notification.company_id == company_id)),
         Notification.read_at.is_(None),

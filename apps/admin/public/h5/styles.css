@@ -81,6 +81,41 @@ button {
 .platform-main {
   padding:14px
 }
+.platform-home-greeting {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:15px;
+  padding:8px 2px 16px
+}
+.platform-home-greeting p {
+  margin:0 0 4px;
+  color:var(--brand-2);
+  font-size:13px;
+  font-weight:800
+}
+.platform-home-greeting h1 {
+  margin:0;
+  overflow:hidden;
+  font-size:27px;
+  letter-spacing:-.04em;
+  line-height:1.18;
+  text-overflow:ellipsis;
+  white-space:nowrap
+}
+.platform-home-avatar {
+  display:grid;
+  flex:none;
+  width:54px;
+  height:54px;
+  place-items:center;
+  border-radius:50%;
+  background:linear-gradient(135deg,#e9cc9f,#b38357);
+  color:#654127;
+  font-size:24px;
+  font-weight:800;
+  box-shadow:0 10px 22px rgba(95,57,30,.12)
+}
 .platform-bottom {
   position:fixed;
   z-index:25;
@@ -214,6 +249,45 @@ button {
   color:#fff;
   box-shadow:0 14px 30px rgba(76,46,25,.16)
 }
+.platformHomeHero {
+  position:relative;
+  min-height:184px;
+  margin:0 0 13px;
+  padding:24px;
+  overflow:hidden;
+  border-radius:24px;
+  background:linear-gradient(115deg,#715037 0%,#8a6241 56%,#b1895c 100%)
+}
+.platformHomeHero::after {
+  position:absolute;
+  right:-55px;
+  bottom:-118px;
+  width:272px;
+  height:272px;
+  border:1px solid rgba(255,250,238,.30);
+  border-radius:50%;
+  box-shadow:0 0 0 42px rgba(255,250,238,.07),0 0 0 84px rgba(255,250,238,.05);
+  content:""
+}
+.platformHomeHero>div,.platformHomeHero .btn {position:relative;z-index:1}
+.platformHomeHero>div {max-width:60%}
+.platformHomeHero strong {
+  display:block;
+  margin:4px 0;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:39px;
+  font-variant-numeric:tabular-nums;
+  letter-spacing:-.05em;
+  line-height:1
+}
+.platformHomeHero .btn {
+  position:absolute;
+  right:20px;
+  bottom:22px;
+  background:#fff1d4;
+  color:#63442d;
+  box-shadow:0 8px 20px rgba(67,44,25,.16)
+}
 .hero h2 {
   margin:0 0 5px;
   font-size:21px
@@ -230,6 +304,20 @@ button {
   gap:8px;
   margin:12px 0
 }
+.platformHomeMetrics {margin:0 0 28px}
+.platformHomeMetrics .metric {min-height:94px;border-radius:17px}
+.platformHomeMetrics .metric b {
+  margin-top:8px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:27px;
+  font-variant-numeric:tabular-nums;
+  color:#5b422d
+}
+.platform-home-tasks {margin-top:0;padding:0;overflow:hidden;border-radius:20px}
+.platform-home-tasks .section-head {padding:16px 16px 10px;margin:0}
+.platform-home-tasks .section-head h2 {font-size:20px;letter-spacing:-.03em}
+.platform-home-tasks .todo {margin:0;border:0;border-top:1px solid var(--line);border-radius:0;box-shadow:none}
+.platform-home-tasks .todo:last-child {border-radius:0 0 20px 20px}
 .metric {
   min-width:0;
   padding:12px 7px;

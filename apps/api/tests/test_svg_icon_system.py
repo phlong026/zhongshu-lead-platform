@@ -15,7 +15,7 @@ def test_all_h5_surfaces_load_local_svg_icon_system_before_application():
     entries = {
         "index.html": ("./app.js", "?v=20260824-card-data1", SVG_LOGIN_VERSION),
         "supplier.html": ("./supplier.js", "?v=20260824-card-data1", SVG_BASE_VERSION),
-        "v12-workbench.html": ("./v12-workbench.js", "?v=20260825-stage7-return-closure", SVG_BASE_VERSION),
+        "v12-workbench.html": ("./v12-workbench.js", "?v=20260825-role-home-cards", SVG_BASE_VERSION),
     }
     for filename, (application_script, application_version, svg_version) in entries.items():
         index = (H5 / filename).read_text(encoding="utf-8")
@@ -43,7 +43,7 @@ def test_call_h5_loads_shared_svg_icon_system_before_application():
 
     assert f"/h5/svg-icon-system.css{SVG_CSS_VERSION}" in index
     assert f"/h5/svg-icon-system.js{SVG_LOGIN_VERSION}" in index
-    assert "./app.js?v=20260825-role-contract" in index
+    assert "./app.js?v=20260825-role-home-cards" in index
     assert index.index("/h5/svg-icon-system.js") < index.index("./app.js")
 
 
@@ -115,7 +115,7 @@ def test_h5_profile_actions_use_svg_instead_of_css_unicode_content():
 def test_h5_v12_workbench_uses_named_svg_icons():
     js = (H5 / "v12-workbench.js").read_text(encoding="utf-8")
     assert "window.ZSIconSystem?.svg" in js
-    for name in ("home", "inbox", "hand-claim", "rotate-ccw", "award", "bell"):
+    for name in ("home", "hand-claim", "clipboard-check", "plus", "rotate-ccw", "award", "bell"):
         assert f"'{name}'" in js
     for glyph in ("'⌂'", "'＋'", "'客'", "'↩'", "'◆'", "'●'"):
         assert glyph not in js

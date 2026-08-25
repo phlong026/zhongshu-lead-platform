@@ -81,9 +81,10 @@ def test_franchise_and_telesales_h5_navigation_is_short_home_first_and_role_scop
     franchise = _read(FRANCHISE_H5)
     telesales = _read(CALL_H5)
 
-    assert "FRANCHISE_HOME_CONTRACT" in franchise
-    assert "['home','leads','points','profile']" in franchise
-    for label in ("首页", "客资", "积分", "我的"):
+    assert "FRANCHISE_NAV" in franchise
+    assert "FRANCHISE_OWNER" in franchise
+    assert "FRANCHISE_EMPLOYEE" in franchise
+    for label in ("首页", "接收", "供资", "跟进", "我的"):
         assert label in franchise
     assert "运营派发" in telesales
     assert "自主领取" in telesales

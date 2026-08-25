@@ -45,7 +45,6 @@ def _can_read_own_rewards(principal: CurrentPrincipal) -> bool:
         principal.company_id
         and (
             principal.can("supplier.reward.own.read")
-            or principal.can("supplier.lead.manage")
             or principal.can("*")
         )
     )

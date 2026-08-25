@@ -30,3 +30,8 @@ def test_browser_smoke_covers_only_the_formal_role_workbenches() -> None:
     assert "MOBILE_WIDTHS = (320, 375, 390, 414)" in script
     assert "def _assert_responsive_widths" in script
     assert "def _assert_safe_html_boundary" in script
+    assert "franchise owner H5 must keep five focused bottom tabs" in script
+    assert "franchise employee H5 must keep four focused bottom tabs" in script
+    assert "franchise owner H5 bottom navigation must stay on one row" in script
+    assert "telesales H5 bottom navigation must stay on one row" in script
+    assert "telesales primary action must keep contrast" in script

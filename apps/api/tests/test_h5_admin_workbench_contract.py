@@ -13,7 +13,7 @@ def test_platform_h5_is_a_real_role_scoped_workbench_not_a_desktop_redirect() ->
 
     assert '"/h5/admin", ROOT / "apps" / "admin" / "public" / "h5", "h5-admin"' in entrypoint
     assert 'return RedirectResponse(url="/admin/v12-operations.html"' not in entrypoint
-    assert 'src="./app.js?v=20260825-stage9-platform-h5"' in index
+    assert 'src="./app.js?v=20260825-role-home-cards"' in index
     assert "SUPER_ADMIN" in app
     assert "OPERATION" in app
     assert "ROLE_META" in app

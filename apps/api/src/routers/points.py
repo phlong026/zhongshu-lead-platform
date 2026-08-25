@@ -149,7 +149,9 @@ def create_price_rule(body: PriceRuleBody, request: Request, principal=Depends(r
 
 @router.get("/accounts/{company_id}")
 def get_account(company_id: str, request: Request, principal: CurrentPrincipal, db: Session = Depends(get_db)):
-    if principal.company_id != company_id and not (principal.can("points.read") or principal.can("*")):
+    can_read_platform_accounts = principal.can("points.read") or principal.can("*")
+    can_read_own_account = principal.company_id == company_id and principal.can("points.own.read")
+    if not (can_read_platform_accounts or can_read_own_account):
         raise AppError("FORBIDDEN", "无权查看积分账户", 403)
     return ok(request, account_summary(db, company_id))
 

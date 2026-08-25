@@ -25,6 +25,10 @@ const shortId = (value, prefix = '记录') => value ? `${prefix}-${String(value)
 const isDone = status => ['ACTIVE', 'APPROVED', 'SETTLED'].includes(status);
 const isBad = status => ['REJECTED', 'FROZEN'].includes(status);
 const badge = status => `<span class="badge ${isDone(status) ? 'ok' : isBad(status) ? 'bad' : ''}">${esc(label(status))}</span>`;
+const greetingName = value => {
+  const name = String(value || '').trim();
+  return name.length > 6 ? `${name.slice(0, 6)}…` : name;
+};
 const currentRole = () => Object.keys(ROLE_META).find(role => S.me?.roles?.includes(role)) || '';
 const roleMeta = () => ROLE_META[currentRole()];
 
@@ -108,6 +112,26 @@ function metric(text, value, view) {
   return `<button class="metric" data-go="${view}"><b>${Number(value || 0)}</b><span>${esc(text)}</span></button>`;
 }
 
+function platformHomeGreeting() {
+  const meta = roleMeta();
+  const name = String(S.me?.display_name || meta.name).trim();
+  return `<section class="platform-home-greeting"><div><p>${esc(meta.name)}</p><h1>${esc(greetingName(name))}，上午好</h1></div><div class="platform-home-avatar" aria-label="${esc(name)}">${esc(name.slice(0, 1))}</div></section>`;
+}
+
+function platformHomeHero({ labelText, value, description, actionLabel, view }) {
+  return `<section class="hero platformHomeHero"><div><small>${esc(labelText)}</small><strong>${Number(value || 0)}</strong><span>${esc(description)}</span></div><button class="btn gold" data-go="${view}">${esc(actionLabel)}</button></section>`;
+}
+
+function platformHomeMetrics(items) {
+  return `<section class="metrics platformHomeMetrics" aria-label="工作概览">${items.map(([labelText, value, view]) => metric(labelText, value, view)).join('')}</section>`;
+}
+
+function platformHomeTasks(items) {
+  const pending = items.filter(([, , , value]) => Number(value || 0) > 0);
+  if (!pending.length) return '';
+  return `<section class="card platform-home-tasks"><div class="section-head"><h2>待处理事项</h2></div>${pending.map(item => todo(...item)).join('')}</section>`;
+}
+
 function count(items, states) { return (items || []).filter(item => states.includes(item.status)).length; }
 
 async function home() {
@@ -121,14 +145,16 @@ async function home() {
   if (currentRole() === 'SUPER_ADMIN') {
     const pendingOperation = count(tasks, ['SUBMITTED']);
     const reviewing = count(returnItems, ['REVIEWING']);
-    shell(`${pageTitle('平台工作台', '先处理风险和待办；复杂批量治理留在桌面工作台。')}<section class="card"><div class="section-head"><div><h2>待办</h2><p>按业务责任和当前状态排列。</p></div></div>${todo('运营待处置', '电销已提交事实结论，等待运营决定下一步。', 'governance', pendingOperation)}${todo('退回终审', '电销核验完成后，运营需决定退回和资金后续。', 'governance', reviewing)}</section><section class="hero"><h2>系统治理</h2><p>移动端用于及时查看风险与单笔资金处理；批量账号治理、长审计导出在桌面完成。</p></section><section class="metrics">${metric('待初审', report.leads?.by_status?.PENDING_REVIEW, 'governance')}${metric('待派发', report.leads?.by_status?.READY_DISPATCH, 'governance')}${metric('运营待处置', pendingOperation, 'governance')}${metric('待终审', reviewing, 'governance')}</section>`);
+    const waitingDispatch = Number(report.leads?.by_status?.READY_DISPATCH || 0);
+    shell(`${platformHomeGreeting()}${platformHomeHero({ labelText: '风险待办', value: pendingOperation + reviewing, description: '待终审与待处置优先', actionLabel: '进入治理', view: 'governance' })}${platformHomeMetrics([['待处置', pendingOperation, 'governance'], ['待终审', reviewing, 'governance'], ['待派发', waitingDispatch, 'governance']])}${platformHomeTasks([['运营待处置', '依据电销事实决定后续流转。', 'governance', pendingOperation], ['退回终审', '审查退回申请与积分处理。', 'governance', reviewing]])}`);
     return;
   }
   const pendingReview = Number(report.leads?.by_status?.PENDING_REVIEW || 0);
   const waitingDispatch = Number(report.leads?.by_status?.READY_DISPATCH || 0);
   const pendingDisposition = count(tasks, ['SUBMITTED']);
   const returnReview = count(returnItems, ['REVIEWING']);
-  shell(`${pageTitle('运营工作台', '只展示当前运营可处理的客资、派发和异常事项。')}<section class="card"><div class="section-head"><div><h2>待办</h2><p>按 SLA、状态和处理责任排序。</p></div></div>${todo('客资初审', '核对资料完整性、重复线索与服务区域。', 'leads', pendingReview)}${todo('电销结论', '仅运营决定电话核验结论后的业务处置。', 'leads', pendingDisposition)}${todo('待派发', '确认接收公司后完成单条派发。', 'dispatch', waitingDispatch)}${todo('退回终审', '核验只提供事实结论，终审和资金处理仍由运营完成。', 'exceptions', returnReview)}</section><section class="metrics">${metric('待初审', pendingReview, 'leads')}${metric('待处置', pendingDisposition, 'leads')}${metric('待派发', waitingDispatch, 'dispatch')}${metric('待终审', returnReview, 'exceptions')}</section>`);
+  const priority = pendingDisposition || pendingReview || waitingDispatch || returnReview;
+  shell(`${platformHomeGreeting()}${platformHomeHero({ labelText: '优先处理', value: priority, description: '初审、处置、派发按序进行', actionLabel: '处理客资', view: 'leads' })}${platformHomeMetrics([['待初审', pendingReview, 'leads'], ['待处置', pendingDisposition, 'leads'], ['待派发', waitingDispatch, 'dispatch']])}${platformHomeTasks([['客资初审', '核对资料、重复和服务区域。', 'leads', pendingReview], ['电销结论', '依据电销事实决定流转。', 'leads', pendingDisposition], ['待派发', '确认接收公司后完成派发。', 'dispatch', waitingDispatch], ['退回终审', '审查退回申请与积分处理。', 'exceptions', returnReview]])}`);
 }
 
 function companyCard(company) {
