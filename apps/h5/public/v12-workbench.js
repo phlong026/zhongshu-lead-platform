@@ -18,6 +18,7 @@ const returnDecisionSummary=x=>{const reason=String(x?.final_decision_reason||''
 const recordCode=(value,prefix='记录')=>{const text=String(value??'').replace(/-/g,'');return text?`${prefix}-${text.slice(-8).toUpperCase()}`:'--'};
 const badge=v=>`<span class="wb-status ${['APPROVED','CLAIMED','SETTLED','COMPLETED','READ'].includes(v)?'ok':['REJECTED','CANCELLED','REVERSED'].includes(v)?'bad':'warn'}">${esc(readableLabel(v))}</span>`;
 const can=p=>(S.me?.permissions||[]).some(x=>x==='*'||x===p);
+const isFranchiseOwner=()=>Boolean((S.me?.roles||[]).includes('FRANCHISE_OWNER'));
 function safeDeepLink(raw){const value=String(raw||'').trim();if(!value)return '';try{const url=new URL(value,location.origin);if(url.origin!==location.origin||(!url.pathname.startsWith('/h5/')&&!url.pathname.startsWith('/admin/')))return '';return `${url.pathname}${url.search}${url.hash}`}catch{return ''}}
 const WORKBENCH_REPORT_PERMISSIONS=['assignment.own.read','supplier.lead.manage','supplier.reward.own.read','points.own.read'];
 const canAny=permissions=>permissions.some(can);
@@ -197,9 +198,59 @@ async function points(){
 }
 async function leads(tabBar=''){const d=await api(`/v1.2/supplier/leads?page=${S.page}&page_size=20`);const list=(d.items||[]).map(x=>item(x.customer_name==='未填写'?'未填写姓名':x.customer_name||'未填写姓名',x.status,`<p>${esc(x.phone_masked||'手机号待补充')} · ${esc(x.city||'地区待补充')} ${esc(x.district||'')}</p><p>${esc(x.need_summary||'需求待补充')}</p>`,`<button class="wb-btn" data-lead="${x.id}">查看进度</button>`)).join('');const empty='<div class="wb-empty">还没有供应客资<br><a class="wb-btn primary" href="./supplier.html">上传第一条客资</a></div>';shell(`<div class="wb-card-head"><div><h2>客资 · 供应客资</h2><p>查看平台审核、重复复核和派发进度。</p></div><a class="wb-btn primary" href="./supplier.html">上传新客资</a></div>${tabBar?`<div class="wb-actions">${tabBar}</div>`:''}<div class="wb-list">${list||empty}</div>`);document.querySelectorAll('[data-lead-tab]').forEach(b=>b.onclick=()=>{S.id=b.dataset.leadTab==='supply'?'supply':'';leadCenter()});document.querySelectorAll('[data-lead]').forEach(b=>b.onclick=()=>leadDetail(b.dataset.lead));if(S.id&&S.id!=='supply'){const id=S.id;S.id='';leadDetail(id)}}
 async function leadDetail(id){const x=await api(`/v1.2/supplier/leads/${id}`);const fields=[['客户',x.customer_name==='未填写'?'未填写':x.customer_name],['手机号',x.phone_masked],['服务地区',`${x.city||''} ${x.district||''}`.trim()],['当前进度',readableLabel(x.status)],['资料审核',readableLabel(x.review_status)],['重复情况',x.duplicate_status?readableLabel(x.duplicate_status,'平台复核中'):null],['提交时间',fmt(x.submitted_at)],['最后更新',fmt(x.updated_at)]].filter(([,value])=>value);openSheet('客资进度',`<div class="wb-detail-grid">${fields.map(([a,b])=>`<div class="wb-detail"><small>${a}</small><b>${esc(b)}</b></div>`).join('')}</div><div class="wb-card"><h3>客户需求</h3><p class="wb-muted">${esc(x.need_summary||'尚未填写')}</p></div>${x.review_note?`<div class="wb-notice">平台说明：${esc(x.review_note)}</div>`:''}${x.status==='INVALID'?'<a class="wb-btn primary" href="./supplier.html">前往修改</a>':''}`)}
-async function assignments(tabBar=''){const d=await api(`/v1.2/assignments?page=${S.page}&page_size=20`);const list=(d.items||[]).map(x=>item(x.customer_name||x.lead?.customer_name||'客户',x.status,`<p>${esc(x.phone||x.phone_masked||'领取后查看')} · ${esc(x.city||x.lead?.city||'')}</p><p>客资积分 ${x.points_price||0} · 领取截止 ${fmt(x.claim_deadline_at)}</p>`,`<button class="wb-btn" data-assignment="${x.id}">详情</button>${x.status==='PENDING_CLAIM'&&can('assignment.own.claim')?`<button class="wb-btn primary" data-claim="${x.id}">领取</button>`:''}`)).join('');shell(`<div class="wb-card-head"><div><h2>客资 · 接收客资</h2><p>领取前隐藏明文电话，领取成功后可查看完整联系方式。</p></div></div>${tabBar?`<div class="wb-actions">${tabBar}</div>`:''}<div class="wb-list">${list||'<div class="wb-empty">暂无派发单</div>'}</div>`);document.querySelectorAll('[data-lead-tab]').forEach(b=>b.onclick=()=>{S.id=b.dataset.leadTab==='supply'?'supply':'';leadCenter()});document.querySelectorAll('[data-assignment]').forEach(b=>b.onclick=()=>assignmentDetail(b.dataset.assignment));document.querySelectorAll('[data-claim]').forEach(b=>b.onclick=()=>claim(b.dataset.claim));if(S.id&&S.id!=='supply'){const id=S.id;S.id='';assignmentDetail(id)}}
+async function assignments(tabBar=''){
+  const companyId=S.me?.company_id;
+  const canManageInternal=isFranchiseOwner()&&can('assignment.own.read')&&Boolean(companyId);
+  const [d,directory]=await Promise.all([
+    api(`/v1.2/assignments?page=${S.page}&page_size=20`),
+    canManageInternal?api(`/companies/${encodeURIComponent(companyId)}/account-directory`):Promise.resolve([]),
+  ]);
+  const employeeName=userId=>(directory||[]).find(user=>user.id===userId)?.display_name||'';
+  const canCollaborate=status=>['CLAIMED','FOLLOWING','RETURN_PENDING'].includes(status);
+  const list=(d.items||[]).map(x=>{
+    const currentAssignee=employeeName(x.internal_assignee_user_id);
+    const collaboration=canManageInternal&&canCollaborate(x.status)?`<p>内部处理：${esc(currentAssignee||'负责人自己跟进')}</p>`:'';
+    const manage=canManageInternal&&canCollaborate(x.status)?`<button class="wb-btn" data-internal-assignment="${x.id}">分配员工</button>`:'';
+    return item(x.customer_name||x.lead?.customer_name||'客户',x.status,`<p>${esc(x.phone||x.phone_masked||'领取后查看')} · ${esc(x.city||x.lead?.city||'')}</p><p>客资积分 ${x.points_price||0} · 领取截止 ${fmt(x.claim_deadline_at)}</p>${collaboration}`,`<button class="wb-btn" data-assignment="${x.id}">详情</button>${x.status==='PENDING_CLAIM'&&can('assignment.own.claim')?`<button class="wb-btn primary" data-claim="${x.id}">领取</button>`:''}${manage}`);
+  }).join('');
+  const collaborationNotice=canManageInternal?'<div class="wb-notice">负责人可在公司内部直接分配，无需运营审批；员工仅可看到分配给自己的客资。</div>':'';
+  shell(`<div class="wb-card-head"><div><h2>客资 · 接收客资</h2><p>领取前隐藏明文电话，领取成功后可查看完整联系方式。</p></div></div>${tabBar?`<div class="wb-actions">${tabBar}</div>`:''}${collaborationNotice}<div class="wb-list">${list||'<div class="wb-empty">暂无派发单</div>'}</div>`);
+  document.querySelectorAll('[data-lead-tab]').forEach(b=>b.onclick=()=>{S.id=b.dataset.leadTab==='supply'?'supply':'';leadCenter()});
+  document.querySelectorAll('[data-assignment]').forEach(b=>b.onclick=()=>assignmentDetail(b.dataset.assignment));
+  document.querySelectorAll('[data-claim]').forEach(b=>b.onclick=()=>claim(b.dataset.claim));
+  document.querySelectorAll('[data-internal-assignment]').forEach(b=>b.onclick=()=>manageInternalAssignment(b.dataset.internalAssignment));
+  if(S.id&&S.id!=='supply'){const id=S.id;S.id='';assignmentDetail(id)}
+}
 async function assignmentDetail(id){const [x,followups]=await Promise.all([api(`/v1.2/assignments/${id}`),api(`/followups/assignments/${id}`)]);const history=(followups||[]).map(row=>`<article class="wb-item"><div class="wb-item-top"><div><h3>${esc(readableLabel(row.status,'状态已更新'))}</h3><p>${esc(row.note||'无备注')}</p><p>记录时间 ${fmt(row.created_at)}${row.next_followup_at?` · 下次跟进 ${fmt(row.next_followup_at)}`:''}</p></div></div></article>`).join('');const currentFollow=x.current_follow_status||followups?.[0]?.status;const canFollow=['CLAIMED','FOLLOWING'].includes(x.status)&&can('followup.own.manage');openSheet('派发单详情',`<div class="wb-detail-grid">${[['派发编号',recordCode(x.id,'PF')],['客户',x.customer_name],['电话',x.phone||x.phone_masked||'领取后查看'],['派发状态',readableLabel(x.status)],['客资状态',readableLabel(x.lead_status)],['当前跟进',currentFollow?readableLabel(currentFollow):'暂无'],['客资积分',x.points_price],['申诉截止',fmt(x.appeal_deadline_at)]].map(([a,b])=>`<div class="wb-detail"><small>${a}</small><b>${esc(b||'--')}</b></div>`).join('')}</div><div class="wb-actions">${x.status==='PENDING_CLAIM'&&can('assignment.own.claim')?`<button class="wb-btn primary" id="sheet-claim">领取客资</button>`:''}${canFollow?`<button class="wb-btn primary" id="sheet-followup">新增跟进</button>`:''}${['CLAIMED','FOLLOWING'].includes(x.status)&&can('return.own.manage')?`<button class="wb-btn danger" id="sheet-return">发起退回</button>`:''}</div><div class="wb-card"><h3>跟进历史</h3><div class="wb-list">${history||'<div class="wb-empty">暂无跟进记录</div>'}</div></div>`,()=>{document.querySelector('#sheet-claim')?.addEventListener('click',()=>claim(id));document.querySelector('#sheet-followup')?.addEventListener('click',()=>followupDraft(id));document.querySelector('#sheet-return')?.addEventListener('click',()=>returnDraft(id))})}
 async function claim(id){try{await api(`/v1.2/assignments/${id}/claim`,{method:'POST'});toast('领取成功');closeSheet();render()}catch(e){toast(e.message,true)}}
+async function manageInternalAssignment(assignmentId){
+  const companyId=S.me?.company_id;
+  if(!isFranchiseOwner()||!companyId){toast('仅加盟商负责人可分配员工',true);return}
+  try{
+    const [assignment,directory]=await Promise.all([
+      api(`/v1.2/assignments/${encodeURIComponent(assignmentId)}`),
+      api(`/companies/${encodeURIComponent(companyId)}/account-directory`),
+    ]);
+    const employees=(directory||[]).filter(user=>user.role_code==='FRANCHISE_EMPLOYEE'&&user.status==='ACTIVE');
+    const currentEmployee=employees.find(user=>user.id===assignment.internal_assignee_user_id)?.id||'';
+    const options=[`<option value="">负责人自己跟进</option>`,...employees.map(user=>`<option value="${esc(user.id)}" ${user.id===currentEmployee?'selected':''}>${esc(user.display_name||'未命名员工')}</option>`)].join('');
+    openSheet('分配员工',`<div class="wb-notice">公司内部直接分配，无需运营审批。选择“负责人自己跟进”可收回该客资，系统会保留交接记录。</div><form class="wb-form" id="internal-assignment-form"><div class="wb-field"><label>处理人员</label><select class="wb-select" name="employee_user_id">${options}</select></div><div class="wb-field"><label>分配或回收原因</label><textarea class="wb-textarea" name="reason" required minlength="2" maxlength="500" placeholder="例如：转交负责该区域的销售跟进"></textarea></div><button class="wb-btn primary" id="internal-assignment-submit">保存分配</button></form>`,()=>{
+      const form=document.querySelector('#internal-assignment-form'),submit=document.querySelector('#internal-assignment-submit');
+      form.onsubmit=async event=>{
+        event.preventDefault();
+        const fields=new FormData(form),reason=String(fields.get('reason')||'').trim(),employeeUserId=String(fields.get('employee_user_id')||'').trim();
+        if(reason.length<2){toast('请至少填写 2 个字的分配或回收原因',true);return}
+        submit.disabled=true;
+        try{
+          await api(`/v1.2/assignments/${encodeURIComponent(assignmentId)}/internal-assignee`,{method:'POST',body:JSON.stringify({employee_user_id:employeeUserId||null,reason})});
+          toast(employeeUserId?'已分配给员工':'已收回到负责人');
+          closeSheet();
+          render();
+        }catch(error){submit.disabled=false;toast(error.message,true)}
+      };
+    });
+  }catch(error){toast(error.message,true)}
+}
 function followupDraft(assignmentId){openSheet('新增跟进',`<form class="wb-form" id="followup-form"><div class="wb-field"><label>跟进状态</label><select class="wb-select" name="status"><option value="CONTACTED">已联系</option><option value="INTERESTED">有意向</option><option value="NOT_INTERESTED">无意向</option><option value="DEAL">已成交</option><option value="INVALID">无效客资</option><option value="UNCONTACTED">未联系</option></select></div><div class="wb-field"><label>跟进备注</label><textarea class="wb-textarea" name="note" maxlength="500" placeholder="填写沟通结果或后续安排"></textarea></div><div class="wb-field"><label>下次跟进时间</label><input class="wb-input" type="datetime-local" name="next_followup_at"><small class="wb-muted">选择方便再次联系客户的时间。</small></div><button class="wb-btn primary" id="followup-submit">保存跟进</button></form>`,()=>{const form=document.querySelector('#followup-form'),submitButton=document.querySelector('#followup-submit');let submitting=false;form.onsubmit=async e=>{e.preventDefault();if(submitting)return;submitting=true;submitButton.disabled=true;const fields=Object.fromEntries(new FormData(form));const nextFollowupAt=String(fields.next_followup_at||'').trim();let nextFollowupAtIso=null;if(nextFollowupAt){const parsed=new Date(nextFollowupAt);if(Number.isNaN(parsed.getTime())){submitting=false;submitButton.disabled=false;toast('下次跟进时间格式不正确',true);return}nextFollowupAtIso=new Date(nextFollowupAt).toISOString()}try{await api(`/followups/assignments/${assignmentId}`,{method:'POST',body:JSON.stringify({status:fields.status,note:String(fields.note||'').trim()||null,next_followup_at:nextFollowupAtIso})})}catch(err){submitting=false;submitButton.disabled=false;toast(err.message,true);return}toast('跟进已保存');try{await assignmentDetail(assignmentId)}catch{closeSheet();toast('跟进已保存，请刷新查看',true)}}})}
 function returnDraft(assignmentId){openSheet('发起退回申诉',`<form class="wb-form" id="return-form"><div class="wb-field"><label>退回原因</label><select class="wb-select" name="reason_code"><option value="EMPTY_NUMBER">空号/停机</option><option value="OUT_OF_SERVICE_REGION">超出服务区域</option><option value="DUPLICATE_TO_RECEIVER">接收方重复客户</option><option value="NON_HOUSING_CONSULTATION">非建房咨询</option></select></div><div class="wb-field"><label>事实说明</label><textarea class="wb-textarea" name="description" required minlength="5" placeholder="请说明联系次数、沟通结果和申请退回的事实依据"></textarea></div><button class="wb-btn primary">下一步：上传证据</button></form>`,()=>{document.querySelector('#return-form').onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);try{const x=await api(`/v1.2/returns/assignments/${assignmentId}/draft`,{method:'POST',body:JSON.stringify(Object.fromEntries(f))});closeSheet();evidence(x.id,x.evidence_summary||{})}catch(err){toast(err.message,true)}}})}
 function evidence(returnId,summary={}){

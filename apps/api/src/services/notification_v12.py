@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from ..core import models_v12 as _models_v12  # noqa: F401
 from ..core.models import (
     Assignment,
+    Company,
     Lead,
     NotificationOutbox,
     ReturnRequest,
@@ -33,6 +34,7 @@ def build_v12_deep_link(target: str, business_id: str, *, admin: bool = False) -
         "report",
         "audit",
         "notification",
+        "profile",
         "review",
         "dispatch",
         "returns",
@@ -347,6 +349,75 @@ def project_v12_notifications(
                     business_id=lead.id,
                     business_ids={"lead_id": lead.id},
                 )
+        return
+
+    if action in {
+        "V12_COMPANY_CAPABILITY_REVIEW",
+        "V12_COMPANY_SERVICE_AREA_REVIEW",
+        "V12_COMPANY_PROFILE_BULK_APPROVE",
+    }:
+        if metadata.get("bulk_profile_approval"):
+            return
+        company = db.get(Company, company_id) if company_id else None
+        if company is None:
+            return
+        removal = (
+            str(after.get("request_type") or "").upper() == "REMOVE"
+            or str(after.get("review_note") or "").startswith("[REMOVE_REQUEST]")
+        )
+        approved = action == "V12_COMPANY_PROFILE_BULK_APPROVE" or (
+            not bool(after.get("active")) if removal else bool(after.get("active"))
+        )
+        event_type = (
+            "V12_COMPANY_PROFILE_APPROVED"
+            if approved
+            else "V12_COMPANY_PROFILE_REJECTED"
+        )
+        if action == "V12_COMPANY_PROFILE_BULK_APPROVE":
+            capability_count = len(after.get("capability_codes") or [])
+            area_count = len(after.get("service_area_codes") or [])
+            title = "公司接单资料已一次审核通过"
+            body = f"已开通 {capability_count} 项客资能力和 {area_count} 个服务区域，可进入派发候选。"
+        elif action == "V12_COMPANY_CAPABILITY_REVIEW":
+            capability = str(after.get("capability_code") or "客资能力")
+            title = "公司客资能力已通过" if approved else "公司客资能力未通过"
+            body = (
+                f"{capability} 已生效，可在满足其他条件时参与客资流程。"
+                if approved
+                else f"{capability} 未通过，请查看平台审核说明后调整。"
+            )
+        else:
+            if removal:
+                title = "服务区域移除已通过" if approved else "服务区域移除未通过"
+                body = (
+                    "该服务区域已按申请停止参与客资派发。"
+                    if approved
+                    else "该服务区域仍保持生效，请查看平台审核说明。"
+                )
+            else:
+                title = "服务区域已通过" if approved else "服务区域未通过"
+                body = (
+                    "服务区域已生效，可在对应区域参与客资派发。"
+                    if approved
+                    else "服务区域未通过，请查看平台审核说明后调整。"
+                )
+        review_round = sha256(
+            f"{action}:{resource_id}:{after.get('reviewed_at') or after}".encode("utf-8")
+        ).hexdigest()[:16]
+        emit_business_notification(
+            db,
+            event_key=f"v12:company-profile:{company.id}:review:{review_round}",
+            event_type=event_type,
+            company_id=company.id,
+            title=title,
+            body=body,
+            target="profile",
+            business_id=company.id,
+            business_ids={
+                "company_id": company.id,
+                "profile_review_resource_id": resource_id,
+            },
+        )
         return
 
     if action == "V12_MANUAL_DISPATCH":

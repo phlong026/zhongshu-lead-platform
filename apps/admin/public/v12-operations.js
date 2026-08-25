@@ -361,26 +361,38 @@ function bindCompanyQueuePager(data,prefix,pageKey){
   document.querySelector(`#${prefix}-next`).onclick=()=>{S[pageKey]=Math.min(pages,S[pageKey]+1);companies()};
 }
 async function companies(){
-  const [companyPage,capabilities,areas]=await Promise.all([
+  const [companyPage,capabilities,areas,pendingCapabilities,pendingAreas]=await Promise.all([
     api('/companies?page=1&page_size=200'),
     api(`/v1.2/admin/company-capabilities${qs({review_status:S.companyStatus,page:S.companyCapabilityPage,page_size:20})}`),
     api(`/v1.2/admin/service-areas${qs({review_status:S.companyStatus,page:S.companyAreaPage,page_size:20})}`),
+    api('/v1.2/admin/company-capabilities?review_status=PENDING&page=1&page_size=200'),
+    api('/v1.2/admin/service-areas?review_status=PENDING&page=1&page_size=200'),
   ]);
   const companyAssignmentSummary=summary=>{
     const byStatus=summary?.by_status||{};
     const statuses=Object.entries(byStatus).map(([status,count])=>`${label(status)} ${Number(count||0)} 条`).join('、');
     return `<small>共 ${Number(summary?.total||0)} 条</small><br><small>${esc(statuses||'暂无已派发客资')}</small>`;
   };
-  const companyRows=(companyPage.items||[]).map(company=>`<tr><td><b>${esc(company.name)}</b><br><small>${esc(company.code)}</small></td><td>${badge(company.status)}</td><td>${companyAssignmentSummary(company.assignment_summary)}</td><td>${esc(company.owner_name||'--')}</td><td><button class="ops-btn primary" data-company-accounts="${esc(company.id)}" data-company-name="${esc(company.name)}">管理账号</button></td></tr>`);
+  const pendingProfileByCompany=new Map();
+  const profilePending=companyId=>pendingProfileByCompany.get(companyId)||{capabilities:0,areas:0};
+  (pendingCapabilities.items||[]).forEach(item=>{const pending=profilePending(item.company_id);pending.capabilities+=1;pendingProfileByCompany.set(item.company_id,pending)});
+  (pendingAreas.items||[]).filter(item=>!String(item.review_note||'').startsWith('[REMOVE_REQUEST]')).forEach(item=>{const pending=profilePending(item.company_id);pending.areas+=1;pendingProfileByCompany.set(item.company_id,pending)});
+  const pendingProfileAction=company=>{const pending=profilePending(company.id),total=pending.capabilities+pending.areas;if(!total)return '';return ` <button class="ops-btn primary" data-company-profile-approve="${esc(company.id)}" data-company-name="${esc(company.name)}" data-pending-capabilities="${pending.capabilities}" data-pending-areas="${pending.areas}">一键审核</button>`};
+  const companyRows=(companyPage.items||[]).map(company=>`<tr><td><b>${esc(company.name)}</b><br><small>${esc(company.code)}</small></td><td>${badge(company.status)}</td><td>${companyAssignmentSummary(company.assignment_summary)}</td><td>${esc(company.owner_name||'--')}</td><td><button class="ops-btn primary" data-company-accounts="${esc(company.id)}" data-company-name="${esc(company.name)}">管理账号</button>${pendingProfileAction(company)}</td></tr>`);
   const capabilityRows=(capabilities.items||[]).map(item=>`<tr><td><b>${esc(item.company_name)}</b><br><small>${esc(recordCode(item.company_id,'加盟商'))}</small></td><td>${esc(CAPABILITY_LABEL[item.capability_code]||readableLabel(item.capability_code,'其他能力'))}</td><td>${badge(item.review_status)}<br><small>${item.active?'已启用':'未启用'}</small></td><td>${esc(cleanProfileNote(item.review_note)||'--')}</td><td>${fmt(item.reviewed_at)}</td><td>${capabilityReviewActions(item)} <button class="ops-btn" data-company-accounts="${esc(item.company_id)}" data-company-name="${esc(item.company_name)}">账号</button></td></tr>`);
   const areaRows=(areas.items||[]).map(item=>{const removal=String(item.review_note||'').startsWith('[REMOVE_REQUEST]');return `<tr><td><b>${esc(item.company_name)}</b><br><small>${esc(recordCode(item.company_id,'加盟商'))}</small></td><td>${esc(item.region_name||recordCode(item.region_code,'区域'))}<br><small>${esc(item.is_primary_city?'主要城市':readableLabel(item.region_level,'服务区域'))}</small></td><td>${badge(item.review_status)}<br><small>${removal&&item.active?'待移除，当前仍生效':item.active?'已生效':'未生效'}</small></td><td>${esc(cleanProfileNote(item.review_note)||'--')}</td><td>${fmt(item.reviewed_at)}</td><td>${areaReviewActions(item)}</td></tr>`});
-  shell(`<section class="ops-card company-review"><div class="ops-card-head"><div><h2>加盟商公司与账号</h2><p>运营只查看公司级状态（客资汇总）和账号生命周期，不查看加盟商内部员工的客资分配明细。</p></div></div>${table(['加盟商','公司状态','公司客资状态','负责人','操作'],companyRows)}</section><section class="ops-card company-review"><div class="ops-card-head"><div><h2>加盟商能力与服务区域审核申请</h2><p>供客与接收能力独立审核；区域移除申请在批准前继续保持原服务资格。</p></div><select class="ops-input" id="company-review-status" style="width:auto"><option value="PENDING" ${S.companyStatus==='PENDING'?'selected':''}>待审核</option><option value="APPROVED" ${S.companyStatus==='APPROVED'?'selected':''}>已通过</option><option value="REJECTED" ${S.companyStatus==='REJECTED'?'selected':''}>已驳回</option></select></div><h3>公司能力（${capabilities.total||0}）</h3>${table(['加盟商','能力','状态','审核说明','审核时间','操作'],capabilityRows)}${companyQueuePager(capabilities,'capability',S.companyCapabilityPage)}</section><section class="ops-card company-review"><h3>服务区域（${areas.total||0}）</h3>${table(['加盟商','区域','状态','审核说明','审核时间','操作'],areaRows)}${companyQueuePager(areas,'area',S.companyAreaPage)}</section>`);
+  shell(`<section class="ops-card company-review"><div class="ops-card-head"><div><h2>加盟商公司与账号</h2><p>运营只查看公司级状态（客资汇总）和账号生命周期，不查看加盟商内部员工的客资分配明细。一键审核会同时通过待开通能力和服务区域；待移除区域仍需单独审核。</p></div></div>${table(['加盟商','公司状态','公司客资状态','负责人','操作'],companyRows)}</section><section class="ops-card company-review"><div class="ops-card-head"><div><h2>加盟商能力与服务区域审核申请</h2><p>供客与接收能力独立审核；区域移除申请在批准前继续保持原服务资格。</p></div><select class="ops-input" id="company-review-status" style="width:auto"><option value="PENDING" ${S.companyStatus==='PENDING'?'selected':''}>待审核</option><option value="APPROVED" ${S.companyStatus==='APPROVED'?'selected':''}>已通过</option><option value="REJECTED" ${S.companyStatus==='REJECTED'?'selected':''}>已驳回</option></select></div><h3>公司能力（${capabilities.total||0}）</h3>${table(['加盟商','能力','状态','审核说明','审核时间','操作'],capabilityRows)}${companyQueuePager(capabilities,'capability',S.companyCapabilityPage)}</section><section class="ops-card company-review"><h3>服务区域（${areas.total||0}）</h3>${table(['加盟商','区域','状态','审核说明','审核时间','操作'],areaRows)}${companyQueuePager(areas,'area',S.companyAreaPage)}</section>`);
   document.querySelector('#company-review-status').onchange=event=>{S.companyStatus=event.target.value;S.companyCapabilityPage=1;S.companyAreaPage=1;companies()};
   bindCompanyQueuePager(capabilities,'capability','companyCapabilityPage');
   bindCompanyQueuePager(areas,'area','companyAreaPage');
   document.querySelectorAll('[data-cap-decision]').forEach(button=>button.onclick=()=>reviewCompanyCapability(button));
   document.querySelectorAll('[data-area-decision]').forEach(button=>button.onclick=()=>reviewCompanyArea(button));
+  document.querySelectorAll('[data-company-profile-approve]').forEach(button=>button.onclick=()=>approvePendingCompanyProfile(button));
   document.querySelectorAll('[data-company-accounts]').forEach(button=>button.onclick=()=>companyAccounts(button.dataset.companyAccounts,button.dataset.companyName));
+}
+async function approvePendingCompanyProfile(button){
+  const capabilities=Number(button.dataset.pendingCapabilities||0),areas=Number(button.dataset.pendingAreas||0),companyName=button.dataset.companyName||'该加盟商';
+  actionForm({title:`一键审核${companyName}`,message:`将一次通过 ${capabilities} 项待开通能力和 ${areas} 个待开通服务区域。待移除区域仍需单独审核。`,labelText:'审核说明',submitLabel:'确认一键审核'},async note=>{const result=await api(`/v1.2/admin/companies/${encodeURIComponent(button.dataset.companyProfileApprove)}/profile/approve-pending`,{method:'POST',body:JSON.stringify({note:note||null})});toast(`已通过 ${result.capabilities?.length||0} 项能力和 ${result.service_areas?.length||0} 个服务区域`);await companies()});
 }
 async function reviewCompanyCapability(button){
   const decision=button.dataset.capDecision;

@@ -5,7 +5,9 @@ from sqlalchemy import func, select
 from apps.api.src.core import models_v12 as _models_v12  # noqa: F401
 from apps.api.src.core.auth import Principal
 from apps.api.src.core.models import AuditLog, Company, Lead, Notification, NotificationOutbox
+from apps.api.src.core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12
 from apps.api.src.services.audit import sanitize_audit_value, write_audit
+from apps.api.src.services.auth_service import create_internal_user
 from apps.api.src.services.notification_v12 import emit_business_notification
 
 
@@ -99,6 +101,98 @@ def test_v12_audit_projects_supplier_submit_notification(db):
     assert notification.scene == "V12_SUPPLIER_LEAD_SUBMITTED"
     assert outbox is not None
     assert outbox.payload["business_ids"]["lead_id"] == lead.id
+
+
+def test_company_profile_review_audit_notifies_the_company_owner(db):
+    company = Company(code="S6-PROFILE", name="阶段六资料审核通知公司")
+    db.add(company)
+    db.flush()
+    owner = create_internal_user(
+        db,
+        username="stage6-profile-owner",
+        password="simple88",
+        display_name="阶段六负责人",
+        role_code="FRANCHISE_OWNER",
+        company_id=company.id,
+    )
+    company.primary_user_id = owner.id
+    capability = CompanyLeadCapability(
+        company_id=company.id,
+        capability_code="LEAD_RECEIVER",
+        active=True,
+        review_status="APPROVED",
+    )
+    db.add(capability)
+    db.flush()
+
+    write_audit(
+        db,
+        principal=principal(company.id),
+        action="V12_COMPANY_CAPABILITY_REVIEW",
+        resource_type="company_lead_capability",
+        resource_id=capability.id,
+        company_id=company.id,
+        after={"capability_code": "LEAD_RECEIVER", "active": True, "review_status": "APPROVED"},
+        request_id="request-s6-profile-review",
+    )
+    db.flush()
+
+    notification = db.scalar(
+        select(Notification).where(Notification.company_id == company.id)
+    )
+    outbox = db.scalar(
+        select(NotificationOutbox).where(NotificationOutbox.aggregate_id == company.id)
+    )
+    assert notification is not None
+    assert notification.scene == "V12_COMPANY_PROFILE_APPROVED"
+    assert notification.deep_link == f"/h5/v12-workbench.html?view=profile&id={company.id}"
+    assert outbox is not None
+    assert outbox.event_type == "V12_COMPANY_PROFILE_APPROVED"
+    assert len(outbox.event_key) <= 128
+    assert outbox.payload["company_id"] == company.id
+    assert company.primary_user_id == owner.id
+
+
+def test_approved_service_area_removal_is_not_reported_as_a_rejection(db):
+    company = Company(code="S6-REMOVE", name="阶段六服务区域移除通知公司")
+    db.add(company)
+    db.flush()
+    area = CompanyServiceAreaV12(
+        company_id=company.id,
+        region_code="310000",
+        region_level="CITY",
+        is_primary_city=True,
+        active=False,
+        review_status="APPROVED",
+        review_note="[REMOVE_REQUEST] 加盟商申请停止该服务区域",
+    )
+    db.add(area)
+    db.flush()
+
+    write_audit(
+        db,
+        principal=principal(company.id),
+        action="V12_COMPANY_SERVICE_AREA_REVIEW",
+        resource_type="company_service_area_v12",
+        resource_id=area.id,
+        company_id=company.id,
+        after={
+            "region_code": area.region_code,
+            "active": False,
+            "review_status": "APPROVED",
+            "review_note": "移除申请已批准",
+            "request_type": "REMOVE",
+        },
+        request_id="request-s6-service-area-removal",
+    )
+    db.flush()
+
+    notification = db.scalar(
+        select(Notification).where(Notification.company_id == company.id)
+    )
+    assert notification is not None
+    assert notification.scene == "V12_COMPANY_PROFILE_APPROVED"
+    assert notification.title == "服务区域移除已通过"
 
 
 def test_audit_sanitizer_preserves_masked_phone_only():

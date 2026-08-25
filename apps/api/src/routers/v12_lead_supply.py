@@ -677,6 +677,7 @@ def admin_approve_pending_company_profile(
             resource_id=item["id"],
             company_id=company_id,
             after=item,
+            metadata={"bulk_profile_approval": True},
             reason=body.note or "APPROVE",
             request_id=request.state.request_id,
         )
@@ -689,6 +690,7 @@ def admin_approve_pending_company_profile(
             resource_id=item["id"],
             company_id=company_id,
             after=item,
+            metadata={"bulk_profile_approval": True},
             reason=body.note or "APPROVE",
             request_id=request.state.request_id,
         )
@@ -756,6 +758,7 @@ def admin_review_area(
     company = db.get(Company, area.company_id)
     if company is None:
         raise AppError("COMPANY_NOT_FOUND", "公司不存在", 404)
+    removal_request = str(area.review_note or "").startswith("[REMOVE_REQUEST]")
     item = review_service_area(
         db,
         area_id=area_id,
@@ -770,7 +773,10 @@ def admin_review_area(
         resource_type="company_service_area_v12",
         resource_id=item.id,
         company_id=item.company_id,
-        after=_area_dict(item, company_name=company.name, company_code=company.code),
+        after={
+            **_area_dict(item, company_name=company.name, company_code=company.code),
+            "request_type": "REMOVE" if removal_request else "OPEN",
+        },
         reason=body.note or body.decision,
         request_id=request.state.request_id,
     )

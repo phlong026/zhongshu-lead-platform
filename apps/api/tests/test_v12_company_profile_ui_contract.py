@@ -25,7 +25,7 @@ def test_v12_workbench_exposes_company_profile_flow() -> None:
     assert "company.profile.manage" in entry
     assert "points.own.read" in entry
     assert "followup.own.manage" not in entry
-    assert "v12-workbench.js?v=20260825-five-role" in html
+    assert "v12-workbench.js?v=20260825-stage6-collaboration" in html
 
 
 def test_v12_operations_exposes_company_review_queue() -> None:
@@ -42,4 +42,17 @@ def test_v12_operations_exposes_company_review_queue() -> None:
     assert "company_name" in js
     assert "review_note" in js
     assert "review_status" in js
-    assert "v12-operations.js?v=20260825-five-role" in html
+    assert "v12-operations.js?v=20260825-stage6-collaboration" in html
+
+
+def test_stage6_company_review_and_internal_collaboration_actions_are_role_scoped() -> None:
+    admin = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
+    franchise = Path("apps/h5/public/v12-workbench.js").read_text(encoding="utf-8")
+
+    assert "/profile/approve-pending" in admin
+    assert "一键审核" in admin
+    assert "待移除区域仍需单独审核" in admin
+    assert "/account-directory" in franchise
+    assert "/internal-assignee" in franchise
+    assert "公司内部直接分配，无需运营审批" in franchise
+    assert "负责人自己跟进" in franchise
