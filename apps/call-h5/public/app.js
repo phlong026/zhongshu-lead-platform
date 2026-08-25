@@ -69,6 +69,40 @@ function taskPath(kind, taskId, action = '') {
   return action ? `${root}/${action}` : root;
 }
 
+function copyWithSelection(value) {
+  const field = document.createElement('textarea');
+  field.value = value;
+  field.setAttribute('readonly', '');
+  field.style.position = 'fixed';
+  field.style.top = '-9999px';
+  document.body.appendChild(field);
+  field.focus();
+  field.select();
+  try {
+    return document.execCommand('copy');
+  } finally {
+    field.remove();
+  }
+}
+
+async function copyPhone(phone) {
+  const value = String(phone || '').trim();
+  if (!value) {
+    toast('号码暂不可复制', 'error');
+    return;
+  }
+  try {
+    if (navigator.clipboard?.writeText && window.isSecureContext) {
+      await navigator.clipboard.writeText(value);
+    } else if (!copyWithSelection(value)) {
+      throw new Error('copy failed');
+    }
+    toast('号码已复制');
+  } catch {
+    toast('复制失败，请手动复制号码', 'error');
+  }
+}
+
 function nav(active) {
   const items = [['home', 'home', '首页'], ['verify', 'phone', '核验'], ['records', 'history', '记录'], ['profile', 'user', '我的']];
   return `<nav class="bottom" aria-label="底部导航">${items.map(([route, iconName, label]) => `<button class="nav ${active === route ? 'active' : ''}" data-route="${route}"><i>${icon(iconName)}</i><span>${label}</span></button>`).join('')}</nav>`;
@@ -230,15 +264,19 @@ async function task(kind, id) {
   const lead = data.lead || {};
   const details = taskFacts(kind, data).map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join('');
   const overdue = Boolean(data.is_overdue);
+  const canContact = data.status === 'IN_PROGRESS' && !overdue;
   const action = overdue ? '<section class="card"><h2>任务已超时</h2><p class="muted">为保证核验结论有效，本任务不能继续处理。请等待运营人员改派。</p></section>' : data.status === 'ASSIGNED' ? `<section class="card"><h2>开始核验</h2><p class="muted">该任务已由运营派发给您。开始后可查看完整手机号；这不是自主领取。</p><button class="btn primary block" id="start">开始核验</button></section>` : data.status === 'IN_PROGRESS' ? taskForm(kind) : `<section class="card"><h2>已提交结论</h2><dl class="detail"><div><dt>联系结果</dt><dd>${esc(contactLabels[data.contact_result] || '待确认')}</dd></div><div><dt>事实结论</dt><dd>${esc(TASK_KIND[kind].conclusions[data.conclusion] || '待确认')}</dd></div></dl><p class="muted">结论已经提交运营人员处置，不能由电销人员直接改变客资状态。</p></section>`;
-  zsSetSafeHtml(app, shell(`<button class="btn small outline" data-history-back>返回</button><section class="detail-hero"><div><p class="eyebrow">${esc(TASK_KIND[kind].label)}</p><h1>${esc(lead.customer_name || '待核验客户')}</h1><span class="badge ${statusClass(data.status)}">${esc(overdue ? '已超时' : statusLabel(data.status))}</span></div>${data.status === 'IN_PROGRESS' && !overdue ? `<button id="dial" class="btn gold">${icon('phone')}<span>一键拨号</span></button>` : ''}</section>${data.status === 'IN_PROGRESS' && !overdue ? '<section class="quick-guide"><b>核验说明</b><span>拨号由您主动确认，只提交事实结论，不决定派发、退款或终审。</span><a href="#result-form">填写结果</a></section>' : ''}<section class="card compact"><dl class="detail"><div><dt>手机号</dt><dd><strong>${esc(lead.phone || lead.phone_masked || '--')}</strong></dd></div><div><dt>地区</dt><dd>${esc(lead.city || '--')} ${esc(lead.district || '')}</dd></div>${details}</dl></section>${action}`, data.status === 'SUBMITTED' ? 'records' : 'verify', '核验详情'));
+  const contactActions = canContact ? `<div class="detail-actions"><button id="dial" class="btn gold">${icon('phone')}<span>一键拨号</span></button><button id="copy-phone" class="btn outline">复制号码</button></div>` : '';
+  const guide = canContact ? '<section class="quick-guide"><b>核验说明</b><span>拨号由您主动确认；桌面端可复制号码，只提交事实结论，不决定派发、退款或终审。</span><a href="#result-form">填写结果</a></section>' : '';
+  zsSetSafeHtml(app, shell(`<button class="btn small outline" data-history-back>返回</button><section class="detail-hero"><div><p class="eyebrow">${esc(TASK_KIND[kind].label)}</p><h1>${esc(lead.customer_name || '待核验客户')}</h1><span class="badge ${statusClass(data.status)}">${esc(overdue ? '已超时' : statusLabel(data.status))}</span></div>${contactActions}</section>${guide}<section class="card compact"><dl class="detail"><div><dt>手机号</dt><dd><strong>${esc(lead.phone || lead.phone_masked || '--')}</strong></dd></div><div><dt>地区</dt><dd>${esc(lead.city || '--')} ${esc(lead.district || '')}</dd></div>${details}</dl></section>${action}`, data.status === 'SUBMITTED' ? 'records' : 'verify', '核验详情'));
   bind();
-  bindTaskActions(kind, id);
+  bindTaskActions(kind, id, lead.phone);
 }
 
-function bindTaskActions(kind, id) {
+function bindTaskActions(kind, id, phone) {
   document.querySelector('#start')?.addEventListener('click', async () => { try { await api(taskPath(kind, id, 'start'), { method: 'POST' }); toast('已开始核验'); task(kind, id); } catch (error) { toast(error.message, 'error'); } });
   document.querySelector('#dial')?.addEventListener('click', async () => { try { const result = await api(taskPath(kind, id, 'dial'), { method: 'POST' }); location.href = result.tel_url; } catch (error) { toast(error.message, 'error'); } });
+  document.querySelector('#copy-phone')?.addEventListener('click', () => copyPhone(phone));
   document.querySelector('#submit')?.addEventListener('click', () => submit(kind, id));
 }
 

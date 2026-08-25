@@ -178,11 +178,14 @@ def test_call_h5_home_first_screen_has_personal_task_summary_without_team_financ
 def test_call_h5_task_detail_first_screen_exposes_dial_rules_and_result_entry() -> None:
     source = CALL_APP.read_text(encoding="utf-8")
 
-    for label in ("一键拨号", "核验说明", "填写结果", "拨号", "提交核验结果"):
+    for label in ("一键拨号", "复制号码", "核验说明", "填写结果", "拨号", "提交核验结果"):
         assert label in source
     for forbidden in ("自动录音", "云外呼", "在线支付"):
         assert forbidden not in source
     assert source.count("['处理期限', fmt(data.due_at)]") >= 2
+    assert "async function copyPhone" in source
+    assert "navigator.clipboard.writeText" in source
+    assert "document.execCommand('copy')" in source
 
 
 def test_call_h5_route_awaits_async_views_so_failures_reach_the_error_state() -> None:
