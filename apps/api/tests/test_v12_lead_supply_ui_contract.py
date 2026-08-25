@@ -53,6 +53,15 @@ def test_unified_operations_lead_ui_distinguishes_platform_and_supplier_flow() -
     assert "加盟商来源才可退回加盟商补正" in js
 
 
+def test_platform_lead_district_options_use_dom_nodes_not_html_injection() -> None:
+    js = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
+
+    assert "function replacePlatformSelectOptions" in js
+    assert "select.replaceChildren(...options)" in js
+    assert "node.textContent=name" in js
+    assert ".innerHTML=platformSelectOptions" not in js
+
+
 def test_operations_review_exposes_four_initial_decisions_and_one_step_telesales_assignment() -> None:
     source = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
 

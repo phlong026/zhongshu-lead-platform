@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-import subprocess
-import sys
 
+from alembic import command
+from alembic.config import Config
 import pytest
 from sqlalchemy import create_engine, func, inspect, select, text
 from sqlalchemy.orm import Session, sessionmaker
@@ -201,16 +201,19 @@ def test_bootstrap_fails_closed_when_schema_is_not_migrated(tmp_path: Path) -> N
 
 
 def _upgrade_to_head(database_url: str) -> None:
-    env = os.environ.copy()
-    env["DATABASE_URL"] = database_url
-    subprocess.run(
-        [sys.executable, "-m", "alembic", "-c", "alembic.ini", "upgrade", "head"],
-        cwd=Path(__file__).resolve().parents[3],
-        env=env,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    from apps.api.src.core.config import get_settings
+
+    previous = os.environ.get("DATABASE_URL")
+    try:
+        os.environ["DATABASE_URL"] = database_url
+        get_settings.cache_clear()
+        command.upgrade(Config(str(Path(__file__).resolve().parents[3] / "alembic.ini")), "head")
+    finally:
+        if previous is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = previous
+        get_settings.cache_clear()
 
 
 def test_bootstrap_works_after_alembic_upgrade(tmp_path: Path) -> None:
