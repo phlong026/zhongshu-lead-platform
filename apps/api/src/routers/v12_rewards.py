@@ -17,6 +17,7 @@ from ..schemas.v12_rewards import (
     SupplierRewardRuleBody,
     SupplierRewardRulePublishBody,
     SupplierRewardSettleBody,
+    SupplierRewardSettleOneBody,
 )
 from ..services.audit import write_audit
 from ..services.reward_rule_v12 import (
@@ -44,7 +45,6 @@ def _can_read_own_rewards(principal: CurrentPrincipal) -> bool:
         principal.company_id
         and (
             principal.can("supplier.reward.own.read")
-            or principal.can("supplier.lead.manage")
             or principal.can("*")
         )
     )
@@ -122,6 +122,7 @@ def settle_due_rewards(
         action="V12_SUPPLIER_REWARD_SETTLE_DUE",
         resource_type="supplier_reward_batch",
         after=result,
+        reason=body.note,
         request_id=request.state.request_id,
     )
     db.commit()
@@ -131,6 +132,7 @@ def settle_due_rewards(
 @router.post("/admin/supplier-rewards/{reward_id}/settle")
 def settle_one_reward(
     reward_id: str,
+    body: SupplierRewardSettleOneBody,
     request: Request,
     principal=Depends(require_permissions("reward.manage")),
     db: Session = Depends(get_db),
@@ -153,6 +155,7 @@ def settle_one_reward(
             "idempotent": result.idempotent,
             "frozen": result.frozen,
         },
+        reason=body.note,
         request_id=request.state.request_id,
     )
     db.commit()

@@ -33,7 +33,7 @@ def verify_password(password: str, password_hash: str) -> bool:
 
 
 def validate_internal_password(password: str) -> None:
-    """Raise ``ValueError`` when an internal account password is out of range."""
+    """Raise ``ValueError`` when an internal password is outside the agreed range."""
 
     if not 8 <= len(password) <= 128:
         raise ValueError("密码长度必须为 8 到 128 位")

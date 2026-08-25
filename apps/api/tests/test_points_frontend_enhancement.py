@@ -1,22 +1,21 @@
 from pathlib import Path
 
 
-def test_h5_points_enhancement_exposes_low_balance_and_level_entitlements():
-    script = Path("apps/h5/public/points-enhancements.js").read_text(encoding="utf-8")
-    style = Path("apps/h5/public/points-enhancements.css").read_text(encoding="utf-8")
-    index = Path("apps/h5/public/index.html").read_text(encoding="utf-8")
-    assert "low_points_threshold" in script
-    assert "level_entitlements" in script
-    assert "线下充值" in script
-    assert ".p1-entitlements-card" in style
-    assert "points-enhancements.js" in index and "points-enhancements.css" in index
+def test_franchise_h5_points_page_is_read_only_and_business_focused() -> None:
+    script = Path("apps/h5/public/v12-workbench.js").read_text(encoding="utf-8")
+
+    assert "/points/accounts/${encodeURIComponent(companyId)}" in script
+    assert "/points/ledgers?company_id=" in script
+    assert "可用积分" in script
+    assert "积分流水" in script
+    assert "微信支付" not in script and "支付宝支付" not in script
 
 
-def test_admin_points_enhancement_requires_recharge_confirmation_without_developer_fields():
-    script = Path("apps/admin/public/points-enhancements.js").read_text(encoding="utf-8")
-    index = Path("apps/admin/public/index.html").read_text(encoding="utf-8")
-    assert "body.confirmed = rechargeConfirmed" in script
-    assert "#p-entitlements" not in script
-    assert "等级权益（JSON）" not in script
-    assert "points-enhancements.js" in index
+def test_superadmin_h5_recharge_requires_offline_collection_confirmation() -> None:
+    script = Path("apps/admin/public/h5/app.js").read_text(encoding="utf-8")
+
+    assert 'id="recharge-confirmed"' in script
+    assert "我已核实本笔线下款项" in script
+    assert "/points/recharge" in script
+    assert "收款核验与凭证说明" in script
     assert "微信支付" not in script and "支付宝支付" not in script

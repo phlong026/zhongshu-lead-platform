@@ -48,6 +48,8 @@ def test_traceability_references_real_repository_paths() -> None:
     assert referenced_paths
     for relative_path in sorted(referenced_paths):
         assert (REPOSITORY_ROOT / relative_path).exists(), relative_path
+    assert "apps/admin/public/v12-leads" not in documents
+    assert "apps/admin/public/v12-operations.html" in documents
 
     for obsolete_path in (
         "routers/v12_leads.py",

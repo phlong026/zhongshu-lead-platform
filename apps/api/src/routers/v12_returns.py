@@ -4,14 +4,14 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import Response
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..core.auth import CurrentPrincipal, require_permissions
 from ..core.database import get_db
 from ..core.enums import EvidenceType, VerificationTaskStatus
 from ..core.errors import AppError
-from ..core.models import ReturnEvidence, ReturnRequest, VerificationTask
+from ..core.models import Assignment, ReturnEvidence, ReturnRequest, VerificationTask
 from ..core.responses import ok, page
 from ..core.v12_enums import VerificationTaskType
 from ..schemas.v12_returns import (
@@ -29,10 +29,13 @@ from ..services.return_v12 import (
     create_or_update_return_draft,
     final_review_return,
     return_request_to_dict,
+    return_verification_task_list_to_dict,
     return_verification_task_to_dict,
+    require_return_verification_task_not_overdue,
     submit_return_request,
     submit_return_verification,
 )
+from ..services.company_assignment_v12 import require_company_assignment_access
 from ..services.storage import create_file_access_token, decode_file_access_token, get_storage
 
 router = APIRouter(prefix="/v1.2", tags=["v1.2-return-verification"])
@@ -50,10 +53,19 @@ AUDIO_MIME = {
 }
 
 
-def _can_read_return(principal, item: ReturnRequest) -> bool:
+def _can_read_return(db: Session, principal, item: ReturnRequest) -> bool:
     if principal.can("*") or principal.can("return.read") or principal.can("return.evidence.read"):
         return True
-    return bool(principal.company_id and item.company_id == principal.company_id and principal.can("return.own.manage"))
+    if not principal.can("return.own.manage"):
+        return False
+    assignment = db.get(Assignment, item.assignment_id)
+    if assignment is None:
+        return False
+    try:
+        require_company_assignment_access(principal, assignment)
+    except AppError:
+        return False
+    return True
 
 
 @router.post("/returns/assignments/{assignment_id}/draft")
@@ -206,8 +218,19 @@ def list_returns_v12(
     if principal.can("*") or principal.can("return.read"):
         if company_id:
             filters.append(ReturnRequest.company_id == company_id)
-    elif principal.can("return.own.manage") and principal.company_id:
+    elif principal.has_any_role("FRANCHISE_OWNER") and principal.can("return.own.manage") and principal.company_id:
         filters.append(ReturnRequest.company_id == principal.company_id)
+    elif principal.has_any_role("FRANCHISE_EMPLOYEE") and principal.can("return.own.manage") and principal.company_id:
+        filters.extend(
+            [
+                ReturnRequest.company_id == principal.company_id,
+                ReturnRequest.assignment_id.in_(
+                    select(Assignment.id).where(
+                        Assignment.internal_assignee_user_id == principal.user_id
+                    )
+                ),
+            ]
+        )
     else:
         raise AppError("FORBIDDEN", "无权查看退回申请", 403)
     if status:
@@ -236,7 +259,7 @@ def return_detail_v12(
     item = db.get(ReturnRequest, return_id)
     if item is None:
         raise AppError("RETURN_NOT_FOUND", "退回申请不存在", 404)
-    if not _can_read_return(principal, item):
+    if not _can_read_return(db, principal, item):
         raise AppError("FORBIDDEN", "无权查看退回申请", 403)
     data = return_request_to_dict(db, item, include_evidence=True)
     for evidence in data.get("evidences", []):
@@ -259,7 +282,7 @@ def download_return_evidence_v12(
     if evidence is None:
         raise AppError("FILE_NOT_FOUND", "证据文件不存在", 404)
     item = db.get(ReturnRequest, evidence.return_request_id)
-    if item is None or not _can_read_return(principal, item):
+    if item is None or not _can_read_return(db, principal, item):
         raise AppError("FORBIDDEN", "无权访问证据文件", 403)
     content = get_storage().read(evidence.object_key)
     write_audit(
@@ -298,12 +321,7 @@ def list_return_verification_tasks(
         raise AppError("FORBIDDEN", "无权查看退回核验任务", 403)
     filters = [VerificationTask.task_type == VerificationTaskType.RETURN_VERIFY.value]
     if mine or principal.has_any_role("TELESALES"):
-        filters.append(
-            or_(
-                VerificationTask.assignee_user_id == principal.user_id,
-                VerificationTask.assignee_user_id.is_(None),
-            )
-        )
+        filters.append(VerificationTask.assignee_user_id == principal.user_id)
     if status:
         filters.append(VerificationTask.status == status.strip().upper())
     total = db.scalar(select(func.count(VerificationTask.id)).where(*filters)) or 0
@@ -317,7 +335,7 @@ def list_return_verification_tasks(
     return ok(
         request,
         page(
-            [return_verification_task_to_dict(db, task, principal) for task in tasks],
+            return_verification_task_list_to_dict(db, tasks, principal),
             int(total),
             page_no,
             page_size,
@@ -335,7 +353,7 @@ def return_verification_task_detail(
     task = db.get(VerificationTask, task_id)
     if task is None or task.task_type != VerificationTaskType.RETURN_VERIFY.value:
         raise AppError("RETURN_VERIFY_TASK_NOT_FOUND", "退回核验任务不存在", 404)
-    if principal.has_any_role("TELESALES") and task.assignee_user_id not in {None, principal.user_id}:
+    if principal.has_any_role("TELESALES") and task.assignee_user_id != principal.user_id:
         raise AppError("FORBIDDEN", "无权查看该退回核验任务", 403)
     if not (
         principal.can("verification.read")
@@ -365,37 +383,46 @@ def assign_return_verification(
     principal=Depends(require_permissions("verification.read")),
     db: Session = Depends(get_db),
 ):
-    task = assign_return_verification_task(
+    assignment = assign_return_verification_task(
         db,
         task_id=task_id,
         assignee_user_id=body.assignee_user_id,
         assigned_by=principal.user_id,
+        reason=body.reason,
     )
+    task = assignment.task
     write_audit(
         db,
         principal=principal,
         action="V12_RETURN_VERIFY_ASSIGN",
         resource_type="verification_task",
         resource_id=task.id,
-        after={"assignee_user_id": task.assignee_user_id, "status": task.status},
+        before=assignment.before,
+        after=assignment.after,
+        reason=body.reason,
         request_id=request.state.request_id,
     )
     db.commit()
     return ok(request, return_verification_task_to_dict(db, task, principal), "任务已分配")
 
 
-@router.post("/return-verifications/tasks/{task_id}/claim")
-def claim_return_verification(
+@router.post("/return-verifications/tasks/{task_id}/start")
+@router.post("/return-verifications/tasks/{task_id}/claim", include_in_schema=False)
+def start_return_verification(
     task_id: str,
     request: Request,
-    principal=Depends(require_permissions("verification.task.claim")),
+    principal: CurrentPrincipal,
     db: Session = Depends(get_db),
 ):
+    if not principal.has_any_role("TELESALES") or not principal.can(
+        "verification.task.start"
+    ):
+        raise AppError("FORBIDDEN", "仅被派发任务的电销人员可以开始核验", 403)
     task = claim_return_verification_task(db, task_id=task_id, principal=principal)
     write_audit(
         db,
         principal=principal,
-        action="V12_RETURN_VERIFY_CLAIM",
+        action="V12_RETURN_VERIFY_START",
         resource_type="verification_task",
         resource_id=task.id,
         after={"assignee_user_id": task.assignee_user_id, "status": task.status},
@@ -405,7 +432,7 @@ def claim_return_verification(
     return ok(
         request,
         return_verification_task_to_dict(db, task, principal, include_phone=True),
-        "任务已领取",
+        "任务已开始核验",
     )
 
 
@@ -424,6 +451,7 @@ def dial_return_verification(
         or task.status != VerificationTaskStatus.IN_PROGRESS.value
     ):
         raise AppError("FORBIDDEN", "无权拨打该退回核验电话", 403)
+    require_return_verification_task_not_overdue(task)
     data = return_verification_task_to_dict(db, task, principal, include_phone=True)
     phone = data["lead"]["phone"]
     write_audit(

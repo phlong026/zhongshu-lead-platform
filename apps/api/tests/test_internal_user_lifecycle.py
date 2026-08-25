@@ -93,24 +93,24 @@ def test_superadmin_lists_only_internal_accounts(api_client) -> None:
     assert "franchise_demo" not in {user["username"] for user in users}
 
 
-def test_superadmin_creates_a_multi_role_internal_account_and_audits_it(api_client) -> None:
+def test_superadmin_creates_a_single_role_internal_account_and_audits_it(api_client) -> None:
     client, factory = api_client
     admin_token = _login(client, "admin", "Admin123!")
 
     response = _create_user(
         client,
         admin_token,
-        username="multi_role",
-        role_codes=["LEAD_ENTRY", "OPERATION"],
+        username="single_role",
+        role_codes=["OPERATION"],
     )
     user_id = _data(response)["id"]
 
-    user = _user_by_username(factory, "multi_role")
+    user = _user_by_username(factory, "single_role")
     assert user.id == user_id
     assert user.company_id is None
     assert user.status == "ACTIVE"
     assert user.session_version == 1
-    assert sorted(role.code for role in user.roles) == ["LEAD_ENTRY", "OPERATION"]
+    assert [role.code for role in user.roles] == ["OPERATION"]
     assert verify_password(STRONG_PASSWORD, user.password_hash or "")
 
     actions, audit_text = _audit_text(factory, user.id)
@@ -137,11 +137,8 @@ def test_create_generates_initial_password_when_password_is_omitted(api_client) 
     initial_password = data["initial_password"]
     assert data["username"] == "generated_password"
     assert isinstance(initial_password, str)
-    assert len(initial_password) == 18
-    assert any(character.islower() for character in initial_password)
-    assert any(character.isupper() for character in initial_password)
-    assert any(character.isdigit() for character in initial_password)
-    assert any(not character.isalnum() for character in initial_password)
+    assert len(initial_password) == 8
+    assert initial_password.isalnum()
     assert response.headers["cache-control"] == "no-store"
 
     user = _user_by_username(factory, "generated_password")
@@ -252,26 +249,19 @@ def test_internal_account_creation_rejects_franchise_company_and_short_passwords
         client,
         admin_token,
         username="short_password",
-        password="short7",
+        password="1234567",
     )
-    assert short_password.status_code == 422
-    assert short_password.json()["code"] == "VALIDATION_ERROR"
+    assert short_password.status_code == 400
+    assert short_password.json()["code"] == "PASSWORD_POLICY_INVALID"
 
-
-def test_internal_account_creation_accepts_eight_characters_without_composition(api_client) -> None:
-    client, factory = api_client
-    admin_token = _login(client, "admin", "Admin123!")
-
-    response = _create_user(
+    simple_password = _create_user(
         client,
         admin_token,
         username="simple_password",
         password="aaaaaaaa",
     )
-
-    user_id = _data(response)["id"]
+    assert simple_password.status_code == 200
     user = _user_by_username(factory, "simple_password")
-    assert user.id == user_id
     assert verify_password("aaaaaaaa", user.password_hash or "")
     assert _login(client, "simple_password", "aaaaaaaa")
 
@@ -299,28 +289,36 @@ def test_role_update_invalidates_existing_session_and_records_before_after(api_c
     assert invalid.status_code == 400
     assert invalid.json()["code"] == "INTERNAL_ROLE_INVALID"
 
+    multiple_roles = client.put(
+        f"/api/v1/users/{user_id}/roles",
+        headers=_bearer(admin_token),
+        json={"role_codes": ["OPERATION", "TELESALES"]},
+    )
+    assert multiple_roles.status_code == 422
+    assert multiple_roles.json()["code"] == "VALIDATION_ERROR"
+
     response = client.put(
         f"/api/v1/users/{user_id}/roles",
         headers=_bearer(admin_token),
-        json={"role_codes": ["RETURN_REVIEWER", "TELESALES"]},
+        json={"role_codes": ["TELESALES"]},
     )
     _data(response)
 
     after = _user_by_username(factory, "role_change")
     assert after.session_version == before.session_version + 1
-    assert sorted(role.code for role in after.roles) == ["RETURN_REVIEWER", "TELESALES"]
+    assert [role.code for role in after.roles] == ["TELESALES"]
     expired = client.get("/api/v1/auth/me", headers=_bearer(old_token))
     assert expired.status_code == 401
     assert expired.json()["code"] == "AUTH_INVALID"
     new_token = _login(client, "role_change", STRONG_PASSWORD)
     me = _data(client.get("/api/v1/auth/me", headers=_bearer(new_token)))
-    assert me["roles"] == ["RETURN_REVIEWER", "TELESALES"]
+    assert me["roles"] == ["TELESALES"]
 
     _data(
         client.put(
             f"/api/v1/users/{user_id}/roles",
             headers=_bearer(admin_token),
-            json={"role_codes": ["TELESALES", "RETURN_REVIEWER"]},
+            json={"role_codes": ["TELESALES"]},
         )
     )
     unchanged = _user_by_username(factory, "role_change")
@@ -329,7 +327,7 @@ def test_role_update_invalidates_existing_session_and_records_before_after(api_c
     actions, audit_text = _audit_text(factory, user_id)
     assert actions.count("USER_ROLES_UPDATE") == 1
     assert "OPERATION" in audit_text
-    assert "RETURN_REVIEWER" in audit_text
+    assert "TELESALES" in audit_text
 
 
 def test_password_reset_invalidates_sessions_and_never_audits_credentials(api_client) -> None:
@@ -342,10 +340,10 @@ def test_password_reset_invalidates_sessions_and_never_audits_credentials(api_cl
     weak = client.post(
         f"/api/v1/users/{user_id}/reset-password",
         headers=_bearer(admin_token),
-        json={"new_password": "short7"},
+        json={"new_password": "1234567"},
     )
-    assert weak.status_code == 422
-    assert weak.json()["code"] == "VALIDATION_ERROR"
+    assert weak.status_code == 400
+    assert weak.json()["code"] == "PASSWORD_POLICY_INVALID"
 
     _data(
         client.post(
@@ -423,7 +421,7 @@ def test_last_active_superadmin_cannot_be_disabled_or_demoted(api_client) -> Non
     demoted = client.put(
         f"/api/v1/users/{admin.id}/roles",
         headers=_bearer(admin_token),
-        json={"role_codes": ["OWNER"]},
+        json={"role_codes": ["OPERATION"]},
     )
     assert demoted.status_code == 409
     assert demoted.json()["code"] == "LAST_SUPER_ADMIN_REQUIRED"
@@ -444,7 +442,7 @@ def test_last_active_superadmin_cannot_be_disabled_or_demoted(api_client) -> Non
         client.put(
             f"/api/v1/users/{admin.id}/roles",
             headers=_bearer(admin_token),
-            json={"role_codes": ["OWNER"]},
+            json={"role_codes": ["OPERATION"]},
         )
     )
     first_after = _user_by_username(factory, "admin")

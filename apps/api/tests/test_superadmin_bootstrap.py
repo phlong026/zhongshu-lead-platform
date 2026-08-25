@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-import subprocess
-import sys
 
+from alembic import command
+from alembic.config import Config
 import pytest
 from sqlalchemy import create_engine, func, inspect, select, text
 from sqlalchemy.orm import Session, sessionmaker
@@ -155,15 +155,11 @@ def test_bootstrap_refuses_business_data_even_when_users_are_empty(db: Session) 
 @pytest.mark.parametrize(
     "password",
     [
-        "short7",
+        "1234567",
         "x" * 129,
     ],
-    ids=[
-        "below-minimum",
-        "above-maximum",
-    ],
 )
-def test_bootstrap_rejects_out_of_range_passwords(db: Session, password: str) -> None:
+def test_bootstrap_rejects_passwords_outside_the_eight_to_128_character_range(db: Session, password: str) -> None:
     with pytest.raises(SuperadminBootstrapError, match="密码"):
         bootstrap_superadmin(
             db,
@@ -173,6 +169,20 @@ def test_bootstrap_rejects_out_of_range_passwords(db: Session, password: str) ->
         )
     db.rollback()
     assert db.scalar(select(func.count(User.id))) == 0
+
+
+def test_bootstrap_accepts_an_eight_character_password_without_composition_rules(db: Session) -> None:
+    result = bootstrap_superadmin(
+        db,
+        username="rootadmin",
+        password="12345678",
+        display_name="平台超级管理员",
+    )
+    db.commit()
+
+    user = db.get(User, result.user_id)
+    assert user is not None
+    assert verify_password("12345678", user.password_hash or "")
 
 
 def test_bootstrap_fails_closed_when_schema_is_not_migrated(tmp_path: Path) -> None:
@@ -191,16 +201,19 @@ def test_bootstrap_fails_closed_when_schema_is_not_migrated(tmp_path: Path) -> N
 
 
 def _upgrade_to_head(database_url: str) -> None:
-    env = os.environ.copy()
-    env["DATABASE_URL"] = database_url
-    subprocess.run(
-        [sys.executable, "-m", "alembic", "-c", "alembic.ini", "upgrade", "head"],
-        cwd=Path(__file__).resolve().parents[3],
-        env=env,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    from apps.api.src.core.config import get_settings
+
+    previous = os.environ.get("DATABASE_URL")
+    try:
+        os.environ["DATABASE_URL"] = database_url
+        get_settings.cache_clear()
+        command.upgrade(Config(str(Path(__file__).resolve().parents[3] / "alembic.ini")), "head")
+    finally:
+        if previous is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = previous
+        get_settings.cache_clear()
 
 
 def test_bootstrap_works_after_alembic_upgrade(tmp_path: Path) -> None:

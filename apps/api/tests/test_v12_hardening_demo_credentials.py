@@ -41,24 +41,24 @@ def test_production_frontend_static_assets_contain_no_demo_credentials() -> None
 
 
 def test_admin_login_requires_credentials_and_user_creation_uses_one_time_password() -> None:
-    source = Path("apps/admin/public/app.js").read_text(encoding="utf-8")
-    assert 'id="admin-login-form"' in source
-    assert 'id="username" name="username" type="text" autocomplete="username"' in source
-    assert 'id="password" name="password" type="password" autocomplete="current-password"' in source
-    assert "u-pass" not in source
+    source = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
+    assert 'id="platform-login-form"' in source
+    assert 'id="username" autocomplete="username" required' in source
+    assert 'id="password" type="password" autocomplete="current-password" required' in source
+    assert "internal-user-password" not in source[source.index("function internalUserModal") : source.index("function internalRoleModal")]
     assert "initial_password" in source
-    assert "初始密码仅在本次创建后显示" in source
-    assert "request('/auth/login'" in source
+    assert "初始密码仅在当前窗口展示一次" in source
+    assert "api('/auth/login'" in source
 
 
-def test_h5_login_is_wechat_only_without_demo_account_form() -> None:
-    source = Path("apps/h5/public/app.js").read_text(encoding="utf-8")
-    assert 'id="wechat-login"' in source
-    assert "/auth/invites/confirm-start" in source
-    assert 'id="username"' not in source
-    assert 'id="password"' not in source
+def test_franchise_h5_login_uses_explicit_credentials_without_demo_account_form() -> None:
+    source = Path("apps/h5/public/v12-workbench.js").read_text(encoding="utf-8")
+    assert 'id="franchise-login-form"' in source
+    assert 'id="franchise-username"' in source
+    assert 'id="franchise-password"' in source
     assert "demo-login" not in source
-    assert "登录方式</dt><dd>微信授权</dd>" not in source
+    assert "franchise_demo" not in source
+    assert "api('/auth/login'" in source
 
 
 def test_call_h5_internal_login_requires_explicit_credentials() -> None:

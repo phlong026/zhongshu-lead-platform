@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     low_points_warning_threshold: int = 1000
     assignment_reminder_hours: int = 24
     assignment_expire_hours: int = 48
+    pre_dispatch_verification_hours: int = 24
+    return_verification_hours: int = 24
     # V1.0.1 compatibility only. V1.2 return appeals use the workday calendar.
     return_window_hours: int = 48
     # Development/test may keep legacy mutation APIs for historical regression tests.
@@ -86,6 +88,8 @@ class Settings(BaseSettings):
         "login_max_failed_attempts",
         "login_failure_window_minutes",
         "login_lock_minutes",
+        "pre_dispatch_verification_hours",
+        "return_verification_hours",
     )
     @classmethod
     def validate_positive_window(cls, value: int) -> int:

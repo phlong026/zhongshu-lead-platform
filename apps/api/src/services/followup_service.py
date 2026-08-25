@@ -10,6 +10,7 @@ from ..core.auth import Principal
 from ..core.enums import AssignmentStatus, FollowStatus, LeadStatus
 from ..core.errors import AppError
 from ..core.models import Assignment, AssignmentEvent, FollowUp, Lead, Notification
+from .company_assignment_v12 import require_company_assignment_access
 from .notification_service import create_station_message, enqueue_outbox
 
 
@@ -30,10 +31,15 @@ def add_followup(
     note: str | None,
     next_followup_at: datetime | None,
 ) -> FollowUp:
-    if assignment.company_id != principal.company_id:
-        raise AppError("FORBIDDEN", "无权更新该客资", 403)
+    require_company_assignment_access(principal, assignment)
     if assignment.status not in {AssignmentStatus.CLAIMED, AssignmentStatus.FOLLOWING}:
         raise AppError("FOLLOWUP_NOT_ALLOWED", "订单当前不可跟进", 409)
+    if status.strip().upper() == FollowStatus.INVALID.value:
+        raise AppError(
+            "FOLLOWUP_INVALID_REQUIRES_RETURN",
+            "无效客资必须发起正式退回申诉，由运营完成后续处置",
+            409,
+        )
     next_followup_at = _as_utc(next_followup_at)
     followup = FollowUp(
         assignment_id=assignment.id,

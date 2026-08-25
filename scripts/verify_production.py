@@ -23,6 +23,7 @@ REQUIRED_FILES = (
     "Dockerfile",
     "docker-compose.yml",
     "docker-compose.prod.yml",
+    "infra/nginx/baota-proxy.conf.template",
     "infra/nginx/production.conf.template",
     "infra/nginx/security-headers.conf",
     "docker/prepare-env.sh",
@@ -283,6 +284,18 @@ def main() -> int:
         for marker in ("listen 443 ssl", "client_max_body_size 25m", "limit_req_zone", "X-Forwarded-Proto https"):
             if marker not in content:
                 errors.append(f"生产 Nginx 缺少配置：{marker}")
+    baota_nginx = ROOT / "infra/nginx/baota-proxy.conf.template"
+    if baota_nginx.exists():
+        content = baota_nginx.read_text(encoding="utf-8")
+        for marker in (
+            "listen 80",
+            "client_max_body_size 25m",
+            "limit_req_zone",
+            "$http_x_real_ip",
+            "X-Forwarded-Proto $http_x_forwarded_proto",
+        ):
+            if marker not in content:
+                errors.append(f"宝塔 Nginx 网关缺少配置：{marker}")
     if docker and args.env_file.exists():
         result = subprocess.run(
             [

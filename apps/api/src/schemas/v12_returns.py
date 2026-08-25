@@ -42,10 +42,16 @@ class ReturnDraftV12Body(BaseModel):
 
 class ReturnVerificationAssignBody(BaseModel):
     assignee_user_id: str = Field(min_length=1, max_length=36)
+    reason: str = Field(min_length=2, max_length=1000)
 
     @field_validator("assignee_user_id")
     @classmethod
     def strip_assignee(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("reason")
+    @classmethod
+    def strip_reason(cls, value: str) -> str:
         return value.strip()
 
 

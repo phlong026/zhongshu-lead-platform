@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class EffectiveWindowMixin(BaseModel):
@@ -42,9 +42,14 @@ class RechargeBody(BaseModel):
     package_id: str
     external_reference: str = Field(min_length=3, max_length=128)
     cash_amount_cents: int = Field(ge=0)
-    note: str | None = Field(default=None, max_length=500)
+    note: str = Field(min_length=3, max_length=500)
     idempotency_key: str = Field(min_length=8, max_length=128)
     confirmed: bool = False
+
+    @field_validator("note", mode="before")
+    @classmethod
+    def strip_note(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
 
 
 class ManualAdjustmentBody(BaseModel):
@@ -53,7 +58,17 @@ class ManualAdjustmentBody(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
     idempotency_key: str = Field(min_length=8, max_length=128)
 
+    @field_validator("reason", mode="before")
+    @classmethod
+    def strip_reason(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
 
 class ReverseLedgerBody(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
     idempotency_key: str = Field(min_length=8, max_length=128)
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def strip_reason(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value

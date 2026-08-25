@@ -16,16 +16,18 @@ settings = get_settings()
 # N7：确定性投递失败（模板未发布、邀请对象无 openid）重试不可能自愈——
 # 直接终态化 MANUAL_ACTION_REQUIRED 交运营兜底，不空转 5 次退避重试污染
 # 失败率；运营修好配置/收件人后经重试按钮手动重置 PENDING。
-_MANUAL_ACTION_ERROR_CODES = frozenset({"TEMPLATE_NOT_CONFIGURED", "NO_RECIPIENT"})
+_MANUAL_ACTION_ERROR_CODES = frozenset(
+    {"TEMPLATE_NOT_CONFIGURED", "TEMPLATE_CONFIG_INVALID", "NO_RECIPIENT"}
+)
 
 
-def _template_for_scene(db: Session, scene: str) -> str | None:
+def _template_for_scene(db: Session, scene: str) -> dict[str, Any] | None:
     config = db.scalar(select(SystemConfig).where(
         SystemConfig.domain == "wechat_template",
         SystemConfig.key == scene,
         SystemConfig.status == "PUBLISHED",
     ).order_by(SystemConfig.version.desc()))
-    return str(config.value_json.get("template_id")) if config and config.value_json.get("template_id") else None
+    return dict(config.value_json) if config and config.value_json.get("template_id") else None
 
 
 def process_outbox(db: Session, limit: int = 100) -> dict[str, int]:
@@ -104,13 +106,15 @@ def _send(db: Session, client: WechatOfficialAccountClient, outbox: Notification
     title = notification.title if notification else _default_title(outbox.event_type)
     body = notification.body if notification else "您有一条业务消息，请点击查看详情。"
     relative_url = notification.deep_link if notification and notification.deep_link else outbox.payload.get("deep_link", "/h5/")
+    template = _template_for_scene(db, outbox.event_type)
     result = client.send_scene_message(
         openid=identity.openid,
         scene=outbox.event_type,
         title=title,
         body=body,
         url=settings.app_base_url.rstrip("/") + relative_url,
-        template_id=_template_for_scene(db, outbox.event_type),
+        template_id=str(template["template_id"]) if template else None,
+        field_map=template.get("field_map") if template else None,
     )
     if notification:
         notification.status = "SENT" if result.success else "FAILED"
@@ -131,7 +135,8 @@ def _send_invite_created(db: Session, client: WechatOfficialAccountClient, outbo
     invitee = str(payload.get("invitee_name") or "负责人")
     company_name = str(payload.get("company_name") or "加盟商")
     expires_at = str(payload.get("expires_at") or "")
-    template_id = _template_for_scene(db, outbox.event_type)
+    template = _template_for_scene(db, outbox.event_type)
+    template_id = str(template["template_id"]) if template else None
     # S1：真实通道下收件人仍是占位符——发起 API 只会得到非法 openid 错误并
     # 空转 5 次退避重试后落 DEAD；明确返回 NO_RECIPIENT，运营经创建弹窗人工
     # 发送兜底。未发布模板时仍走 TEMPLATE_NOT_CONFIGURED 的诚实失败。
@@ -148,6 +153,7 @@ def _send_invite_created(db: Session, client: WechatOfficialAccountClient, outbo
         body=f"{invitee}的绑定邀请已生成，有效期至 {expires_at[:16].replace('T', ' ')}。请运营通过创建弹窗发送邀请链接。",
         url=settings.app_base_url.rstrip("/") + str(payload.get("deep_link", "/h5/#/login")),
         template_id=template_id,
+        field_map=template.get("field_map") if template else None,
     )
     return {"success": result.success, "message_id": result.message_id, "error_code": result.error_code, "error_message": result.error_message}
 
@@ -172,6 +178,7 @@ def _default_title(event_type: str) -> str:
         "V12_SUPPLIER_LEAD_REJECTED": "客资初审未通过", "V12_ASSIGNMENT_DISPATCHED": "新客资已派发",
         "V12_ASSIGNMENT_CLAIMED": "客资领取成功", "V12_RETURN_SUBMITTED": "退回申诉已提交",
         "V12_RETURN_APPROVED": "退回申诉终审通过", "V12_RETURN_REJECTED": "退回申诉终审未通过",
+        "V12_RETURN_NEED_MORE": "退回申诉需要补证",
         "V12_SUPPLIER_REWARD_OBSERVING": "客资奖励进入观察期", "V12_SUPPLIER_REWARD_FROZEN": "客资奖励已冻结",
         "V12_SUPPLIER_REWARD_SETTLED": "客资奖励已到账", "V12_SUPPLIER_REWARD_CANCELLED": "客资奖励已取消",
         "V12_SUPPLIER_REWARD_REVERSED": "客资奖励已冲正",

@@ -18,10 +18,9 @@ def _principal_fixture(db):
     )
     db.add_all([company, user])
     db.flush()
-    for code in ("FRANCHISE_OWNER", "OWNER"):
-        role = db.scalar(select(Role).where(Role.code == code))
-        assert role is not None
-        db.add(UserRole(user_id=user.id, role_id=role.id))
+    role = db.scalar(select(Role).where(Role.code == "FRANCHISE_OWNER"))
+    assert role is not None
+    db.add(UserRole(user_id=user.id, role_id=role.id))
     db.commit()
     return company, user
 
@@ -41,9 +40,9 @@ def test_principal_and_permissions_load_in_one_query(db) -> None:
         event.remove(engine, "before_cursor_execute", record_statement)
 
     assert principal is not None
-    assert principal.role_codes == frozenset({"FRANCHISE_OWNER", "OWNER"})
+    assert principal.role_codes == frozenset({"FRANCHISE_OWNER"})
     assert "assignment.own.read" in principal.permission_codes
-    assert "dashboard.finance.read" in principal.permission_codes
+    assert "dashboard.finance.read" not in principal.permission_codes
     assert len(statements) == 1
 
 
@@ -59,4 +58,21 @@ def test_principal_query_preserves_session_and_company_invalidation(db) -> None:
     company.status = "ACTIVE"
     user.status = "DISABLED"
     db.commit()
+    assert load_current_principal(db, user.id, user.session_version) is None
+
+
+def test_principal_rejects_an_unmigrated_legacy_role(db) -> None:
+    legacy_role = Role(code="FINANCE", name="历史财务", description="待迁移")
+    user = User(
+        username="legacy-principal",
+        password_hash="not-used",
+        display_name="历史账号",
+        status="ACTIVE",
+        session_version=1,
+    )
+    db.add_all([legacy_role, user])
+    db.flush()
+    db.add(UserRole(user_id=user.id, role_id=legacy_role.id))
+    db.commit()
+
     assert load_current_principal(db, user.id, user.session_version) is None

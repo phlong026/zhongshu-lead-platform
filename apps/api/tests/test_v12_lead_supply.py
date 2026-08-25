@@ -21,6 +21,7 @@ from apps.api.src.services.lead_supply_v12 import (
     reopen_rejected_supplier_lead,
     review_supplier_lead,
     submit_draft,
+    update_draft,
 )
 
 
@@ -101,6 +102,29 @@ def test_platform_manual_submission_enters_ready_pool_without_pre_verification(d
     assert lead.status == LeadV12Status.READY_DISPATCH.value
     assert lead.review_status == "APPROVED"
     assert lead.phone_fingerprint
+
+
+def test_operation_can_rework_platform_draft_created_by_another_operator(db) -> None:
+    _, creator = _seed_identity(db, company_code="PLATFORM-CREATOR")
+    _, reworker = _seed_identity(db, company_code="PLATFORM-REWORKER")
+    creator_principal = _principal(creator.id, None, "lead.manual.manage")
+    reworker_principal = _principal(reworker.id, None, "lead.manual.manage")
+    lead = create_draft(
+        db,
+        principal=creator_principal,
+        source_kind=LeadSourceKind.PLATFORM_MANUAL,
+        values={"customer_name": "待运营补充的平台客户", "phone": "13800138008"},
+    )
+
+    update_draft(
+        db,
+        lead=lead,
+        principal=reworker_principal,
+        values={"need_summary": "运营复核后补充的建房需求"},
+    )
+
+    assert lead.submitter_user_id == creator.id
+    assert lead.need_summary == "运营复核后补充的建房需求"
 
 
 def test_clear_dedup_result_cannot_be_artificially_overridden(db) -> None:
@@ -184,6 +208,49 @@ def test_supplier_upload_requires_approved_capability_and_review(db) -> None:
     assert review_result is not None
     assert lead.review_status == "APPROVED"
     assert lead.status == LeadV12Status.READY_DISPATCH.value
+
+
+def test_supplier_initial_review_distinguishes_duplicate_and_invalid(db) -> None:
+    db.add(Region(code="420100", name="武汉市", level="CITY", aliases=[], active=True))
+    company, user = _seed_identity(db, company_code="SUP-REVIEW-DECISIONS")
+    _approve_supplier_capability(db, company, user)
+    principal = _principal(user.id, company.id, "supplier.lead.manage")
+
+    duplicate = create_draft(
+        db,
+        principal=principal,
+        source_kind=LeadSourceKind.SUPPLIER_H5,
+        values=_valid_values("13700137001"),
+    )
+    submit_draft(db, lead=duplicate, principal=principal)
+    review_supplier_lead(
+        db,
+        lead=duplicate,
+        reviewer=principal,
+        decision="DUPLICATE",
+        note="与既有登记信息高度相似，需要人工核查",
+    )
+    assert duplicate.status == LeadV12Status.DUPLICATE.value
+    assert duplicate.review_status == "PENDING"
+    assert duplicate.pending_reason == "SUPPLIER_REVIEW_DUPLICATE"
+
+    invalid = create_draft(
+        db,
+        principal=principal,
+        source_kind=LeadSourceKind.SUPPLIER_H5,
+        values=_valid_values("13700137002"),
+    )
+    submit_draft(db, lead=invalid, principal=principal)
+    review_supplier_lead(
+        db,
+        lead=invalid,
+        reviewer=principal,
+        decision="INVALID",
+        note="客户明确表示并无建房或装修需求",
+    )
+    assert invalid.status == LeadV12Status.INVALID.value
+    assert invalid.review_status == "REJECTED"
+    assert invalid.pending_reason == "SUPPLIER_REVIEW_INVALID"
 
 
 def test_supplier_can_discard_own_draft(db) -> None:

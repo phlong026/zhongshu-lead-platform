@@ -176,8 +176,6 @@ def _create_internal_users(client, admin: dict[str, str]) -> None:
     specs = {
         "operation": ("E2E-Operation9!", "E2E 运营", "OPERATION"),
         "telesales": ("E2E-Telesales9!", "E2E 电销", "TELESALES"),
-        "finance": ("E2E-Finance9!", "E2E 财务", "FINANCE"),
-        "reviewer": ("E2E-Reviewer9!", "E2E 退回审核", "RETURN_REVIEWER"),
     }
     for username, (password, display_name, role_code) in specs.items():
         _data(
@@ -299,7 +297,7 @@ def _approve_profile(
 
 def _recharge(
     client,
-    finance: dict[str, str],
+    super_admin: dict[str, str],
     company_id: str,
     package_id: str,
     suffix: str,
@@ -307,7 +305,7 @@ def _recharge(
     ledger = _data(
         client.post(
             "/api/v1/points/recharge",
-            headers=finance,
+            headers=super_admin,
             json={
                 "company_id": company_id,
                 "package_id": package_id,
@@ -435,8 +433,9 @@ def _dispatch_and_claim(
 def _run_return_flow(
     client,
     receiver: dict[str, str],
+    operation: dict[str, str],
     telesales: dict[str, str],
-    reviewer: dict[str, str],
+    telesales_user_id: str,
     *,
     assignment_id: str,
     decision: str,
@@ -471,13 +470,25 @@ def _run_return_flow(
     )
     assert submitted["status"] == "VERIFYING"
     task_id = submitted["verification_task_id"]
-    claimed = _data(
+    assigned = _data(
         client.post(
-            f"/api/v1/v1.2/return-verifications/tasks/{task_id}/claim",
+            f"/api/v1/v1.2/return-verifications/tasks/{task_id}/assign",
+            headers=operation,
+            json={
+                "assignee_user_id": telesales_user_id,
+                "reason": "运营确认需要电话核验退回事实",
+            },
+        )
+    )
+    assert assigned["status"] == "ASSIGNED"
+    assert assigned["due_at"] is not None
+    started = _data(
+        client.post(
+            f"/api/v1/v1.2/return-verifications/tasks/{task_id}/start",
             headers=telesales,
         )
     )
-    assert claimed["status"] == "IN_PROGRESS"
+    assert started["status"] == "IN_PROGRESS"
     verified = _data(
         client.post(
             f"/api/v1/v1.2/return-verifications/tasks/{task_id}/submit",
@@ -495,7 +506,7 @@ def _run_return_flow(
     reviewed = _data(
         client.post(
             f"/api/v1/v1.2/returns/{return_id}/final-review",
-            headers=reviewer,
+            headers=operation,
             json={"decision": decision, "note": f"E2E 终审{decision}"},
         )
     )
@@ -541,8 +552,8 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
     _create_internal_users(client, admin)
     operation = _login(client, "e2e_operation", "E2E-Operation9!")
     telesales = _login(client, "e2e_telesales", "E2E-Telesales9!")
-    finance = _login(client, "e2e_finance", "E2E-Finance9!")
-    reviewer = _login(client, "e2e_reviewer", "E2E-Reviewer9!")
+    internal_users = _data(client.get("/api/v1/users", headers=admin))
+    telesales_user_id = next(item["id"] for item in internal_users if item["username"] == "e2e_telesales")
 
     supplier_company_id = _create_company(client, admin, "E2E-SUPPLIER", "E2E 供应商")
     receiver_company_id = _create_company(client, admin, "E2E-RECEIVER", "E2E 接收商")
@@ -594,7 +605,7 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
     package = _data(
         client.post(
             "/api/v1/points/packages",
-            headers=finance,
+            headers=admin,
             json={
                 "code": "E2E-1000",
                 "name": "E2E 隔离库积分包",
@@ -609,7 +620,7 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
     )
     assert _recharge(
         client,
-        finance,
+        admin,
         supplier_company_id,
         package["id"],
         "supplier",
@@ -638,7 +649,7 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
 
     assert _recharge(
         client,
-        finance,
+        admin,
         receiver_company_id,
         package["id"],
         "receiver",
@@ -678,16 +689,29 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
     )
     assert followup["status"] == "CONTACTED"
     _make_reward_due(factory, reward_one)
+    missing_settlement_note = client.post(
+        f"/api/v1/v1.2/admin/supplier-rewards/{reward_one}/settle",
+        headers=admin,
+    )
+    assert missing_settlement_note.status_code == 422
+    blank_settlement_note = client.post(
+        f"/api/v1/v1.2/admin/supplier-rewards/{reward_one}/settle",
+        headers=admin,
+        json={"note": "   "},
+    )
+    assert blank_settlement_note.status_code == 422
     first_settlement = _data(
         client.post(
             f"/api/v1/v1.2/admin/supplier-rewards/{reward_one}/settle",
-            headers=finance,
+            headers=admin,
+            json={"note": "E2E 核对奖励结算条件"},
         )
     )
     repeated_settlement = _data(
         client.post(
             f"/api/v1/v1.2/admin/supplier-rewards/{reward_one}/settle",
-            headers=finance,
+            headers=admin,
+            json={"note": "E2E 重复结算幂等核验"},
         )
     )
     assert first_settlement["status"] == "SETTLED"
@@ -712,8 +736,9 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
     return_approved = _run_return_flow(
         client,
         receiver,
+        operation,
         telesales,
-        reviewer,
+        telesales_user_id,
         assignment_id=assignment_two,
         decision="APPROVE",
     )
@@ -737,8 +762,9 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
     return_rejected = _run_return_flow(
         client,
         receiver,
+        operation,
         telesales,
-        reviewer,
+        telesales_user_id,
         assignment_id=assignment_three,
         decision="REJECT",
     )
@@ -746,7 +772,8 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
     rejected_reward_settlement = _data(
         client.post(
             f"/api/v1/v1.2/admin/supplier-rewards/{reward_three}/settle",
-            headers=finance,
+            headers=admin,
+            json={"note": "E2E 冻结奖励结算核验"},
         )
     )
     assert rejected_reward_settlement["status"] == "SETTLED"
@@ -793,9 +820,17 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
         client.get(f"/api/v1/v1.2/trace/{lead_two}", headers=operation)
     )
     assert trace["lead"]["id"] == lead_two
+    assert trace["lead"]["customer_name"]
+    assert trace["lead"]["phone_masked"]
     assert assignment_two in {item["id"] for item in trace["assignments"]}
     assert return_approved in {item["id"] for item in trace["returns"]}
     assert reward_two in {item["id"] for item in trace["supplier_rewards"]}
+    assert trace["assignments"][0]["receiver_company_name"]
+    assert trace["returns"][0]["description"]
+    assert "evidence_summary" in trace["returns"][0]
+    assert "followups" in trace
+    assert all("actor_name" in item for item in trace["audit_events"])
+    assert all("summary" in item for item in trace["timeline"])
 
     with factory() as db:
         reward_rows = {
@@ -825,7 +860,7 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
         assert db.scalar(select(func.count(NotificationOutbox.id))) >= 1
         assert db.scalar(select(func.count(AuditLog.id))) >= 30
         assert db.scalar(select(func.count(VerificationTask.id))) == 2
-        assert db.scalar(select(func.count(User.id))) == 8
+        assert db.scalar(select(func.count(User.id))) == 6
         expected_negative_paths = {
             "cross_company_isolation",
             "points_insufficient",

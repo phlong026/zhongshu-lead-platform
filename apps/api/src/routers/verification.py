@@ -67,8 +67,8 @@ def list_tasks(
     stmt = select(VerificationTask)
     count_stmt = select(func.count(VerificationTask.id))
     if mine or principal.has_any_role("TELESALES"):
-        stmt = stmt.where((VerificationTask.assignee_user_id == principal.user_id) | (VerificationTask.assignee_user_id.is_(None)))
-        count_stmt = count_stmt.where((VerificationTask.assignee_user_id == principal.user_id) | (VerificationTask.assignee_user_id.is_(None)))
+        stmt = stmt.where(VerificationTask.assignee_user_id == principal.user_id)
+        count_stmt = count_stmt.where(VerificationTask.assignee_user_id == principal.user_id)
     if status:
         stmt = stmt.where(VerificationTask.status == status)
         count_stmt = count_stmt.where(VerificationTask.status == status)
@@ -82,7 +82,7 @@ def get_task(task_id: str, request: Request, principal: CurrentPrincipal, db: Se
     task = db.get(VerificationTask, task_id)
     if not task:
         raise AppError("VERIFICATION_TASK_NOT_FOUND", "核验任务不存在", 404)
-    if principal.has_any_role("TELESALES") and task.assignee_user_id not in {None, principal.user_id}:
+    if principal.has_any_role("TELESALES") and task.assignee_user_id != principal.user_id:
         raise AppError("FORBIDDEN", "无权查看该任务", 403)
     return ok(request, task_to_dict(db, task, principal, include_phone=True))
 
@@ -110,15 +110,22 @@ def reclaim(task_id: str, request: Request, principal=Depends(require_permission
     return ok(request)
 
 
-@router.post("/tasks/{task_id}/claim")
-def claim(task_id: str, request: Request, principal=Depends(require_permissions("verification.task.claim")), db: Session = Depends(get_db)):
+@router.post("/tasks/{task_id}/start")
+def start(task_id: str, request: Request, principal=Depends(require_permissions("verification.task.start")), db: Session = Depends(get_db)):
     task = db.get(VerificationTask, task_id)
     if not task:
         raise AppError("VERIFICATION_TASK_NOT_FOUND", "核验任务不存在", 404)
     claim_task(db, task, principal)
-    write_audit(db, principal=principal, action="VERIFICATION_TASK_CLAIM", resource_type="verification_task", resource_id=task.id, request_id=request.state.request_id)
+    write_audit(db, principal=principal, action="VERIFICATION_TASK_START", resource_type="verification_task", resource_id=task.id, request_id=request.state.request_id)
     db.commit()
     return ok(request, task_to_dict(db, task, principal, include_phone=True))
+
+
+@router.post("/tasks/{task_id}/claim", include_in_schema=False)
+def legacy_claim(task_id: str, request: Request, principal=Depends(require_permissions("verification.task.start")), db: Session = Depends(get_db)):
+    """Compatibility endpoint: it only starts a task already assigned by operations."""
+
+    return start(task_id=task_id, request=request, principal=principal, db=db)
 
 
 @router.post("/tasks/{task_id}/dial")

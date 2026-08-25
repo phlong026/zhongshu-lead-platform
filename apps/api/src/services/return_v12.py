@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..core.auth import Principal
+from ..core.config import get_settings
 from ..core.enums import AssignmentStatus, EvidenceType, PointsLedgerType, VerificationTaskStatus
 from ..core.errors import AppError
 from ..core.models import (
@@ -34,6 +35,7 @@ from ..core.v12_enums import (
     VerificationTaskType,
 )
 from .points_service import change_points
+from .company_assignment_v12 import require_company_assignment_access
 from .workday_calendar import WorkdayCalendarService
 
 VALID_RETURN_REASONS = {item.value for item in ReturnReasonCode}
@@ -46,6 +48,28 @@ ACTIVE_RETURN_TASK_STATUSES = {
     VerificationTaskStatus.ASSIGNED.value,
     VerificationTaskStatus.IN_PROGRESS.value,
 }
+
+
+def _return_task_is_overdue(task: VerificationTask) -> bool:
+    due_at = as_utc(task.due_at)
+    return bool(
+        due_at is not None
+        and due_at <= _now()
+        and task.status in {
+            VerificationTaskStatus.ASSIGNED.value,
+            VerificationTaskStatus.IN_PROGRESS.value,
+        }
+    )
+
+
+def _require_return_task_not_overdue(task: VerificationTask) -> None:
+    if _return_task_is_overdue(task):
+        raise AppError("RETURN_VERIFY_TASK_OVERDUE", "退回事实核验任务已超时，请联系运营人员改派", 409)
+
+
+def require_return_verification_task_not_overdue(task: VerificationTask) -> None:
+    """Keep every executable return-verification action behind the same deadline rule."""
+    _require_return_task_not_overdue(task)
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +85,13 @@ class ReturnFinalReviewResult:
     request: ReturnRequest
     refund_ledger: PointsLedger | None
     idempotent: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ReturnVerificationAssignmentResult:
+    task: VerificationTask
+    before: dict[str, Any]
+    after: dict[str, Any]
 
 
 def _now() -> datetime:
@@ -119,8 +150,7 @@ def create_or_update_return_draft(
     description: str,
 ) -> ReturnRequest:
     assignment = _get_assignment(db, assignment_id, lock=True)
-    if not principal.company_id or assignment.company_id != principal.company_id:
-        raise AppError("FORBIDDEN", "无权申请退回该客资", 403)
+    require_company_assignment_access(principal, assignment)
     reason = reason_code.strip().upper()
     if reason not in VALID_RETURN_REASONS:
         raise AppError("RETURN_REASON_INVALID", "退回原因不在 V1.2 冻结范围内", 422)
@@ -181,8 +211,8 @@ def add_return_evidence(
     sha256: str,
     duration_seconds: int | None,
 ) -> ReturnEvidence:
-    if not principal.company_id or request.company_id != principal.company_id:
-        raise AppError("FORBIDDEN", "无权上传该退回申请的证据", 403)
+    assignment = _get_assignment(db, request.assignment_id, lock=True)
+    require_company_assignment_access(principal, assignment)
     if request.status not in {
         ReturnV12Status.DRAFT.value,
         ReturnV12Status.NEED_MORE_EVIDENCE.value,
@@ -252,8 +282,8 @@ def submit_return_request(
     principal: Principal,
 ) -> ReturnSubmitResult:
     request = _get_return(db, return_id, lock=True)
-    if not principal.company_id or request.company_id != principal.company_id:
-        raise AppError("FORBIDDEN", "无权提交该退回申请", 403)
+    assignment_for_access = _get_assignment(db, request.assignment_id, lock=True)
+    require_company_assignment_access(principal, assignment_for_access)
     if request.status in {
         ReturnV12Status.VERIFYING.value,
         ReturnV12Status.REVIEWING.value,
@@ -358,29 +388,60 @@ def _require_telesales_user(db: Session, user_id: str) -> User:
     return user
 
 
+def _return_task_assignment_snapshot(task: VerificationTask) -> dict[str, Any]:
+    return {
+        "lead_id": task.lead_id,
+        "return_request_id": task.return_request_id,
+        "assignee_user_id": task.assignee_user_id,
+        "assigned_by": task.assigned_by,
+        "assigned_at": task.assigned_at.isoformat() if task.assigned_at else None,
+        "due_at": task.due_at.isoformat() if task.due_at else None,
+        "started_at": task.started_at.isoformat() if task.started_at else None,
+        "submitted_at": task.submitted_at.isoformat() if task.submitted_at else None,
+        "status": task.status,
+        "lock_version": task.lock_version,
+    }
+
+
 def assign_return_verification_task(
     db: Session,
     *,
     task_id: str,
     assignee_user_id: str,
     assigned_by: str,
-) -> VerificationTask:
+    reason: str,
+) -> ReturnVerificationAssignmentResult:
     task = db.scalar(select(VerificationTask).where(VerificationTask.id == task_id).with_for_update())
     if task is None or task.task_type != VerificationTaskType.RETURN_VERIFY.value:
         raise AppError("RETURN_VERIFY_TASK_NOT_FOUND", "退回核验任务不存在", 404)
     if task.status not in {
         VerificationTaskStatus.PENDING.value,
         VerificationTaskStatus.ASSIGNED.value,
-    }:
+    } and not (
+        task.status == VerificationTaskStatus.IN_PROGRESS.value and _return_task_is_overdue(task)
+    ):
         raise AppError("RETURN_VERIFY_TASK_NOT_ASSIGNABLE", "退回核验任务当前不可分配", 409)
     _require_telesales_user(db, assignee_user_id)
+    if not reason.strip():
+        raise AppError("RETURN_VERIFY_ASSIGN_REASON_REQUIRED", "派发或改派核验任务必须填写原因", 422)
+    before = _return_task_assignment_snapshot(task)
+    now = _now()
     task.assignee_user_id = assignee_user_id
     task.assigned_by = assigned_by
-    task.assigned_at = _now()
+    task.assigned_at = now
+    task.started_at = None
+    task.due_at = now + timedelta(hours=get_settings().return_verification_hours)
+    task.contact_result = None
+    task.verification_conclusion = None
+    task.submitted_at = None
     task.status = VerificationTaskStatus.ASSIGNED.value
     task.lock_version += 1
     db.flush()
-    return task
+    return ReturnVerificationAssignmentResult(
+        task=task,
+        before=before,
+        after=_return_task_assignment_snapshot(task),
+    )
 
 
 def claim_return_verification_task(
@@ -392,16 +453,19 @@ def claim_return_verification_task(
     task = db.scalar(select(VerificationTask).where(VerificationTask.id == task_id).with_for_update())
     if task is None or task.task_type != VerificationTaskType.RETURN_VERIFY.value:
         raise AppError("RETURN_VERIFY_TASK_NOT_FOUND", "退回核验任务不存在", 404)
+    _require_return_task_not_overdue(task)
     if task.status == VerificationTaskStatus.IN_PROGRESS.value and task.assignee_user_id == principal.user_id:
         return task
-    if task.status not in {
-        VerificationTaskStatus.PENDING.value,
-        VerificationTaskStatus.ASSIGNED.value,
-    }:
-        raise AppError("RETURN_VERIFY_TASK_NOT_CLAIMABLE", "退回核验任务当前不可领取", 409)
-    if task.assignee_user_id and task.assignee_user_id != principal.user_id:
+    if task.status == VerificationTaskStatus.PENDING.value or task.assignee_user_id is None:
+        raise AppError(
+            "RETURN_VERIFY_TASK_NOT_ASSIGNED",
+            "退回核验任务须由运营人员派发后才能开始",
+            409,
+        )
+    if task.status != VerificationTaskStatus.ASSIGNED.value:
+        raise AppError("RETURN_VERIFY_TASK_NOT_STARTABLE", "退回核验任务当前不可开始", 409)
+    if task.assignee_user_id != principal.user_id:
         raise AppError("FORBIDDEN", "退回核验任务已分配给其他电销人员", 403)
-    task.assignee_user_id = principal.user_id
     task.status = VerificationTaskStatus.IN_PROGRESS.value
     task.started_at = task.started_at or _now()
     task.lock_version += 1
@@ -423,6 +487,7 @@ def submit_return_verification(
         raise AppError("RETURN_VERIFY_TASK_NOT_FOUND", "退回核验任务不存在", 404)
     if task.status == VerificationTaskStatus.SUBMITTED.value and task.assignee_user_id == principal.user_id:
         return task
+    _require_return_task_not_overdue(task)
     if task.status != VerificationTaskStatus.IN_PROGRESS.value or task.assignee_user_id != principal.user_id:
         raise AppError("RETURN_VERIFY_TASK_NOT_OWNED", "任务不属于当前电销人员或状态已变化", 409)
     request = _get_return(db, task.return_request_id, lock=True)
@@ -668,6 +733,8 @@ def return_request_to_dict(db: Session, item: ReturnRequest, *, include_evidence
             "contact_result": task.contact_result,
             "conclusion": task.verification_conclusion,
             "submitted_at": task.submitted_at.isoformat() if task.submitted_at else None,
+            "due_at": task.due_at.isoformat() if task.due_at else None,
+            "is_overdue": _return_task_is_overdue(task),
         }
     reward = db.scalar(
         select(SupplierLeadReward).where(SupplierLeadReward.assignment_id == item.assignment_id)
@@ -682,20 +749,80 @@ def return_request_to_dict(db: Session, item: ReturnRequest, *, include_evidence
     return data
 
 
+def return_verification_task_list_to_dict(
+    db: Session,
+    tasks: list[VerificationTask],
+    principal: Principal,
+) -> list[dict[str, Any]]:
+    """Serialize a verification-task page without per-row relation queries."""
+    if not tasks:
+        return []
+    request_ids = {task.return_request_id for task in tasks if task.return_request_id}
+    lead_ids = {task.lead_id for task in tasks}
+    assignment_ids = {task.assignment_id for task in tasks if task.assignment_id}
+    requests_by_id = {
+        item.id: item
+        for item in db.scalars(select(ReturnRequest).where(ReturnRequest.id.in_(request_ids))).all()
+    }
+    leads_by_id = {
+        item.id: item for item in db.scalars(select(Lead).where(Lead.id.in_(lead_ids))).all()
+    }
+    assignments_by_id = {
+        item.id: item
+        for item in db.scalars(select(Assignment).where(Assignment.id.in_(assignment_ids))).all()
+    }
+    evidence_summaries: dict[str, dict[str, int]] = {request_id: {} for request_id in request_ids}
+    for request_id, evidence_type, count in db.execute(
+        select(
+            ReturnEvidence.return_request_id,
+            ReturnEvidence.evidence_type,
+            func.count(ReturnEvidence.id),
+        )
+        .where(ReturnEvidence.return_request_id.in_(request_ids))
+        .group_by(ReturnEvidence.return_request_id, ReturnEvidence.evidence_type)
+    ).all():
+        evidence_summaries[str(request_id)][str(evidence_type)] = int(count)
+    return [
+        return_verification_task_to_dict(
+            db,
+            task,
+            principal,
+            requests_by_id=requests_by_id,
+            leads_by_id=leads_by_id,
+            assignments_by_id=assignments_by_id,
+            evidence_summaries=evidence_summaries,
+        )
+        for task in tasks
+    ]
+
+
 def return_verification_task_to_dict(
     db: Session,
     task: VerificationTask,
     principal: Principal,
     *,
     include_phone: bool = False,
+    requests_by_id: dict[str, ReturnRequest] | None = None,
+    leads_by_id: dict[str, Lead] | None = None,
+    assignments_by_id: dict[str, Assignment] | None = None,
+    evidence_summaries: dict[str, dict[str, int]] | None = None,
 ) -> dict[str, Any]:
-    request = db.get(ReturnRequest, task.return_request_id) if task.return_request_id else None
-    lead = db.get(Lead, task.lead_id)
-    assignment = db.get(Assignment, task.assignment_id) if task.assignment_id else None
+    request = (
+        requests_by_id.get(task.return_request_id) if requests_by_id is not None and task.return_request_id
+        else db.get(ReturnRequest, task.return_request_id) if task.return_request_id else None
+    )
+    lead = leads_by_id.get(task.lead_id) if leads_by_id is not None else db.get(Lead, task.lead_id)
+    assignment = (
+        assignments_by_id.get(task.assignment_id)
+        if assignments_by_id is not None and task.assignment_id
+        else db.get(Assignment, task.assignment_id) if task.assignment_id else None
+    )
+    is_overdue = _return_task_is_overdue(task)
     can_view_phone = bool(
         include_phone
         and task.assignee_user_id == principal.user_id
         and (principal.can("lead.phone.read") or principal.can("*"))
+        and not is_overdue
     )
     phone = decrypt_text(lead.phone_encrypted) if lead and can_view_phone else None
     snapshot = assignment.lead_snapshot if assignment and assignment.lead_snapshot else {}
@@ -708,6 +835,8 @@ def return_verification_task_to_dict(
         "status": task.status,
         "assignee_user_id": task.assignee_user_id,
         "assigned_at": task.assigned_at.isoformat() if task.assigned_at else None,
+        "due_at": task.due_at.isoformat() if task.due_at else None,
+        "is_overdue": is_overdue,
         "started_at": task.started_at.isoformat() if task.started_at else None,
         "submitted_at": task.submitted_at.isoformat() if task.submitted_at else None,
         "contact_result": task.contact_result,
@@ -720,7 +849,13 @@ def return_verification_task_to_dict(
             "appeal_deadline_at": (request.appeal_deadline_at or request.due_at).isoformat()
             if request and (request.appeal_deadline_at or request.due_at)
             else None,
-            "evidence_summary": _evidence_summary(db, request.id) if request else {},
+            "evidence_summary": (
+                evidence_summaries.get(request.id, {})
+                if request and evidence_summaries is not None
+                else _evidence_summary(db, request.id)
+                if request
+                else {}
+            ),
         },
         "assignment": {
             "id": assignment.id if assignment else None,

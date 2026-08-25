@@ -29,7 +29,8 @@ def test_operations_pages_use_business_language_and_existing_safe_endpoints() ->
         assert developer_copy not in source
     assert "/admin-meta/telesales-users" in source
     assert "/return-evidences/${encodeURIComponent(item.id)}/download" in source
-    assert "选择电销人员" in source
+    assert "派发前置电销核验" in source
+    assert "派发退回电话核验" in source
     assert "奖励比例（%）" in source
     assert "esc(label(x.source_kind))" in source
     assert "公司编号" not in source
@@ -62,20 +63,18 @@ def test_company_workbench_uses_user_language_and_real_unread_count() -> None:
     assert "url.origin!==location.origin" in source
 
 
-def test_lead_entry_explains_outcomes_without_security_or_process_jargon() -> None:
-    source = _read(ADMIN, "v12-leads.js")
+def test_unified_lead_review_explains_outcomes_without_security_or_process_jargon() -> None:
+    source = _read(ADMIN, "v12-operations.js")
     assert "HMAC" not in source
-    assert "业务类目" not in source
-    assert "不会生成前置电销核验任务" not in source
-    assert "系统会自动检查信息是否完整" in source
-    assert "只有确认客户授权后才能提交" in source
+    assert "信息不足时必须派发给指定电销人员" in source
+    assert "运营处置电销结论" in source
 
 
 def test_call_workbench_shows_chinese_role_and_plain_task_language() -> None:
     source = _read(CALL_H5, "app.js")
-    assert re.search(r"const\s+ROLE_LABEL\s*=", source)
+    assert re.search(r"const\s+TELESALES_HOME_CONTRACT\s*=", source)
     assert "me.roles.join('、')" not in source
     assert "事实后置核验" not in source
-    assert "锁定给当前电销人员" not in source
-    assert "岗位" in source
+    assert "自主领取" in source
+    assert "电销人员" in source
     assert "工作范围" in source

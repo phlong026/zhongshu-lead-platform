@@ -74,6 +74,40 @@ button:focus-visible,.task:focus-visible,.choice:focus-within,.input:focus,.sele
 }
 .content{padding:15px 14px 18px}
 .home-title{margin:2px 0 12px}
+.call-home-greeting {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:15px;
+  padding:8px 2px 16px
+}
+.call-home-greeting p {
+  margin:0 0 4px;
+  color:var(--brand2);
+  font-size:13px;
+  font-weight:800
+}
+.call-home-greeting h1 {
+  margin:0;
+  overflow:hidden;
+  font-size:27px;
+  letter-spacing:-.04em;
+  text-overflow:ellipsis;
+  white-space:nowrap
+}
+.call-home-avatar {
+  display:grid;
+  flex:none;
+  width:54px;
+  height:54px;
+  place-items:center;
+  border-radius:50%;
+  background:linear-gradient(135deg,#e9cc9f,#b38357);
+  color:#654127;
+  font-size:24px;
+  font-weight:800;
+  box-shadow:0 10px 22px rgba(95,57,30,.12)
+}
 .eyebrow{
   margin:0 0 4px;
   color:var(--brand2);
@@ -98,6 +132,41 @@ h3{margin:0;font-size:15px;line-height:1.3}
   border-radius:16px;
   box-shadow:0 14px 30px rgba(76,46,25,.16);
 }
+.callHomeHero {
+  position:relative;
+  min-height:184px;
+  margin:0 0 13px;
+  padding:24px;
+  overflow:hidden;
+  border-radius:24px;
+  background:linear-gradient(115deg,#715037 0%,#8a6241 56%,#b1895c 100%)
+}
+.callHomeHero::after {
+  position:absolute;
+  right:-55px;
+  bottom:-118px;
+  width:272px;
+  height:272px;
+  border:1px solid rgba(255,250,238,.30);
+  border-radius:50%;
+  box-shadow:0 0 0 42px rgba(255,250,238,.07),0 0 0 84px rgba(255,250,238,.05);
+  content:""
+}
+.callHomeHero>div,.callHomeHero .btn {position:relative;z-index:1}
+.callHomeHero>div {max-width:60%}
+.callHomeHero strong {
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:39px;
+  font-variant-numeric:tabular-nums;
+  letter-spacing:-.05em
+}
+.callHomeHero .btn {
+  flex:none;
+  background:#fff1d4;
+  color:#63442d;
+  box-shadow:0 8px 20px rgba(67,44,25,.16)
+}
+.callHomeHero .btn span,.callHomeHero .btn .zs-svg-icon {color:#63442d}
 .hero small,.hero span{display:block;color:rgba(255,255,255,.78);font-size:12px}
 .hero strong{display:block;margin:2px 0;font-size:36px;line-height:1}
 .metrics{
@@ -106,6 +175,52 @@ h3{margin:0;font-size:15px;line-height:1.3}
   gap:8px;
   margin:12px 0;
 }
+.callHomeMetrics {margin:0 0 28px}
+.callHomeMetrics .metric {min-height:94px;border-radius:17px}
+.callHomeMetrics .metric b {
+  margin-top:8px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:27px;
+  font-variant-numeric:tabular-nums;
+  color:#5b422d
+}
+.home-task-section {margin-top:0;padding:0;overflow:hidden;border-radius:20px}
+.home-task-section .section-head {padding:16px 16px 10px}
+.home-task-section .section-head h2 {font-size:20px;letter-spacing:-.03em}
+.home-task-list {display:grid}
+.home-task-row {
+  display:grid;
+  grid-template-columns:44px minmax(0,1fr) auto 18px;
+  align-items:center;
+  gap:10px;
+  padding:13px 15px;
+  border-top:1px solid var(--line);
+  background:transparent;
+  cursor:pointer
+}
+.home-task-row:active {background:#f8f1e7}
+.home-task-row:focus-visible {
+  position:relative;
+  z-index:1;
+  outline:3px solid rgba(199,161,96,.32);
+  outline-offset:-3px
+}
+.home-task-row>.zs-svg-icon {width:17px;height:17px;color:var(--muted)}
+.home-task-avatar {
+  display:grid;
+  width:44px;
+  height:44px;
+  place-items:center;
+  border-radius:50%;
+  background:linear-gradient(135deg,#e9cdab,#c0976c);
+  color:#6b492d;
+  font-size:18px;
+  font-weight:800
+}
+.home-task-copy {min-width:0}
+.home-task-copy b,.home-task-copy small {display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.home-task-copy b {font-size:16px}
+.home-task-copy small {margin-top:4px;color:var(--muted);font-size:12px}
 .metric,.card,.task{
   background:var(--paper);
   border:1px solid var(--line);
@@ -226,6 +341,7 @@ button.metric:focus-visible{outline:3px solid rgba(199,161,96,.32);outline-offse
   display:flex;
   align-items:center;
   justify-content:space-between;
+  flex-wrap:wrap;
   gap:12px;
   margin:12px 0;
   padding:15px;
@@ -235,7 +351,10 @@ button.metric:focus-visible{outline:3px solid rgba(199,161,96,.32);outline-offse
   box-shadow:0 12px 28px rgba(76,46,25,.15);
 }
 .detail-hero h1{max-width:210px}
+.detail-hero>div:first-child{min-width:0}
 .detail-hero .eyebrow{color:#f1d8a8}
+.detail-actions{display:grid;flex:none;gap:8px}
+.detail-actions .btn{min-width:104px}
 .quick-guide{
   display:grid;
   grid-template-columns:auto 1fr auto;
@@ -304,7 +423,7 @@ button.metric:focus-visible{outline:3px solid rgba(199,161,96,.32);outline-offse
   left:50%;
   z-index:10;
   display:grid;
-  grid-template-columns:repeat(3,1fr);
+  grid-template-columns:repeat(4,minmax(0,1fr));
   width:min(520px,100%);
   padding:7px 10px calc(7px + env(safe-area-inset-bottom));
   background:rgba(255,253,249,.97);

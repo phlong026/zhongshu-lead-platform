@@ -20,9 +20,9 @@ def _contains_key(value, names: set[str]) -> bool:
     return False
 
 
-def test_owner_can_read_v12_overview_and_audit(api_client):
+def test_superadmin_can_read_v12_overview_and_audit(api_client):
     client, _factory = api_client
-    login(client, "owner", "Owner123!")
+    login(client, "admin", "Admin123!")
 
     report = client.get("/api/v1/v1.2/reports/overview")
     assert report.status_code == 200, report.text
@@ -54,9 +54,9 @@ def test_operation_overview_hides_financial_projection(api_client):
     assert not _contains_key(data, {"net_delta", "balance", "recharge", "income", "revenue"})
 
 
-def test_finance_overview_keeps_points_ledger_projection(api_client):
+def test_superadmin_overview_keeps_points_ledger_projection(api_client):
     client, _factory = api_client
-    login(client, "finance", "Finance123!")
+    login(client, "admin", "Admin123!")
 
     response = client.get("/api/v1/v1.2/reports/overview")
 
@@ -79,7 +79,7 @@ def test_franchise_has_company_report_but_not_platform_overview(api_client):
 
 def test_trace_returns_not_found_for_unknown_business_id(api_client):
     client, _factory = api_client
-    login(client, "owner", "Owner123!")
+    login(client, "admin", "Admin123!")
     response = client.get("/api/v1/v1.2/trace/unknown-business-id")
     assert response.status_code == 404
     assert response.json()["code"] == "BUSINESS_TRACE_NOT_FOUND"

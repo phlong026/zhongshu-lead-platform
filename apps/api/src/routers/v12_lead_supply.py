@@ -14,6 +14,7 @@ from ..core.v12_enums import LeadSourceKind
 from ..schemas.v12_lead_supply import (
     CapabilityRequestBody,
     CapabilityReviewBody,
+    CompanyProfileBulkApproveBody,
     DedupOverrideBody,
     LeadDraftBody,
     LeadDraftUpdateBody,
@@ -25,6 +26,7 @@ from ..services.audit import write_audit
 from ..services.company_profile_v12 import (
     list_capabilities,
     list_service_areas,
+    approve_pending_profile,
     replace_service_areas,
     request_capability,
     require_active_company,
@@ -43,6 +45,7 @@ from ..services.lead_supply_v12 import (
     submit_draft,
     update_draft,
 )
+from ..services.pre_dispatch_v12 import assign_pre_dispatch_task
 
 router = APIRouter(prefix="/v1.2", tags=["v1.2-lead-supply"])
 
@@ -58,6 +61,16 @@ def _dedup_dict(result) -> dict | None:
         "event_id": result.event_id,
         "blocks_dispatch": result.blocks_dispatch,
         "reward_eligible": result.reward_eligible,
+    }
+
+
+def _pre_dispatch_task_dict(task) -> dict:
+    return {
+        "id": task.id,
+        "task_type": task.task_type,
+        "status": task.status,
+        "assignee_user_id": task.assignee_user_id,
+        "due_at": task.due_at.isoformat() if task.due_at else None,
     }
 
 
@@ -109,6 +122,13 @@ def _area_dict(
     return result
 
 
+def _platform_lead_or_raise(db: Session, lead_id: str) -> Lead:
+    lead = get_lead_or_404(db, lead_id)
+    if lead.source_kind != LeadSourceKind.PLATFORM_MANUAL.value:
+        raise AppError("LEAD_SOURCE_INVALID", "仅平台来源客资可从此入口查看", 409)
+    return lead
+
+
 @router.post("/platform/leads")
 def create_platform_lead(
     body: LeadDraftBody,
@@ -143,7 +163,7 @@ def update_platform_lead(
     principal=Depends(require_permissions("lead.manual.manage")),
     db: Session = Depends(get_db),
 ):
-    lead = get_lead_or_404(db, lead_id)
+    lead = _platform_lead_or_raise(db, lead_id)
     before = lead_supply_to_dict(lead, principal)
     update_draft(db, lead=lead, principal=principal, values=body.model_dump(exclude_unset=True))
     write_audit(
@@ -160,6 +180,17 @@ def update_platform_lead(
     return ok(request, lead_supply_to_dict(lead, principal))
 
 
+@router.get("/platform/leads/{lead_id}")
+def get_platform_lead(
+    lead_id: str,
+    request: Request,
+    principal=Depends(require_permissions("lead.manual.manage")),
+    db: Session = Depends(get_db),
+):
+    lead = _platform_lead_or_raise(db, lead_id)
+    return ok(request, lead_supply_to_dict(lead, principal))
+
+
 @router.post("/platform/leads/{lead_id}/submit")
 def submit_platform_lead(
     lead_id: str,
@@ -167,7 +198,7 @@ def submit_platform_lead(
     principal=Depends(require_permissions("lead.manual.manage")),
     db: Session = Depends(get_db),
 ):
-    lead = get_lead_or_404(db, lead_id)
+    lead = _platform_lead_or_raise(db, lead_id)
     result = submit_draft(db, lead=lead, principal=principal)
     write_audit(
         db,
@@ -194,9 +225,6 @@ def list_platform_leads(
 ):
     stmt = select(Lead).where(Lead.source_kind == LeadSourceKind.PLATFORM_MANUAL.value)
     count_stmt = select(func.count(Lead.id)).where(Lead.source_kind == LeadSourceKind.PLATFORM_MANUAL.value)
-    if not principal.can("*") and not principal.can("lead.supplier.review"):
-        stmt = stmt.where(Lead.submitter_user_id == principal.user_id)
-        count_stmt = count_stmt.where(Lead.submitter_user_id == principal.user_id)
     if status:
         stmt = stmt.where(Lead.status == status)
         count_stmt = count_stmt.where(Lead.status == status)
@@ -320,7 +348,12 @@ def submit_supplier_lead(
         action="V12_SUPPLIER_LEAD_SUBMIT",
         resource_type="lead",
         resource_id=lead.id,
-        after={"company_id": principal.company_id, "status": lead.status, "duplicate_status": lead.duplicate_status},
+        after={
+            "company_id": principal.company_id,
+            "status": lead.status,
+            "duplicate_status": lead.duplicate_status,
+            "submission_snapshot": lead_supply_to_dict(lead, principal),
+        },
         reason=result.decision.value,
         request_id=request.state.request_id,
     )
@@ -344,6 +377,7 @@ def supplier_lead_list(
         status=status,
         page_no=page_no,
         page_size=page_size,
+        submitter_user_id=principal.user_id if principal.has_any_role("FRANCHISE_EMPLOYEE") else None,
     )
     return ok(request, page([lead_supply_to_dict(item, principal) for item in items], total, page_no, page_size))
 
@@ -358,6 +392,11 @@ def supplier_lead_detail(
     lead = get_lead_or_404(db, lead_id)
     if not principal.can("*") and lead.supplier_company_id != principal.company_id:
         raise AppError("FORBIDDEN", "无权查看其他公司的供应商客资", 403)
+    if (
+        principal.has_any_role("FRANCHISE_EMPLOYEE")
+        and lead.submitter_user_id != principal.user_id
+    ):
+        raise AppError("SUPPLIER_LEAD_NOT_OWNED", "加盟商员工只能查看本人录入的客资", 403)
     return ok(request, lead_supply_to_dict(lead, principal))
 
 
@@ -371,13 +410,31 @@ def admin_review_supplier_lead(
 ):
     lead = get_lead_or_404(db, lead_id)
     before = lead_supply_to_dict(lead, principal)
+    review_decision = {"APPROVE": "QUALIFIED", "REJECT": "INVALID"}.get(
+        body.decision,
+        body.decision,
+    )
     result = review_supplier_lead(
         db,
         lead=lead,
         reviewer=principal,
-        approve=body.decision == "APPROVE",
+        decision=review_decision,
         note=body.note,
     )
+    task = None
+    if review_decision == "INFO_INCOMPLETE":
+        assignment = assign_pre_dispatch_task(
+            db,
+            lead_id=lead.id,
+            assignee_user_id=body.assignee_user_id or "",
+            assigned_by=principal.user_id,
+            reason=body.pre_dispatch_reason or "",
+            template_code=body.template_code,
+        )
+        task = assignment.task
+    after = lead_supply_to_dict(lead, principal)
+    after["review_decision"] = review_decision
+    after["submission_snapshot"] = before
     write_audit(
         db,
         principal=principal,
@@ -385,12 +442,32 @@ def admin_review_supplier_lead(
         resource_type="lead",
         resource_id=lead.id,
         before=before,
-        after=lead_supply_to_dict(lead, principal),
-        reason=body.note or body.decision,
+        after=after,
+        reason=body.note or review_decision,
         request_id=request.state.request_id,
     )
+    if task is not None:
+        write_audit(
+            db,
+            principal=principal,
+            action="V12_PRE_DISPATCH_VERIFY_ASSIGN",
+            resource_type="verification_task",
+            resource_id=task.id,
+            before=assignment.before,
+            after=assignment.after,
+            reason=body.pre_dispatch_reason,
+            request_id=request.state.request_id,
+        )
     db.commit()
-    return ok(request, {"lead": lead_supply_to_dict(lead, principal), "dedup": _dedup_dict(result)}, "资料初审已完成")
+    return ok(
+        request,
+        {
+            "lead": lead_supply_to_dict(lead, principal),
+            "dedup": _dedup_dict(result),
+            "task": _pre_dispatch_task_dict(task) if task else None,
+        },
+        "资料初审已完成",
+    )
 
 
 @router.post("/admin/leads/{lead_id}/dedup-override")
@@ -566,6 +643,79 @@ def admin_review_capability(
     )
 
 
+@router.post("/admin/companies/{company_id}/profile/approve-pending")
+def admin_approve_pending_company_profile(
+    company_id: str,
+    body: CompanyProfileBulkApproveBody,
+    request: Request,
+    principal=Depends(require_permissions("company.profile.review")),
+    db: Session = Depends(get_db),
+):
+    company = db.get(Company, company_id)
+    if company is None:
+        raise AppError("COMPANY_NOT_FOUND", "公司不存在", 404)
+    capabilities, areas = approve_pending_profile(
+        db,
+        company_id=company_id,
+        reviewed_by=principal.user_id,
+        note=body.note,
+    )
+    capability_items = [
+        _capability_dict(item, company_name=company.name, company_code=company.code)
+        for item in capabilities
+    ]
+    area_items = [
+        _area_dict(item, company_name=company.name, company_code=company.code)
+        for item in areas
+    ]
+    for item in capability_items:
+        write_audit(
+            db,
+            principal=principal,
+            action="V12_COMPANY_CAPABILITY_REVIEW",
+            resource_type="company_lead_capability",
+            resource_id=item["id"],
+            company_id=company_id,
+            after=item,
+            metadata={"bulk_profile_approval": True},
+            reason=body.note or "APPROVE",
+            request_id=request.state.request_id,
+        )
+    for item in area_items:
+        write_audit(
+            db,
+            principal=principal,
+            action="V12_COMPANY_SERVICE_AREA_REVIEW",
+            resource_type="company_service_area_v12",
+            resource_id=item["id"],
+            company_id=company_id,
+            after=item,
+            metadata={"bulk_profile_approval": True},
+            reason=body.note or "APPROVE",
+            request_id=request.state.request_id,
+        )
+    write_audit(
+        db,
+        principal=principal,
+        action="V12_COMPANY_PROFILE_BULK_APPROVE",
+        resource_type="company",
+        resource_id=company_id,
+        company_id=company_id,
+        after={
+            "capability_codes": [item["capability_code"] for item in capability_items],
+            "service_area_codes": [item["region_code"] for item in area_items],
+        },
+        reason=body.note or "APPROVE",
+        request_id=request.state.request_id,
+    )
+    db.commit()
+    return ok(
+        request,
+        {"company_id": company_id, "capabilities": capability_items, "service_areas": area_items},
+        "加盟商待开通申请已一次通过",
+    )
+
+
 @router.get("/admin/service-areas")
 def admin_service_area_list(
     request: Request,
@@ -608,6 +758,7 @@ def admin_review_area(
     company = db.get(Company, area.company_id)
     if company is None:
         raise AppError("COMPANY_NOT_FOUND", "公司不存在", 404)
+    removal_request = str(area.review_note or "").startswith("[REMOVE_REQUEST]")
     item = review_service_area(
         db,
         area_id=area_id,
@@ -622,7 +773,10 @@ def admin_review_area(
         resource_type="company_service_area_v12",
         resource_id=item.id,
         company_id=item.company_id,
-        after=_area_dict(item, company_name=company.name, company_code=company.code),
+        after={
+            **_area_dict(item, company_name=company.name, company_code=company.code),
+            "request_type": "REMOVE" if removal_request else "OPEN",
+        },
         reason=body.note or body.decision,
         request_id=request.state.request_id,
     )

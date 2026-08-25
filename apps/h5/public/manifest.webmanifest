@@ -1,9 +1,0 @@
-{
-  "name": "合家美宅客资助手",
-  "short_name": "客资助手",
-  "start_url": "/h5/",
-  "display": "standalone",
-  "background_color": "#f8f5ee",
-  "theme_color": "#6f4324",
-  "icons": []
-}
