@@ -13,6 +13,7 @@ from ..core.config import get_settings
 from ..core.enums import AssignmentStatus
 from ..core.errors import AppError
 from ..core.models import Assignment, Lead
+from ..core.security import ensure_canonical_jwt
 
 settings = get_settings()
 
@@ -51,6 +52,7 @@ def create_assignment_link_token(
 
 def decode_assignment_link_token(token: str) -> dict[str, Any]:
     try:
+        ensure_canonical_jwt(token)
         payload = jwt.decode(
             token,
             settings.jwt_secret,

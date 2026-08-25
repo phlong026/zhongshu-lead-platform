@@ -135,7 +135,7 @@ def create_company_account(
     if username != username.strip() or display_name != display_name.strip():
         raise AppError("COMPANY_ACCOUNT_IDENTITY_INVALID", "登录账号和显示名称首尾不能有空格", 422)
     try:
-        validate_internal_password(password, username)
+        validate_internal_password(password)
     except ValueError as exc:
         raise AppError("PASSWORD_POLICY_INVALID", str(exc), 400) from exc
     user = create_internal_user(
@@ -199,7 +199,7 @@ def reset_company_account_password(
     if not user.username:
         raise AppError("COMPANY_ACCOUNT_PASSWORD_UNAVAILABLE", "微信绑定账号未设置登录账号，不能重置密码", 409)
     try:
-        validate_internal_password(new_password, user.username)
+        validate_internal_password(new_password)
     except ValueError as exc:
         raise AppError("PASSWORD_POLICY_INVALID", str(exc), 400) from exc
     previous_session_version = user.session_version

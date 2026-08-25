@@ -38,7 +38,11 @@ def upgrade() -> None:
                 sa.Column(
                     "internal_assignee_user_id",
                     sa.String(36),
-                    sa.ForeignKey("users.id", ondelete="SET NULL"),
+                    sa.ForeignKey(
+                        "users.id",
+                        name="fk_assignments_internal_assignee_user",
+                        ondelete="SET NULL",
+                    ),
                     nullable=True,
                 )
             )
@@ -47,7 +51,11 @@ def upgrade() -> None:
                 sa.Column(
                     "internal_assigned_by",
                     sa.String(36),
-                    sa.ForeignKey("users.id", ondelete="SET NULL"),
+                    sa.ForeignKey(
+                        "users.id",
+                        name="fk_assignments_internal_assigned_by_user",
+                        ondelete="SET NULL",
+                    ),
                     nullable=True,
                 )
             )

@@ -82,3 +82,13 @@ def test_admin_user_actions_have_busy_state_and_error_feedback() -> None:
     assert "toast(e.message,'error')" in user_section
     assert "data-edit-user" in user_section
     assert "data-reset-user" in user_section
+
+
+def test_admin_password_reset_explains_length_only_policy() -> None:
+    source = _source()
+    user_section = source[source.index("async function runUserAction") : source.index("async function configs")]
+
+    assert "请输入8-128位密码，不限制字符组合" in user_section
+    assert "password.length<8||password.length>128" in user_section
+    assert "密码需为8-128位" in user_section
+    assert "至少12位" not in user_section

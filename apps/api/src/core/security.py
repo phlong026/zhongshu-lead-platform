@@ -32,8 +32,8 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
-def validate_internal_password(password: str, username: str) -> None:
-    """Validate the confirmed eight-character internal password boundary."""
+def validate_internal_password(password: str) -> None:
+    """Raise ``ValueError`` when an internal password is outside the agreed range."""
 
     if not 8 <= len(password) <= 128:
         raise ValueError("密码长度必须为 8 到 128 位")

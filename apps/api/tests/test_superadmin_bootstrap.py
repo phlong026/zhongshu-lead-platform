@@ -291,3 +291,17 @@ def test_cli_does_not_create_schema_seed_demo_or_touch_wechat() -> None:
     assert "seed_demo" not in source
     assert "alembic" not in source.lower()
     assert "wechat" not in source.lower()
+
+
+def test_bootstrap_accepts_eight_characters_without_composition(db: Session) -> None:
+    result = bootstrap_superadmin(
+        db,
+        username="rootadmin",
+        password="rootadmin",
+        display_name="平台超级管理员",
+    )
+    db.commit()
+
+    user = db.get(User, result.user_id)
+    assert user is not None
+    assert verify_password("rootadmin", user.password_hash or "")

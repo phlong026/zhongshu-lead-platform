@@ -40,9 +40,9 @@ def normalize_internal_roles(role_codes: list[str]) -> list[str]:
     return normalized
 
 
-def validate_managed_password(password: str, username: str) -> None:
+def validate_managed_password(password: str) -> None:
     try:
-        validate_internal_password(password, username)
+        validate_internal_password(password)
     except ValueError as exc:
         raise AppError("PASSWORD_POLICY_INVALID", str(exc), 400) from exc
 
@@ -60,7 +60,7 @@ def generate_initial_password(username: str) -> str:
     alphabet = string.ascii_letters + string.digits
     rng = secrets.SystemRandom()
     password = "".join(rng.choice(alphabet) for _ in range(8))
-    validate_internal_password(password, normalized_username)
+    validate_internal_password(password)
     return password
 
 
@@ -185,7 +185,7 @@ def create_managed_internal_user(
         display_name,
     )
     roles = normalize_internal_roles(role_codes)
-    validate_managed_password(password, normalized_username)
+    validate_managed_password(password)
     if "SUPER_ADMIN" in roles:
         _acquire_superadmin_roster_lock(db)
     user = create_internal_user(
@@ -254,7 +254,7 @@ def reset_internal_password(
     new_password: str,
 ) -> tuple[User, int]:
     user = _load_internal_user(db, user_id)
-    validate_managed_password(new_password, user.username or "")
+    validate_managed_password(new_password)
     previous_session_version = user.session_version
     user.password_hash = hash_password(new_password)
     user.session_version += 1

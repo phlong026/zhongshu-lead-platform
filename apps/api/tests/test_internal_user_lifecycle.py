@@ -7,7 +7,7 @@ from apps.api.src.core.security import verify_password
 
 
 STRONG_PASSWORD = "Internal-User9!"
-NEW_STRONG_PASSWORD = "Changed-User8!"
+NEW_PASSWORD = "aaaaaaaa"
 
 
 def _login(client, username: str, password: str) -> str:
@@ -138,6 +138,7 @@ def test_create_generates_initial_password_when_password_is_omitted(api_client) 
     assert data["username"] == "generated_password"
     assert isinstance(initial_password, str)
     assert len(initial_password) == 8
+    assert initial_password.isalnum()
     assert response.headers["cache-control"] == "no-store"
 
     user = _user_by_username(factory, "generated_password")
@@ -257,9 +258,12 @@ def test_internal_account_creation_rejects_franchise_company_and_short_passwords
         client,
         admin_token,
         username="simple_password",
-        password="password1234",
+        password="aaaaaaaa",
     )
     assert simple_password.status_code == 200
+    user = _user_by_username(factory, "simple_password")
+    assert verify_password("aaaaaaaa", user.password_hash or "")
+    assert _login(client, "simple_password", "aaaaaaaa")
 
 
 def test_non_superadmin_cannot_manage_internal_accounts(api_client) -> None:
@@ -345,7 +349,7 @@ def test_password_reset_invalidates_sessions_and_never_audits_credentials(api_cl
         client.post(
             f"/api/v1/users/{user_id}/reset-password",
             headers=_bearer(admin_token),
-            json={"new_password": NEW_STRONG_PASSWORD},
+            json={"new_password": NEW_PASSWORD},
         )
     )
 
@@ -356,12 +360,12 @@ def test_password_reset_invalidates_sessions_and_never_audits_credentials(api_cl
         "/api/v1/auth/login",
         json={"username": "password_reset", "password": STRONG_PASSWORD},
     ).status_code == 401
-    assert _login(client, "password_reset", NEW_STRONG_PASSWORD)
+    assert _login(client, "password_reset", NEW_PASSWORD)
 
     actions, audit_text = _audit_text(factory, user_id)
     assert "USER_PASSWORD_RESET" in actions
     assert STRONG_PASSWORD not in audit_text
-    assert NEW_STRONG_PASSWORD not in audit_text
+    assert NEW_PASSWORD not in audit_text
     assert (before.password_hash or "") not in audit_text
     assert (after.password_hash or "") not in audit_text
 
@@ -466,7 +470,7 @@ def test_franchise_and_missing_users_cannot_enter_internal_management(api_client
         client.post(
             f"/api/v1/users/{franchise_id}/reset-password",
             headers=_bearer(admin_token),
-            json={"new_password": NEW_STRONG_PASSWORD},
+            json={"new_password": NEW_PASSWORD},
         ),
     ]
     assert all(response.status_code == 409 for response in attempts)

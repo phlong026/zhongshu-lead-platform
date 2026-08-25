@@ -114,9 +114,9 @@ def _validate_identity(username: str, display_name: str) -> tuple[str, str]:
     return normalized_username, normalized_display_name
 
 
-def _validate_password(password: str, username: str) -> None:
+def _validate_password(password: str) -> None:
     try:
-        validate_internal_password(password, username)
+        validate_internal_password(password)
     except ValueError as exc:
         raise SuperadminBootstrapError(str(exc)) from exc
 
@@ -154,7 +154,7 @@ def bootstrap_superadmin(
             username,
             display_name,
         )
-        _validate_password(password, normalized_username)
+        _validate_password(password)
 
         rbac_result = seed_rbac(db, source="superadmin_bootstrap")
         if rbac_result.changed:
