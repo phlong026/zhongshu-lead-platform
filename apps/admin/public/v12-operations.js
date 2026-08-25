@@ -1,6 +1,6 @@
 const API='/api/v1',app=document.querySelector('#app'),toastEl=document.querySelector('#toast'),modalRoot=document.querySelector('#modal-root');
-const S={me:null,view:'overview',id:'',status:'',page:1,leadSource:'',platformLeads:[],supplierLeads:[],platformLeadPage:1,supplierLeadPage:1,financeRewardPage:1,platformCities:null,platformDistricts:[],companyStatus:'PENDING',companyCapabilityPage:1,companyAreaPage:1,telesalesUsers:null};
-const P={overview:['工作台','layout-dashboard',['*','dashboard.operation.read']],leads:['客资','user-check',['*','lead.manual.manage','lead.supplier.review']],telesales:['电销','phone',['*','verification.read']],dispatch:['派发','hand-claim',['*','lead.dispatch']],companies:['加盟商','building',['*','company.profile.review','company.account.manage']],returns:['异常','rotate-ccw',['*','return.read']],finance:['资金','coins',['*']],audit:['日志','search',['*','audit.read']],trace:['客资详情','file-text',['*','audit.read'],true]};
+const S={me:null,view:'overview',id:'',status:'',page:1,leadSource:'',platformLeads:[],supplierLeads:[],platformLeadPage:1,supplierLeadPage:1,financeRewardPage:1,platformCities:null,platformDistricts:[],companyStatus:'PENDING',companyCapabilityPage:1,companyAreaPage:1,telesalesUsers:null,calendarMonth:''};
+const P={overview:['工作台','layout-dashboard',['*','dashboard.operation.read']],leads:['客资','user-check',['*','lead.manual.manage','lead.supplier.review']],telesales:['电销','phone',['*','verification.read']],dispatch:['派发','hand-claim',['*','lead.dispatch']],companies:['加盟商','building',['*','company.profile.review','company.account.manage']],returns:['异常','rotate-ccw',['*','return.read']],finance:['资金','coins',['*']],audit:['日志','search',['*','audit.read']],trace:['客资详情','file-text',['*','audit.read'],true],settings:['设置','settings',['*'],true],users:['内部账号','users',['*'],true],calendar:['工作日历','calendar',['*'],true]};
 const ROLE_HOME_CONTRACT={SUPER_ADMIN:'系统治理',OPERATION:'今日运营'};
 const ROLE_HOME_PRIORITY=['SUPER_ADMIN','OPERATION'];
 const ADMIN_ROLE_HOME_CONTENT={
@@ -59,7 +59,7 @@ function shell(body){
   const roleHome=ADMIN_ROLE_HOME_CONTENT[primaryRole()];
   const pageTitle=S.view==='overview'&&roleHome?roleHome.title:meta[0];
   const pageSubtitle=S.view==='overview'&&roleHome?'角色专属首页':S.view==='trace'?'查看客户从提交到处理完成的全部情况':'客资运营管理';
-  const setting=primaryRole()==='SUPER_ADMIN'?`<button class="ops-btn" data-view="companies" type="button">${icon('settings')}设置</button>`:'';
+  const setting=primaryRole()==='SUPER_ADMIN'?`<button class="ops-btn" data-view="settings" type="button">${icon('settings')}设置</button>`:'';
   zsSetSafeHtml(app, `<div class="ops-shell"><aside class="ops-side"><div class="ops-brand"><img class="ops-logo" src="./logo.png" alt="合家美宅"><div><strong>合家美宅</strong><small>V1.2 统一工作台</small></div></div><div class="ops-menu-label">业务工作台</div><nav class="ops-menu">${nav()}</nav><div class="ops-side-foot"><b>${esc(S.me?.display_name||'')}</b><br><span>${esc(ROLE_HOME_CONTRACT[primaryRole()]||'')}</span></div></aside><section class="ops-main"><header class="ops-top"><div class="ops-title"><h1>${esc(pageTitle)}</h1><p>${esc(pageSubtitle)}</p></div><div class="ops-top-actions"><button class="ops-btn primary" id="refresh">${icon('rotate-ccw')}刷新</button>${setting}<button class="ops-btn" id="logout" type="button">${icon('log-out')}退出</button></div></header><main class="ops-content">${body}</main></section></div>`);
   document.querySelectorAll('[data-view]').forEach(button=>button.onclick=()=>go(button.dataset.view));
   document.querySelector('#refresh').onclick=render;
@@ -111,7 +111,7 @@ function telesalesName(userId){if(!userId)return '未分配';const user=(S.teles
 async function loadTelesalesUsers(){if(!S.telesalesUsers)S.telesalesUsers=await api('/admin-meta/telesales-users');return S.telesalesUsers}
 async function render(){
   shell('<div class="ops-loading">加载中…</div>');
-  const views={overview,leads:review,telesales,dispatch,companies,returns,finance,audit,trace:fullTrace};
+  const views={overview,leads:review,telesales,dispatch,companies,returns,finance,audit,trace:fullTrace,settings,users:internalUsers,calendar};
   try{await (views[S.view]||overview)()}catch(error){shell(`<div class="ops-error">${esc(error.message)}</div>`);toast(error.message,true)}
 }
 const totalOf=values=>Object.values(values||{}).reduce((sum,value)=>sum+Number(value||0),0);
@@ -362,6 +362,90 @@ function bindCompanyQueuePager(data,prefix,pageKey){
   const pages=Math.max(1,Math.ceil((data.total||0)/(data.page_size||20)));
   document.querySelector(`#${prefix}-prev`).onclick=()=>{S[pageKey]=Math.max(1,S[pageKey]-1);companies()};
   document.querySelector(`#${prefix}-next`).onclick=()=>{S[pageKey]=Math.min(pages,S[pageKey]+1);companies()};
+}
+const INTERNAL_ROLE_OPTIONS=[['SUPER_ADMIN','超级管理员'],['OPERATION','运营管理员'],['TELESALES','电销人员']];
+const INTERNAL_ROLE_LABEL=Object.fromEntries(INTERNAL_ROLE_OPTIONS);
+const calendarMonthValue=moment=>{const parts=Object.fromEntries(new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'}).formatToParts(moment).filter(part=>part.type!=='literal').map(part=>[part.type,part.value]));return `${parts.year}-${parts.month}`};
+const calendarRange=value=>{const [year,month]=value.split('-').map(Number),daysInMonth=new Date(Date.UTC(year,month,0)).getUTCDate();return {year,month,daysInMonth,start:`${value}-01`,end:`${value}-${String(daysInMonth).padStart(2,'0')}`}};
+const shiftCalendarMonth=(value,offset)=>{const [year,month]=value.split('-').map(Number),absolute=year*12+month-1+offset;return `${Math.floor(absolute/12)}-${String(absolute%12+1).padStart(2,'0')}`};
+const calendarUpdatedBy=item=>item.updated_by_name||(item.updated_by?recordCode(item.updated_by,'账号'):'系统默认规则');
+const calendarUpdatedAt=item=>item.updated_at?new Date(item.updated_at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}):'--';
+const calendarDayBadge=item=>`<span class="ops-status ${item.is_workday?'ok':''}">${item.is_workday?'工作日':'休息日'}</span>`;
+function calendarDayModal(dayValue,item={},lockedDate=false){
+  const day=dayValue||`${S.calendarMonth}-01`,isWorkday=typeof item.is_workday==='boolean'?item.is_workday:true;
+  modal(lockedDate?'编辑工作日历日期':'单日设定',`<form class="ops-form" id="calendar-form"><div class="ops-field"><label for="calendar-day">日期 *</label><input class="ops-input" id="calendar-day" type="date" value="${esc(day)}" ${lockedDate?'readonly':''}></div><div class="ops-field"><label for="calendar-is-workday">当天安排 *</label><select class="ops-input" id="calendar-is-workday"><option value="true" ${isWorkday?'selected':''}>工作日</option><option value="false" ${isWorkday?'':'selected'}>休息日</option></select></div><div class="ops-field"><label for="calendar-holiday-name">节日或说明</label><input class="ops-input" id="calendar-holiday-name" maxlength="128" value="${esc(item.holiday_name||'')}" placeholder="例如：国庆节或调休工作日"></div><div class="ops-notice">只影响保存后新领取或历史缺失字段补算；已固化的历史截止时间不回算。</div><div class="ops-actions"><button type="button" class="ops-btn" id="calendar-cancel">取消</button><button class="ops-btn primary" id="calendar-submit">保存</button></div></form>`,()=>{
+    const form=document.querySelector('#calendar-form'),submit=document.querySelector('#calendar-submit');
+    document.querySelector('#calendar-cancel').onclick=closeModal;
+    form.onsubmit=async event=>{event.preventDefault();const selectedDay=document.querySelector('#calendar-day').value.trim();if(!selectedDay){toast('请选择日期',true);return}submit.disabled=true;try{const result=await api(`/admin/v1.2/calendar-days/${encodeURIComponent(selectedDay)}`,{method:'PUT',body:JSON.stringify({is_workday:document.querySelector('#calendar-is-workday').value==='true',holiday_name:document.querySelector('#calendar-holiday-name').value.trim()||null})});toast(result.changed?'工作日历已保存':'配置无变化，未重复写入审计');closeModal();await calendar()}catch(error){submit.disabled=false;toast(error.message,true)}};
+  });
+}
+function calendarDayDetail(item){
+  modal('工作日历详情',`<div class="ops-detail-grid">${[['日期',item.day],['当天安排',item.is_workday?'工作日':'休息日'],['设置方式',item.is_override?'单日调整':'系统默认'],['节日或说明',item.holiday_name||'--'],['变更人',calendarUpdatedBy(item)],['变更时间（中国时区）',calendarUpdatedAt(item)]].map(([name,value])=>`<div class="ops-detail"><small>${esc(name)}</small><b>${esc(value)}</b></div>`).join('')}</div><div class="ops-notice">只影响保存后新领取或历史缺失字段补算；已固化的历史截止时间不回算。</div><div class="ops-actions"><button class="ops-btn primary" id="calendar-edit">编辑当天</button></div>`,()=>document.querySelector('#calendar-edit').onclick=()=>calendarDayModal(item.day,item,true));
+}
+async function calendar(){
+  S.calendarMonth=S.calendarMonth||calendarMonthValue(new Date());
+  const range=calendarRange(S.calendarMonth),items=await api(`/admin/v1.2/calendar-days?start=${range.start}&end=${range.end}`);
+  if(items.length!==range.daysInMonth)throw new Error('工作日历返回的有效日期不完整');
+  const overrides=items.filter(item=>item.is_override),leadingDays=(new Date(Date.UTC(range.year,range.month-1,1)).getUTCDay()+6)%7;
+  const cells=[...Array(leadingDays)].map(()=>'<div class="ops-calendar-blank" aria-hidden="true"></div>');
+  cells.push(...items.map(item=>`<button class="ops-calendar-day ${item.is_workday?'':'rest'}" type="button" data-calendar-day="${esc(item.day)}"><b>${Number(item.day.slice(-2))}</b><span>${esc(item.is_workday?'工作日':'休息日')}</span><small>${esc(item.holiday_name||(item.is_override?'单日调整':'默认规则'))}</small></button>`));
+  const rows=overrides.map(item=>`<tr><td><b>${esc(item.day)}</b></td><td>${calendarDayBadge(item)}</td><td>${esc(item.holiday_name||'--')}</td><td>${esc(calendarUpdatedBy(item))}<br><small>${esc(calendarUpdatedAt(item))}</small></td><td><button class="ops-btn" data-calendar-day="${esc(item.day)}">查看</button></td></tr>`);
+  shell(`<div class="ops-page-actions"><button class="ops-btn" data-view="settings">返回设置</button><div class="ops-calendar-controls"><button class="ops-btn" id="calendar-prev">上月</button><input class="ops-input" id="calendar-month" type="month" value="${esc(S.calendarMonth)}"><button class="ops-btn" id="calendar-next">下月</button><button class="ops-btn primary" id="calendar-new">单日设定</button></div></div><section class="ops-card"><div class="ops-card-head"><div><h2>${esc(S.calendarMonth)} 工作日历</h2><p>默认按周一到周五计算工作日，法定节假日和调休只维护单日例外。</p></div></div><div class="ops-notice">只影响保存后新领取或历史缺失字段补算；已固化的历史截止时间不回算。</div><div class="ops-calendar-week">${['一','二','三','四','五','六','日'].map(day=>`<span>${day}</span>`).join('')}</div><div class="ops-calendar-grid">${cells.join('')}</div></section><section class="ops-card"><div class="ops-card-head"><div><h2>单日例外</h2><p>本月共 ${overrides.length} 项显式调整。</p></div></div>${table(['日期','状态','节日或说明','变更人/时间','操作'],rows)}</section>`);
+  const byDay=Object.fromEntries(items.map(item=>[item.day,item]));
+  document.querySelector('#calendar-month').onchange=event=>{S.calendarMonth=event.target.value;calendar()};
+  document.querySelector('#calendar-prev').onclick=()=>{S.calendarMonth=shiftCalendarMonth(S.calendarMonth,-1);calendar()};
+  document.querySelector('#calendar-next').onclick=()=>{S.calendarMonth=shiftCalendarMonth(S.calendarMonth,1);calendar()};
+  document.querySelector('#calendar-new').onclick=()=>calendarDayModal(range.start,byDay[range.start]);
+  document.querySelectorAll('[data-calendar-day]').forEach(button=>button.onclick=()=>calendarDayDetail(byDay[button.dataset.calendarDay]));
+}
+const internalUserRoles=user=>(user.roles||user.role_codes||[]).filter(role=>INTERNAL_ROLE_LABEL[role]);
+const internalRoleOptions=(name,current='OPERATION')=>INTERNAL_ROLE_OPTIONS.map(([role,labelText])=>`<label class="ops-choice"><input type="radio" name="${esc(name)}" value="${role}" ${role===current?'checked':''}>${labelText}</label>`).join('');
+const selectedInternalRole=name=>document.querySelector(`input[name="${name}"]:checked`)?.value||'';
+async function runInternalUserAction(button,action,success){
+  const original=button.textContent;button.disabled=true;button.textContent='处理中';
+  try{await action();toast(success);closeModal();await internalUsers()}catch(error){toast(error.message,true)}finally{if(button.isConnected){button.disabled=false;button.textContent=original}}
+}
+function showInternalUserCredentials(user,onClose){
+  const password=user.initial_password||'',username=user.username||'';
+  if(!password){modal('内部账号已创建',`<div class="ops-notice">账号已创建，但初始密码未返回。请立即在账号列表中重置密码后再交付账号本人。</div><div class="ops-detail"><small>登录账号</small><b>${esc(username)}</b></div>`,()=>{});return false}
+  const credentials=`登录账号：${username}\n初始密码：${password}`;
+  modal('请安全交付初始密码',`<div class="ops-notice">初始密码仅在当前窗口展示一次，请立即复制并通过安全渠道交付账号本人。</div><div class="ops-detail-grid"><div class="ops-detail"><small>登录账号</small><b>${esc(username)}</b></div><div class="ops-detail"><small>初始密码</small><b id="internal-user-password">${esc(password)}</b></div></div><div class="ops-actions"><button class="ops-btn primary" id="copy-internal-user-password">复制初始密码</button><button class="ops-btn" id="copy-internal-user-credentials">复制账号与密码</button><button class="ops-btn" id="internal-user-credentials-close">已保存</button></div>`,()=>{
+    const copy=value=>navigator.clipboard.writeText(value).then(()=>toast('已复制')).catch(()=>toast('浏览器不支持自动复制，请手动复制',true));
+    document.querySelector('#copy-internal-user-password').onclick=()=>copy(password);
+    document.querySelector('#copy-internal-user-credentials').onclick=()=>copy(credentials);
+    document.querySelector('#internal-user-credentials-close').onclick=()=>{closeModal();onClose?.()};
+  });
+  return true;
+}
+function internalUserModal(){
+  modal('新建内部账号',`<form class="ops-form" id="internal-user-form"><div class="ops-field"><label for="internal-user-name">姓名 *</label><input class="ops-input" id="internal-user-name" maxlength="64" autocomplete="name"></div><div class="ops-field"><label for="internal-user-username">登录账号 *</label><input class="ops-input" id="internal-user-username" maxlength="64" autocomplete="username"></div><div class="ops-notice">无需填写密码，系统会自动生成可复制的 8 位以上初始密码。</div><div class="ops-field"><label>角色 *</label><div class="ops-choice-list">${internalRoleOptions('internal-role')}</div><small class="ops-muted">单选，仅限平台内部角色。</small></div><div class="ops-actions"><button type="button" class="ops-btn" id="internal-user-cancel">取消</button><button class="ops-btn primary" id="internal-user-submit">创建</button></div></form>`,()=>{
+    const form=document.querySelector('#internal-user-form'),submit=document.querySelector('#internal-user-submit');
+    document.querySelector('#internal-user-cancel').onclick=closeModal;
+    form.onsubmit=async event=>{event.preventDefault();const display_name=document.querySelector('#internal-user-name').value.trim(),username=document.querySelector('#internal-user-username').value.trim(),role=selectedInternalRole('internal-role');if(!display_name){toast('请输入姓名',true);return}if(username.length<2){toast('登录账号至少输入 2 个字符',true);return}if(!role){toast('请选择一个角色',true);return}submit.disabled=true;try{const created=await api('/users',{method:'POST',body:JSON.stringify({display_name,username,role_codes:[role]})});const passwordReady=showInternalUserCredentials(created);toast(passwordReady?'账号已创建，请复制初始密码':'账号已创建，但需要立即重置密码',!passwordReady);try{await internalUsers()}catch(refreshError){toast(`账号已创建，但账号列表刷新失败：${refreshError.message}`,true)}}catch(error){submit.disabled=false;toast(error.message,true)}};
+  });
+}
+function internalRoleModal(user){
+  const current=internalUserRoles(user)[0]||'OPERATION';
+  modal('编辑内部账号角色',`<form class="ops-form" id="internal-role-form"><div class="ops-notice">${esc(user.display_name)} · ${esc(user.username||'--')}。一个账号只能有一个角色，保存后该账号现有会话立即失效。</div><div class="ops-field"><label>角色 *</label><div class="ops-choice-list">${internalRoleOptions('internal-role-edit',current)}</div></div><div class="ops-actions"><button type="button" class="ops-btn" id="internal-role-cancel">取消</button><button class="ops-btn primary" id="internal-role-submit">保存角色</button></div></form>`,()=>{
+    const form=document.querySelector('#internal-role-form'),submit=document.querySelector('#internal-role-submit');document.querySelector('#internal-role-cancel').onclick=closeModal;
+    form.onsubmit=event=>{event.preventDefault();const role=selectedInternalRole('internal-role-edit');runInternalUserAction(submit,()=>api(`/users/${encodeURIComponent(user.id)}/roles`,{method:'PUT',body:JSON.stringify({role_codes:[role]})}),'角色已更新')};
+  });
+}
+function resetInternalUserPassword(user){
+  actionForm({title:'重置内部账号密码',message:'保存后该账号现有会话立即失效。',labelText:'新密码',required:true,minLength:8,submitLabel:'重置密码',danger:true,validate:value=>value.length>128?'密码需为 8-128 位':null},async new_password=>{if(new_password.length<8)throw new Error('密码需为 8-128 位');await api(`/users/${encodeURIComponent(user.id)}/reset-password`,{method:'POST',body:JSON.stringify({new_password})});toast('密码已重置');await internalUsers()});
+}
+async function internalUsers(){
+  const data=await api('/users'),users=data.filter(user=>!user.company_id&&internalUserRoles(user).length);
+  const rows=users.map(user=>{const active=user.status==='ACTIVE';return `<tr><td><b>${esc(user.display_name)}</b></td><td>${esc(user.username||'--')}</td><td>${esc(INTERNAL_ROLE_LABEL[internalUserRoles(user)[0]]||'--')}</td><td>${badge(user.status)}</td><td><button class="ops-btn" data-internal-role="${esc(user.id)}">编辑角色</button> <button class="ops-btn" data-internal-reset="${esc(user.id)}">重置密码</button> <button class="ops-btn ${active?'danger':'primary'}" data-internal-status="${esc(user.id)}:${active?'disable':'enable'}">${active?'停用':'启用'}</button></td></tr>`});
+  shell(`<div class="ops-page-actions"><button class="ops-btn" data-view="settings">返回设置</button><button class="ops-btn primary" id="new-internal-user">新建内部账号</button></div><section class="ops-card"><div class="ops-card-head"><div><h2>内部账号</h2><p>只管理平台内部账号；创建、改角色、启停和重置密码都会使相关会话失效。</p></div></div>${table(['姓名','登录账号','角色','状态','操作'],rows)}</section>`);
+  const byId=Object.fromEntries(users.map(user=>[user.id,user]));
+  document.querySelector('#new-internal-user').onclick=internalUserModal;
+  document.querySelectorAll('[data-internal-role]').forEach(button=>button.onclick=()=>internalRoleModal(byId[button.dataset.internalRole]));
+  document.querySelectorAll('[data-internal-reset]').forEach(button=>button.onclick=()=>resetInternalUserPassword(byId[button.dataset.internalReset]));
+  document.querySelectorAll('[data-internal-status]').forEach(button=>button.onclick=()=>{const [userId,action]=button.dataset.internalStatus.split(':');const user=byId[userId],enabling=action==='enable';actionForm({title:enabling?'启用内部账号':'停用内部账号',message:enabling?'启用后该账号可重新登录。':'停用后该账号的全部会话会立即失效。',submitLabel:enabling?'确认启用':'确认停用',danger:!enabling},async()=>{await api(`/users/${encodeURIComponent(user.id)}/${enabling?'enable':'disable'}`,{method:'POST'});toast(enabling?'账号已启用':'账号已停用');await internalUsers()})});
+}
+async function settings(){
+  shell(`<section class="ops-card"><div class="ops-card-head"><div><h2>系统设置</h2><p>只保留系统治理必需的账号与工作日历，不展示底层参数或旧版入口。</p></div></div><div class="ops-settings-grid"><button class="ops-setting-card" data-view="users"><i>${icon('users')}</i><b>内部账号</b><span>开通、角色调整、启停和密码重置</span></button><button class="ops-setting-card" data-view="calendar"><i>${icon('calendar')}</i><b>工作日历</b><span>维护法定节假日与调休单日例外</span></button><button class="ops-setting-card" data-view="companies"><i>${icon('building')}</i><b>加盟商治理</b><span>审核公司、能力区域和加盟商账号</span></button></div></section>`);
 }
 async function companies(){
   const [companyPage,capabilities,areas,pendingCapabilities,pendingAreas]=await Promise.all([

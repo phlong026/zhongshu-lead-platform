@@ -151,12 +151,27 @@ def _admin_smoke(browser: Browser, base_url: str, output: Path, errors: list[str
         page.locator('.ops-menu [data-view="audit"]').click()
         page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=audit")
         page.get_by_text("通知发送异常", exact=True).wait_for(timeout=15000)
+        page.locator('.ops-top-actions [data-view="settings"]').click()
+        page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=settings")
+        page.get_by_role("heading", name="系统设置").wait_for(timeout=15000)
+        page.locator('[data-view="users"]').click()
+        page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=users")
+        page.get_by_role("heading", name="内部账号").wait_for(timeout=15000)
+        page.locator('.ops-content [data-view="settings"]').click()
+        page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=settings")
+        page.locator('[data-view="calendar"]').click()
+        page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=calendar")
+        page.get_by_text("工作日历", exact=False).first.wait_for(timeout=15000)
+        page.get_by_role("heading", name="单日例外").wait_for(timeout=15000)
+        settings_screenshot = output / "v12-admin-settings.png"
+        page.screenshot(path=str(settings_screenshot), full_page=True)
         return {
             "valid": True,
             "title": page.title(),
             "navigation_count": page.locator(".ops-menu [data-view]").count(),
             "overview_screenshot": str(overview_screenshot),
             "trace_screenshot": str(trace_screenshot),
+            "settings_screenshot": str(settings_screenshot),
             "browser_history_valid": True,
         }
     finally:

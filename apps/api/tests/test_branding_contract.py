@@ -6,20 +6,11 @@ from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 BRANDED_TEXT_FILES = [
-    "apps/admin/public/index.html",
-    "apps/admin/public/app.js",
-    "apps/admin/public/admin-design-system-v10.js",
-    "apps/admin/public/admin-extended-pages-v10.js",
     "apps/admin/public/v12-operations.html",
     "apps/admin/public/v12-operations.js",
+    "apps/admin/public/h5/index.html",
+    "apps/admin/public/h5/app.js",
     "apps/call-h5/public/index.html",
-    "apps/h5/public/index.html",
-    "apps/h5/public/app.js",
-    "apps/h5/public/design-system-v13.js",
-    "apps/h5/public/manifest.webmanifest",
-    "apps/h5/public/status-pages-v13.js",
-    "apps/h5/public/supplier.html",
-    "apps/h5/public/supplier.js",
     "apps/h5/public/v12-workbench.html",
     "apps/h5/public/v12-workbench.js",
 ]

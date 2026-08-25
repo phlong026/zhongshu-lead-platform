@@ -1,84 +1,38 @@
 from pathlib import Path
 
+
 ROOT = Path(__file__).resolve().parents[3]
 ADMIN = ROOT / "apps" / "admin" / "public"
 
 
-def test_admin_v10_assets_loaded_before_application():
-    index = (ADMIN / "index.html").read_text(encoding="utf-8")
-    assert "./admin-design-system-v10.css" in index
-    assert "./admin-design-system-v10.js" in index
-    assert index.index("./styles.css") < index.index("./admin-design-system-v10.css")
-    assert index.index("./admin-design-system-v10.js") < index.index("./app.js")
+def test_unified_desktop_assets_load_the_single_formal_operations_shell() -> None:
+    entry = (ADMIN / "v12-operations.html").read_text(encoding="utf-8")
+
+    assert "./v12-operations.css" in entry
+    assert "./v12-operations.js" in entry
+    assert entry.index("/h5/safe-html.js") < entry.index("./v12-operations.js")
+    assert not (ADMIN / "index.html").exists()
 
 
-def test_admin_v10_design_tokens_and_page_ids():
-    css = (ADMIN / "admin-design-system-v10.css").read_text(encoding="utf-8")
-    js = (ADMIN / "admin-design-system-v10.js").read_text(encoding="utf-8")
-    for token in ("--adm-brand:#7a6248", "--adm-gold:#c8a96a", "--adm-ivory:#f8f5ef"):
-        assert token in css
-    for selector in (".adm-v10-page-id", ".adm-v10-overlay-id", ".adm-v10-login-security"):
-        assert selector in css
-    for number in range(1, 20):
-        assert f"ADM-{number:02d}" in js
+def test_unified_desktop_shell_places_identity_and_actions_in_their_role_areas() -> None:
+    script = (ADMIN / "v12-operations.js").read_text(encoding="utf-8")
+    css = (ADMIN / "v12-operations.css").read_text(encoding="utf-8")
+
+    assert "ops-side-foot" in script
+    assert "ops-top-actions" in script
+    assert "刷新" in script
+    assert "设置" in script
+    assert "退出" in script
+    assert "ops-side-foot" in css
+    assert "ops-role-hero" in css
+    assert "ops-trace-layout" in css
 
 
-def test_admin_v10_preserves_role_and_finance_boundaries():
-    js = (ADMIN / "admin-design-system-v10.js").read_text(encoding="utf-8")
-    assert "admDashboardId" in js
-    assert "main.page .stat .label" in js
-    assert "const pageText=" not in js
-    assert "仅展示资格状态，不展示具体积分余额" not in js
-    assert "现金在线下完成" not in js
-    assert "页面、接口、数据范围和字段权限必须同时生效" not in js
-    assert "MutationObserver" in js
+def test_unified_desktop_uses_svg_icons_without_legacy_v10_assets() -> None:
+    script = (ADMIN / "v12-operations.js").read_text(encoding="utf-8")
 
-
-def test_admin_design_system_does_not_insert_permission_scope_banner():
-    js = (ADMIN / "admin-design-system-v10.js").read_text(encoding="utf-8")
-    css = (ADMIN / "admin-design-system-v10.css").read_text(encoding="utf-8")
-    extended = (ADMIN / "admin-extended-pages-v10.js").read_text(encoding="utf-8")
-    assert "adm-v10-scope" not in js
-    assert ".adm-v10-scope" not in css
-    assert "业务与财务汇总仅按授权展示" not in js
-    assert "page.querySelector('.page-head')?.insertAdjacentElement('afterend',stats)" in extended
-
-
-def test_admin_header_keeps_identity_in_an_avatar_menu_only():
-    app = (ADMIN / "app.js").read_text(encoding="utf-8")
-    css = (ADMIN / "admin-design-system-v10.css").read_text(encoding="utf-8")
-    assert 'id="user-menu"' in app
-    assert 'class="avatar avatar-button"' in app
-    assert 'aria-label="打开账号菜单"' in app
-    assert 'aria-expanded="false"' in app
-    assert 'id="account-menu"' in app
-    assert 'id="logout"' in app
-    assert '<span>${esc(state.me.display_name)}</span>' not in app
-    assert "state.me.roles.join" not in app
-    assert ".avatar-button:focus-visible" in css
-    assert ".account-menu[hidden]" in css
-
-
-def test_admin_icons_render_from_svg_system_without_glyph_placeholders():
-    js = (ADMIN / "app.js").read_text(encoding="utf-8")
-    ui = (ADMIN / "ui.js").read_text(encoding="utf-8")
-    assert "window.ZSIconSystem?.svg" in ui
-    for icon_name in ("layout-dashboard", "inbox", "phone", "user-check", "hand-claim", "building", "coins"):
-        assert icon_name in js
-    for glyph in ("'⌂'", "'⇩'", "'☎'", "'✓'", "'↗'", "'♙'", "'◈'", "'＋'", "'≋'", "'↩'", "'◉'", "'♟'", "'⚙'", "'⌁'"):
-        assert glyph not in js
-
-
-def test_admin_v10_extended_operational_pages():
-    index = (ADMIN / "index.html").read_text(encoding="utf-8")
-    js = (ADMIN / "admin-extended-pages-v10.js").read_text(encoding="utf-8")
-    assert "./admin-extended-pages-v10.js" in index
-    assert "/master-data/regions" in js
-    assert "/admin-meta/rbac-matrix" not in js
-    assert "adm-permission-matrix" not in js
-    assert "/admin-meta/telesales-users" not in js
-    assert "/verification/tasks/${taskId}/assign" not in js
-    assert "/verification/tasks/${taskId}/reclaim" not in js
-    assert "核验模板版本" not in js
-    assert "/admin-meta/companies/${id}" in js
-    assert "业务选项" in js
+    assert "window.ZSIconSystem?.svg" in script
+    for icon_name in ("layout-dashboard", "phone", "user-check", "hand-claim", "building", "coins", "calendar"):
+        assert f"'{icon_name}'" in script
+    assert not (ADMIN / "admin-design-system-v10.js").exists()
+    assert not (ADMIN / "admin-extended-pages-v10.js").exists()

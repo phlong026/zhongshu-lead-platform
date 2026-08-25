@@ -61,10 +61,8 @@ def test_role_entrypoints_use_only_v12_role_workbenches(api_client) -> None:
 
 
 def test_platform_lead_work_is_migrated_into_operations_without_legacy_page() -> None:
-    entry_source = Path("apps/admin/public/v12-entry-link.js").read_text(encoding="utf-8")
     operations_source = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
 
-    assert "v12-leads.html" not in entry_source
     assert "/v1.2/platform/leads" in operations_source
     assert "data-platform-pre-dispatch" in operations_source
     assert "平台补充资料后再处理" in operations_source

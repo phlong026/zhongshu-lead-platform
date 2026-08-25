@@ -78,11 +78,11 @@ def test_unified_operations_workspace_keeps_source_specific_lead_actions() -> No
 
 
 def test_supplier_h5_has_real_pagination_controls() -> None:
-    js = Path("apps/h5/public/supplier.js").read_text(encoding="utf-8")
+    js = Path("apps/h5/public/v12-workbench.js").read_text(encoding="utf-8")
     compact = re.sub(r"\s+", "", js)
-    assert "listPageSize:20" in compact
-    assert "page:state.listPage" in compact
-    assert "previous-page" in js
-    assert "next-page" in js
-    assert "第 ${state.listPage} / ${totalPages} 页" in js
-    assert "page:1,page_size:100" not in compact
+    assert "page_size:'20'" in compact
+    assert "page:String(S.page)" in compact
+    assert "supply-prev" in js
+    assert "supply-next" in js
+    assert "第 ${S.page} / ${totalPages} 页" in js
+    assert "page_size:100" not in compact

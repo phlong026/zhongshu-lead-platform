@@ -35,3 +35,8 @@ def test_browser_smoke_covers_only_the_formal_role_workbenches() -> None:
     assert "franchise owner H5 bottom navigation must stay on one row" in script
     assert "telesales H5 bottom navigation must stay on one row" in script
     assert "telesales primary action must keep contrast" in script
+    assert 'data-view="settings"' in script
+    assert 'data-view="users"' in script
+    assert 'data-view="calendar"' in script
+    assert "内部账号" in script
+    assert "工作日历" in script

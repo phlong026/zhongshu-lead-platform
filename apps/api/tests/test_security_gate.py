@@ -907,11 +907,9 @@ def test_security_workflow_executes_policy_from_protected_base() -> None:
 def test_browser_entrypoints_load_safe_html_boundary_first() -> None:
     root = Path(__file__).parents[3]
     entrypoints = {
-        "apps/admin/public/index.html": "/h5/safe-html.js",
         "apps/admin/public/v12-operations.html": "/h5/safe-html.js",
+        "apps/admin/public/h5/index.html": "/h5/safe-html.js",
         "apps/call-h5/public/index.html": "/h5/safe-html.js",
-        "apps/h5/public/index.html": "./safe-html.js",
-        "apps/h5/public/supplier.html": "./safe-html.js",
         "apps/h5/public/v12-workbench.html": "./safe-html.js",
     }
 

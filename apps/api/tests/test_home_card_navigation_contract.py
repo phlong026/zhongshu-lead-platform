@@ -60,12 +60,11 @@ def test_telesales_home_uses_actionable_count_and_clear_mobile_navigation() -> N
 
 
 def test_supplier_submodule_navigation_uses_progress_and_upload_semantics() -> None:
-    source = read(H5 / "supplier.js")
+    source = read(H5 / "v12-workbench.js")
 
-    assert "<h1>供客进度</h1>" in source
-    assert "${supplierIcon('list')}" in source
-    assert "${supplierIcon('plus')}" in source
-    assert "供客进度" in source
+    assert "leads:['供资','plus']" in source
+    assert "录入客户资料，查看审核与处理进度" in source
+    assert "上传第一条客资" in source
     assert "我的客资" not in source
 
 
@@ -116,12 +115,12 @@ def test_card_layout_uses_fluid_width_and_mobile_tap_targets() -> None:
     shared = read(H5 / "design-system-v13.css")
     workbench_css = read(H5 / "v12-workbench.css")
     call_css = read(CALL / "styles.css")
-    admin_css = read(ADMIN / "styles.css")
+    admin_css = read(ADMIN / "v12-operations.css")
 
     assert "width:100%;max-width:var(--zs-client-max-width)" in shared
     assert "width:375px" not in shared
     assert ".wb-kpi[data-go]" in workbench_css
     assert "button.metric" in call_css
-    assert "button.stat" in admin_css
+    assert ".ops-kpi" in admin_css
     for css in (workbench_css, call_css, admin_css):
         assert "focus-visible" in css

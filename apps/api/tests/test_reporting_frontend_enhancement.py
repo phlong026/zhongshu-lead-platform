@@ -1,12 +1,13 @@
 from pathlib import Path
 
 
-def test_admin_report_enhancement_uses_role_aware_performance_endpoint():
-    script = Path("apps/admin/public/report-enhancements.js").read_text(encoding="utf-8")
-    style = Path("apps/admin/public/report-enhancements.css").read_text(encoding="utf-8")
-    index = Path("apps/admin/public/index.html").read_text(encoding="utf-8")
-    assert "/dashboard/performance?days=" in script
-    assert "claim_rate" in script and "followup_rate" in script and "conversion_rate" in script
-    assert "data.finance" in script
-    assert ".p1-performance-report" in style
-    assert "report-enhancements.js" in index and "report-enhancements.css" in index
+def test_unified_operations_home_uses_role_scoped_overview_metrics() -> None:
+    script = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
+
+    assert "/v1.2/reports/overview" in script
+    assert "ROLE_HOME_CONTRACT" in script
+    assert "ADMIN_ROLE_HOME_CONTENT" in script
+    assert "roleMetricCards" in script
+    assert "运营待办" in script
+    assert "资金处理" in script
+    assert "?view=finance" in script
