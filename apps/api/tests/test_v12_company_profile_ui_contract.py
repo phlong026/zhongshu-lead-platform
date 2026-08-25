@@ -25,7 +25,7 @@ def test_v12_workbench_exposes_company_profile_flow() -> None:
     assert "company.profile.manage" in entry
     assert "points.own.read" in entry
     assert "followup.own.manage" not in entry
-    assert "v12-workbench.js?v=20260825-stage6-collaboration" in html
+    assert "v12-workbench.js?v=20260825-stage7-return-closure" in html
 
 
 def test_v12_operations_exposes_company_review_queue() -> None:
@@ -42,7 +42,7 @@ def test_v12_operations_exposes_company_review_queue() -> None:
     assert "company_name" in js
     assert "review_note" in js
     assert "review_status" in js
-    assert "v12-operations.js?v=20260825-stage6-collaboration" in html
+    assert "v12-operations.js?v=20260825-stage7-return-closure" in html
 
 
 def test_stage6_company_review_and_internal_collaboration_actions_are_role_scoped() -> None:
@@ -56,3 +56,18 @@ def test_stage6_company_review_and_internal_collaboration_actions_are_role_scope
     assert "/internal-assignee" in franchise
     assert "公司内部直接分配，无需运营审批" in franchise
     assert "负责人自己跟进" in franchise
+
+
+def test_stage7_return_and_redispatch_actions_keep_the_business_closure_explicit() -> None:
+    admin = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
+    franchise = Path("apps/h5/public/v12-workbench.js").read_text(encoding="utf-8")
+
+    assert "FOLLOWUP_INVALID_REQUIRES_RETURN" in franchise
+    assert "error.code=j.code" in franchise
+    assert "下一步：发起退回" in franchise
+    assert "data-return-evidence" in franchise
+    assert "补充证据" in franchise
+    assert "资金影响" in admin
+    assert "x.status==='REVIEWING'&&verification.conclusion" in admin
+    assert "RETURNED_RECEIVER_EXCLUDED" in admin
+    assert "return_receiver_override" in admin

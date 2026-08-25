@@ -15,7 +15,7 @@ def test_all_h5_surfaces_load_local_svg_icon_system_before_application():
     entries = {
         "index.html": ("./app.js", "?v=20260824-card-data1", SVG_LOGIN_VERSION),
         "supplier.html": ("./supplier.js", "?v=20260824-card-data1", SVG_BASE_VERSION),
-        "v12-workbench.html": ("./v12-workbench.js", "?v=20260825-stage6-collaboration", SVG_BASE_VERSION),
+        "v12-workbench.html": ("./v12-workbench.js", "?v=20260825-stage7-return-closure", SVG_BASE_VERSION),
     }
     for filename, (application_script, application_version, svg_version) in entries.items():
         index = (H5 / filename).read_text(encoding="utf-8")
@@ -28,7 +28,7 @@ def test_all_h5_surfaces_load_local_svg_icon_system_before_application():
 def test_all_admin_surfaces_reuse_same_local_svg_icon_system():
     entries = {
         "index.html": ("./app.js", "?v=20260824-card-data1", SVG_LOGIN_VERSION),
-        "v12-operations.html": ("./v12-operations.js", "?v=20260825-stage6-collaboration", SVG_BASE_VERSION),
+        "v12-operations.html": ("./v12-operations.js", "?v=20260825-stage7-return-closure", SVG_BASE_VERSION),
     }
     for filename, (application_script, application_version, svg_version) in entries.items():
         index = (ADMIN / filename).read_text(encoding="utf-8")

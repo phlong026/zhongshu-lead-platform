@@ -29,6 +29,7 @@ from ..services.return_v12 import (
     create_or_update_return_draft,
     final_review_return,
     return_request_to_dict,
+    return_verification_task_list_to_dict,
     return_verification_task_to_dict,
     require_return_verification_task_not_overdue,
     submit_return_request,
@@ -334,7 +335,7 @@ def list_return_verification_tasks(
     return ok(
         request,
         page(
-            [return_verification_task_to_dict(db, task, principal) for task in tasks],
+            return_verification_task_list_to_dict(db, tasks, principal),
             int(total),
             page_no,
             page_size,

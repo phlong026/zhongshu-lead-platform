@@ -224,6 +224,8 @@ def manual_dispatch(
             assigned_by=principal.user_id,
             idempotency_key=body.idempotency_key,
             note=body.note,
+            return_receiver_override=body.return_receiver_override,
+            return_receiver_override_reason=body.return_receiver_override_reason,
         )
         assignment = outcome.assignment
         lead = get_dispatch_lead(db, lead_id)
@@ -241,8 +243,10 @@ def manual_dispatch(
                     "status": assignment.status,
                     "points_price": assignment.points_price,
                     "manual": True,
+                    "return_receiver_override": body.return_receiver_override,
+                    "return_receiver_override_reason": body.return_receiver_override_reason,
                 },
-                reason=body.note,
+                reason=body.return_receiver_override_reason or body.note,
                 request_id=request.state.request_id,
             )
         db.commit()

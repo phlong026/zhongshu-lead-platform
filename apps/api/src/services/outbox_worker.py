@@ -172,6 +172,7 @@ def _default_title(event_type: str) -> str:
         "V12_SUPPLIER_LEAD_REJECTED": "客资初审未通过", "V12_ASSIGNMENT_DISPATCHED": "新客资已派发",
         "V12_ASSIGNMENT_CLAIMED": "客资领取成功", "V12_RETURN_SUBMITTED": "退回申诉已提交",
         "V12_RETURN_APPROVED": "退回申诉终审通过", "V12_RETURN_REJECTED": "退回申诉终审未通过",
+        "V12_RETURN_NEED_MORE": "退回申诉需要补证",
         "V12_SUPPLIER_REWARD_OBSERVING": "客资奖励进入观察期", "V12_SUPPLIER_REWARD_FROZEN": "客资奖励已冻结",
         "V12_SUPPLIER_REWARD_SETTLED": "客资奖励已到账", "V12_SUPPLIER_REWARD_CANCELLED": "客资奖励已取消",
         "V12_SUPPLIER_REWARD_REVERSED": "客资奖励已冲正",

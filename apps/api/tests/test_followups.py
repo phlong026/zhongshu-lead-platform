@@ -1,4 +1,7 @@
+import pytest
+
 from apps.api.src.core.auth import Principal
+from apps.api.src.core.errors import AppError
 from apps.api.src.core.models import Assignment, Lead
 from apps.api.src.core.security import encrypt_text, hash_phone
 from apps.api.src.services.followup_service import add_followup
@@ -16,6 +19,51 @@ def test_followup_is_append_only_and_updates_current_state(db) -> None:
     assert first.id != second.id
     assert assignment.status == "FOLLOWING"
     assert lead.current_follow_status == "INTERESTED"
+
+
+def test_invalid_followup_requires_a_formal_return_request(db) -> None:
+    lead = Lead(
+        customer_name="无效客资测试客户",
+        phone_encrypted=encrypt_text("13800138001"),
+        phone_hash=hash_phone("13800138001"),
+        status="CLAIMED",
+    )
+    db.add(lead)
+    db.flush()
+    assignment = Assignment(
+        lead_id=lead.id,
+        company_id="company-1",
+        status="CLAIMED",
+        points_price=100,
+        price_version=1,
+        lead_snapshot={},
+        assigned_by="op",
+    )
+    db.add(assignment)
+    db.flush()
+    principal = Principal(
+        user_id="owner",
+        display_name="负责人",
+        company_id="company-1",
+        role_codes=frozenset({"FRANCHISE_OWNER"}),
+        permission_codes=frozenset({"followup.own.manage"}),
+        session_version=1,
+    )
+
+    with pytest.raises(AppError) as exc_info:
+        add_followup(
+            db,
+            assignment=assignment,
+            principal=principal,
+            status="INVALID",
+            note="多次联系确认空号",
+            next_followup_at=None,
+        )
+
+    assert exc_info.value.code == "FOLLOWUP_INVALID_REQUIRES_RETURN"
+    assert assignment.status == "CLAIMED"
+    assert lead.status == "CLAIMED"
+    assert lead.current_follow_status is None
 
 
 def test_overdue_job_is_idempotent(db):

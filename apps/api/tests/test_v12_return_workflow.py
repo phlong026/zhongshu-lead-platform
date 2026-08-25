@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from apps.api.src.core.auth import Principal
 from apps.api.src.core.enums import AssignmentStatus, EvidenceType, PointsLedgerType, VerificationTaskStatus
@@ -35,6 +35,7 @@ from apps.api.src.services.return_v12 import (
     claim_return_verification_task,
     create_or_update_return_draft,
     final_review_return,
+    return_verification_task_list_to_dict,
     return_verification_task_to_dict,
     submit_return_request,
     submit_return_verification,
@@ -210,6 +211,54 @@ def test_single_evidence_type_creates_post_call_task(db, evidence_type: str) -> 
     assert result.task.task_type == VerificationTaskType.RETURN_VERIFY.value
     assert result.task.status == VerificationTaskStatus.PENDING.value
     assert request.status == ReturnV12Status.VERIFYING.value
+
+
+def test_return_verification_task_list_avoids_per_row_queries(db) -> None:
+    setup = _workflow_setup(db)
+    owner = _principal(setup["receiver_user"], "return.own.manage")
+    request = create_or_update_return_draft(
+        db,
+        assignment_id=setup["assignment"].id,
+        principal=owner,
+        reason_code="EMPTY_NUMBER",
+        description="核验任务列表应批量读取关联退回资料",
+    )
+    _evidence(db, request, owner, EvidenceType.CHAT_SCREENSHOT.value)
+    first_task = submit_return_request(db, return_id=request.id, principal=owner).task
+    assert first_task is not None
+    second_task = VerificationTask(
+        lead_id=setup["lead"].id,
+        template_id=None,
+        template_version=1,
+        status=VerificationTaskStatus.PENDING.value,
+        task_type=VerificationTaskType.RETURN_VERIFY.value,
+        return_request_id=request.id,
+        assignment_id=setup["assignment"].id,
+    )
+    db.add(second_task)
+    db.commit()
+    db.expire_all()
+    tasks = db.scalars(
+        select(VerificationTask)
+        .where(VerificationTask.id.in_([first_task.id, second_task.id]))
+        .order_by(VerificationTask.created_at.asc())
+    ).all()
+    statements: list[str] = []
+
+    def record_statement(*args) -> None:
+        if args[2].lstrip().upper().startswith("SELECT"):
+            statements.append(args[2])
+
+    engine = db.get_bind()
+    event.listen(engine, "before_cursor_execute", record_statement)
+    try:
+        rows = return_verification_task_list_to_dict(db, tasks, owner)
+    finally:
+        event.remove(engine, "before_cursor_execute", record_statement)
+
+    assert [row["id"] for row in rows] == [task.id for task in tasks]
+    assert all(row["return_request"]["id"] == request.id for row in rows)
+    assert len(statements) <= 4
 
 
 def test_telesales_cannot_start_an_unassigned_return_verification_task(db) -> None:

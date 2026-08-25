@@ -34,6 +34,12 @@ def add_followup(
     require_company_assignment_access(principal, assignment)
     if assignment.status not in {AssignmentStatus.CLAIMED, AssignmentStatus.FOLLOWING}:
         raise AppError("FOLLOWUP_NOT_ALLOWED", "订单当前不可跟进", 409)
+    if status.strip().upper() == FollowStatus.INVALID.value:
+        raise AppError(
+            "FOLLOWUP_INVALID_REQUIRES_RETURN",
+            "无效客资必须发起正式退回申诉，由运营完成后续处置",
+            409,
+        )
     next_followup_at = _as_utc(next_followup_at)
     followup = FollowUp(
         assignment_id=assignment.id,

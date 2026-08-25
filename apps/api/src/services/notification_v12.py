@@ -239,6 +239,12 @@ def _lead_event_round(
     return sha256(str(value or "initial").encode("utf-8")).hexdigest()[:16]
 
 
+def _return_event_round(request: ReturnRequest, verification_task_id: str | None) -> str:
+    """Keep multi-round return notifications distinct within the outbox key limit."""
+    value = f"{request.id}:{verification_task_id or 'unassigned'}"
+    return sha256(value.encode("utf-8")).hexdigest()[:16]
+
+
 def project_v12_notifications(
     db: Session,
     *,
@@ -470,9 +476,10 @@ def project_v12_notifications(
     if action == "V12_RETURN_SUBMIT":
         request = db.get(ReturnRequest, resource_id)
         if request:
+            event_round = _return_event_round(request, request.verification_task_id)
             emit_business_notification(
                 db,
-                event_key=f"v12:return:{request.id}:submitted",
+                event_key=f"v12:return:{request.id}:submit:{event_round}",
                 event_type="V12_RETURN_SUBMITTED",
                 company_id=request.company_id,
                 title="退回申诉已提交",
@@ -487,7 +494,9 @@ def project_v12_notifications(
             )
             emit_platform_role_notifications(
                 db,
-                event_key=f"v12:return:{request.id}:verify-required:platform",
+                event_key=(
+                    f"v12:return:{request.id}:verify:{event_round}:plat"
+                ),
                 event_type="V12_RETURN_VERIFY_REQUIRED",
                 role_codes={"OPERATION", "SUPER_ADMIN"},
                 title="有新的退回申诉待后置核验",
@@ -598,9 +607,12 @@ def project_v12_notifications(
                 )
             )
         if request:
+            event_round = _return_event_round(request, resource_id)
             emit_platform_role_notifications(
                 db,
-                event_key=f"v12:return:{request.id}:final-review-required:platform",
+                event_key=(
+                    f"v12:return:{request.id}:finalreq:{event_round}:plat"
+                ),
                 event_type="V12_RETURN_FINAL_REVIEW_REQUIRED",
                 role_codes={"OPERATION", "SUPER_ADMIN"},
                 title="退回事实核验已完成，等待终审",
@@ -619,18 +631,35 @@ def project_v12_notifications(
     if action == "V12_RETURN_FINAL_REVIEW":
         request = db.get(ReturnRequest, resource_id)
         if request:
-            approved = str(request.status).upper() == "APPROVED"
+            status = str(request.status).upper()
+            event_round = _return_event_round(request, request.verification_task_id)
+            approved = status == "APPROVED"
+            needs_more_evidence = status == "NEED_MORE_EVIDENCE"
             emit_business_notification(
                 db,
-                event_key=f"v12:return:{request.id}:final:{str(request.status).lower()}",
+                event_key=(
+                    f"v12:return:{request.id}:final:{status.lower()}:{event_round}"
+                ),
                 event_type=(
-                    "V12_RETURN_APPROVED" if approved else "V12_RETURN_REJECTED"
+                    "V12_RETURN_APPROVED"
+                    if approved
+                    else "V12_RETURN_NEED_MORE"
+                    if needs_more_evidence
+                    else "V12_RETURN_REJECTED"
                 ),
                 company_id=request.company_id,
-                title="退回申诉终审通过" if approved else "退回申诉终审未通过",
+                title=(
+                    "退回申诉终审通过"
+                    if approved
+                    else "退回申诉需要补证"
+                    if needs_more_evidence
+                    else "退回申诉终审未通过"
+                ),
                 body=(
                     "退回已生效，相关积分已按规则处理。"
                     if approved
+                    else "请按平台说明补充证据后重新提交，原有证据会保留。"
+                    if needs_more_evidence
                     else "客资继续有效，请按业务流程继续跟进。"
                 ),
                 target="return",

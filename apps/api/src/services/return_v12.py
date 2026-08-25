@@ -749,16 +749,74 @@ def return_request_to_dict(db: Session, item: ReturnRequest, *, include_evidence
     return data
 
 
+def return_verification_task_list_to_dict(
+    db: Session,
+    tasks: list[VerificationTask],
+    principal: Principal,
+) -> list[dict[str, Any]]:
+    """Serialize a verification-task page without per-row relation queries."""
+    if not tasks:
+        return []
+    request_ids = {task.return_request_id for task in tasks if task.return_request_id}
+    lead_ids = {task.lead_id for task in tasks}
+    assignment_ids = {task.assignment_id for task in tasks if task.assignment_id}
+    requests_by_id = {
+        item.id: item
+        for item in db.scalars(select(ReturnRequest).where(ReturnRequest.id.in_(request_ids))).all()
+    }
+    leads_by_id = {
+        item.id: item for item in db.scalars(select(Lead).where(Lead.id.in_(lead_ids))).all()
+    }
+    assignments_by_id = {
+        item.id: item
+        for item in db.scalars(select(Assignment).where(Assignment.id.in_(assignment_ids))).all()
+    }
+    evidence_summaries: dict[str, dict[str, int]] = {request_id: {} for request_id in request_ids}
+    for request_id, evidence_type, count in db.execute(
+        select(
+            ReturnEvidence.return_request_id,
+            ReturnEvidence.evidence_type,
+            func.count(ReturnEvidence.id),
+        )
+        .where(ReturnEvidence.return_request_id.in_(request_ids))
+        .group_by(ReturnEvidence.return_request_id, ReturnEvidence.evidence_type)
+    ).all():
+        evidence_summaries[str(request_id)][str(evidence_type)] = int(count)
+    return [
+        return_verification_task_to_dict(
+            db,
+            task,
+            principal,
+            requests_by_id=requests_by_id,
+            leads_by_id=leads_by_id,
+            assignments_by_id=assignments_by_id,
+            evidence_summaries=evidence_summaries,
+        )
+        for task in tasks
+    ]
+
+
 def return_verification_task_to_dict(
     db: Session,
     task: VerificationTask,
     principal: Principal,
     *,
     include_phone: bool = False,
+    requests_by_id: dict[str, ReturnRequest] | None = None,
+    leads_by_id: dict[str, Lead] | None = None,
+    assignments_by_id: dict[str, Assignment] | None = None,
+    evidence_summaries: dict[str, dict[str, int]] | None = None,
 ) -> dict[str, Any]:
-    request = db.get(ReturnRequest, task.return_request_id) if task.return_request_id else None
-    lead = db.get(Lead, task.lead_id)
-    assignment = db.get(Assignment, task.assignment_id) if task.assignment_id else None
+    request = (
+        requests_by_id.get(task.return_request_id) if requests_by_id is not None and task.return_request_id
+        else db.get(ReturnRequest, task.return_request_id) if task.return_request_id else None
+    )
+    lead = leads_by_id.get(task.lead_id) if leads_by_id is not None else db.get(Lead, task.lead_id)
+    assignment = (
+        assignments_by_id.get(task.assignment_id)
+        if assignments_by_id is not None and task.assignment_id
+        else db.get(Assignment, task.assignment_id) if task.assignment_id else None
+    )
     is_overdue = _return_task_is_overdue(task)
     can_view_phone = bool(
         include_phone
@@ -791,7 +849,13 @@ def return_verification_task_to_dict(
             "appeal_deadline_at": (request.appeal_deadline_at or request.due_at).isoformat()
             if request and (request.appeal_deadline_at or request.due_at)
             else None,
-            "evidence_summary": _evidence_summary(db, request.id) if request else {},
+            "evidence_summary": (
+                evidence_summaries.get(request.id, {})
+                if request and evidence_summaries is not None
+                else _evidence_summary(db, request.id)
+                if request
+                else {}
+            ),
         },
         "assignment": {
             "id": assignment.id if assignment else None,
