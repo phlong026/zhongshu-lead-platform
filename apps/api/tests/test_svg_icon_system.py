@@ -15,7 +15,7 @@ def test_all_h5_surfaces_load_local_svg_icon_system_before_application():
     entries = {
         "index.html": ("./app.js", "?v=20260824-card-data1", SVG_LOGIN_VERSION),
         "supplier.html": ("./supplier.js", "?v=20260824-card-data1", SVG_BASE_VERSION),
-        "v12-workbench.html": ("./v12-workbench.js", "?v=20260825-role-home-cards", SVG_BASE_VERSION),
+        "v12-workbench.html": ("./v12-workbench.js", "?v=20260825-supply-workbench", SVG_BASE_VERSION),
     }
     for filename, (application_script, application_version, svg_version) in entries.items():
         index = (H5 / filename).read_text(encoding="utf-8")
