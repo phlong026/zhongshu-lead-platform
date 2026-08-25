@@ -148,6 +148,9 @@ def _admin_smoke(browser: Browser, base_url: str, output: Path, errors: list[str
         page.locator('.ops-menu [data-view="finance"]').click()
         page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=finance")
         page.wait_for_selector(".ops-card", timeout=15000)
+        page.locator('.ops-menu [data-view="audit"]').click()
+        page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=audit")
+        page.get_by_text("通知发送异常", exact=True).wait_for(timeout=15000)
         return {
             "valid": True,
             "title": page.title(),

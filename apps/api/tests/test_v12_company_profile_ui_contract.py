@@ -42,7 +42,7 @@ def test_v12_operations_exposes_company_review_queue() -> None:
     assert "company_name" in js
     assert "review_note" in js
     assert "review_status" in js
-    assert "v12-operations.js?v=20260826-full-process-detail" in html
+    assert "v12-operations.js?v=20260826-stage10-notification-retry" in html
 
 
 def test_stage6_company_review_and_internal_collaboration_actions_are_role_scoped() -> None:
