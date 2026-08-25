@@ -123,12 +123,13 @@ def test_admin_and_call_login_inputs_have_polished_accessible_structure() -> Non
     assert "\n    lock:" in icon_system
 
 
-def test_password_login_always_enters_the_role_router() -> None:
+def test_password_login_stays_on_the_formal_role_workbench() -> None:
     admin = read(ADMIN / "app.js")
     call = read(CALL / "app.js")
 
     assert "location.replace('/admin/')" in admin
-    assert "location.replace('/admin/')" in call
+    assert "location.hash = '#/home'" in call
+    assert "location.replace('/admin/index.html')" not in call
     assert "await boot()}catch(e)" not in admin
     assert "加盟商微信授权登录" in admin
     assert 'href="/h5/#/login"' in admin
@@ -142,7 +143,12 @@ def test_role_workbenches_return_to_the_unified_login_and_role_home() -> None:
 
     for source in (operations, call, workbench):
         assert "/auth/logout" in source
-        assert "location.replace('/admin/index.html')" in source
+
+    assert "location.replace('/admin/')" in operations
+    assert "location.replace('/admin/index.html')" not in operations
+    assert "location.hash = '#/home'" in call
+    assert "location.replace('/h5/')" in workbench
+    assert "location.replace('/admin/index.html')" not in workbench
 
     assert 'href="/admin/"' in leads
     assert "返回岗位首页" in leads

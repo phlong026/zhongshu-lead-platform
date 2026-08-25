@@ -6,16 +6,18 @@ from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..core.auth import require_permissions
+from ..core.auth import CurrentPrincipal, require_permissions
 from ..core.database import get_db
 from ..core.errors import AppError
 from ..core.models import Assignment, Lead
 from ..core.responses import ok, page
 from ..core.security import decrypt_text, mask_phone
 from ..core.v12_enums import LeadV12Status
-from ..schemas.v12_dispatch import ManualDispatchBody
+from ..schemas.v12_dispatch import InternalAssignmentBody, ManualDispatchBody
 from ..services.audit import write_audit
 from ..services.claim_singleflight import run_claim_singleflight
+from ..services.company_account_management import require_superadmin_reason
+from ..services.company_assignment_v12 import assign_internal_employee
 from ..services.dispatch_v12 import (
     CLAIMED_CONTACT_STATUSES,
     candidate_to_dict,
@@ -75,6 +77,8 @@ def _assignment_dict(assignment: Assignment, lead: Lead, *, reveal_phone: bool =
         "appeal_deadline_at": assignment.appeal_deadline_at.isoformat() if assignment.appeal_deadline_at else None,
         "reward_due_at": assignment.reward_due_at.isoformat() if assignment.reward_due_at else None,
         "first_followup_due_at": assignment.first_followup_due_at.isoformat() if assignment.first_followup_due_at else None,
+        "internal_assignee_user_id": assignment.internal_assignee_user_id,
+        "internal_assigned_at": assignment.internal_assigned_at.isoformat() if assignment.internal_assigned_at else None,
     }
 
 
@@ -97,6 +101,8 @@ def _assignment_detail_projection(assignment_id: str, company_id: str):
             Assignment.appeal_deadline_at,
             Assignment.reward_due_at,
             Assignment.first_followup_due_at,
+            Assignment.internal_assignee_user_id,
+            Assignment.internal_assigned_at,
             Lead.customer_name,
             Lead.phone_encrypted,
             Lead.city,
@@ -145,6 +151,10 @@ def _projected_assignment_dict(row, *, reveal_phone: bool = False) -> dict:
         "reward_due_at": row.reward_due_at.isoformat() if row.reward_due_at else None,
         "first_followup_due_at": row.first_followup_due_at.isoformat()
         if row.first_followup_due_at
+        else None,
+        "internal_assignee_user_id": row.internal_assignee_user_id,
+        "internal_assigned_at": row.internal_assigned_at.isoformat()
+        if row.internal_assigned_at
         else None,
     }
 
@@ -242,14 +252,22 @@ def manual_dispatch(
 @router.get("/assignments")
 def own_assignments(
     request: Request,
-    principal=Depends(require_permissions("assignment.own.read")),
+    principal: CurrentPrincipal,
     db: Session = Depends(get_db),
     status: str | None = Query(default=None),
     page_no: int = Query(default=1, alias="page", ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
 ):
     company_id = _principal_company_id(principal)
-    filters = [Assignment.company_id == company_id]
+    if principal.has_any_role("FRANCHISE_OWNER") and principal.can("assignment.own.read"):
+        filters = [Assignment.company_id == company_id]
+    elif principal.has_any_role("FRANCHISE_EMPLOYEE") and principal.can("assignment.employee.read"):
+        filters = [
+            Assignment.company_id == company_id,
+            Assignment.internal_assignee_user_id == principal.user_id,
+        ]
+    else:
+        raise AppError("FORBIDDEN", "无权查看加盟商领取客资", 403)
     if status:
         filters.append(Assignment.status == status.strip().upper())
     total = db.scalar(select(func.count(Assignment.id)).where(*filters)) or 0
@@ -276,11 +294,18 @@ def own_assignments(
 def own_assignment_detail(
     assignment_id: str,
     request: Request,
-    principal=Depends(require_permissions("assignment.own.read")),
+    principal: CurrentPrincipal,
     db: Session = Depends(get_db),
 ):
     company_id = _principal_company_id(principal)
-    row = db.execute(_assignment_detail_projection(assignment_id, company_id)).one_or_none()
+    statement = _assignment_detail_projection(assignment_id, company_id)
+    if principal.has_any_role("FRANCHISE_OWNER") and principal.can("assignment.own.read"):
+        pass
+    elif principal.has_any_role("FRANCHISE_EMPLOYEE") and principal.can("assignment.employee.read"):
+        statement = statement.where(Assignment.internal_assignee_user_id == principal.user_id)
+    else:
+        raise AppError("FORBIDDEN", "无权查看该加盟商客资", 403)
+    row = db.execute(statement).one_or_none()
     if row is None:
         raise AppError("ASSIGNMENT_NOT_FOUND", "派发单不存在", 404)
     return ok(
@@ -296,9 +321,11 @@ def own_assignment_detail(
 def claim_own_assignment(
     assignment_id: str,
     request: Request,
-    principal=Depends(require_permissions("assignment.own.claim")),
+    principal: CurrentPrincipal,
     db: Session = Depends(get_db),
 ):
+    if not principal.has_any_role("FRANCHISE_OWNER") or not principal.can("assignment.own.claim"):
+        raise AppError("FORBIDDEN", "仅加盟商负责人可领取客资", 403)
     company_id = _principal_company_id(principal)
 
     def execute_claim() -> dict:
@@ -373,3 +400,113 @@ def claim_own_assignment(
         )
         db.commit()
     return ok(request, payload, "派发单已领取" if payload["idempotent"] else "领取成功")
+
+
+@router.post("/assignments/{assignment_id}/internal-assignee")
+def assign_internal_assignee(
+    assignment_id: str,
+    body: InternalAssignmentBody,
+    request: Request,
+    principal: CurrentPrincipal,
+    db: Session = Depends(get_db),
+):
+    change = assign_internal_employee(
+        db,
+        assignment_id=assignment_id,
+        principal=principal,
+        employee_user_id=body.employee_user_id,
+        reason=body.reason,
+    )
+    if change.changed:
+        write_audit(
+            db,
+            principal=principal,
+            action=(
+                "V12_INTERNAL_ASSIGNMENT_ASSIGN"
+                if body.employee_user_id is not None
+                else "V12_INTERNAL_ASSIGNMENT_RECALL"
+            ),
+            resource_type="assignment",
+            resource_id=change.assignment.id,
+            company_id=change.assignment.company_id,
+            before={"internal_assignee_user_id": change.previous_employee_user_id},
+            after={"internal_assignee_user_id": change.assignment.internal_assignee_user_id},
+            reason=body.reason,
+            request_id=request.state.request_id,
+        )
+        db.commit()
+    return ok(
+        request,
+        {
+            "assignment_id": change.assignment.id,
+            "internal_assignee_user_id": change.assignment.internal_assignee_user_id,
+            "changed": change.changed,
+        },
+        "公司内部客资分配已更新",
+    )
+
+
+@router.get("/companies/{company_id}/assignment-summary")
+def company_assignment_summary(
+    company_id: str,
+    request: Request,
+    principal=Depends(require_permissions("assignment.read")),
+    db: Session = Depends(get_db),
+):
+    rows = db.execute(
+        select(Assignment.status, func.count(Assignment.id))
+        .where(Assignment.company_id == company_id)
+        .group_by(Assignment.status)
+    ).all()
+    counts = {str(status): int(count) for status, count in rows}
+    return ok(
+        request,
+        {"company_id": company_id, "total": sum(counts.values()), "by_status": counts},
+    )
+
+
+@router.get("/admin/companies/{company_id}/internal-assignments")
+def superadmin_internal_assignment_audit(
+    company_id: str,
+    request: Request,
+    principal: CurrentPrincipal,
+    reason: str | None = Query(default=None, max_length=500),
+    db: Session = Depends(get_db),
+):
+    if not principal.has_any_role("SUPER_ADMIN"):
+        raise AppError("FORBIDDEN", "仅超级管理员可查询公司内部协作明细", 403)
+    normalized_reason = require_superadmin_reason(principal, reason)
+    from ..core.models import User
+
+    rows = db.execute(
+        select(Assignment, User.display_name)
+        .outerjoin(User, User.id == Assignment.internal_assignee_user_id)
+        .where(Assignment.company_id == company_id)
+        .order_by(Assignment.assigned_at.desc())
+    ).all()
+    write_audit(
+        db,
+        principal=principal,
+        action="V12_INTERNAL_ASSIGNMENT_DETAIL_READ",
+        resource_type="company",
+        resource_id=company_id,
+        company_id=company_id,
+        metadata={"reason": normalized_reason, "record_count": len(rows)},
+        request_id=request.state.request_id,
+    )
+    db.commit()
+    return ok(
+        request,
+        [
+            {
+                "assignment_id": assignment.id,
+                "status": assignment.status,
+                "employee_user_id": assignment.internal_assignee_user_id,
+                "employee_display_name": display_name,
+                "assigned_at": assignment.internal_assigned_at.isoformat()
+                if assignment.internal_assigned_at
+                else None,
+            }
+            for assignment, display_name in rows
+        ],
+    )

@@ -6,6 +6,7 @@ from apps.api.src.core.models import AuditLog, Company, Lead, User
 from apps.api.src.core.models_v12 import CompanyLeadCapability
 from apps.api.src.core.security import encrypt_text, hash_phone
 from apps.api.src.core.v12_enums import LeadSourceKind, LeadV12Status
+from apps.api.src.services.auth_service import create_internal_user
 
 
 def _login(client, username: str, password: str) -> dict[str, str]:
@@ -140,6 +141,57 @@ def test_supplier_draft_delete_route_is_scoped_and_audited(api_client) -> None:
             )
         )
         assert audit is not None
+
+
+def test_supplier_employee_can_only_read_own_supplier_leads(api_client) -> None:
+    client, factory = api_client
+    company_id, _ = _approve_supplier_capability(factory)
+    with factory() as db:
+        employee = create_internal_user(
+            db,
+            username="supplier_employee_scope",
+            password="Employee123!",
+            display_name="供资员工范围测试",
+            role_code="FRANCHISE_EMPLOYEE",
+            company_id=company_id,
+        )
+        db.commit()
+        employee_id = employee.id
+
+    owner = _login(client, "franchise_demo", "Franchise123!")
+    owner_lead = _data(
+        client.post(
+            "/api/v1/v1.2/supplier/leads",
+            headers=owner,
+            json={"customer_name": "负责人录入的草稿"},
+        )
+    )
+    employee = _login(client, "supplier_employee_scope", "Employee123!")
+    employee_lead = _data(
+        client.post(
+            "/api/v1/v1.2/supplier/leads",
+            headers=employee,
+            json={"customer_name": "员工本人录入的草稿"},
+        )
+    )
+
+    listed = _data(client.get("/api/v1/v1.2/supplier/leads", headers=employee))
+    assert listed["total"] == 1
+    assert [item["id"] for item in listed["items"]] == [employee_lead["id"]]
+    denied = client.get(
+        f"/api/v1/v1.2/supplier/leads/{owner_lead['id']}",
+        headers=employee,
+    )
+    assert denied.status_code == 403
+    assert denied.json()["code"] == "SUPPLIER_LEAD_NOT_OWNED"
+
+    own = _data(
+        client.get(
+            f"/api/v1/v1.2/supplier/leads/{employee_lead['id']}",
+            headers=employee,
+        )
+    )
+    assert own["submitter_user_id"] == employee_id
 
 
 def test_cross_company_delete_and_revise_do_not_expose_lead_state(api_client) -> None:

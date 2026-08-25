@@ -9,12 +9,8 @@ const adminIcon=name=>window.ZSIconSystem?.svg?.(name)||icon(name);
 function confirmAction({title,message,submitLabel='确认',danger=true},onConfirm){const layer=document.createElement('div');modalRoot.appendChild(layer);zsSetSafeHtml(layer,`<div class="modal-bg"><section class="modal"><header class="modal-head"><h3>${esc(title)}</h3><button class="btn btn-small btn-outline" data-close>关闭</button></header><div class="modal-body"><p style="margin:0;color:var(--muted);line-height:1.7">${esc(message)}</p></div><footer class="modal-footer"><button data-close class="btn btn-outline">取消</button><button id="confirm-action" class="btn ${danger?'btn-danger':'btn-primary'}">${esc(submitLabel)}</button></footer></section></div>`);layer.querySelectorAll('[data-close]').forEach(element=>element.onclick=()=>layer.remove());const button=layer.querySelector('#confirm-action');button.onclick=async()=>{const old=button.textContent;button.disabled=true;button.textContent='处理中';try{await onConfirm()}catch(e){toast(e.message,'error')}finally{if(button.isConnected){button.disabled=false;button.textContent=old}}}}
 const INTERNAL_USER_ROLES=[
   ['SUPER_ADMIN','超级管理员'],
-  ['OWNER','平台负责人'],
-  ['LEAD_ENTRY','录入人员'],
-  ['OPERATION','运营人员'],
-  ['TELESALES','电销人员'],
-  ['FINANCE','积分管理员'],
-  ['RETURN_REVIEWER','退回审核员']
+  ['OPERATION','运营管理员'],
+  ['TELESALES','电销人员']
 ];
 const BUSINESS_CATEGORIES=[['OLD_RENOVATION','旧房改造'],['SELF_BUILD','农村自建房'],['INTERIOR','室内装修'],['','全部类目']];
 const BUSINESS_BRANDS=[['ZHONGSHU','合家美宅'],['PARTNER','合作品牌'],['','全部品牌']];
@@ -200,7 +196,7 @@ async function calendar(){
 
 const roleLabels=Object.fromEntries(INTERNAL_USER_ROLES);
 const userRoles=x=>(x.roles||x.role_codes||[]).filter(r=>roleLabels[r]);
-const roleCheckboxes=(name,selected=[])=>INTERNAL_USER_ROLES.map(([code,label])=>`<label style="display:flex;align-items:center;gap:8px;margin:8px 0"><input type="checkbox" name="${name}" value="${esc(code)}" ${selected.includes(code)?'checked':''}>${esc(label)}</label>`).join('');
+const roleChoices=(name,selected=[])=>INTERNAL_USER_ROLES.map(([code,label])=>`<label style="display:flex;align-items:center;gap:8px;margin:8px 0"><input type="radio" name="${name}" value="${esc(code)}" ${selected.includes(code)?'checked':''}>${esc(label)}</label>`).join('');
 const selectedRoleCodes=name=>[...document.querySelectorAll(`input[name="${name}"]:checked`)].map(x=>x.value);
 const CHINA_TIMEZONE='Asia/Shanghai';
 const CALENDAR_WEEKDAYS=['一','二','三','四','五','六','日'];
@@ -231,7 +227,7 @@ function showCreatedUserCredentials(user){
   return true;
 }
 function userModal(){
-  openModal('新建内部账号',`${field('u-name','姓名',input('u-name','','text','例如：裴火荣'))}${field('u-user','登录账号',input('u-user','','text','例如：peihuorong'))}<p class="help">无需填写密码，系统会在创建时自动生成高强度初始密码。</p>${field('u-roles','角色',`<div id="u-roles">${roleCheckboxes('u-role',['OPERATION'])}</div>`,'可多选，仅限平台内部角色。')}`,`<button data-close class="btn btn-outline">取消</button><button id="save-user" class="btn btn-primary">创建</button>`);
+  openModal('新建内部账号',`${field('u-name','姓名',input('u-name','','text','例如：裴火荣'))}${field('u-user','登录账号',input('u-user','','text','例如：peihuorong'))}<p class="help">无需填写密码，系统会自动生成可复制的 8 位初始密码。</p>${field('u-roles','角色',`<div id="u-roles">${roleChoices('u-role',['OPERATION'])}</div>`,'单选，仅限平台内部角色。')}`,`<button data-close class="btn btn-outline">取消</button><button id="save-user" class="btn btn-primary">创建</button>`);
   document.querySelector('#save-user').onclick=async event=>{
     const displayName=document.querySelector('#u-name').value.trim();
     const username=document.querySelector('#u-user').value.trim();
@@ -254,8 +250,8 @@ function userModal(){
     finally{if(button.isConnected){button.disabled=false;button.textContent=old}}
   };
 }
-function editUserRolesModal(user){if(!user)return toast('账号不存在','error');openModal('编辑内部账号角色',`<p style="color:var(--muted);margin-top:0">${esc(user.display_name)} · ${esc(user.username||'--')}</p>${field('edit-roles','角色',`<div id="edit-roles">${roleCheckboxes('edit-role',userRoles(user))}</div>`,'保存后该账号现有会话立即失效。')}`,`<button data-close class="btn btn-outline">取消</button><button id="save-user-roles" class="btn btn-primary">保存角色</button>`);document.querySelector('#save-user-roles').onclick=x=>{const id=user.id;runUserAction(x.currentTarget,()=>request(`/users/${id}/roles`,{method:'PUT',body:JSON.stringify({role_codes:selectedRoleCodes('edit-role')})}),'角色已更新')}}
-function resetUserPasswordModal(user){if(!user)return toast('账号不存在','error');openModal('重置内部账号密码',`${field('reset-pass','新密码',input('reset-pass','','password','请输入至少12位的高强度密码'))}<p style="color:var(--muted)">保存后该账号现有会话立即失效。</p>`,`<button data-close class="btn btn-outline">取消</button><button id="reset-user-password" class="btn btn-danger">重置密码</button>`);document.querySelector('#reset-user-password').onclick=x=>{const id=user.id;runUserAction(x.currentTarget,()=>request(`/users/${id}/reset-password`,{method:'POST',body:JSON.stringify({new_password:document.querySelector('#reset-pass').value})}),'密码已重置')}}
+function editUserRolesModal(user){if(!user)return toast('账号不存在','error');openModal('编辑内部账号角色',`<p style="color:var(--muted);margin-top:0">${esc(user.display_name)} · ${esc(user.username||'--')}</p>${field('edit-roles','角色',`<div id="edit-roles">${roleChoices('edit-role',userRoles(user))}</div>`,'一个账号只能有一个角色；保存后该账号现有会话立即失效。')}`,`<button data-close class="btn btn-outline">取消</button><button id="save-user-roles" class="btn btn-primary">保存角色</button>`);document.querySelector('#save-user-roles').onclick=x=>{const id=user.id;runUserAction(x.currentTarget,()=>request(`/users/${id}/roles`,{method:'PUT',body:JSON.stringify({role_codes:selectedRoleCodes('edit-role')})}),'角色已更新')}}
+function resetUserPasswordModal(user){if(!user)return toast('账号不存在','error');openModal('重置内部账号密码',`${field('reset-pass','新密码',input('reset-pass','','password','请输入至少8位的高强度密码'))}<p style="color:var(--muted)">保存后该账号现有会话立即失效。</p>`,`<button data-close class="btn btn-outline">取消</button><button id="reset-user-password" class="btn btn-danger">重置密码</button>`);document.querySelector('#reset-user-password').onclick=x=>{const id=user.id;runUserAction(x.currentTarget,()=>request(`/users/${id}/reset-password`,{method:'POST',body:JSON.stringify({new_password:document.querySelector('#reset-pass').value})}),'密码已重置')}}
 
 async function configs(){const cleanup=await request('/leads/staging-cleanup-preview').catch(()=>null);const rows=[`<tr><td>客资领取与退回</td><td>领取后跟进、三工作日申诉和管理员复核按系统默认流程执行。</td><td>${badge('已启用','ok')}</td></tr>`,`<tr><td>积分预警</td><td>加盟商余额不足时按通知任务提醒，提醒标准由平台统一设置。</td><td>${badge('已启用','ok')}</td></tr>`,`<tr><td>工作日历</td><td>默认按周一到周五计算工作日，法定节假日和调休在日历页维护单日例外。</td><td>${badge('已启用','ok')}</td></tr>`];const cleanupPanel=cleanup?`<section class="panel"><div class="panel-head"><h3>历史导入暂存概览</h3></div><div class="panel-body"><p style="color:var(--muted);margin-top:0">${esc(cleanup.scope)}。生产环境不提供物理删除按钮，确需处理请先完成备份、迁移和人工复核。</p>${cleanupStats(cleanup)}</div></section>`:'';shell(`${pageHead('系统设置','这里只保留业务默认规则和只读状态概览，复杂参数由系统自动维护。')}<section class="panel">${table(['设置项','当前规则','状态'],rows)}</section>${cleanupPanel}`,'系统设置')}
 

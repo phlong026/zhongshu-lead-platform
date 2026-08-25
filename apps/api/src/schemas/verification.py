@@ -14,7 +14,7 @@ class VerificationTemplateBody(BaseModel):
 
 class VerificationTaskCreateBody(BaseModel):
     lead_ids: list[str] = Field(min_length=1, max_length=500)
-    assignee_user_id: str | None = None
+    assignee_user_id: str = Field(min_length=1, max_length=36)
     template_code: str = "DEFAULT"
 
 

@@ -6,10 +6,10 @@ from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from ..core.auth import require_permissions
+from ..core.auth import CurrentPrincipal, require_permissions
 from ..core.database import get_db
 from ..core.errors import AppError
-from ..core.models import Company
+from ..core.models import Assignment, Company
 from ..core.responses import ok, page
 from ..schemas.company import CompanyCreateBody, CompanySimpleCreateBody, CompanyUpdateBody
 from ..services.audit import write_audit
@@ -21,13 +21,19 @@ router = APIRouter(prefix="/companies", tags=["companies"])
 @router.get("")
 def list_companies(
     request: Request,
-    principal=Depends(require_permissions("company.read")),
+    principal: CurrentPrincipal,
     db: Session = Depends(get_db),
     keyword: str | None = Query(default=None),
     status: str | None = Query(default=None),
     page_no: int = Query(default=1, alias="page", ge=1),
     page_size: int = Query(default=20, ge=1, le=200),
 ):
+    if not (
+        principal.can("company.read")
+        or principal.can("company.account.manage")
+        or principal.can("*")
+    ):
+        raise AppError("FORBIDDEN", "无权查看加盟商公司列表", 403)
     stmt = select(Company).options(selectinload(Company.service_regions), selectinload(Company.capabilities), selectinload(Company.points_account))
     count_stmt = select(func.count(Company.id))
     if keyword:
@@ -39,7 +45,29 @@ def list_companies(
     total = db.scalar(count_stmt) or 0
     items = db.scalars(stmt.order_by(Company.created_at.desc()).offset((page_no - 1) * page_size).limit(page_size)).all()
     include_finance = principal.can("points.read") or principal.can("*")
-    return ok(request, page([company_to_dict(x, include_finance=include_finance) for x in items], total, page_no, page_size))
+    include_assignment_summary = principal.can("assignment.read") or principal.can("*")
+    summaries: dict[str, dict[str, object]] = {}
+    if include_assignment_summary and items:
+        counts = db.execute(
+            select(Assignment.company_id, Assignment.status, func.count(Assignment.id))
+            .where(Assignment.company_id.in_([company.id for company in items]))
+            .group_by(Assignment.company_id, Assignment.status)
+        ).all()
+        for company_id, assignment_status, count in counts:
+            summary = summaries.setdefault(company_id, {"total": 0, "by_status": {}})
+            summary["total"] = int(summary["total"]) + int(count)
+            summary["by_status"][str(assignment_status)] = int(count)
+
+    payload = []
+    for company in items:
+        item = company_to_dict(company, include_finance=include_finance)
+        if include_assignment_summary:
+            item["assignment_summary"] = summaries.get(
+                company.id,
+                {"total": 0, "by_status": {}},
+            )
+        payload.append(item)
+    return ok(request, page(payload, total, page_no, page_size))
 
 
 @router.post("")

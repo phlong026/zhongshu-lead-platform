@@ -82,6 +82,8 @@ class Permission(Base, TimestampMixin):
 
 class UserRole(Base):
     __tablename__ = "user_roles"
+    __table_args__ = (UniqueConstraint("user_id", name="uq_user_roles_single_business_role"),)
+
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
     role_id: Mapped[str] = mapped_column(ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True)
 
@@ -326,6 +328,7 @@ class Assignment(Base, TimestampMixin):
     __table_args__ = (
         Index("ix_assignment_company_status", "company_id", "status"),
         Index("ix_assignment_lead_status", "lead_id", "status"),
+        Index("ix_assignment_internal_assignee_status", "internal_assignee_user_id", "status"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
@@ -345,6 +348,14 @@ class Assignment(Base, TimestampMixin):
     released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     release_reason: Mapped[str | None] = mapped_column(String(128))
     idempotency_key: Mapped[str | None] = mapped_column(String(64), unique=True)
+    # 公司内部协作不改变平台对公司的派发结果；仅负责人和获分配员工可见。
+    internal_assignee_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
+    internal_assigned_by: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    internal_assigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class AssignmentEvent(Base):

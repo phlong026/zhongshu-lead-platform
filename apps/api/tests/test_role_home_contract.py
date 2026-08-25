@@ -1,142 +1,96 @@
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 
-ADMIN_APP = Path("apps/admin/public/app.js")
 ADMIN_OPERATIONS = Path("apps/admin/public/v12-operations.js")
 ADMIN_OPERATIONS_CSS = Path("apps/admin/public/v12-operations.css")
 CALL_H5 = Path("apps/call-h5/public/app.js")
 FRANCHISE_H5 = Path("apps/h5/public/v12-workbench.js")
-
-FIXED_ROLES = (
-    "SUPER_ADMIN",
-    "OWNER",
-    "LEAD_ENTRY",
-    "OPERATION",
-    "TELESALES",
-    "FINANCE",
-    "RETURN_REVIEWER",
-    "FRANCHISE_OWNER",
-)
 
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def test_role_home_contract_declares_default_surface_for_all_fixed_roles() -> None:
-    source = "\n".join(_read(path) for path in (ADMIN_APP, ADMIN_OPERATIONS, CALL_H5, FRANCHISE_H5))
+def test_five_roles_have_only_their_formal_workbenches() -> None:
+    source = "\n".join(_read(path) for path in (ADMIN_OPERATIONS, CALL_H5, FRANCHISE_H5))
 
-    assert "ROLE_HOME_CONTRACT" in source
-    for role in FIXED_ROLES:
+    for role in (
+        "SUPER_ADMIN",
+        "OPERATION",
+        "TELESALES",
+        "FRANCHISE_OWNER",
+        "FRANCHISE_EMPLOYEE",
+    ):
         assert role in source
-    for label in ("系统治理", "经营总览", "录入工作台", "今日运营", "电话核验", "积分财务", "退回审核", "加盟商工作台"):
-        assert label in source
+
+    for removed_role in ("LEAD_ENTRY", "RETURN_REVIEWER", "FINANCE"):
+        assert removed_role not in source
 
 
-def test_multi_role_home_priority_prefers_dedicated_mobile_workbenches() -> None:
+def test_platform_workbench_keeps_identity_left_and_top_actions_operational() -> None:
     source = _read(ADMIN_OPERATIONS)
-    priority = re.search(r"ROLE_HOME_PRIORITY=\[(?P<body>[^\]]+)\]", source)
 
-    assert priority is not None
-    body = priority.group("body")
-    for left, right in zip(FIXED_ROLES[:1] + ("OWNER", "OPERATION", "FINANCE", "LEAD_ENTRY", "RETURN_REVIEWER", "TELESALES"), ("OWNER", "OPERATION", "FINANCE", "LEAD_ENTRY", "RETURN_REVIEWER", "TELESALES", "FRANCHISE_OWNER")):
-        assert body.index(left) < body.index(right)
+    assert "ops-side-foot" in source
+    assert "ops-top-actions" in source
+    for label in ("刷新", "设置", "退出"):
+        assert label in source
+    assert "data-view=\"companies\"" in source
+    assert "index.html" not in source
 
 
-def test_franchise_home_contract_uses_fixed_four_tab_bottom_navigation() -> None:
-    source = _read(FRANCHISE_H5)
+def test_operation_workbench_has_the_required_dispatch_and_account_boundaries() -> None:
+    source = _read(ADMIN_OPERATIONS)
 
-    assert "FRANCHISE_HOME_CONTRACT" in source
-    assert "['home','leads','points','profile']" in source
-    assert "['home','leads','points','notifications','profile']" not in source
+    for marker in (
+        "派发前置电销核验",
+        "前置电销待处置",
+        "运营处置电销结论",
+        "派发退回电话核验",
+        "派发或改派原因",
+        "公司级状态",
+        "不查看加盟商内部员工的客资分配明细",
+    ):
+        assert marker in source
+    assert "/v1.2/admin/leads/" in source
+    assert "/pre-dispatch-verification" in source
+    assert "/pre-dispatch-disposition" in source
+    assert "/v1.2/return-verifications/tasks/" in source
+
+
+def test_superadmin_can_manage_franchise_accounts_and_recharge_with_audit_copy() -> None:
+    source = _read(ADMIN_OPERATIONS)
+
+    for marker in (
+        "开通加盟商账号",
+        "重置加盟商账号密码",
+        "超级管理员操作必须填写至少",
+        "仅展示一次",
+        "线下充值",
+        "外部收款凭据号",
+        "无需第二位超级管理员复核",
+    ):
+        assert marker in source
+    assert "/companies/${encodeURIComponent(companyId)}/accounts" in source
+    assert "/points/recharge" in source
+    assert "crypto.randomUUID()" in source
+
+
+def test_franchise_and_telesales_h5_navigation_is_short_home_first_and_role_scoped() -> None:
+    franchise = _read(FRANCHISE_H5)
+    telesales = _read(CALL_H5)
+
+    assert "FRANCHISE_HOME_CONTRACT" in franchise
+    assert "['home','leads','points','profile']" in franchise
     for label in ("首页", "客资", "积分", "我的"):
-        assert label in source
-    assert "wb-profile-message" in source
-    assert 'data-go="notifications"' in source
-    assert "公司资料与接单能力" in source
-    assert "slice(0,5)" not in source
-    assert "/points/accounts/" in source
-    assert "encodeURIComponent(companyId)" in source
-    assert "d.points" not in source
-
-
-def test_telesales_home_contract_focuses_on_call_tasks_without_finance_copy() -> None:
-    source = _read(CALL_H5)
-
-    assert "TELESALES_HOME_CONTRACT" in source
-    assert "page_size=200" in source
-    assert "actionableTasks.slice(0, 5)" in source
-    for label in ("待开始", "核验中", "已提交", "开始核验", "优先任务"):
-        assert label in source
-    for finance_copy in ("公司充值", "平台收入", "加盟商积分"):
-        assert finance_copy not in source
-
-
-def test_admin_role_home_contract_separates_role_specific_first_screen_copy() -> None:
-    source = _read(ADMIN_OPERATIONS)
-
-    assert "ADMIN_ROLE_HOME_CONTENT" in source
-    for label in (
-        "风险预警",
-        "账号角色",
-        "今日运营",
-        "待初审",
-        "待派发",
-        "待分配电销",
-        "积分财务",
-        "人工入账",
-        "录入工作台",
-        "疑似重复",
-        "退回审核",
-        "待补证",
-    ):
-        assert label in source
-    for raw_copy in ("原始权限码", "JSON 快照", "模板快照"):
-        assert raw_copy not in source
-
-
-def test_admin_role_homes_use_existing_role_appropriate_data_sources() -> None:
-    source = _read(ADMIN_OPERATIONS)
-
-    assert "async function leadEntryHome" in source
-    assert "/leads/staging?page=1&page_size=20" in source
-    assert "async function returnReviewerHome" in source
-    assert "/v1.2/returns?page=1&page_size=20" in source
-    for permission in (
-        "dashboard.business.read",
-        "dashboard.operation.read",
-        "dashboard.finance.read",
-        "lead.manual.manage",
-        "return.review",
-    ):
-        assert permission in source
-
-
-def test_v12_operations_replaces_browser_prompts_with_branded_forms() -> None:
-    source = _read(ADMIN_OPERATIONS)
-
-    assert "function actionForm" in source
-    assert "prompt(" not in source
-    assert "confirm(" not in source
-    for action in ("初审", "派发", "终审", "冲正"):
-        assert action in source
-
-
-def test_remaining_admin_danger_actions_use_branded_confirmations() -> None:
-    source = _read(ADMIN_APP)
-
-    assert "function confirmAction" in source
-    assert "confirm(" not in source
-    assert "modalRoot.appendChild(layer)" in source
-    assert "layer.remove()" in source
-    for action in ("撤销邀请", "停用账号"):
-        assert action in source
-    assert "清理历史暂存" not in source
-    assert "cleanup-staging" not in source
-    assert "staging-cleanup',{method:'POST'" not in source
+        assert label in franchise
+    assert "运营派发" in telesales
+    assert "自主领取" in telesales
+    assert "['home', 'home', '首页']" in telesales
+    assert "['verify', 'phone', '核验']" in telesales
+    assert "['records', 'history', '记录']" in telesales
+    assert "['profile', 'user', '我的']" in telesales
 
 
 def test_role_interfaces_keep_hejiameizhai_warm_visual_tokens_and_focus_states() -> None:

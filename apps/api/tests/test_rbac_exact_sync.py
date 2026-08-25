@@ -16,38 +16,18 @@ from apps.api.src.services.rbac import (
 
 MINIMUM_ROLE_PERMISSIONS = {
     "SUPER_ADMIN": {"*"},
-    "OWNER": {
-        "lead.phone.read",
-        "points.read",
-        "audit.read",
-        "report.v12.read",
-        "calendar.read",
-        "calendar.manage",
-        "calendar.import",
-    },
-    "LEAD_ENTRY": {"lead.read", "lead.manual.manage"},
     "OPERATION": {
         "lead.dispatch",
         "company.profile.review",
         "verification.read",
         "notification.retry",
         "calendar.read",
+        "return.review",
     },
     "TELESALES": {
         "verification.task.read",
-        "verification.task.claim",
+        "verification.task.start",
         "verification.submit",
-        "lead.phone.read",
-    },
-    "FINANCE": {
-        "points.recharge",
-        "points.reverse",
-        "reward.manage",
-        "reward.reverse",
-    },
-    "RETURN_REVIEWER": {
-        "return.review",
-        "return.evidence.read",
         "lead.phone.read",
     },
     "FRANCHISE_OWNER": {
@@ -56,6 +36,21 @@ MINIMUM_ROLE_PERMISSIONS = {
         "return.own.manage",
         "points.own.read",
     },
+    "FRANCHISE_EMPLOYEE": {
+        "h5.home",
+        "supplier.lead.manage",
+        "followup.own.manage",
+        "return.own.manage",
+        "notification.own.read",
+    },
+}
+
+BUSINESS_ROLE_CODES = {
+    "SUPER_ADMIN",
+    "OPERATION",
+    "TELESALES",
+    "FRANCHISE_OWNER",
+    "FRANCHISE_EMPLOYEE",
 }
 
 
@@ -242,6 +237,16 @@ def test_fixed_roles_match_the_code_matrix_exactly(db: Session) -> None:
         role_code: set(permission_codes)
         for role_code, (_, permission_codes) in ROLE_PERMISSION_MATRIX.items()
     }
+
+
+def test_fixed_role_matrix_is_the_confirmed_five_role_contract(db: Session) -> None:
+    seed_rbac(db, source="test_five_role_contract")
+
+    assert set(ROLE_PERMISSION_MATRIX) == BUSINESS_ROLE_CODES
+    assert "verification.task.claim" not in _role_permission_codes(db, "TELESALES")
+    assert "verification.task.start" in _role_permission_codes(db, "TELESALES")
+    assert "return.review" in _role_permission_codes(db, "OPERATION")
+    assert "points.recharge" not in _role_permission_codes(db, "OPERATION")
 
 
 def test_critical_role_permissions_cannot_be_removed_silently(db: Session) -> None:

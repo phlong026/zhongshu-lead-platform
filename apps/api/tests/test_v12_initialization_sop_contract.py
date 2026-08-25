@@ -18,34 +18,27 @@ def test_initialization_sop_covers_all_roles_and_current_entries() -> None:
     content = sop_text()
     for section in (
         "管理员首装与初始化 SOP",
-        "加盟商与供应商 SOP",
-        "内部电销 SOP",
+        "正常业务主链路",
+        "各角色日常操作要点",
         "初始化验收记录",
     ):
         assert section in content
 
     for role_code in (
         "SUPER_ADMIN",
-        "OWNER",
-        "LEAD_ENTRY",
         "OPERATION",
         "TELESALES",
-        "FINANCE",
-        "RETURN_REVIEWER",
         "FRANCHISE_OWNER",
+        "FRANCHISE_EMPLOYEE",
     ):
         assert role_code in content
 
     for entry in (
         "/admin/",
         "/admin/v12-operations.html",
-        "/admin/index.html#/users",
-        "/admin/index.html#/companies",
-        "/admin/index.html#/recharge",
-        "/admin/index.html#/calendar",
+        "/h5/admin/",
+        "/h5/call/",
         "/h5/v12-workbench.html",
-        "/h5/supplier.html",
-        "/call/",
     ):
         assert entry in content
 
@@ -61,18 +54,17 @@ def test_initialization_sop_is_actionable_and_uses_current_contracts() -> None:
         "SYSTEM_SUPERADMIN_BOOTSTRAP",
         "SYSTEM_RBAC_SYNC",
         "LAST_SUPER_ADMIN_REQUIRED",
-        "AUTH_INVITE_INVALID",
-        "AUTH_WECHAT_BOUND_OTHER_COMPANY",
         "LEAD_SUPPLIER",
         "LEAD_RECEIVER",
-        "RETURN_VERIFY",
+        "PENDING_TELESALES_VERIFY",
+        "PENDING_OPERATION_DISPOSITION",
         "IN_PROGRESS",
         "SUBMITTED",
     ):
         assert contract in content
 
     assert "seed_demo.py" not in content
-    assert "微信小程序" in content and "不是原生" in content
+    assert "不是原生微信小程序" in content
 
 
 def test_initialization_sop_respects_frozen_credentials_and_configuration() -> None:

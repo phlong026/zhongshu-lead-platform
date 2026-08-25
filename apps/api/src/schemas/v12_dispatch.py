@@ -16,3 +16,15 @@ class ManualDispatchBody(BaseModel):
 
 class ClaimBody(BaseModel):
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
+
+
+class InternalAssignmentBody(BaseModel):
+    employee_user_id: str | None = Field(default=None, min_length=1, max_length=36)
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("employee_user_id", "reason")
+    @classmethod
+    def strip_values(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip()

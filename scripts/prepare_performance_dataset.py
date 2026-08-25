@@ -286,7 +286,9 @@ def prepare_dataset(
         resource="owner",
         username=credentials.owner_username,
         password=credentials.owner_password,
-        role_code="OWNER",
+        # 压测中的 owner 仅用于平台级报表读取和积分种子审计；五角色模型中
+        # 这属于超级管理员职责，不再保留历史 OWNER 角色。
+        role_code="SUPER_ADMIN",
     )
     company.primary_user_id = receiver.id
 

@@ -14,6 +14,7 @@ from ..core.v12_enums import LeadSourceKind
 from ..schemas.v12_lead_supply import (
     CapabilityRequestBody,
     CapabilityReviewBody,
+    CompanyProfileBulkApproveBody,
     DedupOverrideBody,
     LeadDraftBody,
     LeadDraftUpdateBody,
@@ -25,6 +26,7 @@ from ..services.audit import write_audit
 from ..services.company_profile_v12 import (
     list_capabilities,
     list_service_areas,
+    approve_pending_profile,
     replace_service_areas,
     request_capability,
     require_active_company,
@@ -344,6 +346,7 @@ def supplier_lead_list(
         status=status,
         page_no=page_no,
         page_size=page_size,
+        submitter_user_id=principal.user_id if principal.has_any_role("FRANCHISE_EMPLOYEE") else None,
     )
     return ok(request, page([lead_supply_to_dict(item, principal) for item in items], total, page_no, page_size))
 
@@ -358,6 +361,11 @@ def supplier_lead_detail(
     lead = get_lead_or_404(db, lead_id)
     if not principal.can("*") and lead.supplier_company_id != principal.company_id:
         raise AppError("FORBIDDEN", "无权查看其他公司的供应商客资", 403)
+    if (
+        principal.has_any_role("FRANCHISE_EMPLOYEE")
+        and lead.submitter_user_id != principal.user_id
+    ):
+        raise AppError("SUPPLIER_LEAD_NOT_OWNED", "加盟商员工只能查看本人录入的客资", 403)
     return ok(request, lead_supply_to_dict(lead, principal))
 
 
@@ -563,6 +571,77 @@ def admin_review_capability(
         request,
         _capability_dict(item, company_name=company.name, company_code=company.code),
         "公司能力审核已完成",
+    )
+
+
+@router.post("/admin/companies/{company_id}/profile/approve-pending")
+def admin_approve_pending_company_profile(
+    company_id: str,
+    body: CompanyProfileBulkApproveBody,
+    request: Request,
+    principal=Depends(require_permissions("company.profile.review")),
+    db: Session = Depends(get_db),
+):
+    company = db.get(Company, company_id)
+    if company is None:
+        raise AppError("COMPANY_NOT_FOUND", "公司不存在", 404)
+    capabilities, areas = approve_pending_profile(
+        db,
+        company_id=company_id,
+        reviewed_by=principal.user_id,
+        note=body.note,
+    )
+    capability_items = [
+        _capability_dict(item, company_name=company.name, company_code=company.code)
+        for item in capabilities
+    ]
+    area_items = [
+        _area_dict(item, company_name=company.name, company_code=company.code)
+        for item in areas
+    ]
+    for item in capability_items:
+        write_audit(
+            db,
+            principal=principal,
+            action="V12_COMPANY_CAPABILITY_REVIEW",
+            resource_type="company_lead_capability",
+            resource_id=item["id"],
+            company_id=company_id,
+            after=item,
+            reason=body.note or "APPROVE",
+            request_id=request.state.request_id,
+        )
+    for item in area_items:
+        write_audit(
+            db,
+            principal=principal,
+            action="V12_COMPANY_SERVICE_AREA_REVIEW",
+            resource_type="company_service_area_v12",
+            resource_id=item["id"],
+            company_id=company_id,
+            after=item,
+            reason=body.note or "APPROVE",
+            request_id=request.state.request_id,
+        )
+    write_audit(
+        db,
+        principal=principal,
+        action="V12_COMPANY_PROFILE_BULK_APPROVE",
+        resource_type="company",
+        resource_id=company_id,
+        company_id=company_id,
+        after={
+            "capability_codes": [item["capability_code"] for item in capability_items],
+            "service_area_codes": [item["region_code"] for item in area_items],
+        },
+        reason=body.note or "APPROVE",
+        request_id=request.state.request_id,
+    )
+    db.commit()
+    return ok(
+        request,
+        {"company_id": company_id, "capabilities": capability_items, "service_areas": area_items},
+        "加盟商待开通申请已一次通过",
     )
 
 

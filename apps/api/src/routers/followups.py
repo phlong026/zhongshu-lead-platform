@@ -12,6 +12,7 @@ from ..core.responses import ok
 from ..schemas.followups import FollowUpBody
 from ..services.audit import write_audit
 from ..services.followup_service import add_followup, followup_to_dict, run_followup_overdue
+from ..services.company_assignment_v12 import require_company_assignment_access
 
 router = APIRouter(prefix="/followups", tags=["followups"])
 
@@ -21,9 +22,9 @@ def list_assignment_followups(assignment_id: str, request: Request, principal: C
     assignment = db.get(Assignment, assignment_id)
     if not assignment:
         raise AppError("ASSIGNMENT_NOT_FOUND", "派发订单不存在", 404)
-    if principal.has_any_role("FRANCHISE_OWNER") and assignment.company_id != principal.company_id:
-        raise AppError("FORBIDDEN", "无权查看跟进记录", 403)
-    if not principal.has_any_role("FRANCHISE_OWNER") and not (principal.can("assignment.read") or principal.can("*")):
+    if principal.has_any_role("FRANCHISE_OWNER", "FRANCHISE_EMPLOYEE"):
+        require_company_assignment_access(principal, assignment)
+    elif not (principal.can("assignment.read") or principal.can("*")):
         raise AppError("FORBIDDEN", "无权查看跟进记录", 403)
     items = db.scalars(select(FollowUp).where(FollowUp.assignment_id == assignment_id).order_by(FollowUp.created_at.desc())).all()
     return ok(request, [followup_to_dict(x) for x in items])

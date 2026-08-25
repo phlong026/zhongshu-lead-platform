@@ -207,7 +207,7 @@ def test_parallel_invite_callbacks_still_consume_exactly_once(api_client) -> Non
 
 def test_points_same_idempotency_key_is_atomic_under_concurrent_requests(api_client) -> None:
     client, factory = api_client
-    finance = _login_headers(client, "finance", "Finance123!")
+    admin = _login_headers(client, "admin", "Admin123!")
     with factory() as db:
         company = db.scalar(select(Company).where(Company.code == "SH-DEMO"))
         assert company is not None
@@ -226,7 +226,7 @@ def test_points_same_idempotency_key_is_atomic_under_concurrent_requests(api_cli
     }
 
     def adjust(_: int):
-        return client.post("/api/v1/points/adjust", headers=finance, json=payload)
+        return client.post("/api/v1/points/adjust", headers=admin, json=payload)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         responses = list(pool.map(adjust, range(2)))
@@ -306,7 +306,7 @@ def test_disabled_company_cookie_is_rejected_by_api_and_web_entry(api_client) ->
     assert api.status_code == 401
     h5 = client.get("/h5/", follow_redirects=False)
     assert h5.status_code == 302
-    assert h5.headers["location"] == "/h5/index.html"
+    assert h5.headers["location"] == "/h5/v12-workbench.html"
 
     admin_login = client.post(
         "/api/v1/auth/login",

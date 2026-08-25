@@ -7,7 +7,16 @@ from urllib.parse import urlencode
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..core.models import Assignment, Lead, NotificationOutbox, ReturnRequest, Role, User
+from ..core import models_v12 as _models_v12  # noqa: F401
+from ..core.models import (
+    Assignment,
+    Lead,
+    NotificationOutbox,
+    ReturnRequest,
+    Role,
+    User,
+    VerificationTask,
+)
 from ..core.models_v12 import SupplierLeadReward
 from ..core.time import as_utc
 from ..core.v12_enums import RewardStatus
@@ -27,10 +36,13 @@ def build_v12_deep_link(target: str, business_id: str, *, admin: bool = False) -
         "dispatch",
         "returns",
         "rewards",
+        "call",
     }
     normalized = target.strip().lower()
     if normalized not in allowed:
         normalized = "notification"
+    if normalized == "call":
+        return "/h5/call/#/verify"
     root = "/admin/v12-operations.html" if admin else "/h5/v12-workbench.html"
     return f"{root}?{urlencode({'view': normalized, 'id': business_id})}"
 
@@ -190,7 +202,9 @@ def _notify_reward_state(db: Session, reward: SupplierLeadReward) -> None:
             db,
             event_key=f"v12:reward:{reward.id}:{status.lower()}:platform",
             event_type=event_type,
-            role_codes={"FINANCE", "OWNER", "SUPER_ADMIN"},
+            # 积分资金的最终处置属于超级管理员职责；旧财务/平台主管角色
+            # 已禁止作为业务身份继续接收通知。
+            role_codes={"SUPER_ADMIN"},
             title=title,
             body=body,
             target="rewards",
@@ -355,9 +369,9 @@ def project_v12_notifications(
                 db,
                 event_key=f"v12:return:{request.id}:verify-required:platform",
                 event_type="V12_RETURN_VERIFY_REQUIRED",
-                role_codes={"TELESALES", "OPERATION", "SUPER_ADMIN"},
+                role_codes={"OPERATION", "SUPER_ADMIN"},
                 title="有新的退回申诉待后置核验",
-                body="请领取或分配 RETURN_VERIFY 任务并完成事实核验。",
+                body="请为退回事实核验指定电销人员，并在结论提交后完成终审。",
                 target="returns",
                 business_id=request.id,
                 business_ids={
@@ -375,6 +389,31 @@ def project_v12_notifications(
                 _notify_reward_state(db, reward)
         return
 
+    if action in {"V12_PRE_DISPATCH_VERIFY_ASSIGN", "V12_RETURN_VERIFY_ASSIGN"}:
+        task = db.get(VerificationTask, resource_id)
+        if task and task.assignee_user_id:
+            is_pre_dispatch = action == "V12_PRE_DISPATCH_VERIFY_ASSIGN"
+            emit_business_notification(
+                db,
+                event_key=(
+                    f"v12:verification:{task.id}:assigned:{task.assignee_user_id}:"
+                    f"{task.lock_version}"
+                ),
+                event_type=(
+                    "V12_PRE_DISPATCH_VERIFY_ASSIGNED"
+                    if is_pre_dispatch
+                    else "V12_RETURN_VERIFY_ASSIGNED"
+                ),
+                company_id=None,
+                user_id=task.assignee_user_id,
+                title="有新的前置电话核验任务" if is_pre_dispatch else "有新的退回事实核验任务",
+                body="运营人员已派发任务，请在电销工作台开始核验。",
+                target="call",
+                business_id=task.id,
+                business_ids={"lead_id": task.lead_id, "verification_task_id": task.id},
+            )
+        return
+
     if action == "V12_RETURN_VERIFY_SUBMIT":
         task_return_id = str(metadata.get("return_request_id") or "")
         request = db.get(ReturnRequest, task_return_id) if task_return_id else None
@@ -389,7 +428,7 @@ def project_v12_notifications(
                 db,
                 event_key=f"v12:return:{request.id}:final-review-required:platform",
                 event_type="V12_RETURN_FINAL_REVIEW_REQUIRED",
-                role_codes={"RETURN_REVIEWER", "OPERATION", "SUPER_ADMIN"},
+                role_codes={"OPERATION", "SUPER_ADMIN"},
                 title="退回事实核验已完成，等待终审",
                 body="请结合申诉证据和电销核验结论完成平台终审。",
                 target="returns",

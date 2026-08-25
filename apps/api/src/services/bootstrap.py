@@ -34,12 +34,10 @@ from ..schemas.company import CompanyCreateBody
 
 DEMO_PASSWORDS = {
     "admin": "Admin123!",
-    "owner": "Owner123!",
     "operation": "Operation123!",
     "telesales": "Telesales123!",
-    "finance": "Finance123!",
-    "reviewer": "Reviewer123!",
     "franchise_demo": "Franchise123!",
+    "franchise_employee_demo": "Employee123!",
 }
 
 
@@ -112,11 +110,8 @@ def seed_reference_data(db: Session) -> None:
 def seed_users_and_company(db: Session) -> dict[str, User | Company]:
     user_specs = [
         ("admin", "平台超级管理员", "SUPER_ADMIN"),
-        ("owner", "平台负责人", "OWNER"),
-        ("operation", "运营人员", "OPERATION"),
+        ("operation", "运营管理员", "OPERATION"),
         ("telesales", "电销人员", "TELESALES"),
-        ("finance", "积分管理员", "FINANCE"),
-        ("reviewer", "退回审核员", "RETURN_REVIEWER"),
     ]
     users: dict[str, User] = {}
     for username, display_name, role_code in user_specs:
@@ -170,11 +165,30 @@ def seed_users_and_company(db: Session) -> dict[str, User | Company]:
         franchise.company_id = company.id
         if not any(role.code == "FRANCHISE_OWNER" for role in franchise.roles):
             assign_role(db, franchise, "FRANCHISE_OWNER")
+    employee = db.scalar(
+        select(User)
+        .options(selectinload(User.roles))
+        .where(User.username == "franchise_employee_demo")
+    )
+    if not employee:
+        employee = create_internal_user(
+            db,
+            username="franchise_employee_demo",
+            password=DEMO_PASSWORDS["franchise_employee_demo"],
+            display_name="加盟商员工演示账号",
+            role_code="FRANCHISE_EMPLOYEE",
+            company_id=company.id,
+        )
+    else:
+        employee.company_id = company.id
+        if not any(role.code == "FRANCHISE_EMPLOYEE" for role in employee.roles):
+            assign_role(db, employee, "FRANCHISE_EMPLOYEE")
     identity = db.scalar(select(WechatIdentity).where(WechatIdentity.user_id == franchise.id))
     if not identity:
         db.add(WechatIdentity(openid="demo-openid-franchise", nickname="张老板", subscribed=True, user_id=franchise.id))
     company.primary_user_id = franchise.id
     users["franchise_demo"] = franchise
+    users["franchise_employee_demo"] = employee
     return {**users, "company": company}
 
 

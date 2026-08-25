@@ -155,15 +155,11 @@ def test_bootstrap_refuses_business_data_even_when_users_are_empty(db: Session) 
 @pytest.mark.parametrize(
     "password",
     [
-        "Admin123!",
-        "all-lowercase-123!",
-        "ALL-UPPERCASE-123!",
-        "NoDigits-Allowed!",
-        "NoSymbolAllowed9A",
-        "RootAdmin-Inside9!",
+        "1234567",
+        "x" * 129,
     ],
 )
-def test_bootstrap_rejects_weak_passwords(db: Session, password: str) -> None:
+def test_bootstrap_rejects_passwords_outside_the_eight_to_128_character_range(db: Session, password: str) -> None:
     with pytest.raises(SuperadminBootstrapError, match="密码"):
         bootstrap_superadmin(
             db,
@@ -173,6 +169,20 @@ def test_bootstrap_rejects_weak_passwords(db: Session, password: str) -> None:
         )
     db.rollback()
     assert db.scalar(select(func.count(User.id))) == 0
+
+
+def test_bootstrap_accepts_an_eight_character_password_without_composition_rules(db: Session) -> None:
+    result = bootstrap_superadmin(
+        db,
+        username="rootadmin",
+        password="12345678",
+        display_name="平台超级管理员",
+    )
+    db.commit()
+
+    user = db.get(User, result.user_id)
+    assert user is not None
+    assert verify_password("12345678", user.password_hash or "")
 
 
 def test_bootstrap_fails_closed_when_schema_is_not_migrated(tmp_path: Path) -> None:

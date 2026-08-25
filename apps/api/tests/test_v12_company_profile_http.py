@@ -342,10 +342,70 @@ def test_service_area_approval_and_removal_change_dispatch_eligibility_only_afte
         ) == 4
 
 
+def test_bulk_profile_approval_activates_pending_opening_items_but_not_removals(
+    api_client,
+) -> None:
+    client, factory = api_client
+    company = _company(factory)
+    franchise = _login(client, "franchise_demo", "Franchise123!")
+    operation = _login(client, "operation", "Operation123!")
+    admin = _login(client, "admin", "Admin123!")
+    _, areas = _request_profile(client, franchise)
+    lead_id = _ready_lead(factory, "13900139812")
+
+    approved = _data(
+        client.post(
+            f"/api/v1/v1.2/admin/companies/{company.id}/profile/approve-pending",
+            headers=admin,
+            json={"note": "加盟商开通资料已一次核验"},
+        )
+    )
+    assert {item["capability_code"] for item in approved["capabilities"]} == {
+        "LEAD_SUPPLIER",
+        "LEAD_RECEIVER",
+    }
+    assert {item["region_code"] for item in approved["service_areas"]} == {
+        item["region_code"] for item in areas
+    }
+    assert all(item["active"] for item in approved["capabilities"])
+    assert all(item["active"] for item in approved["service_areas"])
+    assert _candidate(client, operation, lead_id, company.id)["eligible"] is True
+
+    removal = _data(
+        client.put(
+            "/api/v1/v1.2/company/service-areas",
+            headers=franchise,
+            json={"region_codes": ["310000"], "primary_city_code": "310000"},
+        )
+    )
+    pending_removal = next(item for item in removal if item["region_code"] == "310115")
+    no_opening_items = client.post(
+        f"/api/v1/v1.2/admin/companies/{company.id}/profile/approve-pending",
+        headers=admin,
+        json={"note": "不应自动通过停用申请"},
+    )
+    assert no_opening_items.status_code == 409
+    assert no_opening_items.json()["code"] == "COMPANY_PROFILE_NOT_PENDING"
+
+    with factory() as db:
+        area = db.get(CompanyServiceAreaV12, pending_removal["id"])
+        assert area is not None
+        assert area.active is True
+        assert area.review_status == "PENDING"
+        assert area.review_note.startswith("[REMOVE_REQUEST]")
+        bulk_audits = db.scalars(
+            select(AuditLog).where(
+                AuditLog.company_id == company.id,
+                AuditLog.action == "V12_COMPANY_PROFILE_BULK_APPROVE",
+            )
+        ).all()
+        assert len(bulk_audits) == 1
+
+
 def test_company_profile_endpoints_enforce_role_and_company_boundaries(api_client) -> None:
     client, factory = api_client
     franchise = _login(client, "franchise_demo", "Franchise123!")
-    owner = _login(client, "owner", "Owner123!")
+    telesales = _login(client, "telesales", "Telesales123!")
 
     _request_profile(client, franchise)
 
@@ -355,7 +415,7 @@ def test_company_profile_endpoints_enforce_role_and_company_boundaries(api_clien
     )
     unauthorized_request = client.post(
         "/api/v1/v1.2/company/capabilities",
-        headers=owner,
+        headers=telesales,
         json={"capability_code": "LEAD_RECEIVER"},
     )
     assert admin_queue.status_code == 403

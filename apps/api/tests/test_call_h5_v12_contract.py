@@ -13,6 +13,7 @@ from apps.api.src.core.models import (
     AssignmentEvent,
     Company,
     Lead,
+    Notification,
     ReturnRequest,
     User,
     VerificationTask,
@@ -30,6 +31,7 @@ from apps.api.src.services import return_v12 as return_v12_service
 CALL_APP = Path("apps/call-h5/public/app.js")
 CALL_INDEX = Path("apps/call-h5/public/index.html")
 TASKS_ENDPOINT = "/v1.2/return-verifications/tasks"
+PRE_DISPATCH_TASKS_ENDPOINT = "/v1.2/pre-dispatch-verifications/tasks"
 
 
 def _login(client, username: str, password: str) -> dict[str, str]:
@@ -137,14 +139,16 @@ def _seed_return_verification(factory) -> tuple[str, str, str, str]:
         return task.id, return_request.id, phone, telesales.id
 
 
-def test_call_h5_uses_only_v12_return_verification_contract() -> None:
+def test_call_h5_uses_only_v12_assigned_verification_contracts() -> None:
     source = CALL_APP.read_text(encoding="utf-8")
     index = CALL_INDEX.read_text(encoding="utf-8")
 
     assert TASKS_ENDPOINT in source
+    assert PRE_DISPATCH_TASKS_ENDPOINT in source
     assert "/verification/tasks" not in source
-    for action in ("claim", "dial", "submit"):
-        assert f"{TASKS_ENDPOINT}/${{id}}/{action}" in source
+    assert "taskPath(kind, taskId, action = '')" in source
+    for action in ("start", "dial", "submit"):
+        assert f"taskPath(kind, id, '{action}')" in source
     for field in ("contact_result", "conclusion", "note"):
         assert field in source
     for legacy_field in ("invalid_reason", "answers:", "corrections:"):
@@ -152,17 +156,19 @@ def test_call_h5_uses_only_v12_return_verification_contract() -> None:
     for removed_editor in ('id="region"', 'id="category"', 'id="summary"'):
         assert removed_editor not in source
     assert "return_request" in source
-    assert "evidence_summary" in source
+    assert "PRE_DISPATCH" in source
+    assert "运营派发" in source
+    assert "自主领取" in source
     assert "go('home');route()" not in source
-    assert "go('tasks');route()" not in source
-    assert "app.js?v=20260824-card-data1" in index
+    assert "/admin/index.html" not in source
+    assert "app.js?v=20260825-role-contract" in index
 
 
 def test_call_h5_home_first_screen_has_personal_task_summary_without_team_finance() -> None:
     source = CALL_APP.read_text(encoding="utf-8")
 
     assert "TELESALES_HOME_CONTRACT" in source
-    for label in ("待开始", "核验中", "已提交", "开始核验", "继续核验", "优先任务"):
+    for label in ("待开始", "核验中", "已提交", "开始核验", "继续核验", "待办"):
         assert label in source
     for copy in ("团队排行", "公司充值", "平台收入", "加盟商积分"):
         assert copy not in source
@@ -180,7 +186,7 @@ def test_call_h5_task_detail_first_screen_exposes_dial_rules_and_result_entry() 
 def test_call_h5_route_awaits_async_views_so_failures_reach_the_error_state() -> None:
     source = CALL_APP.read_text(encoding="utf-8")
 
-    for view in ("home()", "tasks()", "task(parts[1])", "profile()"):
+    for view in ("home()", "verify()", "records()", "task(parts[1], parts[2])", "profile()"):
         assert f"await {view}" in source
 
 
@@ -197,16 +203,34 @@ def test_v12_call_flow_works_with_legacy_writes_disabled(api_client, monkeypatch
 
     monkeypatch.setattr(return_v12_service, "decrypt_text", tracked_decrypt)
     operation = _login(client, "operation", "Operation123!")
+    missing_reason = client.post(
+        f"/api/v1{TASKS_ENDPOINT}/{task_id}/assign",
+        headers=operation,
+        json={"assignee_user_id": telesales_id},
+    )
+    assert missing_reason.status_code == 422
     assigned = _data(
         client.post(
             f"/api/v1{TASKS_ENDPOINT}/{task_id}/assign",
             headers=operation,
-            json={"assignee_user_id": telesales_id},
+            json={
+                "assignee_user_id": telesales_id,
+                "reason": "运营确认需要电话核验退回事实",
+            },
         )
     )
     assert assigned["status"] == VerificationTaskStatus.ASSIGNED.value
     assert assigned["assignee_user_id"] == telesales_id
     assert decrypt_calls == []
+    with factory() as db:
+        notification = db.scalar(
+            select(Notification).where(
+                Notification.user_id == telesales_id,
+                Notification.scene == "V12_RETURN_VERIFY_ASSIGNED",
+            )
+        )
+        assert notification is not None
+        assert notification.deep_link == "/h5/call/#/verify"
 
     legacy_claim = client.post(
         f"/api/v1/verification/tasks/{task_id}/claim",
@@ -234,7 +258,7 @@ def test_v12_call_flow_works_with_legacy_writes_disabled(api_client, monkeypatch
     assert decrypt_calls == []
 
     claimed = _data(
-        client.post(f"/api/v1{TASKS_ENDPOINT}/{task_id}/claim", headers=telesales)
+        client.post(f"/api/v1{TASKS_ENDPOINT}/{task_id}/start", headers=telesales)
     )
     assert claimed["status"] == VerificationTaskStatus.IN_PROGRESS.value
     assert claimed["lead"]["phone"] == phone
@@ -294,7 +318,7 @@ def test_v12_call_flow_works_with_legacy_writes_disabled(api_client, monkeypatch
     assert repeated["contact_result"] == "EMPTY_NUMBER"
     assert repeated["conclusion"] == "SUPPORT_RETURN"
 
-    for action in ("claim", "dial", "submit"):
+    for action in ("start", "dial", "submit"):
         response = client.post(
             f"/api/v1{TASKS_ENDPOINT}/{task_id}/{action}",
             headers=operation,

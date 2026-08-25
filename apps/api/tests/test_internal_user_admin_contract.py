@@ -6,12 +6,8 @@ from pathlib import Path
 ADMIN_APP = Path("apps/admin/public/app.js")
 INTERNAL_ROLES = (
     "SUPER_ADMIN",
-    "OWNER",
-    "LEAD_ENTRY",
     "OPERATION",
     "TELESALES",
-    "FINANCE",
-    "RETURN_REVIEWER",
 )
 
 
@@ -27,8 +23,12 @@ def test_admin_user_page_uses_internal_role_allowlist() -> None:
 
     user_section = source[source.index("async function users") : source.index("async function configs")]
     assert "FRANCHISE_OWNER" not in user_section
+    assert "FRANCHISE_EMPLOYEE" not in user_section
     assert "加盟商负责人" not in user_section
     assert "内部账号" in user_section
+    assert "roleChoices" in user_section
+    assert 'type="radio"' in source
+    assert "可多选" not in user_section
 
 
 def test_admin_user_page_calls_internal_lifecycle_apis() -> None:
@@ -62,7 +62,8 @@ def test_admin_user_creation_relies_on_generated_initial_password() -> None:
     assert "账号已创建，但初始密码未返回" in credential_section
     assert "请输入姓名" in creation_section
     assert "登录账号至少输入2个字符" in creation_section
-    assert "至少选择一个角色" in creation_section
+    assert "单选，仅限平台内部角色" in creation_section
+    assert "8 位初始密码" in creation_section
     assert "value.trim()" in creation_section
     assert creation_section.index("showCreatedUserCredentials(created)") < creation_section.index("await users()")
     assert "账号已创建，但账号列表刷新失败" in creation_section

@@ -55,7 +55,7 @@ def _put_day(
 def test_calendar_permissions_separate_read_and_manage(api_client) -> None:
     client, _ = api_client
     operation = _login(client, "operation", "Operation123!")
-    owner = _login(client, "owner", "Owner123!")
+    admin = _login(client, "admin", "Admin123!")
     telesales = _login(client, "telesales", "Telesales123!")
 
     assert client.get(
@@ -71,7 +71,7 @@ def test_calendar_permissions_separate_read_and_manage(api_client) -> None:
     ).status_code == 403
     assert _put_day(
         client,
-        owner,
+        admin,
         "2026-08-08",
         is_workday=True,
         holiday_name="周末调休",
@@ -177,7 +177,7 @@ def test_single_day_repeat_is_audited_only_when_data_changes(api_client) -> None
 
 def test_repeated_calendar_import_is_idempotent_and_reports_impact(api_client) -> None:
     client, factory = api_client
-    owner = _login(client, "owner", "Owner123!")
+    admin = _login(client, "admin", "Admin123!")
     body = {
         "days": [
             {
@@ -200,14 +200,14 @@ def test_repeated_calendar_import_is_idempotent_and_reports_impact(api_client) -
     first = _data(
         client.post(
             "/api/v1/admin/v1.2/calendar-days/import",
-            headers=_bearer(owner),
+            headers=_bearer(admin),
             json=body,
         )
     )
     second = _data(
         client.post(
             "/api/v1/admin/v1.2/calendar-days/import",
-            headers=_bearer(owner),
+            headers=_bearer(admin),
             json=body,
         )
     )
@@ -231,12 +231,12 @@ def test_repeated_calendar_import_is_idempotent_and_reports_impact(api_client) -
     assert second["impact_start"] is None
     assert second["impact_end"] is None
     with factory() as db:
-        owner_user = db.scalar(select(User).where(User.username == "owner"))
-        assert owner_user is not None
+        admin_user = db.scalar(select(User).where(User.username == "admin"))
+        assert admin_user is not None
         assert db.get(
             CalendarDay,
             date(2026, 10, 1),
-        ).updated_by == owner_user.id
+        ).updated_by == admin_user.id
         assert db.scalar(
             select(func.count(AuditLog.id)).where(
                 AuditLog.action == "V12_CALENDAR_IMPORT"

@@ -16,22 +16,19 @@ from .rbac import assign_role
 INTERNAL_ROLE_CODES = frozenset(
     {
         "SUPER_ADMIN",
-        "OWNER",
-        "LEAD_ENTRY",
         "OPERATION",
         "TELESALES",
-        "FINANCE",
-        "RETURN_REVIEWER",
     }
 )
 _SUPERADMIN_LOCK_KEY = "zhongshu.internal-user.superadmin-roster"
-_PASSWORD_SYMBOLS = "!@#$%^&*()-_=+"
 
 
 def normalize_internal_roles(role_codes: list[str]) -> list[str]:
     normalized = sorted({code.strip() for code in role_codes if code.strip()})
     if not normalized:
         raise AppError("INTERNAL_ROLE_REQUIRED", "至少选择一个内部角色", 400)
+    if len(normalized) != 1:
+        raise AppError("INTERNAL_ROLE_SINGLE_REQUIRED", "一个账号只能选择一个业务角色", 400)
     invalid = sorted(set(normalized) - INTERNAL_ROLE_CODES)
     if invalid:
         raise AppError(
@@ -60,23 +57,11 @@ def generate_initial_password(username: str) -> str:
             "登录账号不能为空或包含首尾空格",
             400,
         )
-    alphabet = string.ascii_letters + string.digits + _PASSWORD_SYMBOLS
+    alphabet = string.ascii_letters + string.digits
     rng = secrets.SystemRandom()
-    while True:
-        characters = [
-            rng.choice(string.ascii_lowercase),
-            rng.choice(string.ascii_uppercase),
-            rng.choice(string.digits),
-            rng.choice(_PASSWORD_SYMBOLS),
-            *[rng.choice(alphabet) for _ in range(14)],
-        ]
-        rng.shuffle(characters)
-        password = "".join(characters)
-        try:
-            validate_internal_password(password, normalized_username)
-            return password
-        except ValueError:
-            continue
+    password = "".join(rng.choice(alphabet) for _ in range(8))
+    validate_internal_password(password, normalized_username)
+    return password
 
 
 def _validate_identity(username: str, display_name: str) -> tuple[str, str]:
@@ -210,8 +195,6 @@ def create_managed_internal_user(
         display_name=normalized_display_name,
         role_code=roles[0],
     )
-    for role_code in roles[1:]:
-        assign_role(db, user, role_code)
     db.flush()
     db.refresh(user, attribute_names=["roles"])
     return user

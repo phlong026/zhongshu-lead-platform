@@ -39,21 +39,21 @@ def test_legacy_write_classifier_blocks_only_legacy_mutations() -> None:
     assert is_legacy_write("POST", "/api/v1/verification/tasks/task-1/reclaim") is True
 
 
-def test_default_web_entries_require_valid_session_and_legacy_is_explicit(api_client) -> None:
+def test_default_web_entries_use_only_the_formal_role_workbenches(api_client) -> None:
     client, _ = api_client
 
     admin = client.get("/admin/", follow_redirects=False)
     assert admin.status_code == 302
-    assert admin.headers["location"] == "/admin/index.html"
+    assert admin.headers["location"] == "/admin/v12-operations.html"
 
     h5 = client.get("/h5/", follow_redirects=False)
     assert h5.status_code == 302
-    assert h5.headers["location"] == "/h5/index.html"
+    assert h5.headers["location"] == "/h5/v12-workbench.html"
 
     client.cookies.set("access_token", "invalid-token")
     invalid = client.get("/admin/", follow_redirects=False)
     assert invalid.status_code == 302
-    assert invalid.headers["location"] == "/admin/index.html"
+    assert invalid.headers["location"] == "/admin/v12-operations.html"
     client.cookies.clear()
 
     login = client.post(
@@ -68,15 +68,23 @@ def test_default_web_entries_require_valid_session_and_legacy_is_explicit(api_cl
 
     h5_authenticated = client.get("/h5/", follow_redirects=False)
     assert h5_authenticated.status_code == 302
-    assert h5_authenticated.headers["location"] == "/h5/v12-workbench.html"
+    assert h5_authenticated.headers["location"] == "/h5/admin/"
 
     admin_legacy = client.get("/admin/legacy", follow_redirects=False)
     assert admin_legacy.status_code == 302
-    assert admin_legacy.headers["location"] == "/admin/index.html"
+    assert admin_legacy.headers["location"] == "/admin/"
 
     h5_legacy = client.get("/h5/legacy", follow_redirects=False)
     assert h5_legacy.status_code == 302
-    assert h5_legacy.headers["location"] == "/h5/index.html"
+    assert h5_legacy.headers["location"] == "/h5/"
+
+    admin_index = client.get("/admin/index.html", follow_redirects=False)
+    assert admin_index.status_code == 302
+    assert admin_index.headers["location"] == "/admin/"
+
+    h5_index = client.get("/h5/index.html", follow_redirects=False)
+    assert h5_index.status_code == 302
+    assert h5_index.headers["location"] == "/h5/"
 
 
 def test_legacy_mutations_fail_closed_even_when_app_env_is_mislabelled(

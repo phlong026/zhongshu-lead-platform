@@ -53,6 +53,50 @@ class SupplierReviewBody(BaseModel):
         return value.upper()
 
 
+class PreDispatchAssignBody(BaseModel):
+    assignee_user_id: str = Field(min_length=1, max_length=36)
+    reason: str = Field(min_length=1, max_length=500)
+    template_code: str = Field(default="PRE_DISPATCH", min_length=2, max_length=64)
+
+    @field_validator("assignee_user_id", "reason", "template_code")
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        return value.strip()
+
+
+class PreDispatchSubmitBody(BaseModel):
+    contact_result: str = Field(min_length=1, max_length=64)
+    conclusion: str = Field(
+        pattern=r"^(QUALIFIED|INFO_INCOMPLETE|UNVERIFIABLE|INVALID|DUPLICATE)$"
+    )
+    note: str = Field(min_length=1, max_length=1000)
+
+    @field_validator("contact_result", "conclusion")
+    @classmethod
+    def normalize_submission_code(cls, value: str) -> str:
+        return value.strip().upper()
+
+    @field_validator("note")
+    @classmethod
+    def normalize_submission_note(cls, value: str) -> str:
+        return value.strip()
+
+
+class PreDispatchDispositionBody(BaseModel):
+    decision: str = Field(pattern=r"^(APPROVE_POOL|RETURN_REWORK|DUPLICATE|CLOSE)$")
+    note: str = Field(min_length=1, max_length=1000)
+
+    @field_validator("decision")
+    @classmethod
+    def normalize_disposition_code(cls, value: str) -> str:
+        return value.strip().upper()
+
+    @field_validator("note")
+    @classmethod
+    def normalize_disposition_note(cls, value: str) -> str:
+        return value.strip()
+
+
 class DedupOverrideBody(BaseModel):
     event_id: str | None = None
     reason: str = Field(min_length=5, max_length=1000)
@@ -81,6 +125,10 @@ class CapabilityReviewBody(BaseModel):
         if self.decision == "REJECT" and not (self.note and self.note.strip()):
             raise ValueError("驳回公司能力申请时必须填写原因")
         return self
+
+
+class CompanyProfileBulkApproveBody(BaseModel):
+    note: str | None = Field(default=None, max_length=1000)
 
 
 class ServiceAreaReplaceBody(BaseModel):

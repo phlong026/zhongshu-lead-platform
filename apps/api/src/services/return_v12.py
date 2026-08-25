@@ -34,6 +34,7 @@ from ..core.v12_enums import (
     VerificationTaskType,
 )
 from .points_service import change_points
+from .company_assignment_v12 import require_company_assignment_access
 from .workday_calendar import WorkdayCalendarService
 
 VALID_RETURN_REASONS = {item.value for item in ReturnReasonCode}
@@ -119,8 +120,7 @@ def create_or_update_return_draft(
     description: str,
 ) -> ReturnRequest:
     assignment = _get_assignment(db, assignment_id, lock=True)
-    if not principal.company_id or assignment.company_id != principal.company_id:
-        raise AppError("FORBIDDEN", "无权申请退回该客资", 403)
+    require_company_assignment_access(principal, assignment)
     reason = reason_code.strip().upper()
     if reason not in VALID_RETURN_REASONS:
         raise AppError("RETURN_REASON_INVALID", "退回原因不在 V1.2 冻结范围内", 422)
@@ -181,8 +181,8 @@ def add_return_evidence(
     sha256: str,
     duration_seconds: int | None,
 ) -> ReturnEvidence:
-    if not principal.company_id or request.company_id != principal.company_id:
-        raise AppError("FORBIDDEN", "无权上传该退回申请的证据", 403)
+    assignment = _get_assignment(db, request.assignment_id, lock=True)
+    require_company_assignment_access(principal, assignment)
     if request.status not in {
         ReturnV12Status.DRAFT.value,
         ReturnV12Status.NEED_MORE_EVIDENCE.value,
@@ -252,8 +252,8 @@ def submit_return_request(
     principal: Principal,
 ) -> ReturnSubmitResult:
     request = _get_return(db, return_id, lock=True)
-    if not principal.company_id or request.company_id != principal.company_id:
-        raise AppError("FORBIDDEN", "无权提交该退回申请", 403)
+    assignment_for_access = _get_assignment(db, request.assignment_id, lock=True)
+    require_company_assignment_access(principal, assignment_for_access)
     if request.status in {
         ReturnV12Status.VERIFYING.value,
         ReturnV12Status.REVIEWING.value,
@@ -364,6 +364,7 @@ def assign_return_verification_task(
     task_id: str,
     assignee_user_id: str,
     assigned_by: str,
+    reason: str,
 ) -> VerificationTask:
     task = db.scalar(select(VerificationTask).where(VerificationTask.id == task_id).with_for_update())
     if task is None or task.task_type != VerificationTaskType.RETURN_VERIFY.value:
@@ -374,6 +375,8 @@ def assign_return_verification_task(
     }:
         raise AppError("RETURN_VERIFY_TASK_NOT_ASSIGNABLE", "退回核验任务当前不可分配", 409)
     _require_telesales_user(db, assignee_user_id)
+    if not reason.strip():
+        raise AppError("RETURN_VERIFY_ASSIGN_REASON_REQUIRED", "派发或改派核验任务必须填写原因", 422)
     task.assignee_user_id = assignee_user_id
     task.assigned_by = assigned_by
     task.assigned_at = _now()
@@ -394,14 +397,16 @@ def claim_return_verification_task(
         raise AppError("RETURN_VERIFY_TASK_NOT_FOUND", "退回核验任务不存在", 404)
     if task.status == VerificationTaskStatus.IN_PROGRESS.value and task.assignee_user_id == principal.user_id:
         return task
-    if task.status not in {
-        VerificationTaskStatus.PENDING.value,
-        VerificationTaskStatus.ASSIGNED.value,
-    }:
-        raise AppError("RETURN_VERIFY_TASK_NOT_CLAIMABLE", "退回核验任务当前不可领取", 409)
-    if task.assignee_user_id and task.assignee_user_id != principal.user_id:
+    if task.status == VerificationTaskStatus.PENDING.value or task.assignee_user_id is None:
+        raise AppError(
+            "RETURN_VERIFY_TASK_NOT_ASSIGNED",
+            "退回核验任务须由运营人员派发后才能开始",
+            409,
+        )
+    if task.status != VerificationTaskStatus.ASSIGNED.value:
+        raise AppError("RETURN_VERIFY_TASK_NOT_STARTABLE", "退回核验任务当前不可开始", 409)
+    if task.assignee_user_id != principal.user_id:
         raise AppError("FORBIDDEN", "退回核验任务已分配给其他电销人员", 403)
-    task.assignee_user_id = principal.user_id
     task.status = VerificationTaskStatus.IN_PROGRESS.value
     task.started_at = task.started_at or _now()
     task.lock_version += 1

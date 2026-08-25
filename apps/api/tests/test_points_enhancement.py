@@ -131,8 +131,8 @@ def _login(client, username: str, password: str) -> dict[str, str]:
 
 def test_manual_recharge_requires_explicit_confirmation_and_enqueues_notice(api_client):
     client, factory = api_client
-    finance = _login(client, "finance", "Finance123!")
-    packages = client.get("/api/v1/points/packages", headers=finance).json()["data"]
+    admin = _login(client, "admin", "Admin123!")
+    packages = client.get("/api/v1/points/packages", headers=admin).json()["data"]
     package = packages[0]
     with factory() as db:
         company = db.scalar(select(Company).where(Company.code == "SH-DEMO"))
@@ -146,16 +146,16 @@ def test_manual_recharge_requires_explicit_confirmation_and_enqueues_notice(api_
         "cash_amount_cents": package["cash_amount_cents"],
         "idempotency_key": "recharge-p101-confirm",
     }
-    rejected = client.post("/api/v1/points/recharge", headers=finance, json=payload)
+    rejected = client.post("/api/v1/points/recharge", headers=admin, json=payload)
     assert rejected.status_code == 422
     assert rejected.json()["code"] == "POINTS_RECHARGE_CONFIRM_REQUIRED"
 
-    accepted = client.post("/api/v1/points/recharge", headers=finance, json={**payload, "confirmed": True})
+    accepted = client.post("/api/v1/points/recharge", headers=admin, json={**payload, "confirmed": True})
     assert accepted.status_code == 200, accepted.text
     first_ledger = accepted.json()["data"]
     assert first_ledger["delta"] == package["total_points"]
 
-    repeated = client.post("/api/v1/points/recharge", headers=finance, json={**payload, "confirmed": True})
+    repeated = client.post("/api/v1/points/recharge", headers=admin, json={**payload, "confirmed": True})
     assert repeated.status_code == 200, repeated.text
     assert repeated.json()["data"]["id"] == first_ledger["id"]
 
@@ -168,7 +168,7 @@ def test_manual_recharge_requires_explicit_confirmation_and_enqueues_notice(api_
 
 def test_publishing_new_package_version_closes_previous_active_version(api_client):
     client, factory = api_client
-    finance = _login(client, "finance", "Finance123!")
+    admin = _login(client, "admin", "Admin123!")
     payload = {
         "code": "V2_VERSIONED",
         "name": "V2版本档",
@@ -179,11 +179,11 @@ def test_publishing_new_package_version_closes_previous_active_version(api_clien
         "entitlements": {"服务优先级": "优先"},
         "publish": True,
     }
-    first = client.post("/api/v1/points/packages", headers=finance, json=payload)
+    first = client.post("/api/v1/points/packages", headers=admin, json=payload)
     assert first.status_code == 200, first.text
     second = client.post(
         "/api/v1/points/packages",
-        headers=finance,
+        headers=admin,
         json={**payload, "name": "V2版本档升级", "bonus_points": 3_000},
     )
     assert second.status_code == 200, second.text
@@ -199,7 +199,7 @@ def test_publishing_new_package_version_closes_previous_active_version(api_clien
         assert versions[0].expires_at is not None
         assert versions[1].expires_at is None
 
-    active = client.get("/api/v1/points/packages", headers=finance).json()["data"]
+    active = client.get("/api/v1/points/packages", headers=admin).json()["data"]
     active_versions = [item for item in active if item["code"] == "V2_VERSIONED"]
     assert len(active_versions) == 1
     assert active_versions[0]["version"] == 2

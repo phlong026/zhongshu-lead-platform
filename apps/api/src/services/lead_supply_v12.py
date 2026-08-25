@@ -54,6 +54,8 @@ def _assert_owner(lead: Lead, principal: Principal, *, supplier: bool) -> None:
     if supplier:
         if not principal.company_id or lead.supplier_company_id != principal.company_id:
             raise AppError("FORBIDDEN", "无权访问其他公司的供应商客资", 403)
+        if principal.has_any_role("FRANCHISE_EMPLOYEE") and lead.submitter_user_id != principal.user_id:
+            raise AppError("SUPPLIER_LEAD_NOT_OWNED", "加盟商员工只能编辑本人录入的客资", 403)
     elif lead.submitter_user_id != principal.user_id:
         raise AppError("FORBIDDEN", "无权修改其他录入人的客资草稿", 403)
 
@@ -271,6 +273,7 @@ def list_supplier_leads(
     status: str | None,
     page_no: int,
     page_size: int,
+    submitter_user_id: str | None = None,
 ) -> tuple[list[Lead], int]:
     stmt = select(Lead).where(
         Lead.source_kind == LeadSourceKind.SUPPLIER_H5.value,
@@ -280,6 +283,9 @@ def list_supplier_leads(
         Lead.source_kind == LeadSourceKind.SUPPLIER_H5.value,
         Lead.supplier_company_id == company_id,
     )
+    if submitter_user_id:
+        stmt = stmt.where(Lead.submitter_user_id == submitter_user_id)
+        count_stmt = count_stmt.where(Lead.submitter_user_id == submitter_user_id)
     if status:
         stmt = stmt.where(Lead.status == status)
         count_stmt = count_stmt.where(Lead.status == status)

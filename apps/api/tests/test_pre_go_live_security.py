@@ -613,11 +613,11 @@ def test_points_idempotency_negative_balance_and_privilege_boundaries(api_client
     assert forbidden_adjust.status_code == 403
 
     client.post("/api/v1/auth/logout", headers=attacker)
-    finance = _login_headers(client, "finance", "Finance123!")
+    admin = _login_headers(client, "admin", "Admin123!")
     key = "security-idempotent-adjust"
     first = client.post(
         "/api/v1/points/adjust",
-        headers=finance,
+        headers=admin,
         json={
             "company_id": graph["attacker_company_id"],
             "delta": 25,
@@ -627,7 +627,7 @@ def test_points_idempotency_negative_balance_and_privilege_boundaries(api_client
     )
     second = client.post(
         "/api/v1/points/adjust",
-        headers=finance,
+        headers=admin,
         json={
             "company_id": graph["attacker_company_id"],
             "delta": 25,
@@ -650,7 +650,7 @@ def test_points_idempotency_negative_balance_and_privilege_boundaries(api_client
 
     negative = client.post(
         "/api/v1/points/adjust",
-        headers=finance,
+        headers=admin,
         json={
             "company_id": graph["attacker_company_id"],
             "delta": -100000,
@@ -693,14 +693,14 @@ def test_return_reward_review_permissions_and_reward_settlement_are_idempotent(a
     assert reverse.status_code == 403
 
     client.post("/api/v1/auth/logout", headers=attacker)
-    finance = _login_headers(client, "finance", "Finance123!")
+    admin = _login_headers(client, "admin", "Admin123!")
     first = client.post(
         f"/api/v1/v1.2/admin/supplier-rewards/{graph['reward_id']}/settle",
-        headers=finance,
+        headers=admin,
     )
     second = client.post(
         f"/api/v1/v1.2/admin/supplier-rewards/{graph['reward_id']}/settle",
-        headers=finance,
+        headers=admin,
     )
     assert first.status_code == 200, first.text
     assert second.status_code == 200, second.text

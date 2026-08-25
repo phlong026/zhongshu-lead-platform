@@ -46,7 +46,7 @@ def _principal(user: User, *permissions: str) -> Principal:
         user_id=user.id,
         display_name=user.display_name,
         company_id=user.company_id,
-        role_codes=frozenset(),
+        role_codes=frozenset(role.code for role in user.roles),
         permission_codes=frozenset(permissions),
         session_version=1,
     )
@@ -79,6 +79,7 @@ def _workflow_setup(db, *, lead_status: str = LeadV12Status.CLAIMED.value):
     operator = User(display_name="运营分配员", status="ACTIVE")
     db.add_all([receiver_user, telesales, reviewer, operator])
     db.flush()
+    assign_role(db, receiver_user, "FRANCHISE_OWNER")
     assign_role(db, telesales, "TELESALES")
 
     phone = "13800138301"
@@ -129,6 +130,8 @@ def _workflow_setup(db, *, lead_status: str = LeadV12Status.CLAIMED.value):
         claimed_at=claimed_at,
         appeal_deadline_at=deadline,
         reward_due_at=deadline,
+        internal_assignee_user_id=receiver_user.id,
+        internal_assigned_by=receiver_user.id,
         idempotency_key=f"return-workflow-{receiver.id}",
     )
     db.add(assignment)
@@ -206,6 +209,32 @@ def test_single_evidence_type_creates_post_call_task(db, evidence_type: str) -> 
     assert result.task.task_type == VerificationTaskType.RETURN_VERIFY.value
     assert result.task.status == VerificationTaskStatus.PENDING.value
     assert request.status == ReturnV12Status.VERIFYING.value
+
+
+def test_telesales_cannot_start_an_unassigned_return_verification_task(db) -> None:
+    setup = _workflow_setup(db)
+    owner = _principal(setup["receiver_user"], "return.own.manage")
+    request = create_or_update_return_draft(
+        db,
+        assignment_id=setup["assignment"].id,
+        principal=owner,
+        reason_code="EMPTY_NUMBER",
+        description="运营尚未派发电销任务时，电销不能自行领取。",
+    )
+    _evidence(db, request, owner, EvidenceType.CHAT_SCREENSHOT.value)
+    submitted = submit_return_request(db, return_id=request.id, principal=owner)
+    assert submitted.task is not None
+    assert submitted.task.assignee_user_id is None
+
+    telesales = _principal(setup["telesales"], "verification.task.start")
+    with pytest.raises(AppError) as exc_info:
+        claim_return_verification_task(
+            db,
+            task_id=submitted.task.id,
+            principal=telesales,
+        )
+
+    assert exc_info.value.code == "RETURN_VERIFY_TASK_NOT_ASSIGNED"
 
 
 def test_missing_return_evidence_is_rejected(db) -> None:
@@ -296,6 +325,7 @@ def _submit_and_verify(db, setup, *, conclusion: str = "SUPPORT_RETURN"):
         task_id=submitted.task.id,
         assignee_user_id=setup["telesales"].id,
         assigned_by=operator.user_id,
+        reason="运营确认需要电话核验退回事实",
     )
     telesales = _principal(
         setup["telesales"],

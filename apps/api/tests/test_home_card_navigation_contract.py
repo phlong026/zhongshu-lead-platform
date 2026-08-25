@@ -15,7 +15,6 @@ def read(path: Path) -> str:
 
 def test_franchise_home_metrics_open_existing_business_details() -> None:
     workbench = read(H5 / "v12-workbench.js")
-    legacy = read(H5 / "app.js")
 
     assert "leads:['客资','list']" in workbench
     for route in ("points", "assignments", "returns"):
@@ -31,15 +30,6 @@ def test_franchise_home_metrics_open_existing_business_details() -> None:
     assert "d.supplier_rewards?.points" not in workbench
     assert "const assignmentMetricTarget=canView('assignments')" in workbench
 
-    for route in (
-        "leads?status=PENDING_CLAIM",
-        "leads?status=ACTIVE",
-        "leads?status=RETURN_PENDING",
-        "leads?status=COMPLETED",
-    ):
-        assert f'data-route="{route}"' in legacy
-    assert "filter === 'ACTIVE'" in legacy
-    assert "['ACTIVE','待跟进']" in legacy
 
 
 def test_franchise_secondary_metrics_scroll_or_filter_to_existing_details() -> None:
@@ -59,16 +49,17 @@ def test_telesales_home_uses_actionable_count_and_clear_mobile_navigation() -> N
 
     for nav_item in (
         "['home', 'home', '首页']",
-        "['tasks', 'phone', '核验']",
+        "['verify', 'phone', '核验']",
+        "['records', 'history', '记录']",
         "['profile', 'user', '我的']",
     ):
         assert nav_item in source
-    assert "const actionableTasks = tasks.items.filter" in source
-    assert "actionableTasks.length" in source
-    assert "actionableTasks.slice(0, 5)" in source
-    assert 'data-route="tasks?status=TODO"' in source
-    assert "status === 'TODO'" in source
-    assert "['TODO', '待开始']" in source
+    assert "const actionable = tasks.filter" in source
+    assert "actionable.length" in source
+    assert "actionable.slice(0, 5)" in source
+    assert 'data-route="verify?status=ASSIGNED"' in source
+    assert "status === 'ASSIGNED'" in source
+    assert "['ASSIGNED', '待开始']" in source
 
 
 def test_supplier_submodule_navigation_uses_progress_and_upload_semantics() -> None:
@@ -82,33 +73,21 @@ def test_supplier_submodule_navigation_uses_progress_and_upload_semantics() -> N
 
 
 def test_admin_dashboard_and_role_kpis_link_to_existing_detail_pages() -> None:
-    legacy = read(ADMIN / "app.js")
     operations = read(ADMIN / "v12-operations.js")
 
-    assert "cards.map(([l,v,i,r])" in legacy
-    for route in ("staging", "verification", "qualified", "assignments", "ledgers"):
-        assert f"'{route}'" in legacy
-    assert "alertCards" in legacy
-
-    assert "function statusSummary(data,hrefForStatus)" in operations
-    assert "typeof hrefForStatus==='function'" in operations
-    assert 'class="ops-detail ops-detail-link"' in operations
     for destination in (
-        "./v12-leads.html",
+        "?view=leads",
+        "?view=telesales",
         "?view=dispatch",
         "?view=returns",
         "?view=companies",
-        "./index.html#/outbox",
-        "./index.html#/audit",
+        "?view=finance",
+        "?view=audit",
     ):
         assert destination in operations
 
-    assert "./v12-leads.html?status=" in operations
-    assert "./index.html#/assignments?status=" in operations
-    assert "?view=returns&status=" in operations
-    assert "status:S.status" in operations
-    assert "const filter=query.get('status')||''" in legacy
-    assert "status:filter" in legacy
+    assert "data-overview-view" in operations
+    assert "index.html" not in operations
     for mapping in (
         "FOLLOWING:'跟进中'",
         "RETURN_PENDING:'退回处理中'",
@@ -120,28 +99,20 @@ def test_admin_dashboard_and_role_kpis_link_to_existing_detail_pages() -> None:
         assert mapping in operations
 
 
-def test_remaining_admin_numeric_summaries_open_existing_details() -> None:
-    source = read(ADMIN / "app.js")
+def test_formal_admin_home_explains_the_five_role_boundaries() -> None:
+    source = read(ADMIN / "v12-operations.js")
 
-    assert '<button type="button" class="stat" data-route="staging">' in source
-    assert 'data-calendar-scroll="calendar-grid"' in source
-    assert 'data-calendar-scroll="calendar-overrides"' in source
-    assert "[data-calendar-scroll]" in source
-    assert "scrollIntoView" in source
+    for copy in ("运营待办", "运营派发", "不具备自主领取", "不查看加盟商内部员工的客资分配明细"):
+        assert copy in source
 
 
-def test_platform_lead_summary_cards_apply_existing_status_filters() -> None:
-    source = read(ADMIN / "v12-leads.js")
+def test_formal_lead_page_uses_the_unified_operation_view() -> None:
+    source = read(ADMIN / "v12-operations.js")
 
-    assert 'data-platform-status=""' in source
-    for status in ("DRAFT", "READY_DISPATCH", "DUPLICATE"):
-        assert f'data-platform-status="{status}"' in source
-    assert "[data-platform-status]" in source
-    assert "function setPlatformStatus(status)" in source
+    assert "async function review" in source
+    assert "派发电销核验" in source
     assert "history.pushState" in source
-    assert "addEventListener('popstate'" in source
-    for label in ("当前结果", "本页草稿", "本页待派发", "本页重复/疑似"):
-        assert label in source
+    assert "window.addEventListener('popstate'" in source
 
 
 def test_card_layout_uses_fluid_width_and_mobile_tap_targets() -> None:

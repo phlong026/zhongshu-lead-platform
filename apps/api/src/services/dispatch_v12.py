@@ -706,6 +706,9 @@ def claim_assignment(
     deadline = WorkdayCalendarService(db).add_workdays(now, 3)
     assignment.status = AssignmentStatus.CLAIMED.value
     assignment.claimed_at = now
+    assignment.internal_assignee_user_id = claimed_by
+    assignment.internal_assigned_by = claimed_by
+    assignment.internal_assigned_at = now
     assignment.claim_points = int(assignment.points_price)
     assignment.appeal_deadline_at = deadline
     assignment.reward_due_at = deadline
@@ -727,6 +730,7 @@ def claim_assignment(
                 "ledger_id": ledger.id,
                 "appeal_deadline_at": deadline.isoformat(),
                 "reward_id": reward.id if reward else None,
+                "internal_assignee_user_id": claimed_by,
             },
         )
     )
