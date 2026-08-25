@@ -10,8 +10,6 @@ BRANDED_TEXT_FILES = [
     "apps/admin/public/app.js",
     "apps/admin/public/admin-design-system-v10.js",
     "apps/admin/public/admin-extended-pages-v10.js",
-    "apps/admin/public/v12-leads.html",
-    "apps/admin/public/v12-leads.js",
     "apps/admin/public/v12-operations.html",
     "apps/admin/public/v12-operations.js",
     "apps/call-h5/public/index.html",

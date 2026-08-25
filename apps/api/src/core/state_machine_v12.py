@@ -21,7 +21,12 @@ class UnknownLegacyStatus(ValueError):
 
 
 LEAD_TRANSITIONS: Mapping[LeadV12Status, Set[LeadV12Status]] = {
-    LeadV12Status.DRAFT: {LeadV12Status.PENDING_REVIEW, LeadV12Status.READY_DISPATCH, LeadV12Status.CLOSED},
+    LeadV12Status.DRAFT: {
+        LeadV12Status.PENDING_REVIEW,
+        LeadV12Status.PENDING_TELESALES_VERIFY,
+        LeadV12Status.READY_DISPATCH,
+        LeadV12Status.CLOSED,
+    },
     LeadV12Status.PENDING_REVIEW: {
         LeadV12Status.PENDING_TELESALES_VERIFY,
         LeadV12Status.READY_DISPATCH,

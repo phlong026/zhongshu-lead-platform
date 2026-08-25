@@ -67,14 +67,14 @@ def test_supplier_dedup_override_returns_to_pending_review(db) -> None:
     assert lead.pending_reason is None
 
 
-def test_admin_workspace_closes_codex_review_findings() -> None:
-    js = Path("apps/admin/public/v12-leads.js").read_text(encoding="utf-8")
-    assert "item.submitter_user_id===state.me.id" in js
-    assert "data-dedup-override" in js
-    assert "/dedup-override" in js
-    assert "supplierReviewStatus:'PENDING'" in js
-    assert "state.supplierReviewStatus=document.querySelector('#supplier-review-status').value" in js
-    assert "option value=\"\"" in js
+def test_unified_operations_workspace_keeps_source_specific_lead_actions() -> None:
+    js = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
+
+    assert "PLATFORM_MANUAL" in js
+    assert "SUPPLIER_H5" in js
+    assert "data-platform-pre-dispatch" in js
+    assert "data-review-info" in js
+    assert "平台补充资料后再处理" in js
 
 
 def test_supplier_h5_has_real_pagination_controls() -> None:

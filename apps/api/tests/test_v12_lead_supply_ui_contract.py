@@ -32,24 +32,24 @@ def test_admin_and_h5_shells_expose_v12_entry_scripts() -> None:
     assert Path("apps/h5/public/v12-supplier-entry.js").exists()
 
 
-def test_dedicated_v12_pages_are_self_contained() -> None:
-    _assert_local_references_exist(Path("apps/admin/public/v12-leads.html"))
+def test_unified_operations_and_h5_shells_are_self_contained() -> None:
+    _assert_local_references_exist(Path("apps/admin/public/v12-operations.html"))
     _assert_local_references_exist(Path("apps/h5/public/supplier.html"))
 
 
-def test_admin_lead_supply_ui_uses_v12_flow_without_pre_verification() -> None:
-    js = Path("apps/admin/public/v12-leads.js").read_text(encoding="utf-8")
-    assert "返回岗位首页" in js
-    assert "返回工作台首页" not in js
-    assert "返回管理后台" not in js
+def test_unified_operations_lead_ui_distinguishes_platform_and_supplier_flow() -> None:
+    js = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
     assert "/v1.2/platform/leads" in js
     assert "/v1.2/admin/supplier-leads" in js
     assert "/master-data/regions" in js
     assert "READY_DISPATCH" in js
-    assert "/verification/tasks" not in js
-    assert "LEAD_VERIFY" not in js
-    assert "前置电销核验任务" not in js
-    assert "疑似重复的客资会交由人工复核" in js
+    assert "data-platform-pre-dispatch" in js
+    assert "请先补充客户联系电话，再派发电话核验" in js
+    assert "平台补充资料后再处理" in js
+    assert "platformLeadPage" in js
+    assert "supplierLeadPage" in js
+    assert "leadQueuePager" in js
+    assert "加盟商来源才可退回加盟商补正" in js
 
 
 def test_operations_review_exposes_four_initial_decisions_and_one_step_telesales_assignment() -> None:

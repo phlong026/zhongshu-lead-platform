@@ -11,17 +11,15 @@ async function refreshPermissions(){
   try{const me=await request('/auth/me');permissions=me.permissions||[];}catch{permissions=[];}finally{checking=false;injectEntries();}
 }
 function can(code){return permissions.includes('*')||permissions.includes(code);}
-function canLeadEntry(){return can('lead.manual.manage')||can('lead.supplier.review');}
 function canOperations(){return ['lead.dispatch','return.read','return.review','verification.read','reward.read','reward.manage','reward.reverse','report.v12.read','audit.read','company.profile.review'].some(can);}
 function icon(name){return window.ZSIconSystem?.svg?.(name)||'';}
 function makeLink(id,href,iconName,label){const link=document.createElement('a');link.className='menu-item';link.id=id;link.href=href;zsSetSafeHtml(link, `<i>${icon(iconName)}</i>${label}`);return link;}
 function injectEntries(){
   const sidebar=document.querySelector('#sidebar');
   if(!sidebar){refreshPermissions();return;}
-  if((canLeadEntry()||canOperations())&&!document.querySelector('#v12-platform-label')){
+  if(canOperations()&&!document.querySelector('#v12-platform-label')){
     const label=document.createElement('div');label.className='menu-label';label.id='v12-platform-label';label.textContent='客资工作台';sidebar.append(label);
   }
-  if(canLeadEntry()&&!document.querySelector('#v12-lead-supply-entry'))sidebar.append(makeLink('v12-lead-supply-entry','./v12-leads.html','inbox','客资录入与初审'));
   if(canOperations()&&!document.querySelector('#v12-operations-entry'))sidebar.append(makeLink('v12-operations-entry','./v12-operations.html','layout-dashboard','全链路运营台'));
 }
 const observer=new MutationObserver(injectEntries);

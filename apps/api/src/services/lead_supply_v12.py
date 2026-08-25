@@ -56,7 +56,7 @@ def _assert_owner(lead: Lead, principal: Principal, *, supplier: bool) -> None:
             raise AppError("FORBIDDEN", "无权访问其他公司的供应商客资", 403)
         if principal.has_any_role("FRANCHISE_EMPLOYEE") and lead.submitter_user_id != principal.user_id:
             raise AppError("SUPPLIER_LEAD_NOT_OWNED", "加盟商员工只能编辑本人录入的客资", 403)
-    elif lead.submitter_user_id != principal.user_id:
+    elif not principal.can("lead.manual.manage") and lead.submitter_user_id != principal.user_id:
         raise AppError("FORBIDDEN", "无权修改其他录入人的客资草稿", 403)
 
 

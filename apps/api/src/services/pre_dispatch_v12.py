@@ -13,6 +13,7 @@ from ..core.config import get_settings
 from ..core.enums import VerificationTaskStatus
 from ..core.errors import AppError
 from ..core.models import Lead, Role, User, VerificationSubmission, VerificationTask
+from ..core.security import decrypt_text, normalize_phone
 from ..core.state_machine_v12 import assert_lead_transition
 from ..core.time import as_utc
 from ..core.v12_enums import LeadSourceKind, LeadV12Status, VerificationTaskType
@@ -118,11 +119,17 @@ def assign_pre_dispatch_task(
     if not normalized_reason:
         raise AppError("PRE_DISPATCH_REASON_REQUIRED", "派发前置核验必须填写原因", 422)
     lead = _lead_or_raise(db, lead_id, lock=True)
-    if lead.status not in {
+    allowed_statuses = {
         LeadV12Status.PENDING_REVIEW.value,
         LeadV12Status.PENDING_TELESALES_VERIFY.value,
-    }:
+    }
+    if lead.status == LeadV12Status.DRAFT.value:
+        if lead.source_kind != LeadSourceKind.PLATFORM_MANUAL.value:
+            raise AppError("PRE_DISPATCH_LEAD_STATE_INVALID", "加盟商草稿须先完成运营初审", 409)
+    elif lead.status not in allowed_statuses:
         raise AppError("PRE_DISPATCH_LEAD_STATE_INVALID", "当前客资不可派发前置电销核验", 409)
+    if not normalize_phone(decrypt_text(lead.phone_encrypted) or ""):
+        raise AppError("PRE_DISPATCH_PHONE_REQUIRED", "前置电话核验需要客户联系电话", 422)
     _telesales_or_raise(db, assignee_user_id)
     active = db.scalar(
         select(VerificationTask)

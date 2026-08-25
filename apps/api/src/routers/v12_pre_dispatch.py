@@ -70,6 +70,7 @@ def _task_to_dict(db: Session, task: VerificationTask, principal: CurrentPrincip
         "contact_result": task.contact_result,
         "conclusion": task.verification_conclusion,
         "lead": {
+            "source_kind": lead.source_kind if lead else None,
             "customer_name": lead.customer_name if lead else None,
             "phone": phone,
             "phone_masked": mask_phone(phone or decrypt_text(lead.phone_encrypted)) if lead else None,
@@ -200,6 +201,8 @@ def dial_pre_dispatch_verification(
     require_pre_dispatch_task_not_overdue(task)
     payload = _task_to_dict(db, task, principal, include_phone=True)
     phone = payload["lead"]["phone"]
+    if not phone:
+        raise AppError("PRE_DISPATCH_PHONE_REQUIRED", "前置电话核验需要客户联系电话", 422)
     write_audit(
         db,
         principal=principal,

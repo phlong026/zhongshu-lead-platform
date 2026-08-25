@@ -18,7 +18,6 @@ def test_user_pages_do_not_render_raw_json_or_internal_status_codes() -> None:
     supplier = read(H5 / "supplier.js")
 
     assert "from './ui.js?v=20260823-readable-fields2'" in admin
-    assert "from './ui.js?v=20260823-readable-fields2'" in read(ADMIN / "v12-leads.js")
 
     for raw_fragment in (
         "模板快照",
@@ -43,14 +42,9 @@ def test_user_pages_do_not_render_raw_json_or_internal_status_codes() -> None:
     ):
         assert raw_fragment not in admin
 
-    leads = read(ADMIN / "v12-leads.js")
-    assert "v12-leads.js?v=20260824-card-data1" in read(ADMIN / "v12-leads.html")
-    assert '<input class="v12-input" id="lead-source"' not in leads
-    assert '<input class="v12-input" id="lead-category"' not in leads
-    assert '<select class="v12-select" id="lead-source">' in leads
-    assert '<select class="v12-select" id="lead-category">' in leads
-    assert "load('source_channel',DEFAULT_SOURCE_OPTIONS)" in leads
-    assert "load('lead_category',DEFAULT_CATEGORY_OPTIONS)" in leads
+    operations = read(ADMIN / "v12-operations.js")
+    assert '<select class="ops-input" id="platform-lead-source">' in operations
+    assert '<select class="ops-input" id="platform-lead-category">' in operations
     assert '<input\n                  class="supplier-input"\n                  id="lead-source"' not in supplier
     assert '<input\n                  class="supplier-input"\n                  id="lead-category"' not in supplier
     assert '<select class="supplier-select" id="lead-source">' in supplier
@@ -137,7 +131,6 @@ def test_password_login_stays_on_the_formal_role_workbench() -> None:
 
 def test_role_workbenches_return_to_the_unified_login_and_role_home() -> None:
     operations = read(ADMIN / "v12-operations.js")
-    leads = read(ADMIN / "v12-leads.js")
     call = read(CALL / "app.js")
     workbench = read(H5 / "v12-workbench.js")
 
@@ -150,9 +143,6 @@ def test_role_workbenches_return_to_the_unified_login_and_role_home() -> None:
     assert "location.replace('/h5/')" in workbench
     assert "location.replace('/admin/index.html')" not in workbench
 
-    assert 'href="/admin/"' in leads
-    assert "返回岗位首页" in leads
-    assert "./#/dashboard" not in leads
 
 
 def test_completed_returns_never_show_as_waiting_for_review() -> None:
@@ -192,7 +182,6 @@ def test_company_profile_uses_business_names_instead_of_raw_codes_and_ids() -> N
     legacy_h5 = read(H5 / "app.js")
     workbench = read(H5 / "v12-workbench.js")
     operations = read(ADMIN / "v12-operations.js")
-    leads = read(ADMIN / "v12-leads.js")
 
     assert "account.level_code" not in legacy_h5
     assert "esc(state.me.company_id)" not in legacy_h5
@@ -202,7 +191,6 @@ def test_company_profile_uses_business_names_instead_of_raw_codes_and_ids() -> N
     assert "const recordCode=" in workbench
     assert "const readableLabel=" in operations
     assert "const recordCode=" in operations
-    assert "const readableLabel=" in leads
     for mapping in (
         "user:'账号'",
         "followup:'跟进记录'",
@@ -278,7 +266,6 @@ def test_audit_resource_types_never_fall_back_to_raw_snake_case() -> None:
 
 def test_role_pages_use_franchise_business_wording_instead_of_supplier_copy() -> None:
     supplier = read(H5 / "supplier.js")
-    leads = read(ADMIN / "v12-leads.js")
     operations = read(ADMIN / "v12-operations.js")
     workbench = read(H5 / "v12-workbench.js")
     entry = read(H5 / "v12-supplier-entry.js")
@@ -293,7 +280,6 @@ def test_role_pages_use_franchise_business_wording_instead_of_supplier_copy() ->
         "供应商客资上传",
     ):
         assert phrase not in supplier
-        assert phrase not in leads
         assert phrase not in operations
         assert phrase not in workbench
         assert phrase not in entry
@@ -301,7 +287,7 @@ def test_role_pages_use_franchise_business_wording_instead_of_supplier_copy() ->
 
     assert "<strong>合家美宅</strong>" in supplier
     assert "加盟商供客" in supplier
-    assert "加盟商客资初审" in leads
+    assert "加盟商客资初审" in operations
     assert "供客奖励" in operations
     assert "供客奖励" in workbench
 

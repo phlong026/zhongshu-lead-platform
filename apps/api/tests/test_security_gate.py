@@ -908,7 +908,6 @@ def test_browser_entrypoints_load_safe_html_boundary_first() -> None:
     root = Path(__file__).parents[3]
     entrypoints = {
         "apps/admin/public/index.html": "/h5/safe-html.js",
-        "apps/admin/public/v12-leads.html": "/h5/safe-html.js",
         "apps/admin/public/v12-operations.html": "/h5/safe-html.js",
         "apps/call-h5/public/index.html": "/h5/safe-html.js",
         "apps/h5/public/index.html": "./safe-html.js",

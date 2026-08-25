@@ -491,3 +491,197 @@ def test_supplier_approval_notification_keys_fit_outbox_limit(api_client) -> Non
         ).all()
         assert any(item.event_type == "V12_LEAD_DISPATCH_REQUIRED" for item in outboxes)
         assert all(len(item.event_key) <= 128 for item in outboxes)
+
+
+def test_platform_draft_can_enter_telesales_then_return_to_operation_rework(api_client) -> None:
+    client, factory = api_client
+    with factory() as db:
+        telesales = db.scalar(select(User).where(User.username == "telesales"))
+        operation_user = db.scalar(select(User).where(User.username == "operation"))
+        assert telesales is not None and operation_user is not None
+        publish_template(
+            db,
+            code="PRE_DISPATCH",
+            name="前置事实核验",
+            schema={"fields": []},
+        )
+        db.commit()
+        telesales_id = telesales.id
+        operation_id = operation_user.id
+
+    operation = _login(client, "operation", "Operation123!")
+    telesales = _login(client, "telesales", "Telesales123!")
+    platform_draft = _data(
+        client.post(
+            "/api/v1/v1.2/platform/leads",
+            headers=operation,
+            json={
+                "customer_name": "待电话确认的平台客户",
+                "phone": "13900139034",
+                "city": "上海市",
+            },
+        )
+    )
+    assigned = _data(
+        client.post(
+            f"/api/v1/v1.2/admin/leads/{platform_draft['id']}/pre-dispatch-verification",
+            headers=operation,
+            json={
+                "assignee_user_id": telesales_id,
+                "reason": "缺少客户授权、联系方式和需求说明，需要电话补充",
+            },
+        )
+    )
+    assert assigned["lead"]["status"] == LeadV12Status.PENDING_TELESALES_VERIFY.value
+    assert assigned["lead"]["source_kind"] == LeadSourceKind.PLATFORM_MANUAL.value
+    assert assigned["task_type"] == VerificationTaskType.PRE_DISPATCH_VERIFY.value
+
+    _data(
+        client.post(
+            f"/api/v1/v1.2/pre-dispatch-verifications/tasks/{assigned['id']}/start",
+            headers=telesales,
+        )
+    )
+    _data(
+        client.post(
+            f"/api/v1/v1.2/pre-dispatch-verifications/tasks/{assigned['id']}/submit",
+            headers=telesales,
+            json={
+                "contact_result": "CONNECTED",
+                "conclusion": "INFO_INCOMPLETE",
+                "note": "客户愿意继续沟通，但尚未确认具体需求和授权方式",
+            },
+        )
+    )
+    disposition = _data(
+        client.post(
+            f"/api/v1/v1.2/admin/leads/{platform_draft['id']}/pre-dispatch-disposition",
+            headers=operation,
+            json={"decision": "RETURN_REWORK", "note": "平台补充客户授权和明确需求后再提交"},
+        )
+    )
+    assert disposition["status"] == LeadV12Status.DRAFT.value
+
+    reworked = _data(
+        client.patch(
+            f"/api/v1/v1.2/platform/leads/{platform_draft['id']}",
+            headers=operation,
+            json=_valid_lead_body("13900139034"),
+        )
+    )
+    assert reworked["source_kind"] == LeadSourceKind.PLATFORM_MANUAL.value
+    assert reworked["supplier_company_id"] is None
+    assert reworked["status"] == LeadV12Status.DRAFT.value
+
+    with factory() as db:
+        operation_notifications = db.scalars(
+            select(Notification).where(
+                Notification.user_id == operation_id,
+                Notification.scene.in_(
+                    {
+                        "V12_PRE_DISPATCH_OPERATION_REQUIRED",
+                        "V12_PLATFORM_LEAD_DISPOSITION",
+                    }
+                ),
+            )
+        ).all()
+        links_by_scene = {item.scene: item.deep_link for item in operation_notifications}
+        assert links_by_scene["V12_PRE_DISPATCH_OPERATION_REQUIRED"] == (
+            f"/admin/v12-operations.html?view=telesales&id={assigned['id']}"
+        )
+        assert links_by_scene["V12_PLATFORM_LEAD_DISPOSITION"] == (
+            f"/admin/v12-operations.html?view=leads&id={platform_draft['id']}"
+        )
+        outboxes = db.scalars(
+            select(NotificationOutbox).where(
+                NotificationOutbox.aggregate_id.in_([platform_draft["id"], assigned["id"]])
+            )
+        ).all()
+        assert {
+            "V12_PRE_DISPATCH_OPERATION_REQUIRED",
+            "V12_PLATFORM_LEAD_DISPOSITION",
+        }.issubset({item.event_type for item in outboxes})
+        assert all(len(item.event_key) <= 128 for item in outboxes)
+
+
+def test_platform_draft_without_phone_cannot_enter_telesales_verification(api_client) -> None:
+    client, factory = api_client
+    with factory() as db:
+        telesales = db.scalar(select(User).where(User.username == "telesales"))
+        assert telesales is not None
+        telesales_id = telesales.id
+
+    operation = _login(client, "operation", "Operation123!")
+    draft = _data(
+        client.post(
+            "/api/v1/v1.2/platform/leads",
+            headers=operation,
+            json={"customer_name": "没有联系电话的平台客户", "city": "上海市"},
+        )
+    )
+
+    blocked = client.post(
+        f"/api/v1/v1.2/admin/leads/{draft['id']}/pre-dispatch-verification",
+        headers=operation,
+        json={"assignee_user_id": telesales_id, "reason": "需电话补充客户需求"},
+    )
+
+    assert blocked.status_code == 422
+    assert blocked.json()["code"] == "PRE_DISPATCH_PHONE_REQUIRED"
+
+
+def test_supplier_draft_cannot_bypass_initial_review_into_telesales_verification(api_client) -> None:
+    client, factory = api_client
+    _approve_supplier_capability(factory)
+    with factory() as db:
+        telesales = db.scalar(select(User).where(User.username == "telesales"))
+        assert telesales is not None
+        telesales_id = telesales.id
+
+    supplier = _login(client, "franchise_demo", "Franchise123!")
+    operation = _login(client, "operation", "Operation123!")
+    draft = _data(
+        client.post(
+            "/api/v1/v1.2/supplier/leads",
+            headers=supplier,
+            json=_valid_lead_body("13900139035"),
+        )
+    )
+
+    blocked = client.post(
+        f"/api/v1/v1.2/admin/leads/{draft['id']}/pre-dispatch-verification",
+        headers=operation,
+        json={"assignee_user_id": telesales_id, "reason": "错误尝试绕过初审"},
+    )
+
+    assert blocked.status_code == 409
+    assert blocked.json()["code"] == "PRE_DISPATCH_LEAD_STATE_INVALID"
+
+
+def test_platform_endpoints_reject_supplier_lead_ids(api_client) -> None:
+    client, factory = api_client
+    _approve_supplier_capability(factory)
+    supplier = _login(client, "franchise_demo", "Franchise123!")
+    operation = _login(client, "operation", "Operation123!")
+    draft = _data(
+        client.post(
+            "/api/v1/v1.2/supplier/leads",
+            headers=supplier,
+            json={"customer_name": "不能走平台接口的加盟商草稿"},
+        )
+    )
+
+    update = client.patch(
+        f"/api/v1/v1.2/platform/leads/{draft['id']}",
+        headers=operation,
+        json={"need_summary": "错误入口"},
+    )
+    submit = client.post(
+        f"/api/v1/v1.2/platform/leads/{draft['id']}/submit",
+        headers=operation,
+    )
+
+    assert update.status_code == 409
+    assert update.json()["code"] == "LEAD_SOURCE_INVALID"
+    assert submit.status_code == 409
+    assert submit.json()["code"] == "LEAD_SOURCE_INVALID"

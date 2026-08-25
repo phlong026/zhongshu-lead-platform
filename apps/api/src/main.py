@@ -3,9 +3,10 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 import os
 from pathlib import Path
+from urllib.parse import urlencode
 
 from anyio.to_thread import current_default_thread_limiter
-from fastapi import Cookie, Depends, FastAPI
+from fastapi import Cookie, Depends, FastAPI, Request
 from fastapi.responses import RedirectResponse
 from jwt import InvalidTokenError
 from sqlalchemy import text
@@ -270,10 +271,15 @@ def h5_supplier_legacy_entry() -> RedirectResponse:
 
 
 @app.get("/admin/v12-leads.html", include_in_schema=False)
-def admin_lead_legacy_entry() -> RedirectResponse:
+def admin_lead_legacy_entry(request: Request) -> RedirectResponse:
     """Retire the standalone lead page in favour of the platform workbench."""
 
-    return RedirectResponse(url="/admin/v12-operations.html?view=leads", status_code=302)
+    query = {"view": "leads"}
+    for key in ("id", "status", "source"):
+        value = request.query_params.get(key)
+        if value:
+            query[key] = value
+    return RedirectResponse(url=f"/admin/v12-operations.html?{urlencode(query)}", status_code=302)
 
 
 for route, directory, name in [

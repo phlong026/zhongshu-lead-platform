@@ -7,7 +7,7 @@
 - Primary product surfaces: platform operations desktop (`/admin/`), platform mobile workbench (`/h5/admin/`), franchise workbench (`/h5/`), and telesales console (`/h5/call/`).
 - Evidence reviewed:
   - `apps/admin/public/v12-operations.js` and `v12-operations.css`
-  - `apps/admin/public/v12-leads.js`
+  - `apps/admin/public/v12-operations.js`（已承接原独立客资页）
   - `apps/h5/public/v12-workbench.js`
   - `apps/api/src/services/rbac.py`
   - `apps/api/src/core/v12_enums.py`

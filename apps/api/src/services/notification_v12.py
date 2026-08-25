@@ -37,6 +37,7 @@ def build_v12_deep_link(target: str, business_id: str, *, admin: bool = False) -
         "dispatch",
         "returns",
         "rewards",
+        "telesales",
         "call",
     }
     normalized = target.strip().lower()
@@ -45,6 +46,8 @@ def build_v12_deep_link(target: str, business_id: str, *, admin: bool = False) -
     if normalized == "call":
         return "/h5/call/#/verify"
     root = "/admin/v12-operations.html" if admin else "/h5/v12-workbench.html"
+    if admin:
+        normalized = {"lead": "leads", "review": "leads"}.get(normalized, normalized)
     return f"{root}?{urlencode({'view': normalized, 'id': business_id})}"
 
 
@@ -458,6 +461,60 @@ def project_v12_notifications(
                 business_id=task.id,
                 business_ids={"lead_id": task.lead_id, "verification_task_id": task.id},
             )
+        return
+
+    if action == "V12_PRE_DISPATCH_VERIFY_SUBMIT":
+        task = db.get(VerificationTask, resource_id)
+        lead = db.get(Lead, task.lead_id) if task else None
+        if task and lead:
+            source_title = "平台客资" if lead.source_kind == "PLATFORM_MANUAL" else "加盟商客资"
+            emit_platform_role_notifications(
+                db,
+                event_key=f"v12:verification:{task.id}:submitted:{task.lock_version}:platform",
+                event_type="V12_PRE_DISPATCH_OPERATION_REQUIRED",
+                role_codes={"OPERATION", "SUPER_ADMIN"},
+                title=f"{source_title}电话核验已完成，等待运营处置",
+                body="请结合电销事实结论决定进入派发池、补充资料、重复处理或关闭。",
+                target="telesales",
+                business_id=task.id,
+                business_ids={"lead_id": lead.id, "verification_task_id": task.id},
+            )
+        return
+
+    if action == "V12_PRE_DISPATCH_DISPOSITION":
+        lead = db.get(Lead, resource_id)
+        if lead is None:
+            return
+        event_round = _lead_event_round(after, lead, timestamp_field="reviewed_at")
+        is_platform = lead.source_kind == "PLATFORM_MANUAL"
+        source_title = "平台客资" if is_platform else "加盟商客资"
+        copy_by_status = {
+            "DRAFT": (f"{source_title}需要补充", "请补充资料后重新处理。"),
+            "DUPLICATE": (f"{source_title}进入重复处理", "平台正在处理重复记录，请留意后续结果。"),
+            "CLOSED": (f"{source_title}已关闭", "该条客资已完成关闭处置。"),
+            "READY_DISPATCH": (f"{source_title}已进入待派发池", "客资将按派发规则匹配接收公司。"),
+        }
+        title, body = copy_by_status.get(
+            str(lead.status).upper(),
+            (f"{source_title}已完成运营处置", "请进入客资详情查看最新处理结果。"),
+        )
+        emit_business_notification(
+            db,
+            event_key=f"v12:lead:{lead.id}:pre-disposition:{event_round}",
+            event_type=(
+                "V12_PLATFORM_LEAD_DISPOSITION"
+                if is_platform
+                else "V12_SUPPLIER_LEAD_DISPOSITION"
+            ),
+            company_id=None if is_platform else lead.supplier_company_id,
+            user_id=lead.submitter_user_id if is_platform else None,
+            title=title,
+            body=body,
+            target="lead",
+            business_id=lead.id,
+            business_ids={"lead_id": lead.id},
+            admin=is_platform,
+        )
         return
 
     if action == "V12_RETURN_VERIFY_SUBMIT":

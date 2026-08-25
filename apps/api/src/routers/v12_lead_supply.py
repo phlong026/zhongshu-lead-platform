@@ -122,6 +122,13 @@ def _area_dict(
     return result
 
 
+def _platform_lead_or_raise(db: Session, lead_id: str) -> Lead:
+    lead = get_lead_or_404(db, lead_id)
+    if lead.source_kind != LeadSourceKind.PLATFORM_MANUAL.value:
+        raise AppError("LEAD_SOURCE_INVALID", "仅平台来源客资可从此入口查看", 409)
+    return lead
+
+
 @router.post("/platform/leads")
 def create_platform_lead(
     body: LeadDraftBody,
@@ -156,7 +163,7 @@ def update_platform_lead(
     principal=Depends(require_permissions("lead.manual.manage")),
     db: Session = Depends(get_db),
 ):
-    lead = get_lead_or_404(db, lead_id)
+    lead = _platform_lead_or_raise(db, lead_id)
     before = lead_supply_to_dict(lead, principal)
     update_draft(db, lead=lead, principal=principal, values=body.model_dump(exclude_unset=True))
     write_audit(
@@ -173,6 +180,17 @@ def update_platform_lead(
     return ok(request, lead_supply_to_dict(lead, principal))
 
 
+@router.get("/platform/leads/{lead_id}")
+def get_platform_lead(
+    lead_id: str,
+    request: Request,
+    principal=Depends(require_permissions("lead.manual.manage")),
+    db: Session = Depends(get_db),
+):
+    lead = _platform_lead_or_raise(db, lead_id)
+    return ok(request, lead_supply_to_dict(lead, principal))
+
+
 @router.post("/platform/leads/{lead_id}/submit")
 def submit_platform_lead(
     lead_id: str,
@@ -180,7 +198,7 @@ def submit_platform_lead(
     principal=Depends(require_permissions("lead.manual.manage")),
     db: Session = Depends(get_db),
 ):
-    lead = get_lead_or_404(db, lead_id)
+    lead = _platform_lead_or_raise(db, lead_id)
     result = submit_draft(db, lead=lead, principal=principal)
     write_audit(
         db,
@@ -207,9 +225,6 @@ def list_platform_leads(
 ):
     stmt = select(Lead).where(Lead.source_kind == LeadSourceKind.PLATFORM_MANUAL.value)
     count_stmt = select(func.count(Lead.id)).where(Lead.source_kind == LeadSourceKind.PLATFORM_MANUAL.value)
-    if not principal.can("*") and not principal.can("lead.supplier.review"):
-        stmt = stmt.where(Lead.submitter_user_id == principal.user_id)
-        count_stmt = count_stmt.where(Lead.submitter_user_id == principal.user_id)
     if status:
         stmt = stmt.where(Lead.status == status)
         count_stmt = count_stmt.where(Lead.status == status)

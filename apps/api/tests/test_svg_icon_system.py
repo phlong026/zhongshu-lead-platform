@@ -28,7 +28,6 @@ def test_all_h5_surfaces_load_local_svg_icon_system_before_application():
 def test_all_admin_surfaces_reuse_same_local_svg_icon_system():
     entries = {
         "index.html": ("./app.js", "?v=20260824-card-data1", SVG_LOGIN_VERSION),
-        "v12-leads.html": ("./v12-leads.js", "?v=20260824-card-data1", SVG_BASE_VERSION),
         "v12-operations.html": ("./v12-operations.js", "?v=20260825-five-role", SVG_BASE_VERSION),
     }
     for filename, (application_script, application_version, svg_version) in entries.items():
@@ -81,7 +80,6 @@ def test_admin_uses_named_svg_icons_instead_of_unicode_placeholders():
         "admin-design-system-v10.js",
         "admin-extended-pages-v10.js",
         "v12-entry-link.js",
-        "v12-leads.js",
         "v12-operations.js",
     )
     source = "\n".join((ADMIN / filename).read_text(encoding="utf-8") for filename in filenames)

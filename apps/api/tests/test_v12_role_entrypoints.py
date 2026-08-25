@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 
 def _login(client, username: str, password: str) -> None:
     response = client.post(
@@ -24,6 +26,14 @@ def test_role_entrypoints_use_only_v12_role_workbenches(api_client) -> None:
     legacy_platform_leads = client.get("/admin/v12-leads.html", follow_redirects=False)
     assert legacy_platform_leads.status_code == 302
     assert legacy_platform_leads.headers["location"] == "/admin/v12-operations.html?view=leads"
+    legacy_platform_detail = client.get(
+        "/admin/v12-leads.html?id=lead-123&status=DRAFT&source=PLATFORM_MANUAL",
+        follow_redirects=False,
+    )
+    assert legacy_platform_detail.status_code == 302
+    assert legacy_platform_detail.headers["location"] == (
+        "/admin/v12-operations.html?view=leads&id=lead-123&status=DRAFT&source=PLATFORM_MANUAL"
+    )
 
     _login(client, "telesales", "Telesales123!")
     telesales_h5 = client.get("/h5/", follow_redirects=False)
@@ -46,3 +56,19 @@ def test_role_entrypoints_use_only_v12_role_workbenches(api_client) -> None:
     assert franchise_h5.headers["location"] == "/h5/v12-workbench.html"
     franchise_admin = client.get("/admin/", follow_redirects=False)
     assert franchise_admin.headers["location"] == "/h5/v12-workbench.html"
+
+
+def test_platform_lead_work_is_migrated_into_operations_without_legacy_page() -> None:
+    entry_source = Path("apps/admin/public/v12-entry-link.js").read_text(encoding="utf-8")
+    operations_source = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
+
+    assert "v12-leads.html" not in entry_source
+    assert "/v1.2/platform/leads" in operations_source
+    assert "data-platform-pre-dispatch" in operations_source
+    assert "平台补充资料后再处理" in operations_source
+    assert "async function openLeadDetail(id)" in operations_source
+    assert "await platformDetail(id)" in operations_source
+    assert "await reviewDetail(id)" in operations_source
+    assert not Path("apps/admin/public/v12-leads.html").exists()
+    assert not Path("apps/admin/public/v12-leads.js").exists()
+    assert not Path("apps/admin/public/v12-leads.css").exists()
