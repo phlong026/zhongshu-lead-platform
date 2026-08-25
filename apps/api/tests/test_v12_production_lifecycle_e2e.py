@@ -689,16 +689,29 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
     )
     assert followup["status"] == "CONTACTED"
     _make_reward_due(factory, reward_one)
+    missing_settlement_note = client.post(
+        f"/api/v1/v1.2/admin/supplier-rewards/{reward_one}/settle",
+        headers=admin,
+    )
+    assert missing_settlement_note.status_code == 422
+    blank_settlement_note = client.post(
+        f"/api/v1/v1.2/admin/supplier-rewards/{reward_one}/settle",
+        headers=admin,
+        json={"note": "   "},
+    )
+    assert blank_settlement_note.status_code == 422
     first_settlement = _data(
         client.post(
             f"/api/v1/v1.2/admin/supplier-rewards/{reward_one}/settle",
             headers=admin,
+            json={"note": "E2E 核对奖励结算条件"},
         )
     )
     repeated_settlement = _data(
         client.post(
             f"/api/v1/v1.2/admin/supplier-rewards/{reward_one}/settle",
             headers=admin,
+            json={"note": "E2E 重复结算幂等核验"},
         )
     )
     assert first_settlement["status"] == "SETTLED"
@@ -760,6 +773,7 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
         client.post(
             f"/api/v1/v1.2/admin/supplier-rewards/{reward_three}/settle",
             headers=admin,
+            json={"note": "E2E 冻结奖励结算核验"},
         )
     )
     assert rejected_reward_settlement["status"] == "SETTLED"

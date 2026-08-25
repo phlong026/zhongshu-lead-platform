@@ -144,6 +144,7 @@ def test_manual_recharge_requires_explicit_confirmation_and_enqueues_notice(api_
         "package_id": package["id"],
         "external_reference": "BANK-P101-CONFIRM",
         "cash_amount_cents": package["cash_amount_cents"],
+        "note": "已核对银行流水与收款凭证",
         "idempotency_key": "recharge-p101-confirm",
     }
     rejected = client.post("/api/v1/points/recharge", headers=admin, json=payload)
@@ -164,6 +165,92 @@ def test_manual_recharge_requires_explicit_confirmation_and_enqueues_notice(api_
         outbox = db.scalars(select(NotificationOutbox).where(NotificationOutbox.event_type == "POINTS_RECHARGED")).all()
         assert len(notifications) == 1
         assert len(outbox) == 1
+
+
+def test_financial_writes_require_voucher_and_preserve_business_ledger_semantics(api_client):
+    client, factory = api_client
+    admin = _login(client, "admin", "Admin123!")
+    operation = _login(client, "operation", "Operation123!")
+    package = client.get("/api/v1/points/packages", headers=admin).json()["data"][0]
+    with factory() as db:
+        company = db.scalar(select(Company).where(Company.code == "SH-DEMO"))
+        assert company
+        company_id = company.id
+
+    recharge_payload = {
+        "company_id": company_id,
+        "package_id": package["id"],
+        "external_reference": "BANK-P101-VOUCHER",
+        "cash_amount_cents": package["cash_amount_cents"],
+        "idempotency_key": "recharge-p101-voucher",
+        "confirmed": True,
+    }
+    missing_voucher = client.post("/api/v1/points/recharge", headers=admin, json=recharge_payload)
+    assert missing_voucher.status_code == 422
+    blank_voucher = client.post(
+        "/api/v1/points/recharge",
+        headers=admin,
+        json={**recharge_payload, "note": "   "},
+    )
+    assert blank_voucher.status_code == 422
+
+    client.cookies.clear()
+    assert client.get("/api/v1/points/packages?active_only=false").status_code == 401
+    assert client.get("/api/v1/points/packages?active_only=false", headers=operation).status_code == 403
+    assert client.get("/api/v1/points/packages?active_only=false", headers=admin).status_code == 200
+
+    accepted = client.post(
+        "/api/v1/points/recharge",
+        headers=admin,
+        json={**recharge_payload, "note": "已核对收款流水、凭证截图和到账金额"},
+    )
+    assert accepted.status_code == 200, accepted.text
+    recharge_ledger_id = accepted.json()["data"]["id"]
+
+    adjustment_payload = {
+        "company_id": company_id,
+        "delta": 10,
+        "reason": "测试人工调账原因",
+        "idempotency_key": "adjust-p101-voucher",
+    }
+    assert client.post(
+        "/api/v1/points/adjust",
+        headers=admin,
+        json={**adjustment_payload, "reason": "   "},
+    ).status_code == 422
+    assert client.post(
+        f"/api/v1/points/ledgers/{recharge_ledger_id}/reverse",
+        headers=admin,
+        json={"reason": "   ", "idempotency_key": "reverse-p101-blank"},
+    ).status_code == 422
+    assert client.post("/api/v1/points/adjust", headers=operation, json=adjustment_payload).status_code == 403
+    assert client.post("/api/v1/points/recharge", headers=operation, json={**recharge_payload, "note": "越权充值"}).status_code == 403
+    assert client.post(
+        f"/api/v1/points/ledgers/{recharge_ledger_id}/reverse",
+        headers=operation,
+        json={"reason": "越权冲正", "idempotency_key": "reverse-p101-operation"},
+    ).status_code == 403
+
+    with factory() as db:
+        claim_ledger = change_points(
+            db,
+            company_id=company_id,
+            delta=-10,
+            ledger_type="CLAIM",
+            business_type="ASSIGNMENT",
+            business_id="assignment-p101-voucher",
+            idempotency_key="claim-p101-voucher",
+            created_by=None,
+        )
+        db.commit()
+
+    protected = client.post(
+        f"/api/v1/points/ledgers/{claim_ledger.id}/reverse",
+        headers=admin,
+        json={"reason": "不能跳过业务退回流程", "idempotency_key": "reverse-p101-claim"},
+    )
+    assert protected.status_code == 409
+    assert protected.json()["code"] == "POINTS_REVERSAL_MANUAL_ONLY"
 
 
 def test_publishing_new_package_version_closes_previous_active_version(api_client):

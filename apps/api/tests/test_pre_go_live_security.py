@@ -697,10 +697,12 @@ def test_return_reward_review_permissions_and_reward_settlement_are_idempotent(a
     first = client.post(
         f"/api/v1/v1.2/admin/supplier-rewards/{graph['reward_id']}/settle",
         headers=admin,
+        json={"note": "安全测试奖励结算"},
     )
     second = client.post(
         f"/api/v1/v1.2/admin/supplier-rewards/{graph['reward_id']}/settle",
         headers=admin,
+        json={"note": "安全测试重复结算"},
     )
     assert first.status_code == 200, first.text
     assert second.status_code == 200, second.text

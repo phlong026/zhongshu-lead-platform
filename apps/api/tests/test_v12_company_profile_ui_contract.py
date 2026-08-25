@@ -42,7 +42,7 @@ def test_v12_operations_exposes_company_review_queue() -> None:
     assert "company_name" in js
     assert "review_note" in js
     assert "review_status" in js
-    assert "v12-operations.js?v=20260825-stage7-return-closure" in html
+    assert "v12-operations.js?v=20260825-stage8-finance-governance" in html
 
 
 def test_stage6_company_review_and_internal_collaboration_actions_are_role_scoped() -> None:
@@ -71,3 +71,25 @@ def test_stage7_return_and_redispatch_actions_keep_the_business_closure_explicit
     assert "x.status==='REVIEWING'&&verification.conclusion" in admin
     assert "RETURNED_RECEIVER_EXCLUDED" in admin
     assert "return_receiver_override" in admin
+
+
+def test_stage8_finance_governance_stays_inside_the_unified_workbench() -> None:
+    admin = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
+
+    for marker in (
+        "/points/adjust",
+        "/points/ledgers/${encodeURIComponent(ledgerId)}/reverse",
+        "/points/reconciliation/${encodeURIComponent(companyId)}",
+        "/points/packages?active_only=false",
+        "/points/price-rules",
+        "/v1.2/supplier-rewards",
+        "ledger.type",
+        "financeRewardPage",
+        "收款核验与凭证说明",
+        "结算说明",
+        "对账异常",
+        "无需第二位超级管理员复核",
+    ):
+        assert marker in admin
+
+    assert "function rewards" not in admin

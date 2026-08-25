@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..core.auth import CurrentPrincipal, require_permissions
 from ..core.database import get_db
+from ..core.enums import PointsLedgerType
 from ..core.errors import AppError
 from ..core.models import Company, LeadPriceRule, PointsLedger, PointsPackage
 from ..core.responses import ok, page
@@ -55,7 +56,9 @@ def _package_to_dict(item: PointsPackage) -> dict:
 
 
 @router.get("/packages")
-def list_packages(request: Request, db: Session = Depends(get_db), active_only: bool = Query(default=True)):
+def list_packages(request: Request, principal: CurrentPrincipal, db: Session = Depends(get_db), active_only: bool = Query(default=True)):
+    if not active_only and not (principal.can("points.read") or principal.can("*")):
+        raise AppError("FORBIDDEN", "无权查看全部充值档位", 403)
     stmt = select(PointsPackage)
     if active_only:
         now = datetime.now(timezone.utc)
@@ -229,6 +232,8 @@ def reverse(ledger_id: str, body: ReverseLedgerBody, request: Request, principal
     original = db.get(PointsLedger, ledger_id)
     if not original:
         raise AppError("POINTS_LEDGER_NOT_FOUND", "积分流水不存在", 404)
+    if original.ledger_type not in {PointsLedgerType.RECHARGE, PointsLedgerType.ADJUST}:
+        raise AppError("POINTS_REVERSAL_MANUAL_ONLY", "领取、退回和奖励流水必须通过对应业务流程处理，不能直接冲正", 409)
     reversal = reverse_ledger(db, original, reason=body.reason, idempotency_key=body.idempotency_key, created_by=principal.user_id)
     write_audit(db, principal=principal, action="POINTS_REVERSE", resource_type="points_ledger", resource_id=reversal.id, company_id=original.company_id, metadata={"original_ledger_id": original.id, "reason": body.reason}, request_id=request.state.request_id)
     db.commit()
