@@ -40,6 +40,16 @@ def test_nginx_reuses_upstream_connections_for_capacity() -> None:
         assert 'proxy_set_header Connection "";' in config or "proxy_set_header Connection $connection_upgrade;" in config
 
 
+def test_nginx_template_mount_leaves_envsubst_destination_writable() -> None:
+    base_compose = Path("docker-compose.yml").read_text(encoding="utf-8")
+    production_compose = Path("docker-compose.prod.yml").read_text(encoding="utf-8")
+
+    assert "/etc/nginx/conf.d/default.conf:ro" not in base_compose
+    template_target = "/etc/nginx/templates/default.conf.template:ro"
+    assert template_target in base_compose
+    assert template_target in production_compose
+
+
 def test_container_shell_scripts_are_checked_out_with_linux_line_endings():
     attributes = Path('.gitattributes').read_text(encoding='utf-8')
     assert '*.sh text eol=lf' in attributes
