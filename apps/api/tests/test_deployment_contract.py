@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 from fastapi.testclient import TestClient
 
@@ -49,3 +50,16 @@ def test_container_shell_scripts_are_checked_out_with_linux_line_endings():
         content = script.read_bytes()
         assert content.startswith(b'#!/'), script
         assert b'\r\n' not in content, script
+
+
+def test_migration_revision_identifiers_fit_alembic_version_column() -> None:
+    """Keep revision values compatible with Alembic's default VARCHAR(32) table."""
+
+    for migration in Path("migrations/versions").glob("*.py"):
+        match = re.search(
+            r'^revision\s*=\s*["\']([^"\']+)["\']',
+            migration.read_text(encoding="utf-8"),
+            flags=re.MULTILINE,
+        )
+        assert match is not None, migration
+        assert len(match.group(1)) <= 32, migration

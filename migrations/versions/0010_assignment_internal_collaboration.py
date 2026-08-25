@@ -1,6 +1,6 @@
 """Add company-internal assignment ownership without changing platform dispatch.
 
-Revision ID: 0010_assignment_internal_collaboration
+Revision ID: 0010_assignment_internal
 Revises: 0009_single_business_role
 """
 from __future__ import annotations
@@ -9,7 +9,7 @@ import sqlalchemy as sa
 from alembic import op
 
 
-revision = "0010_assignment_internal_collaboration"
+revision = "0010_assignment_internal"
 down_revision = "0009_single_business_role"
 branch_labels = None
 depends_on = None
