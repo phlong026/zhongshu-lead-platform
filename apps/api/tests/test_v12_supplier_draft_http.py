@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
-from apps.api.src.core.models import AuditLog, Company, Lead, User
+from apps.api.src.core.models import AuditLog, Company, Lead, Notification, NotificationOutbox, User
 from apps.api.src.core.models_v12 import CompanyLeadCapability
 from apps.api.src.core.security import encrypt_text, hash_phone
-from apps.api.src.core.v12_enums import LeadSourceKind, LeadV12Status
+from apps.api.src.core.v12_enums import LeadSourceKind, LeadV12Status, VerificationTaskType
 from apps.api.src.services.auth_service import create_internal_user
+from apps.api.src.services.verification_service import publish_template
 
 
 def _login(client, username: str, password: str) -> dict[str, str]:
@@ -329,6 +330,15 @@ def test_rejected_supplier_lead_can_revise_and_resubmit_over_http(api_client) ->
     assert blocked.status_code == 409
     assert blocked.json()["code"] == "LEAD_REVISION_NOT_ALLOWED"
 
+    rejected_again = _data(
+        client.post(
+            f"/api/v1/v1.2/admin/supplier-leads/{lead['id']}/review",
+            headers=admin,
+            json={"decision": "INVALID", "note": "补正后仍缺少可核验的客户意向说明"},
+        )
+    )
+    assert rejected_again["lead"]["status"] == "INVALID"
+
     with factory() as db:
         audit = db.scalar(
             select(AuditLog).where(
@@ -338,3 +348,146 @@ def test_rejected_supplier_lead_can_revise_and_resubmit_over_http(api_client) ->
             )
         )
         assert audit is not None
+        submissions = db.scalars(
+            select(AuditLog)
+            .where(
+                AuditLog.action == "V12_SUPPLIER_LEAD_SUBMIT",
+                AuditLog.resource_id == lead["id"],
+            )
+            .order_by(AuditLog.created_at.asc())
+        ).all()
+        assert len(submissions) == 2
+        assert submissions[0].after_json["submission_snapshot"]["need_summary"] == _valid_lead_body("0")["need_summary"]
+        assert submissions[1].after_json["submission_snapshot"]["need_summary"] == "已补充施工时间、地点和预算安排"
+        submitted_notifications = db.scalars(
+            select(Notification).where(
+                Notification.company_id == company_id,
+                Notification.scene == "V12_SUPPLIER_LEAD_SUBMITTED",
+            )
+        ).all()
+        rejected_notifications = db.scalars(
+            select(Notification).where(
+                Notification.company_id == company_id,
+                Notification.scene == "V12_SUPPLIER_LEAD_REJECTED",
+            )
+        ).all()
+        submission_outboxes = db.scalars(
+            select(NotificationOutbox).where(
+                NotificationOutbox.aggregate_id == lead["id"],
+                NotificationOutbox.event_type == "V12_SUPPLIER_LEAD_SUBMITTED",
+            )
+        ).all()
+        assert len(submitted_notifications) == 2
+        assert len(rejected_notifications) == 2
+        assert len(submission_outboxes) == 2
+        assert len({item.event_key for item in submission_outboxes}) == 2
+
+
+def test_supplier_initial_review_can_require_assigned_telesales_verification(api_client) -> None:
+    client, factory = api_client
+    _approve_supplier_capability(factory)
+    with factory() as db:
+        telesales = db.scalar(select(User).where(User.username == "telesales"))
+        assert telesales is not None
+        publish_template(
+            db,
+            code="PRE_DISPATCH",
+            name="前置事实核验",
+            schema={"fields": []},
+        )
+        db.commit()
+        telesales_id = telesales.id
+
+    supplier = _login(client, "franchise_demo", "Franchise123!")
+    operation = _login(client, "operation", "Operation123!")
+    initial_body = _valid_lead_body("13900139032")
+    lead = _data(
+        client.post(
+            "/api/v1/v1.2/supplier/leads",
+            headers=supplier,
+            json=initial_body,
+        )
+    )
+    _data(
+        client.post(
+            f"/api/v1/v1.2/supplier/leads/{lead['id']}/submit",
+            headers=supplier,
+        )
+    )
+
+    reviewed = _data(
+        client.post(
+            f"/api/v1/v1.2/admin/supplier-leads/{lead['id']}/review",
+            headers=operation,
+            json={
+                "decision": "INFO_INCOMPLETE",
+                "note": "客户意向与预算还需要电话确认",
+                "assignee_user_id": telesales_id,
+                "pre_dispatch_reason": "补齐客户意向、预算和可联系时间",
+            },
+        )
+    )
+    assert reviewed["lead"]["status"] == LeadV12Status.PENDING_TELESALES_VERIFY.value
+    assert reviewed["lead"]["review_status"] == "PENDING"
+    assert reviewed["task"]["task_type"] == VerificationTaskType.PRE_DISPATCH_VERIFY.value
+    assert reviewed["task"]["assignee_user_id"] == telesales_id
+    assert reviewed["task"]["due_at"] is not None
+
+    with factory() as db:
+        review_audit = db.scalar(
+            select(AuditLog).where(
+                AuditLog.action == "V12_SUPPLIER_LEAD_REVIEW",
+                AuditLog.resource_id == lead["id"],
+            )
+        )
+        assert review_audit is not None
+        assert review_audit.after_json["review_decision"] == "INFO_INCOMPLETE"
+        assert review_audit.after_json["submission_snapshot"]["need_summary"] == initial_body["need_summary"]
+        task_audit = db.scalar(
+            select(AuditLog).where(
+                AuditLog.action == "V12_PRE_DISPATCH_VERIFY_ASSIGN",
+                AuditLog.resource_id == reviewed["task"]["id"],
+            )
+        )
+        assert task_audit is not None
+        notification = db.scalar(
+            select(Notification).where(
+                Notification.scene == "V12_SUPPLIER_LEAD_TELESALES_VERIFY_REQUIRED"
+            )
+        )
+        assert notification is not None
+
+
+def test_supplier_approval_notification_keys_fit_outbox_limit(api_client) -> None:
+    client, factory = api_client
+    _approve_supplier_capability(factory)
+    supplier = _login(client, "franchise_demo", "Franchise123!")
+    operation = _login(client, "operation", "Operation123!")
+    lead = _data(
+        client.post(
+            "/api/v1/v1.2/supplier/leads",
+            headers=supplier,
+            json=_valid_lead_body("13900139033"),
+        )
+    )
+    _data(
+        client.post(
+            f"/api/v1/v1.2/supplier/leads/{lead['id']}/submit",
+            headers=supplier,
+        )
+    )
+    reviewed = _data(
+        client.post(
+            f"/api/v1/v1.2/admin/supplier-leads/{lead['id']}/review",
+            headers=operation,
+            json={"decision": "QUALIFIED", "note": "资料完整，可进入待派发池"},
+        )
+    )
+    assert reviewed["lead"]["status"] == LeadV12Status.READY_DISPATCH.value
+
+    with factory() as db:
+        outboxes = db.scalars(
+            select(NotificationOutbox).where(NotificationOutbox.aggregate_id == lead["id"])
+        ).all()
+        assert any(item.event_type == "V12_LEAD_DISPATCH_REQUIRED" for item in outboxes)
+        assert all(len(item.event_key) <= 128 for item in outboxes)

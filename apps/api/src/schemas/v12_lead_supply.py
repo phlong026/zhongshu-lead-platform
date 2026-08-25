@@ -44,13 +44,47 @@ class LeadDraftUpdateBody(BaseModel):
 
 
 class SupplierReviewBody(BaseModel):
-    decision: str = Field(pattern=r"^(APPROVE|REJECT)$")
+    decision: str = Field(min_length=1, max_length=32)
     note: str | None = Field(default=None, max_length=1000)
+    assignee_user_id: str | None = Field(default=None, max_length=36)
+    pre_dispatch_reason: str | None = Field(default=None, max_length=500)
+    template_code: str = Field(default="PRE_DISPATCH", min_length=2, max_length=64)
 
     @field_validator("decision")
     @classmethod
     def normalize_decision(cls, value: str) -> str:
-        return value.upper()
+        normalized = value.strip().upper()
+        if normalized not in {
+            "QUALIFIED",
+            "INFO_INCOMPLETE",
+            "DUPLICATE",
+            "INVALID",
+            "APPROVE",
+            "REJECT",
+        }:
+            raise ValueError("初审结论无效")
+        return normalized
+
+    @field_validator("note", "assignee_user_id", "pre_dispatch_reason")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        return value.strip() if value and value.strip() else None
+
+    @field_validator("template_code")
+    @classmethod
+    def normalize_template_code(cls, value: str) -> str:
+        return value.strip()
+
+    @model_validator(mode="after")
+    def require_telesales_assignment_for_incomplete_information(self) -> "SupplierReviewBody":
+        if self.decision == "INFO_INCOMPLETE":
+            if not self.note:
+                raise ValueError("资料不全时必须填写初审说明")
+            if not self.assignee_user_id or not self.pre_dispatch_reason:
+                raise ValueError("资料不全时必须指定电销人员和核验重点")
+        elif self.decision in {"DUPLICATE", "INVALID", "REJECT"} and not self.note:
+            raise ValueError("重复或无效结论必须填写初审说明")
+        return self
 
 
 class PreDispatchAssignBody(BaseModel):

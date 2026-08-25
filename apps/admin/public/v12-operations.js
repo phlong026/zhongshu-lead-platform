@@ -154,9 +154,10 @@ async function review(){
     const pending=lead.review_status==='PENDING';
     const actions=[`<button class="ops-btn" data-detail="${esc(lead.id)}">详情</button>`];
     if(pending){
-      actions.push(`<button class="ops-btn primary" data-review="${esc(lead.id)}:APPROVE">通过</button>`);
-      actions.push(`<button class="ops-btn" data-pre-dispatch="${esc(lead.id)}">派发电销核验</button>`);
-      actions.push(`<button class="ops-btn danger" data-review="${esc(lead.id)}:REJECT">驳回</button>`);
+      actions.push(`<button class="ops-btn primary" data-review="${esc(lead.id)}:QUALIFIED">确认合格</button>`);
+      actions.push(`<button class="ops-btn" data-review-info="${esc(lead.id)}">信息不全并派发电销</button>`);
+      actions.push(`<button class="ops-btn" data-review="${esc(lead.id)}:DUPLICATE">标记重复</button>`);
+      actions.push(`<button class="ops-btn danger" data-review="${esc(lead.id)}:INVALID">明确无效</button>`);
     }
     return `<tr><td><b>${esc(lead.customer_name)}</b><br>${esc(lead.phone_masked||'--')}</td><td>${esc(lead.city||'--')} ${esc(lead.district||'')}</td><td>${badge(lead.status)} ${badge(lead.review_status)}</td><td>${esc(label(lead.duplicate_status))}</td><td>${fmt(lead.submitted_at)}</td><td>${actions.join(' ')}</td></tr>`;
   });
@@ -167,11 +168,36 @@ async function review(){
     const [id,decision]=button.dataset.review.split(':');
     reviewAction(id,decision);
   });
-  document.querySelectorAll('[data-pre-dispatch]').forEach(button=>button.onclick=()=>assignPreDispatch(button.dataset.preDispatch));
+  document.querySelectorAll('[data-review-info]').forEach(button=>button.onclick=()=>assignInitialPreDispatch(button.dataset.reviewInfo));
   if(S.id){const id=S.id;S.id='';reviewDetail(id)}
 }
 async function reviewDetail(id){const x=await api(`/v1.2/admin/supplier-leads/${encodeURIComponent(id)}`);modal('客资初审详情',`<div class="ops-detail-grid">${[['客资编号',recordCode(x.id,'KZ')],['客户',x.customer_name],['手机号',x.phone_masked],['处理状态',label(x.status)],['初审结果',label(x.review_status)],['重复检查',label(x.duplicate_status)],['服务地区',`${x.city||''} ${x.district||''}`]].map(([a,b])=>`<div class="ops-detail"><small>${a}</small><b>${esc(b||'--')}</b></div>`).join('')}</div><section class="ops-card"><h3>客户需求</h3><p class="ops-muted">${esc(x.need_summary||'暂无说明')}</p></section><button class="ops-btn" id="trace">查看完整记录</button>`,()=>document.querySelector('#trace').onclick=()=>{closeModal();go('audit',id)})}
-function reviewAction(id,decision){actionForm({title:decision==='REJECT'?'驳回客资':'通过客资初审',message:'提交后将记录操作人和处理说明。',labelText:'初审说明',required:decision==='REJECT',minLength:2,submitLabel:decision==='REJECT'?'确认驳回':'确认通过',danger:decision==='REJECT'},async note=>{await api(`/v1.2/admin/supplier-leads/${encodeURIComponent(id)}/review`,{method:'POST',body:JSON.stringify({decision,note:note||null})});toast('初审结果已提交');await review()})}
+function reviewAction(id,decision){const copy={QUALIFIED:['确认客资合格','资料完整且不需要电话补充，将进入待派发池。',false,false],DUPLICATE:['标记重复客资','请写明重复判断依据，客资将进入重复核查。',true,false],INVALID:['确认客资无效','请写明无效原因，加盟商可根据说明补正后重新提交。',true,true]}[decision];actionForm({title:copy[0],message:copy[1],labelText:'初审说明',required:copy[2],minLength:2,submitLabel:'确认提交',danger:copy[3]},async note=>{await api(`/v1.2/admin/supplier-leads/${encodeURIComponent(id)}/review`,{method:'POST',body:JSON.stringify({decision,note:note||null})});toast('初审结果已提交');await review()})}
+async function assignInitialPreDispatch(leadId){
+  try{
+    const users=await loadTelesalesUsers();
+    const options=users.map(user=>`<option value="${esc(user.id)}">${esc(user.display_name||user.username)}${user.username?` · ${esc(user.username)}`:''}</option>`).join('');
+    modal('信息不全并派发电销',users.length?`<form class="ops-form" id="initial-pre-dispatch-form"><div class="ops-notice">初审结论会同步记录为“信息不全”；电销只能接受运营指定的任务。</div><div class="ops-field"><label for="initial-pre-assignee">电销人员 *</label><select class="ops-input" id="initial-pre-assignee">${options}</select></div><div class="ops-field"><label for="initial-pre-note">初审说明 *</label><textarea class="ops-textarea" id="initial-pre-note" placeholder="说明哪些资料不足"></textarea></div><div class="ops-field"><label for="initial-pre-reason">核验重点 *</label><textarea class="ops-textarea" id="initial-pre-reason" placeholder="例如：确认客户意向、预算和可联系时间"></textarea></div><div class="ops-actions"><button class="ops-btn" type="button" id="initial-pre-cancel">取消</button><button class="ops-btn primary" id="initial-pre-submit">确认派发</button></div></form>`:'<div class="ops-empty">暂无可分配的电销人员</div>',()=>{
+      const form=document.querySelector('#initial-pre-dispatch-form');
+      if(!form)return;
+      document.querySelector('#initial-pre-cancel').onclick=closeModal;
+      form.onsubmit=async event=>{
+        event.preventDefault();
+        const note=document.querySelector('#initial-pre-note').value.trim();
+        const reason=document.querySelector('#initial-pre-reason').value.trim();
+        const submit=document.querySelector('#initial-pre-submit');
+        if(note.length<2||reason.length<2){toast('请至少填写 2 个字的初审说明和核验重点',true);return}
+        submit.disabled=true;
+        try{
+          await api(`/v1.2/admin/supplier-leads/${encodeURIComponent(leadId)}/review`,{method:'POST',body:JSON.stringify({decision:'INFO_INCOMPLETE',note,assignee_user_id:document.querySelector('#initial-pre-assignee').value,pre_dispatch_reason:reason})});
+          toast('已记录初审结论并派发电销核验');
+          closeModal();
+          await review();
+        }catch(error){submit.disabled=false;toast(error.message,true)}
+      };
+    });
+  }catch(error){toast(error.message,true)}
+}
 async function assignPreDispatch(leadId){
   try{
     const users=await loadTelesalesUsers();

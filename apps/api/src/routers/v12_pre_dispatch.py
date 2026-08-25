@@ -266,7 +266,21 @@ def decide_pre_dispatch_lead(
         action="V12_PRE_DISPATCH_DISPOSITION",
         resource_type="lead",
         resource_id=lead.id,
-        after={"status": lead.status, "review_status": lead.review_status},
+        after={
+            "status": lead.status,
+            "review_status": lead.review_status,
+            "lead_snapshot": {
+                "source_kind": lead.source_kind,
+                "customer_name": lead.customer_name,
+                "city": lead.city,
+                "district": lead.district,
+                "region_code": lead.region_code,
+                "category_code": lead.category_code,
+                "need_summary": lead.need_summary,
+                "review_note": lead.review_note,
+                "pending_reason": lead.pending_reason,
+            },
+        },
         reason=body.note,
         request_id=request.state.request_id,
     )

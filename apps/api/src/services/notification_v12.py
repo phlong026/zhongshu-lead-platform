@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from hashlib import sha256
 from typing import Any
 from urllib.parse import urlencode
 
@@ -217,6 +218,22 @@ def _notify_reward_state(db: Session, reward: SupplierLeadReward) -> None:
         )
 
 
+def _lead_event_round(
+    after: dict[str, Any],
+    lead: Lead,
+    *,
+    timestamp_field: str,
+) -> str:
+    """Return a short idempotency scope for one submit or review transition."""
+
+    snapshot = after.get("submission_snapshot")
+    snapshot_value = snapshot.get(timestamp_field) if isinstance(snapshot, dict) else None
+    value = after.get(timestamp_field) or snapshot_value or getattr(lead, timestamp_field, None)
+    if isinstance(value, datetime):
+        value = as_utc(value).isoformat()
+    return sha256(str(value or "initial").encode("utf-8")).hexdigest()[:16]
+
+
 def project_v12_notifications(
     db: Session,
     *,
@@ -238,9 +255,10 @@ def project_v12_notifications(
     if action == "V12_SUPPLIER_LEAD_SUBMIT":
         lead = db.get(Lead, resource_id)
         if lead and lead.supplier_company_id:
+            event_round = _lead_event_round(after, lead, timestamp_field="submitted_at")
             emit_business_notification(
                 db,
-                event_key=f"v12:lead:{lead.id}:submitted",
+                event_key=f"v12:lead:{lead.id}:submitted:{event_round}",
                 event_type="V12_SUPPLIER_LEAD_SUBMITTED",
                 company_id=lead.supplier_company_id,
                 title="客资已提交初审",
@@ -251,7 +269,7 @@ def project_v12_notifications(
             )
             emit_platform_role_notifications(
                 db,
-                event_key=f"v12:lead:{lead.id}:submitted:platform",
+                event_key=f"v12:lead:{lead.id}:submitted:{event_round}:platform",
                 event_type="V12_SUPPLIER_LEAD_REVIEW_REQUIRED",
                 role_codes={"OPERATION", "SUPER_ADMIN"},
                 title="有新的供应商客资待初审",
@@ -265,7 +283,35 @@ def project_v12_notifications(
     if action == "V12_SUPPLIER_LEAD_REVIEW":
         lead = db.get(Lead, resource_id)
         if lead and lead.supplier_company_id:
+            decision = str(after.get("review_decision") or "").upper()
+            event_round = _lead_event_round(after, lead, timestamp_field="reviewed_at")
             approved = str(lead.review_status or "").upper() == "APPROVED"
+            if decision == "INFO_INCOMPLETE":
+                emit_business_notification(
+                    db,
+                    event_key=f"v12:lead:{lead.id}:review:{event_round}:info-incomplete",
+                    event_type="V12_SUPPLIER_LEAD_TELESALES_VERIFY_REQUIRED",
+                    company_id=lead.supplier_company_id,
+                    title="客资已安排电话核验",
+                    body="平台正在核对客户意向和资料完整性，核验结论会同步至供客进度。",
+                    target="lead",
+                    business_id=lead.id,
+                    business_ids={"lead_id": lead.id},
+                )
+                return
+            if decision == "DUPLICATE":
+                emit_business_notification(
+                    db,
+                    event_key=f"v12:lead:{lead.id}:review:{event_round}:duplicate",
+                    event_type="V12_SUPPLIER_LEAD_DUPLICATE_REVIEW",
+                    company_id=lead.supplier_company_id,
+                    title="客资进入重复核查",
+                    body="平台正在核对重复记录，处理结果会通过消息通知。",
+                    target="lead",
+                    business_id=lead.id,
+                    business_ids={"lead_id": lead.id},
+                )
+                return
             event_type = (
                 "V12_SUPPLIER_LEAD_APPROVED"
                 if approved
@@ -273,7 +319,7 @@ def project_v12_notifications(
             )
             emit_business_notification(
                 db,
-                event_key=f"v12:lead:{lead.id}:review:{str(lead.review_status).lower()}",
+                event_key=f"v12:lead:{lead.id}:review:{event_round}:{str(lead.review_status).lower()}",
                 event_type=event_type,
                 company_id=lead.supplier_company_id,
                 title="客资初审已通过" if approved else "客资初审未通过",
@@ -289,7 +335,7 @@ def project_v12_notifications(
             if approved:
                 emit_platform_role_notifications(
                     db,
-                    event_key=f"v12:lead:{lead.id}:ready-dispatch:platform",
+                    event_key=f"v12:lead:{lead.id}:ready-dispatch:{event_round}:platform",
                     event_type="V12_LEAD_DISPATCH_REQUIRED",
                     role_codes={"OPERATION", "SUPER_ADMIN"},
                     title="客资初审通过，等待人工派发",

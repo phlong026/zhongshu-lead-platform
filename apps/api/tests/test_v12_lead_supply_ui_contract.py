@@ -52,6 +52,15 @@ def test_admin_lead_supply_ui_uses_v12_flow_without_pre_verification() -> None:
     assert "疑似重复的客资会交由人工复核" in js
 
 
+def test_operations_review_exposes_four_initial_decisions_and_one_step_telesales_assignment() -> None:
+    source = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
+
+    for decision in ("QUALIFIED", "INFO_INCOMPLETE", "DUPLICATE", "INVALID"):
+        assert decision in source
+    assert "pre_dispatch_reason" in source
+    assert "信息不全并派发电销" in source
+
+
 def test_supplier_h5_supports_capability_upload_list_and_detail() -> None:
     js = Path("apps/h5/public/supplier.js").read_text(encoding="utf-8")
     assert "/v1.2/company/capabilities" in js
@@ -89,6 +98,15 @@ def test_supplier_h5_exposes_draft_cleanup_and_rejected_lead_revision() -> None:
     assert "/revise" in js
     assert '@router.delete("/supplier/leads/{lead_id}")' in router
     assert '@router.post("/supplier/leads/{lead_id}/revise")' in router
+
+
+def test_supplier_h5_explains_operation_requested_rework_before_resubmission() -> None:
+    source = Path("apps/h5/public/supplier.js").read_text(encoding="utf-8")
+
+    assert "PRE_DISPATCH_REWORK_REQUIRED" in source
+    assert "根据运营说明补正" in source
+    assert "PENDING_TELESALES_VERIFY" in source
+    assert "PENDING_OPERATION_DISPOSITION" in source
 
 
 def test_supplier_workbench_uses_user_facing_reward_copy() -> None:

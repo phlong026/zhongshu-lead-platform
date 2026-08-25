@@ -25,6 +25,8 @@ const state = {
 const labels = {
   DRAFT: '待完善',
   PENDING_REVIEW: '平台审核中',
+  PENDING_TELESALES_VERIFY: '电话核验中',
+  PENDING_OPERATION_DISPOSITION: '运营处理中',
   READY_DISPATCH: '已进入派发',
   DUPLICATE: '重复信息复核中',
   INVALID: '需要修改',
@@ -151,6 +153,8 @@ function statusClass(status) {
       CLEAR: 'ok',
       OVERRIDDEN: 'blue',
       PENDING_REVIEW: 'warn',
+      PENDING_TELESALES_VERIFY: 'warn',
+      PENDING_OPERATION_DISPOSITION: 'warn',
       PENDING: 'warn',
       DUPLICATE: 'warn',
       REWARD_DUPLICATE: 'warn',
@@ -437,10 +441,19 @@ function queryString(values) {
 
 function leadProgress(item) {
   if (item.status === 'DRAFT') {
+    if (item.pending_reason === 'PRE_DISPATCH_REWORK_REQUIRED') {
+      return item.review_note || '请根据运营说明补正资料后重新提交。';
+    }
     return '资料尚未提交，可以继续补充或删除草稿。';
   }
   if (item.status === 'PENDING_REVIEW') {
     return '平台正在审核资料，结果会在这里更新。';
+  }
+  if (item.status === 'PENDING_TELESALES_VERIFY') {
+    return '平台正在电话核对客户意向和资料完整性。';
+  }
+  if (item.status === 'PENDING_OPERATION_DISPOSITION') {
+    return '电话核验已完成，运营正在决定后续处理。';
   }
   if (item.status === 'DUPLICATE') {
     return '平台正在核对重复信息，暂时无需再次提交。';
@@ -456,8 +469,9 @@ function leadProgress(item) {
 
 function leadActions(item) {
   if (item.status === 'DRAFT') {
+    const rework = item.pending_reason === 'PRE_DISPATCH_REWORK_REQUIRED';
     return `
-      <button class="supplier-btn small primary" data-edit="${item.id}">继续填写并提交</button>
+      <button class="supplier-btn small primary" data-edit="${item.id}">${rework ? '根据运营说明补正' : '继续填写并提交'}</button>
       <button class="supplier-btn small danger" data-delete="${item.id}">删除草稿</button>
     `;
   }
@@ -467,7 +481,7 @@ function leadActions(item) {
       <button class="supplier-btn small" data-detail="${item.id}">查看说明</button>
     `;
   }
-  const text = ['PENDING_REVIEW', 'DUPLICATE'].includes(item.status)
+  const text = ['PENDING_REVIEW', 'PENDING_TELESALES_VERIFY', 'PENDING_OPERATION_DISPOSITION', 'DUPLICATE'].includes(item.status)
     ? '查看进度'
     : '查看详情';
   return `<button class="supplier-btn small primary" data-detail="${item.id}">${text}</button>`;
@@ -544,7 +558,7 @@ async function renderList() {
         <span>按进度筛选</span>
         <select class="supplier-select" id="supplier-status">
           <option value="" ${state.listStatus === '' ? 'selected' : ''}>全部进度</option>
-          ${['DRAFT', 'PENDING_REVIEW', 'READY_DISPATCH', 'DUPLICATE', 'INVALID']
+          ${['DRAFT', 'PENDING_REVIEW', 'PENDING_TELESALES_VERIFY', 'PENDING_OPERATION_DISPOSITION', 'READY_DISPATCH', 'DUPLICATE', 'INVALID']
             .map(
               (option) =>
                 `<option value="${option}" ${state.listStatus === option ? 'selected' : ''}>${esc(

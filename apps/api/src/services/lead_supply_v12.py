@@ -221,21 +221,41 @@ def review_supplier_lead(
     *,
     lead: Lead,
     reviewer: Principal,
-    approve: bool,
     note: str | None,
+    approve: bool | None = None,
+    decision: str | None = None,
 ) -> DedupResult | None:
     if lead.source_kind != LeadSourceKind.SUPPLIER_H5.value:
         raise AppError("LEAD_SOURCE_INVALID", "仅供应商上传客资需要资料初审", 409)
     if lead.status not in {LeadV12Status.PENDING_REVIEW.value, LeadV12Status.DUPLICATE.value}:
         raise AppError("LEAD_REVIEW_STATE_INVALID", "当前客资状态不可初审", 409)
+    normalized_decision = (decision or ("QUALIFIED" if approve else "INVALID")).strip().upper()
+    legacy_decisions = {"APPROVE": "QUALIFIED", "REJECT": "INVALID"}
+    normalized_decision = legacy_decisions.get(normalized_decision, normalized_decision)
+    if normalized_decision not in {"QUALIFIED", "INFO_INCOMPLETE", "DUPLICATE", "INVALID"}:
+        raise AppError("SUPPLIER_REVIEW_DECISION_INVALID", "初审结论无效", 422)
+
     lead.review_note = _clean_text(note)
     lead.reviewed_at = datetime.now(timezone.utc)
-    if not approve:
-        if not lead.review_note:
-            raise AppError("REVIEW_NOTE_REQUIRED", "驳回时必须填写原因", 422)
+    if normalized_decision in {"INFO_INCOMPLETE", "DUPLICATE", "INVALID"} and not lead.review_note:
+        raise AppError("REVIEW_NOTE_REQUIRED", "该初审结论必须填写原因", 422)
+    if normalized_decision == "INFO_INCOMPLETE":
+        if lead.status != LeadV12Status.PENDING_REVIEW.value:
+            raise AppError("LEAD_REVIEW_INFO_INCOMPLETE_INVALID", "仅待初审客资可派发前置电销核验", 409)
+        lead.review_status = LeadReviewStatus.PENDING.value
+        lead.pending_reason = "SUPPLIER_REVIEW_INFO_INCOMPLETE"
+        db.flush()
+        return None
+    if normalized_decision == "DUPLICATE":
+        lead.review_status = LeadReviewStatus.PENDING.value
+        lead.status = LeadV12Status.DUPLICATE.value
+        lead.pending_reason = "SUPPLIER_REVIEW_DUPLICATE"
+        db.flush()
+        return None
+    if normalized_decision == "INVALID":
         lead.review_status = LeadReviewStatus.REJECTED.value
         lead.status = LeadV12Status.INVALID.value
-        lead.pending_reason = "SUPPLIER_REVIEW_REJECTED"
+        lead.pending_reason = "SUPPLIER_REVIEW_INVALID"
         db.flush()
         return None
 

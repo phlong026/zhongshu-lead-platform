@@ -45,6 +45,7 @@ from ..services.lead_supply_v12 import (
     submit_draft,
     update_draft,
 )
+from ..services.pre_dispatch_v12 import assign_pre_dispatch_task
 
 router = APIRouter(prefix="/v1.2", tags=["v1.2-lead-supply"])
 
@@ -60,6 +61,16 @@ def _dedup_dict(result) -> dict | None:
         "event_id": result.event_id,
         "blocks_dispatch": result.blocks_dispatch,
         "reward_eligible": result.reward_eligible,
+    }
+
+
+def _pre_dispatch_task_dict(task) -> dict:
+    return {
+        "id": task.id,
+        "task_type": task.task_type,
+        "status": task.status,
+        "assignee_user_id": task.assignee_user_id,
+        "due_at": task.due_at.isoformat() if task.due_at else None,
     }
 
 
@@ -322,7 +333,12 @@ def submit_supplier_lead(
         action="V12_SUPPLIER_LEAD_SUBMIT",
         resource_type="lead",
         resource_id=lead.id,
-        after={"company_id": principal.company_id, "status": lead.status, "duplicate_status": lead.duplicate_status},
+        after={
+            "company_id": principal.company_id,
+            "status": lead.status,
+            "duplicate_status": lead.duplicate_status,
+            "submission_snapshot": lead_supply_to_dict(lead, principal),
+        },
         reason=result.decision.value,
         request_id=request.state.request_id,
     )
@@ -379,13 +395,31 @@ def admin_review_supplier_lead(
 ):
     lead = get_lead_or_404(db, lead_id)
     before = lead_supply_to_dict(lead, principal)
+    review_decision = {"APPROVE": "QUALIFIED", "REJECT": "INVALID"}.get(
+        body.decision,
+        body.decision,
+    )
     result = review_supplier_lead(
         db,
         lead=lead,
         reviewer=principal,
-        approve=body.decision == "APPROVE",
+        decision=review_decision,
         note=body.note,
     )
+    task = None
+    if review_decision == "INFO_INCOMPLETE":
+        assignment = assign_pre_dispatch_task(
+            db,
+            lead_id=lead.id,
+            assignee_user_id=body.assignee_user_id or "",
+            assigned_by=principal.user_id,
+            reason=body.pre_dispatch_reason or "",
+            template_code=body.template_code,
+        )
+        task = assignment.task
+    after = lead_supply_to_dict(lead, principal)
+    after["review_decision"] = review_decision
+    after["submission_snapshot"] = before
     write_audit(
         db,
         principal=principal,
@@ -393,12 +427,32 @@ def admin_review_supplier_lead(
         resource_type="lead",
         resource_id=lead.id,
         before=before,
-        after=lead_supply_to_dict(lead, principal),
-        reason=body.note or body.decision,
+        after=after,
+        reason=body.note or review_decision,
         request_id=request.state.request_id,
     )
+    if task is not None:
+        write_audit(
+            db,
+            principal=principal,
+            action="V12_PRE_DISPATCH_VERIFY_ASSIGN",
+            resource_type="verification_task",
+            resource_id=task.id,
+            before=assignment.before,
+            after=assignment.after,
+            reason=body.pre_dispatch_reason,
+            request_id=request.state.request_id,
+        )
     db.commit()
-    return ok(request, {"lead": lead_supply_to_dict(lead, principal), "dedup": _dedup_dict(result)}, "资料初审已完成")
+    return ok(
+        request,
+        {
+            "lead": lead_supply_to_dict(lead, principal),
+            "dedup": _dedup_dict(result),
+            "task": _pre_dispatch_task_dict(task) if task else None,
+        },
+        "资料初审已完成",
+    )
 
 
 @router.post("/admin/leads/{lead_id}/dedup-override")

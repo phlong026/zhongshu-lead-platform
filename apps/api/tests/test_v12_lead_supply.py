@@ -186,6 +186,49 @@ def test_supplier_upload_requires_approved_capability_and_review(db) -> None:
     assert lead.status == LeadV12Status.READY_DISPATCH.value
 
 
+def test_supplier_initial_review_distinguishes_duplicate_and_invalid(db) -> None:
+    db.add(Region(code="420100", name="武汉市", level="CITY", aliases=[], active=True))
+    company, user = _seed_identity(db, company_code="SUP-REVIEW-DECISIONS")
+    _approve_supplier_capability(db, company, user)
+    principal = _principal(user.id, company.id, "supplier.lead.manage")
+
+    duplicate = create_draft(
+        db,
+        principal=principal,
+        source_kind=LeadSourceKind.SUPPLIER_H5,
+        values=_valid_values("13700137001"),
+    )
+    submit_draft(db, lead=duplicate, principal=principal)
+    review_supplier_lead(
+        db,
+        lead=duplicate,
+        reviewer=principal,
+        decision="DUPLICATE",
+        note="与既有登记信息高度相似，需要人工核查",
+    )
+    assert duplicate.status == LeadV12Status.DUPLICATE.value
+    assert duplicate.review_status == "PENDING"
+    assert duplicate.pending_reason == "SUPPLIER_REVIEW_DUPLICATE"
+
+    invalid = create_draft(
+        db,
+        principal=principal,
+        source_kind=LeadSourceKind.SUPPLIER_H5,
+        values=_valid_values("13700137002"),
+    )
+    submit_draft(db, lead=invalid, principal=principal)
+    review_supplier_lead(
+        db,
+        lead=invalid,
+        reviewer=principal,
+        decision="INVALID",
+        note="客户明确表示并无建房或装修需求",
+    )
+    assert invalid.status == LeadV12Status.INVALID.value
+    assert invalid.review_status == "REJECTED"
+    assert invalid.pending_reason == "SUPPLIER_REVIEW_INVALID"
+
+
 def test_supplier_can_discard_own_draft(db) -> None:
     company, user = _seed_identity(db, company_code="SUP-DISCARD")
     _approve_supplier_capability(db, company, user)
