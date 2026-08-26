@@ -156,7 +156,7 @@ WECHAT_DEV_MOCK=false
   "value": {
     "template_id": "lY0K9b-7pB0bOnfjOJ6zPvPeL5fm0DjPhjxhRUZt3MU",
     "field_map": {
-      "thing1": "body",
+      "thing1": "title",
       "const16": "literal:乡墅新客资"
     }
   },
@@ -170,7 +170,7 @@ WECHAT_DEV_MOCK=false
 
 ```json
 "field_map": {
-  "thing1": "body",
+  "thing1": "title",
   "const16": "literal:乡墅新客资"
 }
 ```

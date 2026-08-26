@@ -103,7 +103,7 @@ def test_official_account_client_sends_v12_dispatch_template(monkeypatch) -> Non
         body="上海·浦东｜旧改客资",
         url="https://zszhj.cn/h5/#/leads",
         template_id="lY0K9b-7pB0bOnfjOJ6zPvPeL5fm0DjPhjxhRUZt3MU",
-        field_map={"thing1": "body", "const16": "literal:乡墅新客资"},
+        field_map={"thing1": "title", "const16": "literal:乡墅新客资"},
     )
 
     assert result.success is True
@@ -112,7 +112,7 @@ def test_official_account_client_sends_v12_dispatch_template(monkeypatch) -> Non
         "template_id": "lY0K9b-7pB0bOnfjOJ6zPvPeL5fm0DjPhjxhRUZt3MU",
         "url": "https://zszhj.cn/h5/#/leads",
         "data": {
-            "thing1": {"value": "上海·浦东｜旧改客资"},
+            "thing1": {"value": "您有一条新客资待领取"},
             "const16": {"value": "乡墅新客资"},
         },
     }
