@@ -98,9 +98,12 @@ def test_admin_dashboard_and_role_kpis_link_to_existing_detail_pages() -> None:
 
 def test_formal_admin_home_distinguishes_platform_and_operation_boundaries() -> None:
     source = read(ADMIN / "v12-operations.js")
+    overview = source[source.index("async function overview"):source.index("async function review")]
 
-    for copy in ("客资流转", "电销协同", "经营流转概览", "不具备自主领取", "加盟商内部员工分配仅由公司负责人处理"):
+    for copy in ("当前待办", "经营风险", "当前待办分布", "不具备自主领取", "加盟商内部员工分配仅由公司负责人处理"):
         assert copy in source
+    assert "statusSummary(" not in overview
+    assert "ops-summary-columns" not in overview
 
 
 def test_formal_lead_page_uses_the_unified_operation_view() -> None:

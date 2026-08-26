@@ -102,7 +102,6 @@ function go(view,id=''){
 function table(head,rows){return `<div class="ops-table-wrap"><table class="ops-table"><thead><tr>${head.map(x=>`<th>${x}</th>`).join('')}</tr></thead><tbody>${rows.join('')||`<tr><td colspan="${head.length}" class="ops-empty">暂无数据</td></tr>`}</tbody></table></div>`}
 function pager(d){const pages=Math.max(1,Math.ceil((d.total||0)/(d.page_size||20)));return `<div class="ops-pager"><button class="ops-btn" id="prev" ${S.page<=1?'disabled':''}>上一页</button><span>${S.page}/${pages}，共 ${d.total||0} 条</span><button class="ops-btn" id="next" ${S.page>=pages?'disabled':''}>下一页</button></div>`}
 function bindPager(d,fn){const pages=Math.max(1,Math.ceil((d.total||0)/(d.page_size||20)));document.querySelector('#prev')?.addEventListener('click',()=>{S.page--;fn()});document.querySelector('#next')?.addEventListener('click',()=>{S.page=Math.min(pages,S.page+1);fn()})}
-function statusSummary(data,hrefForStatus){return `<div class="ops-detail-grid">${Object.entries(data||{}).map(([status,count])=>{const content=`<small>${esc(label(status))}</small><b>${Number(count||0)}</b><i aria-hidden="true">${icon('chevron-right')}</i>`;const href=typeof hrefForStatus==='function'?hrefForStatus(status):hrefForStatus;return href?`<a class="ops-detail ops-detail-link" href="${esc(href)}" aria-label="${esc(label(status))} ${Number(count||0)} 条，查看明细">${content}</a>`:`<div class="ops-detail">${content}</div>`}).join('')||'<div class="ops-empty">暂无状态数据</div>'}</div>`}
 function fileSize(bytes){const value=Number(bytes||0);if(value<1024)return `${value} B`;if(value<1024*1024)return `${(value/1024).toFixed(1)} KB`;return `${(value/1024/1024).toFixed(1)} MB`}
 function evidenceList(items){
   return (items||[]).map(item=>{
@@ -132,13 +131,7 @@ async function overview(){
   const pool=management.lead_pool||{};
   const verification=management.verification||{};
   const exceptions=management.exceptions||{};
-  const cards=role==='SUPER_ADMIN'
-    ?[
-      ['客资总量',pool.total||0,'user-check','?view=leads'],
-      ['待派发',pool.unassigned||0,'hand-claim','?view=leads'],
-      ['派发中',pool.dispatching||0,'building','?view=leads'],
-      ['问题客资',pool.problem||0,'rotate-ccw','?view=returns'],
-    ]
+  const cards=role==='SUPER_ADMIN'?[]
     :[
       ['待初审',report.leads.by_status?.PENDING_REVIEW||0,'user-check','?view=leads'],
       ['电销处理中',(verification.pending||0)+(verification.in_progress||0),'phone','?view=telesales'],
@@ -149,7 +142,10 @@ async function overview(){
     ];
   if(role==='SUPER_ADMIN'){
     const funds=management.funds||{};
-    const body=`<section class="ops-summary-columns"><div><h3>客资流转</h3>${statusSummary({待派发:pool.unassigned||0,派发中:pool.dispatching||0,问题客资:pool.problem||0},'?view=leads')}</div><div><h3>电销协同</h3>${statusSummary({待电销核验:verification.pending||0,核验中:verification.in_progress||0,待运营处置:verification.awaiting_operation||0},'?view=leads')}</div><div><h3>资金与异常</h3>${statusSummary({退回待终审:exceptions.return_final_review||0,加盟商待审:exceptions.company_review||0,冻结供客奖励:funds.frozen_reward||0},'?view=returns')}</div></section>${barChart('经营流转概览','柱状长度对应当前需要处理的数量，点击可直接查看业务明细。',[['待派发',pool.unassigned||0,'leads'],['电销核验',verification.pending||0,'leads'],['待运营处置',verification.awaiting_operation||0,'leads'],['退回终审',exceptions.return_final_review||0,'returns'],['加盟商待审',exceptions.company_review||0,'companies'],['冻结供客奖励',funds.frozen_reward||0,'finance']])}`;
+    const todoCount=(pool.unassigned||0)+(verification.pending||0)+(verification.in_progress||0)+(verification.awaiting_operation||0)+(exceptions.return_final_review||0)+(exceptions.company_review||0);
+    const riskCount=(pool.problem||0)+(verification.overdue||0)+(exceptions.failed_notification||0)+(exceptions.disabled_company||0);
+    cards.push(['客资总量',pool.total||0,'user-check','?view=leads'],['当前待办',todoCount,'clipboard-check','?view=leads'],['经营风险',riskCount,'alert-triangle','?view=returns'],['冻结供客奖励',funds.frozen_reward||0,'wallet','?view=finance']);
+    const body=barChart('当前待办分布','只展示需要处理的业务队列；顶部数据用于判断整体规模与风险。',[['待派发',pool.unassigned||0,'leads'],['待电销核验',verification.pending||0,'leads'],['核验中',verification.in_progress||0,'leads'],['待运营处置',verification.awaiting_operation||0,'leads'],['退回终审',exceptions.return_final_review||0,'returns'],['加盟商待审',exceptions.company_review||0,'companies']]);
     roleHome(ADMIN_ROLE_HOME_CONTENT[role],cards,body);
     document.querySelectorAll('[data-overview-view]').forEach(button=>button.onclick=()=>go(button.dataset.overviewView));
     return;
