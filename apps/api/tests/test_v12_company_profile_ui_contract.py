@@ -49,7 +49,7 @@ def test_v12_operations_exposes_company_detail_and_platform_configuration() -> N
     assert "province_code:province.code" in js
     assert "district_codes" in js
     assert "serve_all_districts:false" in js
-    assert "v12-operations.js?v=20260826-recharge-first" in html
+    assert "v12-operations.js?v=20260826-login-polish" in html
     assert "加盟商能力与服务区域审核申请" not in js
 
 

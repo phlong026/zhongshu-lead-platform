@@ -864,8 +864,10 @@ function redirectToAllowedSurface(){
   if(roles.has('FRANCHISE_OWNER')||roles.has('FRANCHISE_EMPLOYEE')){location.replace('/h5/');return true}
   return false;
 }
-function renderLogin(message=''){
-  zsSetSafeHtml(app, `<div class="ops-login-shell"><section class="ops-login-brand"><img src="./logo.png" alt="合家美宅" class="ops-login-logo"><div><span>合家美宅</span><h1>客资管理平台</h1><p>客资流转、加盟商协同与经营决策</p></div></section><section class="ops-card ops-login-card"><div class="ops-card-head"><div><h2>平台管理登录</h2><p>使用平台管理员或运营管理员账号登录。</p></div></div>${message?`<div class="ops-notice">${esc(message)}</div>`:''}<form class="ops-form" id="platform-login-form"><div class="ops-field"><label for="username">登录账号</label><input class="ops-input" id="username" autocomplete="username" required></div><div class="ops-field"><label for="password">登录密码</label><input class="ops-input" id="password" type="password" autocomplete="current-password" required></div><button class="ops-btn primary ops-login-submit" id="login-btn" type="submit">登录工作台</button></form></section></div>`);
+function renderLogin(){
+  zsSetSafeHtml(app, `<div class="ops-login-shell"><section class="ops-login-brand"><img src="./logo.png" alt="合家美宅" class="ops-login-logo"><div><span>合家美宅</span><h1>客资管理平台</h1><p>客资流转、加盟商协同与经营决策</p></div></section><section class="ops-card ops-login-card"><div class="ops-card-head"><div><h2>平台管理登录</h2></div></div><form class="ops-form" id="platform-login-form"><div class="ops-field"><label for="username">登录账号</label><input class="ops-input" id="username" autocomplete="username" required></div><div class="ops-field"><label for="password">登录密码</label><div class="ops-password-input"><input class="ops-input" id="password" type="password" autocomplete="current-password" required><button class="ops-password-toggle" id="login-password-toggle" type="button" aria-label="显示密码" aria-pressed="false">${icon('eye')}</button></div></div><button class="ops-btn primary ops-login-submit" id="login-btn" type="submit">登录工作台</button></form></section></div>`);
+  const passwordInput=document.querySelector('#password'),passwordToggle=document.querySelector('#login-password-toggle');
+  passwordToggle.onclick=()=>{const visible=passwordInput.type==='password';passwordInput.type=visible?'text':'password';passwordToggle.setAttribute('aria-label',visible?'隐藏密码':'显示密码');passwordToggle.setAttribute('aria-pressed',String(visible));zsSetSafeHtml(passwordToggle,icon(visible?'eye-off':'eye'))};
   document.querySelector('#platform-login-form').onsubmit=async event=>{
     event.preventDefault();
     const submit=document.querySelector('#login-btn');
@@ -888,7 +890,7 @@ async function boot(){
       return;
     }
     render();
-  }catch(error){renderLogin(error.message||'请登录后继续')}
+  }catch{renderLogin()}
 }
 window.addEventListener('popstate',()=>{if(syncRouteFromUrl())render()});
 boot();

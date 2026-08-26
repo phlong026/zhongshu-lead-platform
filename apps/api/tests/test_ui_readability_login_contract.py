@@ -33,6 +33,23 @@ def test_formal_workbenches_keep_login_at_the_matching_role_entry() -> None:
     assert "location.replace('/h5/')" in franchise
 
 
+def test_platform_login_keeps_only_credentials_and_can_reveal_password() -> None:
+    operations = read(ADMIN / "v12-operations.js")
+    login_start = operations.index("function renderLogin(")
+    login_end = operations.index("function renderNoAccess()")
+    login = operations[login_start:login_end]
+
+    assert "使用平台管理员或运营管理员账号登录。" not in login
+    assert "请先登录" not in login
+    assert "function renderLogin(message" not in operations
+    assert "renderLogin(error.message" not in operations
+    assert "ops-notice" not in login
+    assert 'id="login-password-toggle"' in login
+    assert 'aria-label="显示密码"' in login
+    assert "passwordInput.type=visible?'text':'password'" in login
+    assert "ops-password-input" in login
+
+
 def test_formal_workbenches_use_business_labels_without_old_page_links() -> None:
     operations = read(ADMIN / "v12-operations.js")
     franchise = read(H5 / "v12-workbench.js")
