@@ -157,7 +157,7 @@ WECHAT_DEV_MOCK=false
     "template_id": "lY0K9b-7pB0bOnfjOJ6zPvPeL5fm0DjPhjxhRUZt3MU",
     "field_map": {
       "thing1": "body",
-      "const16": "literal:家装新客资"
+      "const16": "literal:乡墅新客资"
     }
   },
   "publish_immediately": true
@@ -171,7 +171,7 @@ WECHAT_DEV_MOCK=false
 ```json
 "field_map": {
   "thing1": "body",
-  "const16": "literal:家装新客资"
+  "const16": "literal:乡墅新客资"
 }
 ```
 
