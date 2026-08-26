@@ -11,6 +11,7 @@ from ..schemas.auth import PasswordResetBody
 from ..services.audit import write_audit
 from ..services.internal_user_management import (
     create_managed_internal_user,
+    generate_initial_password,
     list_internal_users,
     reset_internal_password,
     set_internal_user_status,
@@ -22,9 +23,9 @@ router = APIRouter(prefix="/users", tags=["users"])
 
 class UserCreateBody(BaseModel):
     username: str = Field(min_length=2, max_length=64)
-    password: str = Field(min_length=12, max_length=128)
+    password: str | None = Field(default=None, max_length=128)
     display_name: str = Field(min_length=1, max_length=64)
-    role_codes: list[str] | None = Field(default=None, min_length=1, max_length=7)
+    role_codes: list[str] | None = Field(default=None, min_length=1, max_length=1)
     role_code: str | None = None
     company_id: str | None = None
 
@@ -41,7 +42,7 @@ class UserCreateBody(BaseModel):
 
 
 class UserRolesBody(BaseModel):
-    role_codes: list[str] = Field(min_length=1, max_length=7)
+    role_codes: list[str] = Field(min_length=1, max_length=1)
 
 
 def _serialize_user(user) -> dict:
@@ -72,10 +73,11 @@ def create_user(
     principal=Depends(require_permissions("*")),
     db: Session = Depends(get_db),
 ):
+    initial_password = body.password or generate_initial_password(body.username)
     user = create_managed_internal_user(
         db,
         username=body.username,
-        password=body.password,
+        password=initial_password,
         display_name=body.display_name,
         role_codes=body.resolved_role_codes(),
         company_id=body.company_id,
@@ -95,7 +97,10 @@ def create_user(
         request_id=request.state.request_id,
     )
     db.commit()
-    return ok(request, _serialize_user(user))
+    payload = _serialize_user(user)
+    if body.password is None:
+        payload["initial_password"] = initial_password
+    return ok(request, payload)
 
 
 @router.put("/{user_id}/roles")

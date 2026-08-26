@@ -6,9 +6,9 @@
 
 ## 已冻结的业务边界
 
-- 平台手工客资校验和去重通过后直接进入 `READY_DISPATCH`；
-- 供应商客资需具备有效供给能力并通过平台资料初审；
-- 正常客资不做前置电销，只有退回申诉创建 `RETURN_VERIFY`；
+- 平台手工客资校验和去重通过后进入 `READY_DISPATCH`；资料不全时由运营派发前置电销核验；
+- 加盟商客资需具备有效供给能力并通过运营资料初审；资料不全时同样由运营派发前置电销核验；
+- 电销只能处理运营指派的 `PRE_DISPATCH_VERIFY` 或 `RETURN_VERIFY`，提交事实结论后由运营决定后续处置；
 - 退回证据为聊天截图或电话录音至少一项；
 - 申诉期与供应奖励观察期统一为 3 个工作日；
 - V1.2 仅支持平台人工派发，不提供自动、随机、轮询、权重或抢单；
@@ -42,9 +42,10 @@ uvicorn apps.api.src.main:app --host 0.0.0.0 --port 8000 --reload
 
 - 加盟商 H5：`http://localhost:8000/h5/`
 - V1.2 加盟商工作台：`http://localhost:8000/h5/v12-workbench.html`
-- 内部电销 H5：`http://localhost:8000/call/`
-- 管理后台：`http://localhost:8000/admin/`
-- V1.2 运营台：`http://localhost:8000/admin/v12-operations.html`
+- 平台管理工作台：`http://localhost:8000/admin/`
+- 平台响应式工作台：`http://localhost:8000/h5/admin/`
+- 内部电销 H5：`http://localhost:8000/h5/call/`
+- 加盟商 H5：`http://localhost:8000/h5/`
 - OpenAPI：`http://localhost:8000/docs`
 
 演示账号只允许用于开发和自动验收，见 `docs/runbooks/DEMO_ACCOUNTS.md`。

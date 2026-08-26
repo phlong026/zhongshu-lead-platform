@@ -67,22 +67,40 @@ def test_supplier_dedup_override_returns_to_pending_review(db) -> None:
     assert lead.pending_reason is None
 
 
-def test_admin_workspace_closes_codex_review_findings() -> None:
-    js = Path("apps/admin/public/v12-leads.js").read_text(encoding="utf-8")
-    assert "item.submitter_user_id===state.me.id" in js
-    assert "data-dedup-override" in js
-    assert "/dedup-override" in js
-    assert "supplierReviewStatus:'PENDING'" in js
-    assert "state.supplierReviewStatus=document.querySelector('#supplier-review-status').value" in js
-    assert "option value=\"\"" in js
+def test_unified_operations_workspace_keeps_source_specific_lead_actions() -> None:
+    js = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
+
+    assert "PLATFORM_MANUAL" in js
+    assert "SUPPLIER_H5" in js
+    assert "data-platform-pre-dispatch" in js
+    assert "data-pre-assign" in js
+    assert "data-review-info" not in js
+    assert "平台补充资料后再处理" in js
 
 
 def test_supplier_h5_has_real_pagination_controls() -> None:
-    js = Path("apps/h5/public/supplier.js").read_text(encoding="utf-8")
+    js = Path("apps/h5/public/v12-workbench.js").read_text(encoding="utf-8")
     compact = re.sub(r"\s+", "", js)
-    assert "listPageSize:20" in compact
-    assert "page:state.listPage" in compact
-    assert "previous-page" in js
-    assert "next-page" in js
-    assert "第 ${state.listPage} / ${totalPages} 页" in js
-    assert "page:1,page_size:100" not in compact
+    assert "page_size:'20'" in compact
+    assert "page:String(S.page)" in compact
+    assert "supply-prev" in js
+    assert "supply-next" in js
+    assert "第 ${S.page} / ${totalPages} 页" in js
+    assert "page_size:100" not in compact
+
+
+def test_operation_workbench_uses_customer_location_and_business_readable_audit_details() -> None:
+    js = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
+
+    assert "全国城市" in js
+    assert "所在地" in js
+    assert "['服务地区'," not in js
+    assert "预算下限（万元）" in js
+    assert "budgetToWan" in js
+    assert "budgetFromWan" in js
+    assert "按所在地优先" in js
+    assert "搜索其他加盟商" in js
+    assert "data-audit-detail" in js
+    assert "操作详情" in js
+    assert "操作人" in js
+    assert "操作结果" in js

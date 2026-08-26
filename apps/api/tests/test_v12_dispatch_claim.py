@@ -173,6 +173,16 @@ def test_city_service_area_covers_child_district_leads(db, dispatch_setup) -> No
     assert listed[receiver.id].eligible is True
 
 
+def test_candidate_list_prioritizes_matching_service_area(db, dispatch_setup) -> None:
+    supplier, _, receiver, _, lead = dispatch_setup
+
+    candidates = list_candidates(db, lead=lead)
+
+    assert candidates[0].company_id == receiver.id
+    assert candidates[0].region_match is True
+    assert any(item.company_id == supplier.id and not item.region_match for item in candidates)
+
+
 def test_candidate_list_matches_individual_evaluation_with_bounded_queries(db, dispatch_setup) -> None:
     supplier, _, receiver, _, lead = dispatch_setup
     expected = {
@@ -250,7 +260,9 @@ def test_manual_dispatch_does_not_deduct_points_and_claim_is_atomic_and_idempote
     reward = db.scalar(select(SupplierLeadReward).where(SupplierLeadReward.assignment_id == assignment.id))
     assert reward is not None
     assert reward.supplier_company_id == supplier.id
-    assert reward.status == RewardStatus.OBSERVING.value
+    assert reward.status == RewardStatus.WAITING_CLAIM.value
+    assert reward.observed_at is None
+    assert reward.reward_due_at is None
     assert reward.reward_ratio_bps == 3000
     assert reward.reward_points == 30
     assert reward.rule_version == 1

@@ -4,7 +4,7 @@ import pytest
 
 from apps.api.src.core.auth import Principal
 from apps.api.src.core.errors import AppError
-from apps.api.src.core.models import Company, Lead, Region, User
+from apps.api.src.core.models import Company, Lead, Region, User, VerificationTask
 from apps.api.src.core.models_v12 import CompanyLeadCapability
 from apps.api.src.core.security import fingerprint_phone
 from apps.api.src.core.v12_enums import DuplicateDecision, LeadSourceKind, LeadV12Status
@@ -21,6 +21,7 @@ from apps.api.src.services.lead_supply_v12 import (
     reopen_rejected_supplier_lead,
     review_supplier_lead,
     submit_draft,
+    update_draft,
 )
 
 
@@ -103,6 +104,58 @@ def test_platform_manual_submission_enters_ready_pool_without_pre_verification(d
     assert lead.phone_fingerprint
 
 
+def test_nationwide_customer_location_is_materialized_before_submission(db) -> None:
+    _, user = _seed_identity(db, company_code="NATIONWIDE-LEAD")
+    principal = _principal(user.id, None, "lead.manual.manage")
+    lead = create_draft(
+        db,
+        principal=principal,
+        source_kind=LeadSourceKind.PLATFORM_MANUAL,
+        values={
+            "customer_name": "广州客户",
+            "phone": "13800138288",
+            "city": "广州市",
+            "district": "天河区",
+            "region_code": "440106",
+            "need_summary": "计划翻新自建房，需要预约上门沟通",
+            "consent_confirmed": True,
+        },
+    )
+
+    submit_draft(db, lead=lead, principal=principal)
+
+    city = db.get(Region, "440100")
+    district = db.get(Region, "440106")
+    assert city is not None and city.name == "广州市"
+    assert district is not None and district.name == "天河区"
+    assert district.parent_code == city.code
+    assert lead.city == "广州市"
+    assert lead.district == "天河区"
+
+
+def test_operation_can_rework_platform_draft_created_by_another_operator(db) -> None:
+    _, creator = _seed_identity(db, company_code="PLATFORM-CREATOR")
+    _, reworker = _seed_identity(db, company_code="PLATFORM-REWORKER")
+    creator_principal = _principal(creator.id, None, "lead.manual.manage")
+    reworker_principal = _principal(reworker.id, None, "lead.manual.manage")
+    lead = create_draft(
+        db,
+        principal=creator_principal,
+        source_kind=LeadSourceKind.PLATFORM_MANUAL,
+        values={"customer_name": "待运营补充的平台客户", "phone": "13800138008"},
+    )
+
+    update_draft(
+        db,
+        lead=lead,
+        principal=reworker_principal,
+        values={"need_summary": "运营复核后补充的建房需求"},
+    )
+
+    assert lead.submitter_user_id == creator.id
+    assert lead.need_summary == "运营复核后补充的建房需求"
+
+
 def test_clear_dedup_result_cannot_be_artificially_overridden(db) -> None:
     db.add(Region(code="420100", name="武汉市", level="CITY", aliases=[], active=True))
     _, user = _seed_identity(db, company_code="CLEAR001")
@@ -151,7 +204,7 @@ def test_recent_duplicate_is_blocked_and_can_be_audited_override(db) -> None:
     assert second.duplicate_status == DuplicateDecision.OVERRIDDEN.value
 
 
-def test_supplier_upload_requires_approved_capability_and_review(db) -> None:
+def test_supplier_upload_requires_approved_capability_and_telesales_verification(db) -> None:
     db.add(Region(code="420100", name="武汉市", level="CITY", aliases=[], active=True))
     company, user = _seed_identity(db, company_code="SUP001")
     principal = _principal(user.id, company.id, "supplier.lead.manage")
@@ -171,19 +224,39 @@ def test_supplier_upload_requires_approved_capability_and_review(db) -> None:
     lead = create_draft(db, principal=principal, source_kind=LeadSourceKind.SUPPLIER_H5, values=_valid_values())
     result = submit_draft(db, lead=lead, principal=principal)
     assert result.decision is DuplicateDecision.CLEAR
-    assert lead.status == LeadV12Status.PENDING_REVIEW.value
+    assert lead.status == LeadV12Status.PENDING_TELESALES_VERIFY.value
+    assert lead.review_status == "PENDING"
+    assert lead.pending_reason == "SUPPLIER_SUBMISSION_REQUIRES_TELESALES_VERIFY"
+    task = db.query(VerificationTask).filter_by(lead_id=lead.id).one()
+    assert task.status == "PENDING"
+    assert task.assignee_user_id is None
 
-    review_result = review_supplier_lead(
+
+def test_supplier_submission_cannot_bypass_telesales_verification_with_initial_review(db) -> None:
+    db.add(Region(code="420100", name="武汉市", level="CITY", aliases=[], active=True))
+    company, user = _seed_identity(db, company_code="SUP-REVIEW-DECISIONS")
+    _approve_supplier_capability(db, company, user)
+    principal = _principal(user.id, company.id, "supplier.lead.manage")
+
+    lead = create_draft(
         db,
-        lead=lead,
-        reviewer=principal,
-        approve=True,
-        note="资料与授权完整",
+        principal=principal,
+        source_kind=LeadSourceKind.SUPPLIER_H5,
+        values=_valid_values("13700137001"),
     )
-    db.commit()
-    assert review_result is not None
-    assert lead.review_status == "APPROVED"
-    assert lead.status == LeadV12Status.READY_DISPATCH.value
+    submit_draft(db, lead=lead, principal=principal)
+
+    with pytest.raises(AppError) as exc_info:
+        review_supplier_lead(
+            db,
+            lead=lead,
+            reviewer=principal,
+            decision="QUALIFIED",
+            note="不能绕过电销核实直接入池",
+        )
+
+    assert exc_info.value.code == "LEAD_REVIEW_STATE_INVALID"
+    assert lead.status == LeadV12Status.PENDING_TELESALES_VERIFY.value
 
 
 def test_supplier_can_discard_own_draft(db) -> None:
@@ -276,13 +349,10 @@ def test_rejected_supplier_lead_can_be_revised_and_resubmitted(db) -> None:
         values=_valid_values("13600136000"),
     )
     submit_draft(db, lead=lead, principal=principal)
-    review_supplier_lead(
-        db,
-        lead=lead,
-        reviewer=principal,
-        approve=False,
-        note="请补充更具体的建房需求",
-    )
+    lead.status = LeadV12Status.INVALID.value
+    lead.review_status = "REJECTED"
+    lead.review_note = "请补充更具体的建房需求"
+    lead.pending_reason = "PRE_DISPATCH_SUPPLIER_INVALID"
     assert lead.status == LeadV12Status.INVALID.value
 
     reopen_rejected_supplier_lead(db, lead=lead, principal=principal)
@@ -296,7 +366,7 @@ def test_rejected_supplier_lead_can_be_revised_and_resubmitted(db) -> None:
     lead.need_summary = "计划在武汉建设两层自住房，近期确认设计方案"
     submit_draft(db, lead=lead, principal=principal)
 
-    assert lead.status == LeadV12Status.PENDING_REVIEW.value
+    assert lead.status == LeadV12Status.PENDING_TELESALES_VERIFY.value
     assert lead.review_status == "PENDING"
     assert lead.review_note is None
 

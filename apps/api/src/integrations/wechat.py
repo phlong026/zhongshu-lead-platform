@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Mapping
 
 import httpx
 
@@ -89,22 +89,58 @@ class WechatOfficialAccountClient:
             "message_adapter": "MOCK" if settings.wechat_dev_mock else "OFFICIAL_ACCOUNT",
         }
 
-    def send_scene_message(self, *, openid: str, scene: str, title: str, body: str, url: str | None, template_id: str | None = None) -> WechatSendResult:
+    def send_scene_message(
+        self,
+        *,
+        openid: str,
+        scene: str,
+        title: str,
+        body: str,
+        url: str | None,
+        template_id: str | None = None,
+        field_map: Mapping[str, str] | None = None,
+    ) -> WechatSendResult:
         if settings.wechat_dev_mock:
             return WechatSendResult(success=True, message_id=f"mock-{scene.lower()}")
         if not template_id:
             return WechatSendResult(success=False, error_code="TEMPLATE_NOT_CONFIGURED", error_message="消息模板未配置")
+        values = {"title": title, "scene": scene, "body": body, "remark": "点击查看详情"}
+        resolved_field_map = field_map or {
+            "first": "title",
+            "keyword1": "scene",
+            "keyword2": "body",
+            "remark": "remark",
+        }
+        payload_data: dict[str, dict[str, str]] = {}
+        for field_name, source in resolved_field_map.items():
+            if not isinstance(field_name, str) or not field_name or not isinstance(source, str):
+                return WechatSendResult(
+                    success=False,
+                    error_code="TEMPLATE_CONFIG_INVALID",
+                    error_message="消息模板字段映射无效",
+                )
+            value = values.get(source)
+            if value is None and source.startswith("literal:"):
+                value = source.removeprefix("literal:")
+            if not value:
+                return WechatSendResult(
+                    success=False,
+                    error_code="TEMPLATE_CONFIG_INVALID",
+                    error_message="消息模板字段映射无效",
+                )
+            payload_data[field_name] = {"value": value}
+        if not payload_data:
+            return WechatSendResult(
+                success=False,
+                error_code="TEMPLATE_CONFIG_INVALID",
+                error_message="消息模板字段映射无效",
+            )
         token = self._token()
         payload = {
             "touser": openid,
             "template_id": template_id,
             "url": url,
-            "data": {
-                "first": {"value": title},
-                "keyword1": {"value": scene},
-                "keyword2": {"value": body},
-                "remark": {"value": "点击查看详情"},
-            },
+            "data": payload_data,
         }
         response = httpx.post(f"https://api.weixin.qq.com/cgi-bin/message/template/send?access_token={token}", json=payload, timeout=15)
         response.raise_for_status()

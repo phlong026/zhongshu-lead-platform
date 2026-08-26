@@ -9,6 +9,7 @@ from apps.api.src.core.models import (
     CompanyServiceRegion,
     PointsAccount,
     Region,
+    User,
 )
 from apps.api.src.core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12
 
@@ -24,7 +25,75 @@ def _login_admin(client) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_simple_company_creation_creates_pending_v12_dispatch_profile(api_client) -> None:
+def _login_operation(client) -> dict[str, str]:
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"username": "operation", "password": "Operation123!"},
+    )
+    assert response.status_code == 200, response.text
+    token = response.cookies.get("access_token")
+    assert token
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_operation_can_open_a_new_franchise_company(api_client) -> None:
+    client, factory = api_client
+    operation = _login_operation(client)
+
+    response = client.post(
+        "/api/v1/companies/simple",
+        headers=operation,
+        json={
+            "name": "北京合家美宅",
+            "owner_name": "北京负责人",
+            "contact_phone": "13900139040",
+            "primary_city_code": "110000",
+            "district_codes": ["110101"],
+            "serve_all_districts": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    result = response.json()["data"]
+    assert result["name"] == "北京合家美宅"
+    assert result["readiness"] == {
+        "points_account": "READY",
+        "receiver_capability": "READY",
+        "service_areas": "READY",
+    }
+
+    with factory() as db:
+        company = db.get(Company, result["id"])
+        assert company is not None
+        franchise_user = db.scalar(select(User).where(User.username == "franchise_demo"))
+        assert franchise_user is not None
+        franchise_user.company_id = company.id
+        db.commit()
+
+    franchise = client.post(
+        "/api/v1/auth/login",
+        json={"username": "franchise_demo", "password": "Franchise123!"},
+    )
+    assert franchise.status_code == 200, franchise.text
+    headers = {"Authorization": f"Bearer {franchise.cookies.get('access_token')}"}
+    capabilities = client.get("/api/v1/v1.2/company/capabilities", headers=headers)
+    areas = client.get("/api/v1/v1.2/company/service-areas", headers=headers)
+    assert capabilities.status_code == 200, capabilities.text
+    assert areas.status_code == 200, areas.text
+    assert [
+        (item["company_id"], item["capability_code"], item["active"], item["review_status"])
+        for item in capabilities.json()["data"]
+    ] == [(result["id"], "LEAD_RECEIVER", True, "APPROVED")]
+    assert {
+        (item["region_name"], item["active"], item["review_status"])
+        for item in areas.json()["data"]
+    } == {
+        ("北京市", True, "APPROVED"),
+        ("北京市 · 东城区", True, "APPROVED"),
+    }
+
+
+def test_simple_company_creation_automatically_opens_v12_dispatch_profile(api_client) -> None:
     client, factory = api_client
     admin = _login_admin(client)
 
@@ -45,8 +114,8 @@ def test_simple_company_creation_creates_pending_v12_dispatch_profile(api_client
     assert result["code"].startswith("JM-")
     assert result["readiness"] == {
         "points_account": "READY",
-        "receiver_capability": "PENDING_REVIEW",
-        "service_areas": "PENDING_REVIEW",
+        "receiver_capability": "READY",
+        "service_areas": "READY",
     }
 
     with factory() as db:
@@ -81,8 +150,16 @@ def test_simple_company_creation_creates_pending_v12_dispatch_profile(api_client
             )
         )
         assert receiver is not None
-        assert receiver.active is False
-        assert receiver.review_status == "PENDING"
+        assert receiver.active is True
+        assert receiver.review_status == "APPROVED"
+
+        supplier = db.scalar(
+            select(CompanyLeadCapability).where(
+                CompanyLeadCapability.company_id == company.id,
+                CompanyLeadCapability.capability_code == "LEAD_SUPPLIER",
+            )
+        )
+        assert supplier is None
 
         service_areas = db.scalars(
             select(CompanyServiceAreaV12).where(
@@ -91,7 +168,7 @@ def test_simple_company_creation_creates_pending_v12_dispatch_profile(api_client
         ).all()
         assert {"310000", "310104", "310115"}.issubset({item.region_code for item in service_areas})
         assert len(service_areas) > 10
-        assert all(not item.active and item.review_status == "PENDING" for item in service_areas)
+        assert all(item.active and item.review_status == "APPROVED" for item in service_areas)
         assert next(item for item in service_areas if item.region_code == "310000").is_primary_city
 
         audit = db.scalar(
@@ -101,6 +178,47 @@ def test_simple_company_creation_creates_pending_v12_dispatch_profile(api_client
             )
         )
         assert audit is not None
+
+
+def test_platform_can_enable_supplier_capability_for_new_franchise(api_client) -> None:
+    client, _ = api_client
+    admin = _login_admin(client)
+    created = client.post(
+        "/api/v1/companies/simple",
+        headers=admin,
+        json={
+            "name": "供资配置测试加盟商",
+            "primary_city_code": "310000",
+            "district_codes": ["310104"],
+            "serve_all_districts": False,
+        },
+    )
+    assert created.status_code == 200, created.text
+    company_id = created.json()["data"]["id"]
+
+    configured = client.put(
+        f"/api/v1/v1.2/admin/companies/{company_id}/capabilities/LEAD_SUPPLIER",
+        headers=admin,
+        json={"active": True, "note": "运营开通供资"},
+    )
+    assert configured.status_code == 200, configured.text
+    capability = configured.json()["data"]
+    assert capability["capability_code"] == "LEAD_SUPPLIER"
+    assert capability["active"] is True
+    assert capability["review_status"] == "APPROVED"
+
+    detail = client.get(
+        f"/api/v1/v1.2/admin/companies/{company_id}/profile",
+        headers=admin,
+    )
+    assert detail.status_code == 200, detail.text
+    data = detail.json()["data"]
+    assert data["company"]["id"] == company_id
+    assert {item["capability_code"] for item in data["capabilities"]} == {
+        "LEAD_RECEIVER",
+        "LEAD_SUPPLIER",
+    }
+    assert data["service_areas"]
 
 
 def test_simple_company_creation_rejects_region_outside_primary_city(api_client) -> None:
@@ -159,7 +277,7 @@ def test_simple_company_creation_materializes_selected_nationwide_regions(api_cl
             select(CompanyServiceAreaV12).where(CompanyServiceAreaV12.company_id == company_id)
         ).all()
         assert {item.region_code for item in service_areas} == {"440100", "440106"}
-        assert all(not item.active and item.review_status == "PENDING" for item in service_areas)
+        assert all(item.active and item.review_status == "APPROVED" for item in service_areas)
 
 
 def test_simple_company_creation_materializes_all_city_districts(api_client) -> None:
@@ -184,8 +302,8 @@ def test_simple_company_creation_materializes_all_city_districts(api_client) -> 
             db.scalars(
                 select(CompanyServiceAreaV12.region_code).where(
                     CompanyServiceAreaV12.company_id == company_id,
-                    CompanyServiceAreaV12.active.is_(False),
-                    CompanyServiceAreaV12.review_status == "PENDING",
+                    CompanyServiceAreaV12.active.is_(True),
+                    CompanyServiceAreaV12.review_status == "APPROVED",
                 )
             ).all()
         )

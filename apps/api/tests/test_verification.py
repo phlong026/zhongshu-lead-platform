@@ -1,6 +1,9 @@
 from sqlalchemy import select
 
+import pytest
+
 from apps.api.src.core.auth import Principal
+from apps.api.src.core.errors import AppError
 from apps.api.src.core.models import Lead, VerificationTask
 from apps.api.src.core.security import encrypt_text, hash_phone
 from apps.api.src.services.verification_service import (
@@ -13,7 +16,7 @@ from apps.api.src.services.auth_service import create_internal_user
 
 
 def principal(user_id: str) -> Principal:
-    return Principal(user_id=user_id, display_name="电销", company_id=None, role_codes=frozenset({"TELESALES"}), permission_codes=frozenset({"verification.task.claim","verification.submit","lead.phone.read"}), session_version=1)
+    return Principal(user_id=user_id, display_name="电销", company_id=None, role_codes=frozenset({"TELESALES"}), permission_codes=frozenset({"verification.task.start","verification.submit","lead.phone.read"}), session_version=1)
 
 
 def test_verification_qualified_flow(db) -> None:
@@ -30,3 +33,19 @@ def test_verification_qualified_flow(db) -> None:
     assert submission.result == "QUALIFIED"
     assert db.get(Lead, lead.id).status == "QUALIFIED"
     assert db.get(VerificationTask, task.id).status == "SUBMITTED"
+
+
+def test_telesales_cannot_start_unassigned_verification_task(db) -> None:
+    user = create_internal_user(db, username="tel-unassigned", password="password1", display_name="电销", role_code="TELESALES")
+    lead = Lead(customer_name="王先生", phone_encrypted=encrypt_text("13900139001"), phone_hash=hash_phone("13900139001"), city="上海市", region_code="310100", category_code="OLD_RENOVATION", status="IMPORTED")
+    db.add(lead)
+    publish_template(db, code="UNASSIGNED", name="未派发核验", schema={"fields": []})
+    db.commit()
+    task = create_tasks(db, lead_ids=[lead.id], assignee_user_id=user.id, assigned_by="operation", template_code="UNASSIGNED")[0]
+    task.assignee_user_id = None
+    task.status = "PENDING"
+
+    with pytest.raises(AppError) as exc_info:
+        claim_task(db, task, principal(user.id))
+
+    assert exc_info.value.code == "VERIFICATION_TASK_NOT_ASSIGNED"

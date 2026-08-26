@@ -13,7 +13,9 @@ from ..core.models_v12 import LeadDedupEvent
 from ..core.security import decrypt_text, encrypt_text, fingerprint_phone, hash_phone, mask_phone, normalize_phone
 from ..core.v12_enums import LeadReviewStatus, LeadSourceKind, LeadV12Status
 from .company_profile_v12 import require_lead_capability
+from .china_regions import region_by_code
 from .dedup_v12 import DedupResult, apply_submission_decision, evaluate_phone
+from .pre_dispatch_v12 import queue_pre_dispatch_task
 
 
 EDITABLE_FIELDS = {
@@ -54,7 +56,9 @@ def _assert_owner(lead: Lead, principal: Principal, *, supplier: bool) -> None:
     if supplier:
         if not principal.company_id or lead.supplier_company_id != principal.company_id:
             raise AppError("FORBIDDEN", "无权访问其他公司的供应商客资", 403)
-    elif lead.submitter_user_id != principal.user_id:
+        if principal.has_any_role("FRANCHISE_EMPLOYEE") and lead.submitter_user_id != principal.user_id:
+            raise AppError("SUPPLIER_LEAD_NOT_OWNED", "加盟商员工只能编辑本人录入的客资", 403)
+    elif not principal.can("lead.manual.manage") and lead.submitter_user_id != principal.user_id:
         raise AppError("FORBIDDEN", "无权修改其他录入人的客资草稿", 403)
 
 
@@ -189,6 +193,44 @@ def _validate_submission(db: Session, lead: Lead) -> str:
     return phone
 
 
+def _materialize_nationwide_location(db: Session, lead: Lead) -> None:
+    """Persist only the selected nationwide location before it enters business flow."""
+
+    if not lead.region_code:
+        return
+    location = region_by_code(lead.region_code)
+    if location is None:
+        return
+    city_code = str(location["city_code"])
+    city = db.get(Region, city_code)
+    if city is None:
+        city = Region(
+            code=city_code,
+            name=str(location["city_name"]),
+            level="CITY",
+            parent_code=None,
+            aliases=[str(location["city_name"])],
+            active=True,
+        )
+        db.add(city)
+    district_code = location["district_code"]
+    district_name = location["district_name"]
+    if district_code and db.get(Region, district_code) is None:
+        db.add(
+            Region(
+                code=district_code,
+                name=str(district_name),
+                level="DISTRICT",
+                parent_code=city_code,
+                aliases=[str(district_name)],
+                active=True,
+            )
+        )
+    lead.city = str(location["city_name"])
+    lead.district = str(district_name) if district_name else None
+    db.flush()
+
+
 def submit_draft(
     db: Session,
     *,
@@ -201,6 +243,7 @@ def submit_draft(
     _assert_owner(lead, principal, supplier=supplier)
     if supplier:
         require_lead_capability(db, principal.company_id, "LEAD_SUPPLIER")
+    _materialize_nationwide_location(db, lead)
     phone = _validate_submission(db, lead)
     if supplier:
         lead.review_note = None
@@ -210,6 +253,12 @@ def submit_draft(
     lead.imported_at = lead.imported_at or now
     result = evaluate_phone(db, lead=lead, normalized_phone=phone, checkpoint=checkpoint, now=now)
     apply_submission_decision(lead, result)
+    if supplier and not result.blocks_dispatch:
+        queue_pre_dispatch_task(
+            db,
+            lead_id=lead.id,
+            reason="SUPPLIER_SUBMISSION_REQUIRES_TELESALES_VERIFY",
+        )
     db.flush()
     return result
 
@@ -219,21 +268,41 @@ def review_supplier_lead(
     *,
     lead: Lead,
     reviewer: Principal,
-    approve: bool,
     note: str | None,
+    approve: bool | None = None,
+    decision: str | None = None,
 ) -> DedupResult | None:
     if lead.source_kind != LeadSourceKind.SUPPLIER_H5.value:
         raise AppError("LEAD_SOURCE_INVALID", "仅供应商上传客资需要资料初审", 409)
     if lead.status not in {LeadV12Status.PENDING_REVIEW.value, LeadV12Status.DUPLICATE.value}:
         raise AppError("LEAD_REVIEW_STATE_INVALID", "当前客资状态不可初审", 409)
+    normalized_decision = (decision or ("QUALIFIED" if approve else "INVALID")).strip().upper()
+    legacy_decisions = {"APPROVE": "QUALIFIED", "REJECT": "INVALID"}
+    normalized_decision = legacy_decisions.get(normalized_decision, normalized_decision)
+    if normalized_decision not in {"QUALIFIED", "INFO_INCOMPLETE", "DUPLICATE", "INVALID"}:
+        raise AppError("SUPPLIER_REVIEW_DECISION_INVALID", "初审结论无效", 422)
+
     lead.review_note = _clean_text(note)
     lead.reviewed_at = datetime.now(timezone.utc)
-    if not approve:
-        if not lead.review_note:
-            raise AppError("REVIEW_NOTE_REQUIRED", "驳回时必须填写原因", 422)
+    if normalized_decision in {"INFO_INCOMPLETE", "DUPLICATE", "INVALID"} and not lead.review_note:
+        raise AppError("REVIEW_NOTE_REQUIRED", "该初审结论必须填写原因", 422)
+    if normalized_decision == "INFO_INCOMPLETE":
+        if lead.status != LeadV12Status.PENDING_REVIEW.value:
+            raise AppError("LEAD_REVIEW_INFO_INCOMPLETE_INVALID", "仅待初审客资可派发前置电销核验", 409)
+        lead.review_status = LeadReviewStatus.PENDING.value
+        lead.pending_reason = "SUPPLIER_REVIEW_INFO_INCOMPLETE"
+        db.flush()
+        return None
+    if normalized_decision == "DUPLICATE":
+        lead.review_status = LeadReviewStatus.PENDING.value
+        lead.status = LeadV12Status.DUPLICATE.value
+        lead.pending_reason = "SUPPLIER_REVIEW_DUPLICATE"
+        db.flush()
+        return None
+    if normalized_decision == "INVALID":
         lead.review_status = LeadReviewStatus.REJECTED.value
         lead.status = LeadV12Status.INVALID.value
-        lead.pending_reason = "SUPPLIER_REVIEW_REJECTED"
+        lead.pending_reason = "SUPPLIER_REVIEW_INVALID"
         db.flush()
         return None
 
@@ -250,9 +319,12 @@ def review_supplier_lead(
         lead.status = LeadV12Status.DUPLICATE.value
         lead.pending_reason = result.decision.value
     else:
-        lead.review_status = LeadReviewStatus.APPROVED.value
-        lead.status = LeadV12Status.READY_DISPATCH.value
-        lead.pending_reason = None
+        queue_pre_dispatch_task(
+            db,
+            lead_id=lead.id,
+            reason="SUPPLIER_SUBMISSION_REQUIRES_TELESALES_VERIFY",
+        )
+        lead.review_status = LeadReviewStatus.PENDING.value
     db.flush()
     return result
 
@@ -271,6 +343,7 @@ def list_supplier_leads(
     status: str | None,
     page_no: int,
     page_size: int,
+    submitter_user_id: str | None = None,
 ) -> tuple[list[Lead], int]:
     stmt = select(Lead).where(
         Lead.source_kind == LeadSourceKind.SUPPLIER_H5.value,
@@ -280,6 +353,9 @@ def list_supplier_leads(
         Lead.source_kind == LeadSourceKind.SUPPLIER_H5.value,
         Lead.supplier_company_id == company_id,
     )
+    if submitter_user_id:
+        stmt = stmt.where(Lead.submitter_user_id == submitter_user_id)
+        count_stmt = count_stmt.where(Lead.submitter_user_id == submitter_user_id)
     if status:
         stmt = stmt.where(Lead.status == status)
         count_stmt = count_stmt.where(Lead.status == status)

@@ -5,11 +5,135 @@ from sqlalchemy import select
 import apps.api.src.integrations.wechat as wechat_module
 from apps.api.src.core.models import NotificationOutbox, SystemConfig
 from apps.api.src.schemas.company import CompanyCreateBody
+from apps.api.src.services.auth_service import create_internal_user
 from apps.api.src.services.company_service import create_company
 from apps.api.src.services.notification_service import enqueue_outbox
 from apps.api.src.services.outbox_worker import process_outbox
 # I19/N13：admin 登录头与 test_auth_company 单一来源，不再手写样板。
 from test_auth_company import _admin_headers
+
+
+def test_official_account_client_uses_configured_template_field_map(monkeypatch) -> None:
+    """公众号模板字段由已发布配置决定，避免模板关键字名称不一致时盲发。"""
+
+    from apps.api.src.integrations.wechat import WechatOfficialAccountClient
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict[str, int]:
+            return {"errcode": 0, "msgid": 123}
+
+    sent: dict[str, object] = {}
+
+    def fake_post(url: str, *, json: dict[str, object], timeout: int):
+        sent.update({"url": url, "json": json, "timeout": timeout})
+        return _Response()
+
+    monkeypatch.setattr(wechat_module.settings, "wechat_dev_mock", False)
+    monkeypatch.setattr(wechat_module.httpx, "post", fake_post)
+    client = WechatOfficialAccountClient()
+    client._access_token = "test-access-token"
+    client._expires_at = (
+        wechat_module.datetime.now(wechat_module.timezone.utc)
+        + wechat_module.timedelta(hours=1)
+    )
+
+    result = client.send_scene_message(
+        openid="o-test-user",
+        scene="V12_ASSIGNMENT_DISPATCHED",
+        title="新客资已派发",
+        body="上海市浦东新区，领取截止 18:00",
+        url="https://zszhj.cn/h5/#/leads",
+        template_id="approved-template-id",
+        field_map={
+            "first": "title",
+            "keyword1": "scene",
+            "keyword2": "body",
+            "remark": "remark",
+        },
+    )
+
+    assert result.success is True
+    assert sent["json"] == {
+        "touser": "o-test-user",
+        "template_id": "approved-template-id",
+        "url": "https://zszhj.cn/h5/#/leads",
+        "data": {
+            "first": {"value": "新客资已派发"},
+            "keyword1": {"value": "V12_ASSIGNMENT_DISPATCHED"},
+            "keyword2": {"value": "上海市浦东新区，领取截止 18:00"},
+            "remark": {"value": "点击查看详情"},
+        },
+    }
+
+
+def test_official_account_client_sends_v12_dispatch_template(monkeypatch) -> None:
+    """新客资派发必须使用已核验的模板 ID 与字段键，避免升级时静默错配。"""
+
+    from apps.api.src.integrations.wechat import WechatOfficialAccountClient
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict[str, int]:
+            return {"errcode": 0, "msgid": 124}
+
+    sent: dict[str, object] = {}
+
+    def fake_post(url: str, *, json: dict[str, object], timeout: int):
+        sent["json"] = json
+        return _Response()
+
+    monkeypatch.setattr(wechat_module.settings, "wechat_dev_mock", False)
+    monkeypatch.setattr(wechat_module.httpx, "post", fake_post)
+    client = WechatOfficialAccountClient()
+    client._access_token = "test-access-token"
+    client._expires_at = (
+        wechat_module.datetime.now(wechat_module.timezone.utc)
+        + wechat_module.timedelta(hours=1)
+    )
+
+    result = client.send_scene_message(
+        openid="o-test-user",
+        scene="V12_ASSIGNMENT_DISPATCHED",
+        title="您有一条新客资待领取",
+        body="上海·浦东｜旧改客资",
+        url="https://zszhj.cn/h5/#/leads",
+        template_id="lY0K9b-7pB0bOnfjOJ6zPvPeL5fm0DjPhjxhRUZt3MU",
+        field_map={"thing1": "title", "const16": "literal:乡墅新客资"},
+    )
+
+    assert result.success is True
+    assert sent["json"] == {
+        "touser": "o-test-user",
+        "template_id": "lY0K9b-7pB0bOnfjOJ6zPvPeL5fm0DjPhjxhRUZt3MU",
+        "url": "https://zszhj.cn/h5/#/leads",
+        "data": {
+            "thing1": {"value": "您有一条新客资待领取"},
+            "const16": {"value": "乡墅新客资"},
+        },
+    }
+
+
+def test_official_account_client_rejects_unknown_template_field_source(monkeypatch) -> None:
+    from apps.api.src.integrations.wechat import WechatOfficialAccountClient
+
+    monkeypatch.setattr(wechat_module.settings, "wechat_dev_mock", False)
+    result = WechatOfficialAccountClient().send_scene_message(
+        openid="o-test-user",
+        scene="V12_ASSIGNMENT_DISPATCHED",
+        title="新客资已派发",
+        body="测试内容",
+        url="https://zszhj.cn/h5/#/leads",
+        template_id="approved-template-id",
+        field_map={"keyword1": "unsupported_source"},
+    )
+
+    assert result.success is False
+    assert result.error_code == "TEMPLATE_CONFIG_INVALID"
 
 
 def test_outbox_without_recipient_is_retried(db) -> None:
@@ -67,7 +191,7 @@ def test_create_invite_enqueues_outbox_event_without_raw_token(api_client) -> No
         assert item.status == "PENDING"
         assert item.payload["company_name"] == "通知测试公司"
         assert item.payload["invitee_name"] == "李负责人"
-        assert item.payload["deep_link"] == "/h5/#/login"
+        assert item.payload["deep_link"] == "/h5/invite.html"
         # 安全红线：raw token 不落 Outbox（失败队列/DB 都不暴露邀请原文）。
         assert raw_token not in json.dumps(item.payload, ensure_ascii=False)
 
@@ -163,6 +287,42 @@ def test_outbox_failure_text_never_persists_credentials(db, monkeypatch) -> None
     assert "RuntimeError" in item.last_error, "异常类名保留供排障"
 
 
+def test_outbox_invalid_template_field_map_requires_manual_action(db, monkeypatch) -> None:
+    """字段映射填错是确定性配置错误，不能消耗重试次数。"""
+
+    from apps.api.src.core.models import User, WechatIdentity
+
+    monkeypatch.setattr(wechat_module.settings, "wechat_dev_mock", False)
+    user = User(display_name="模板测试负责人", status="ACTIVE")
+    db.add(user)
+    db.flush()
+    db.add(WechatIdentity(openid="o-template-config", user_id=user.id))
+    db.add(
+        SystemConfig(
+            domain="wechat_template",
+            key="ASSIGNMENT_DISPATCHED",
+            status="PUBLISHED",
+            value_json={"template_id": "approved-template-id", "field_map": {"keyword1": "unknown"}},
+        )
+    )
+    item = enqueue_outbox(
+        db,
+        event_key="test:invalid-template-map",
+        event_type="ASSIGNMENT_DISPATCHED",
+        aggregate_type="assignment",
+        aggregate_id="a-template-map",
+        payload={"user_id": user.id},
+    )
+    db.commit()
+
+    result = process_outbox(db)
+    db.commit()
+
+    assert result["manual"] == 1
+    assert item.status == "MANUAL_ACTION_REQUIRED"
+    assert "TEMPLATE_CONFIG_INVALID" in (item.last_error or "")
+
+
 def test_failed_outbox_response_scrubs_legacy_poisoned_last_error(api_client) -> None:
     """N3：存量脏 last_error 经 failed-outbox 出参时同样脱敏。"""
 
@@ -215,3 +375,28 @@ def test_failed_outbox_panel_defaults_include_terminal_states(api_client) -> Non
     resp = client.get("/api/v1/notifications/outbox/failed?status=FAILED", headers=headers)
     assert resp.status_code == 200, resp.text
     assert {row["status"] for row in resp.json()["data"]} == {"FAILED"}
+
+
+def test_operation_cannot_review_or_retry_failed_outbox(api_client) -> None:
+    client, factory = api_client
+    with factory() as db:
+        create_internal_user(
+            db,
+            username="notification-operation",
+            password="Operation123!",
+            display_name="通知运营",
+            role_code="OPERATION",
+        )
+        db.commit()
+
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "notification-operation", "password": "Operation123!"},
+    )
+    assert login.status_code == 200, login.text
+    token = login.cookies.get("access_token")
+    assert token
+    headers = {"Authorization": f"Bearer {token}"}
+
+    assert client.get("/api/v1/notifications/outbox/failed", headers=headers).status_code == 403
+    assert client.post("/api/v1/notifications/outbox/not-a-real-id/retry", headers=headers).status_code == 403

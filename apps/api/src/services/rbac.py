@@ -7,6 +7,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session, selectinload
 
 from ..core.models import Permission, Role, RolePermission, User, UserRole
+from ..core.role_contract import ACTIVE_BUSINESS_ROLE_CODES, LEGACY_ROLE_CODES
 
 
 logger = logging.getLogger("zhongshu.rbac")
@@ -14,34 +15,8 @@ _RBAC_SYNC_LOCK_KEY = "zhongshu.rbac.fixed-role-matrix"
 
 ROLE_PERMISSION_MATRIX: dict[str, tuple[str, list[str]]] = {
     "SUPER_ADMIN": ("超级管理员", ["*"]),
-    "OWNER": (
-        "老板/业务负责人",
-        [
-            "dashboard.business.read",
-            "dashboard.finance.read",
-            "lead.read",
-            "lead.phone.read",
-            "company.read",
-            "assignment.read",
-            "points.read",
-            "reward.read",
-            "return.read",
-            "audit.read",
-            "report.v12.read",
-            "calendar.read",
-            "calendar.manage",
-            "calendar.import",
-        ],
-    ),
-    "LEAD_ENTRY": (
-        "平台客资录入员",
-        [
-            "lead.read",
-            "lead.manual.manage",
-        ],
-    ),
     "OPERATION": (
-        "运营人员",
+        "运营管理员",
         [
             "lead.read",
             "lead.edit",
@@ -53,10 +28,12 @@ ROLE_PERMISSION_MATRIX: dict[str, tuple[str, list[str]]] = {
             "assignment.release",
             "company.read_eligibility",
             "company.profile.review",
+            "company.account.manage",
             "verification.read",
             "return.read",
+            "return.review",
+            "return.evidence.read",
             "reward.read",
-            "notification.retry",
             "dashboard.operation.read",
             "audit.read",
             "report.v12.read",
@@ -67,31 +44,12 @@ ROLE_PERMISSION_MATRIX: dict[str, tuple[str, list[str]]] = {
         "电销人员",
         [
             "verification.task.read",
-            "verification.task.claim",
+            "verification.task.start",
             "verification.submit",
             "lead.phone.read",
             "lead.phone.dial",
             "dashboard.telesales.read",
         ],
-    ),
-    "FINANCE": (
-        "积分/财务管理员",
-        [
-            "points.read",
-            "points.package.manage",
-            "points.recharge",
-            "points.reverse",
-            "reward.read",
-            "reward.manage",
-            "reward.reverse",
-            "dashboard.finance.read",
-            "company.read",
-            "report.v12.read",
-        ],
-    ),
-    "RETURN_REVIEWER": (
-        "退回审核员",
-        ["return.read", "return.review", "return.evidence.read", "lead.phone.read"],
     ),
     "FRANCHISE_OWNER": (
         "加盟商负责人",
@@ -109,8 +67,18 @@ ROLE_PERMISSION_MATRIX: dict[str, tuple[str, list[str]]] = {
             "notification.own.read",
         ],
     ),
+    "FRANCHISE_EMPLOYEE": (
+        "加盟商员工",
+        [
+            "h5.home",
+            "assignment.employee.read",
+            "supplier.lead.manage",
+            "followup.own.manage",
+            "return.own.manage",
+            "notification.own.read",
+        ],
+    ),
 }
-
 
 SENSITIVE_PERMISSION_CODES = frozenset(
     {
@@ -179,7 +147,7 @@ class RbacSyncRequiredError(RuntimeError):
 
 
 def _fixed_role_permission_codes(db: Session) -> tuple[set[str], dict[str, set[str]]]:
-    fixed_role_codes = set(ROLE_PERMISSION_MATRIX)
+    fixed_role_codes = set(ROLE_PERMISSION_MATRIX) | set(LEGACY_ROLE_CODES)
     existing_roles = set(
         db.scalars(select(Role.code).where(Role.code.in_(fixed_role_codes))).all()
     )
@@ -213,6 +181,17 @@ def preview_rbac_sync(db: Session) -> RbacSyncResult:
                     role_created=role_created,
                     added=added,
                     removed=removed,
+                )
+            )
+    for role_code in sorted(LEGACY_ROLE_CODES.intersection(existing_roles)):
+        existing = permissions_by_role.get(role_code, set())
+        if existing:
+            diffs.append(
+                RolePermissionDiff(
+                    role_code=role_code,
+                    role_created=False,
+                    added=(),
+                    removed=tuple(sorted(existing)),
                 )
             )
     return RbacSyncResult(roles=tuple(diffs))
@@ -290,6 +269,13 @@ def seed_rbac(db: Session, *, source: str = "seed_rbac") -> RbacSyncResult:
             db.add(role)
             role_cache[role_code] = role
         role.permissions = [permission_cache[code] for code in codes]
+    legacy_roles = db.scalars(
+        select(Role)
+        .options(selectinload(Role.permissions))
+        .where(Role.code.in_(LEGACY_ROLE_CODES))
+    ).all()
+    for role in legacy_roles:
+        role.permissions = []
     db.flush()
 
     if result.changed:
@@ -304,9 +290,16 @@ def seed_rbac(db: Session, *, source: str = "seed_rbac") -> RbacSyncResult:
 
 
 def assign_role(db: Session, user: User, role_code: str) -> None:
+    if role_code not in ACTIVE_BUSINESS_ROLE_CODES:
+        raise ValueError(f"role is not an active business role: {role_code}")
     role = db.scalar(select(Role).where(Role.code == role_code))
     if not role:
         raise ValueError(f"role not seeded: {role_code}")
-    exists = db.scalar(select(UserRole).where(UserRole.user_id == user.id, UserRole.role_id == role.id))
+    existing_role_ids = set(
+        db.scalars(select(UserRole.role_id).where(UserRole.user_id == user.id)).all()
+    )
+    if existing_role_ids and role.id not in existing_role_ids:
+        raise ValueError("a user can only have one business role")
+    exists = role.id in existing_role_ids
     if not exists:
         db.add(UserRole(user_id=user.id, role_id=role.id))

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from .database import get_db
 from .errors import AppError
 from .models import Company, Permission, Role, RolePermission, User, UserRole
+from .role_contract import has_exactly_one_active_business_role
 from .security import decode_access_token
 
 
@@ -85,11 +86,14 @@ def load_current_principal(
         return None
     if user.company_id and rows[0].company_status != "ACTIVE":
         return None
+    role_codes = frozenset(row.role_code for row in rows if row.role_code)
+    if not has_exactly_one_active_business_role(role_codes):
+        return None
     return Principal(
         user_id=user.id,
         display_name=user.display_name,
         company_id=user.company_id,
-        role_codes=frozenset(row.role_code for row in rows if row.role_code),
+        role_codes=role_codes,
         permission_codes=frozenset(row.permission_code for row in rows if row.permission_code),
         session_version=user.session_version,
     )

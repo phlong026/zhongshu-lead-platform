@@ -216,6 +216,19 @@ def _receiver_duplicate_assignment(
     )
 
 
+def _returned_receiver_company_ids(db: Session, lead_id: str) -> set[str]:
+    return {
+        str(company_id)
+        for company_id in db.scalars(
+            select(func.coalesce(Assignment.receiver_company_id, Assignment.company_id)).where(
+                Assignment.lead_id == lead_id,
+                Assignment.status == AssignmentStatus.RETURNED.value,
+            )
+        ).all()
+        if company_id
+    }
+
+
 def evaluate_candidate(
     db: Session,
     *,
@@ -223,6 +236,8 @@ def evaluate_candidate(
     company: Company,
     lock_account: bool = False,
     reward_rule: SupplierRewardRule | None = None,
+    returned_receiver_company_ids: set[str] | None = None,
+    allow_returned_receiver: bool = False,
 ) -> CandidateResult:
     reasons: list[str] = []
     if company.status != "ACTIVE":
@@ -231,6 +246,13 @@ def evaluate_candidate(
         reasons.append("RECEIVER_CAPABILITY_REQUIRED")
     if lead.supplier_company_id and lead.supplier_company_id == company.id:
         reasons.append("SELF_SUPPLY_FORBIDDEN")
+    returned_receiver_company_ids = (
+        _returned_receiver_company_ids(db, lead.id)
+        if returned_receiver_company_ids is None
+        else returned_receiver_company_ids
+    )
+    if company.id in returned_receiver_company_ids and not allow_returned_receiver:
+        reasons.append("RETURNED_RECEIVER_EXCLUDED")
     region_match = _region_matches(db, company.id, lead)
     if not region_match:
         reasons.append("SERVICE_REGION_MISMATCH")
@@ -286,16 +308,34 @@ def list_candidates(db: Session, *, lead: Lead) -> list[CandidateResult]:
         .group_by(Assignment.company_id)
         .subquery()
     )
+    returned_receiver_companies = (
+        select(
+            func.coalesce(Assignment.receiver_company_id, Assignment.company_id).label(
+                "company_id"
+            )
+        )
+        .where(
+            Assignment.lead_id == lead.id,
+            Assignment.status == AssignmentStatus.RETURNED.value,
+        )
+        .distinct()
+        .subquery()
+    )
     company_stmt = (
         select(
             Company,
             capable_companies.c.company_id.label("capable_company_id"),
             PointsAccount.balance.label("points_balance"),
             func.coalesce(reserved_by_company.c.points_reserved, 0).label("points_reserved"),
+            returned_receiver_companies.c.company_id.label("returned_receiver_company_id"),
         )
         .outerjoin(capable_companies, capable_companies.c.company_id == Company.id)
         .outerjoin(PointsAccount, PointsAccount.company_id == Company.id)
         .outerjoin(reserved_by_company, reserved_by_company.c.company_id == Company.id)
+        .outerjoin(
+            returned_receiver_companies,
+            returned_receiver_companies.c.company_id == Company.id,
+        )
     )
     if lead.region_code:
         region_companies = (
@@ -340,6 +380,11 @@ def list_candidates(db: Session, *, lead: Lead) -> list[CandidateResult]:
             .distinct()
         ).all()
     )
+    returned_receiver_company_ids = {
+        row.returned_receiver_company_id
+        for row in company_rows
+        if row.returned_receiver_company_id
+    }
     now = datetime.now(timezone.utc)
     price_rules = db.scalars(
         select(LeadPriceRule)
@@ -371,6 +416,8 @@ def list_candidates(db: Session, *, lead: Lead) -> list[CandidateResult]:
             reasons.append("RECEIVER_CAPABILITY_REQUIRED")
         if lead.supplier_company_id and lead.supplier_company_id == company.id:
             reasons.append("SELF_SUPPLY_FORBIDDEN")
+        if company.id in returned_receiver_company_ids:
+            reasons.append("RETURNED_RECEIVER_EXCLUDED")
         region_match = company.id in region_company_ids
         if not region_match:
             reasons.append("SERVICE_REGION_MISMATCH")
@@ -403,7 +450,15 @@ def list_candidates(db: Session, *, lead: Lead) -> list[CandidateResult]:
                 duplicate_to_receiver=duplicate_to_receiver,
             )
         )
-    return results
+    return sorted(
+        results,
+        key=lambda item: (
+            not item.region_match,
+            not item.eligible,
+            item.company_name.casefold(),
+            item.company_id,
+        ),
+    )
 
 
 def list_dispatch_pool(
@@ -441,6 +496,8 @@ def dispatch_manually_with_outcome(
     assigned_by: str,
     idempotency_key: str,
     note: str | None = None,
+    return_receiver_override: bool = False,
+    return_receiver_override_reason: str | None = None,
 ) -> ManualDispatchOutcome:
     existing = db.scalar(select(Assignment).where(Assignment.idempotency_key == idempotency_key))
     if existing:
@@ -480,7 +537,30 @@ def dispatch_manually_with_outcome(
     company = db.scalar(select(Company).where(Company.id == company_id).with_for_update())
     if company is None:
         raise AppError("COMPANY_NOT_FOUND", "目标公司不存在", 404)
-    candidate = evaluate_candidate(db, lead=lead, company=company, lock_account=True)
+    returned_receiver_company_ids = _returned_receiver_company_ids(db, lead.id)
+    is_returned_receiver = company.id in returned_receiver_company_ids
+    if return_receiver_override and not is_returned_receiver:
+        raise AppError(
+            "RETURN_RECEIVER_OVERRIDE_NOT_APPLICABLE",
+            "仅再次派发给原领取公司时可使用例外派发",
+            409,
+        )
+    if is_returned_receiver and return_receiver_override and not (
+        return_receiver_override_reason and return_receiver_override_reason.strip()
+    ):
+        raise AppError(
+            "RETURN_RECEIVER_OVERRIDE_REASON_REQUIRED",
+            "再次派发给原领取公司必须填写例外原因",
+            422,
+        )
+    candidate = evaluate_candidate(
+        db,
+        lead=lead,
+        company=company,
+        lock_account=True,
+        returned_receiver_company_ids=returned_receiver_company_ids,
+        allow_returned_receiver=return_receiver_override,
+    )
     if not candidate.eligible:
         raise AppError(
             "DISPATCH_CANDIDATE_INELIGIBLE",
@@ -534,6 +614,12 @@ def dispatch_manually_with_outcome(
                 "points_price": candidate.points_price,
                 "price_rule_id": candidate.price_rule_id,
                 "manual": True,
+                "return_receiver_override": is_returned_receiver,
+                "return_receiver_override_reason": (
+                    return_receiver_override_reason.strip()
+                    if is_returned_receiver and return_receiver_override_reason
+                    else None
+                ),
             },
         )
     )
@@ -566,7 +652,6 @@ def _reward_for_claim(
     lead: Lead,
     assignment: Assignment,
     now: datetime,
-    deadline: datetime,
 ) -> SupplierLeadReward | None:
     if not lead.supplier_company_id or lead.supplier_company_id == assignment.company_id:
         return None
@@ -582,7 +667,7 @@ def _reward_for_claim(
     rule = resolve_supplier_reward_rule(db, as_of=now)
     reward_points = calculate_reward_points(int(assignment.points_price), rule) if eligible else 0
     reward_status = (
-        RewardStatus.OBSERVING.value
+        RewardStatus.WAITING_CLAIM.value
         if eligible and reward_points > 0
         else RewardStatus.NOT_ELIGIBLE.value
     )
@@ -597,12 +682,13 @@ def _reward_for_claim(
         reward_points=reward_points,
         rule_version=rule.version,
         rule_snapshot_json=rule.snapshot(),
-        observed_at=now if reward_status == RewardStatus.OBSERVING.value else None,
-        appeal_deadline_at=deadline,
-        reward_due_at=deadline,
+        # 领取只代表接收方取得了客资；供资奖励要等有效确认后才开始结算。
+        observed_at=None,
+        appeal_deadline_at=None,
+        reward_due_at=None,
         exception_reason=(
             None
-            if reward_status == RewardStatus.OBSERVING.value
+            if reward_status == RewardStatus.WAITING_CLAIM.value
             else "REWARD_DUPLICATE" if not eligible else "ZERO_REWARD_POINTS"
         ),
     )
@@ -706,6 +792,9 @@ def claim_assignment(
     deadline = WorkdayCalendarService(db).add_workdays(now, 3)
     assignment.status = AssignmentStatus.CLAIMED.value
     assignment.claimed_at = now
+    assignment.internal_assignee_user_id = claimed_by
+    assignment.internal_assigned_by = claimed_by
+    assignment.internal_assigned_at = now
     assignment.claim_points = int(assignment.points_price)
     assignment.appeal_deadline_at = deadline
     assignment.reward_due_at = deadline
@@ -714,7 +803,7 @@ def claim_assignment(
     assignment.first_followup_due_at = now + timedelta(hours=settings.first_followup_hours)
     lead.status = LeadV12Status.CLAIMED.value
     lead.current_follow_status = "UNCONTACTED"
-    reward = _reward_for_claim(db, lead=lead, assignment=assignment, now=now, deadline=deadline)
+    reward = _reward_for_claim(db, lead=lead, assignment=assignment, now=now)
     db.add(
         AssignmentEvent(
             assignment_id=assignment.id,
@@ -727,6 +816,7 @@ def claim_assignment(
                 "ledger_id": ledger.id,
                 "appeal_deadline_at": deadline.isoformat(),
                 "reward_id": reward.id if reward else None,
+                "internal_assignee_user_id": claimed_by,
             },
         )
     )

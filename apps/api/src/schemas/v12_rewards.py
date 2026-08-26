@@ -44,11 +44,26 @@ class SupplierRewardReversalBody(BaseModel):
             raise ValueError("冲正原因仅支持欺诈、系统错误或管理员错误")
         return normalized
 
-    @field_validator("note")
+    @field_validator("note", mode="before")
     @classmethod
-    def strip_note(cls, value: str) -> str:
-        return value.strip()
+    def strip_note(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
 
 
 class SupplierRewardSettleBody(BaseModel):
     limit: int = Field(default=100, ge=1, le=1000)
+    note: str = Field(min_length=3, max_length=500)
+
+    @field_validator("note", mode="before")
+    @classmethod
+    def strip_note(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+
+class SupplierRewardSettleOneBody(BaseModel):
+    note: str = Field(min_length=3, max_length=500)
+
+    @field_validator("note", mode="before")
+    @classmethod
+    def strip_note(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value

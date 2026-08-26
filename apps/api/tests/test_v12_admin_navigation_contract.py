@@ -22,34 +22,20 @@ def test_v12_operations_uses_browser_history_for_internal_views() -> None:
     assert "syncRouteFromUrl" in source
 
 
-def test_v12_operations_exposes_permission_scoped_system_settings() -> None:
+def test_v12_operations_exposes_only_formal_five_role_navigation() -> None:
     source = _source()
 
-    assert "const SYSTEM_LINKS=" in source
-    for href in (
-        "./index.html#/users",
-        "./index.html#/companies",
-        "./index.html#/points",
-        "./index.html#/recharge",
-        "./index.html#/ledgers",
-        "./index.html#/calendar",
-        "./index.html#/configs",
-    ):
-        assert href in source
-
-    for permission in (
-        "company.read",
-        "points.read",
-        "points.package.manage",
-        "points.recharge",
-        "calendar.read",
-        "*",
-    ):
-        assert permission in source
-
-    assert "data-system-setting" in source
-    assert "旧业务写接口" not in source
-    assert "配置值与场景参数" not in source
+    for view in ("overview", "leads", "telesales", "dispatch", "companies", "returns", "finance", "audit"):
+        assert f"{view}:" in source
+    for legacy_marker in ("SYSTEM_LINKS", "data-system-setting", "index.html#"):
+        assert legacy_marker not in source
+    assert "ops-account-zone" in source
+    assert "data-account-center" in source
+    assert "ops-top-actions" not in source
+    assert "ops-personal-menu" not in source
+    assert "data-account-tool" in source
+    assert "company.account.manage" in source
+    assert "/points/recharge" in source
 
 
 def test_v12_operations_does_not_use_the_authenticated_admin_redirect_as_back_link() -> None:

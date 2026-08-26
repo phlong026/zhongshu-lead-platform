@@ -3,13 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 
 
-ADMIN_APP = Path("apps/admin/public/app.js")
+ADMIN_APP = Path("apps/admin/public/v12-operations.js")
 
 
 def _calendar_source() -> str:
     source = ADMIN_APP.read_text(encoding="utf-8")
     return source[
-        source.index("function calendarDayModal") : source.index("const roleLabels")
+        source.index("function calendarDayModal") : source.index("const internalUserRoles")
     ]
 
 
@@ -17,7 +17,7 @@ def test_calendar_page_uses_backend_effective_days_and_china_timezone() -> None:
     source = ADMIN_APP.read_text(encoding="utf-8")
     calendar = _calendar_source()
 
-    assert "can('calendar.read')" in source
+    assert "settings:['平台设置','settings',['*'],true]" in source
     assert "Asia/Shanghai" in source
     assert "/admin/v1.2/calendar-days?start=" in calendar
     assert "item.is_override" in calendar
@@ -30,13 +30,13 @@ def test_calendar_page_uses_backend_effective_days_and_china_timezone() -> None:
 def test_calendar_page_uses_default_rules_without_import_controls() -> None:
     calendar = _calendar_source()
 
-    assert "can('calendar.manage')" in calendar
+    assert "data-view=\"settings\"" in calendar
     assert "calendar-new" in calendar
     assert "can('calendar.import')" not in calendar
     assert "calendar-import" not in calendar
     assert "calendar-source" not in calendar
     assert "calendar-version" not in calendar
-    assert "\u65e0\u7ef4\u62a4\u6743\u9650" in calendar
+    assert "法定节假日和调休只维护单日例外" in calendar
 
 
 def test_calendar_writes_are_idempotent_and_explain_impact_scope() -> None:

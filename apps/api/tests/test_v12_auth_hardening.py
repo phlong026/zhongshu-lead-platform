@@ -203,7 +203,7 @@ def test_disabled_user_consumes_expired_lock_only_once(api_client) -> None:
 
 def test_logout_invalidates_previous_bearer_token_via_session_version(api_client) -> None:
     client, _ = api_client
-    login = _login(client, "owner", "Owner123!")
+    login = _login(client, "franchise_demo", "Franchise123!")
     assert login.status_code == 200
     token = login.cookies.get("access_token")
     assert token
