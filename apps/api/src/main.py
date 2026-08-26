@@ -3,9 +3,10 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 import os
 from pathlib import Path
+from urllib.parse import urlencode
 
 from anyio.to_thread import current_default_thread_limiter
-from fastapi import Cookie, Depends, FastAPI
+from fastapi import Cookie, Depends, FastAPI, Request
 from fastapi.responses import RedirectResponse
 from jwt import InvalidTokenError
 from sqlalchemy import text
@@ -14,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from .core.auth import get_valid_session_user
+from .core.auth import load_current_principal
 from .core.config import get_settings
 from .core.database import SessionLocal, get_db, init_database
 from .core.errors import register_error_handlers
@@ -29,6 +30,7 @@ from .routers import (
     admin_meta,
     auth,
     claim,
+    company_accounts,
     companies,
     dispatch,
     followups,
@@ -43,6 +45,7 @@ from .routers import (
     v12_dispatch,
     v12_insights,
     v12_lead_supply,
+    v12_pre_dispatch,
     v12_returns,
     v12_rewards,
     v12_supplier_review,
@@ -103,6 +106,9 @@ app.include_router(auth.router, prefix=api_prefix)
 app.include_router(invite_preview.router, prefix=api_prefix)
 app.include_router(users.router, prefix=api_prefix)
 app.include_router(companies.router, prefix=api_prefix)
+app.include_router(company_accounts.router, prefix=api_prefix)
+app.include_router(company_accounts.directory_router, prefix=api_prefix)
+app.include_router(company_accounts.request_router, prefix=api_prefix)
 app.include_router(leads.router, prefix=api_prefix)
 app.include_router(verification.router, prefix=api_prefix)
 app.include_router(points.router, prefix=api_prefix)
@@ -114,6 +120,7 @@ app.include_router(notifications.router, prefix=api_prefix)
 app.include_router(master_data.router, prefix=api_prefix)
 app.include_router(v12_admin.router, prefix=api_prefix)
 app.include_router(v12_lead_supply.router, prefix=api_prefix)
+app.include_router(v12_pre_dispatch.router, prefix=api_prefix)
 app.include_router(v12_supplier_review.router, prefix=api_prefix)
 app.include_router(v12_dispatch.router, prefix=api_prefix)
 app.include_router(v12_returns.router, prefix=api_prefix)
@@ -146,14 +153,29 @@ def health_ready() -> dict[str, str]:
     return {"status": "ready", "database": "ok", "storage": storage, "version": settings.app_version}
 
 
-def _has_valid_web_session(db: Session, access_token: str | None) -> bool:
+def _web_entry_role(db: Session, access_token: str | None) -> str | None:
+    """Return the single active business role carried by a web session."""
+
     if not access_token:
-        return False
+        return None
     try:
         payload = decode_access_token(access_token)
     except InvalidTokenError:
-        return False
-    return get_valid_session_user(db, payload.get("sub"), payload.get("sv")) is not None
+        return None
+    principal = load_current_principal(db, payload.get("sub"), payload.get("sv"))
+    return next(iter(principal.role_codes)) if principal else None
+
+
+def _role_entry_target(role_code: str | None, *, surface: str) -> str:
+    """Keep every signed-in user on the one workbench allowed by their role."""
+
+    if role_code == "TELESALES":
+        return "/h5/call/"
+    if role_code in {"FRANCHISE_OWNER", "FRANCHISE_EMPLOYEE"}:
+        return "/h5/v12-workbench.html"
+    if role_code in {"SUPER_ADMIN", "OPERATION"}:
+        return "/h5/admin/" if surface == "mobile" else "/admin/v12-operations.html"
+    return "/h5/v12-workbench.html" if surface == "mobile" else "/admin/v12-operations.html"
 
 
 @app.get("/admin", include_in_schema=False)
@@ -162,8 +184,10 @@ def admin_entry(
     access_token: str | None = Cookie(default=None),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
-    target = "/admin/v12-operations.html" if _has_valid_web_session(db, access_token) else "/admin/index.html"
-    return RedirectResponse(url=target, status_code=302)
+    return RedirectResponse(
+        url=_role_entry_target(_web_entry_role(db, access_token), surface="desktop"),
+        status_code=302,
+    )
 
 
 @app.get("/h5", include_in_schema=False)
@@ -172,23 +196,81 @@ def h5_entry(
     access_token: str | None = Cookie(default=None),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
-    target = "/h5/v12-workbench.html" if _has_valid_web_session(db, access_token) else "/h5/index.html"
-    return RedirectResponse(url=target, status_code=302)
+    return RedirectResponse(
+        url=_role_entry_target(_web_entry_role(db, access_token), surface="mobile"),
+        status_code=302,
+    )
+
+
+@app.get("/h5/call", include_in_schema=False)
+@app.get("/h5/call/", include_in_schema=False)
+def h5_call_entry(
+    access_token: str | None = Cookie(default=None),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    role_code = _web_entry_role(db, access_token)
+    if role_code in {None, "TELESALES"}:
+        # 未登录时由同一新电销页显示登录表单，避免跳入旧版后台登录壳。
+        return RedirectResponse(url="/h5/call/index.html", status_code=302)
+    return RedirectResponse(url=_role_entry_target(role_code, surface="mobile"), status_code=302)
+
+
+@app.get("/call", include_in_schema=False)
+@app.get("/call/", include_in_schema=False)
+@app.get("/call/{legacy_path:path}", include_in_schema=False)
+def legacy_call_entry(legacy_path: str = "") -> RedirectResponse:
+    """Keep historical bookmarks working without retaining a second call shell."""
+
+    return RedirectResponse(url="/h5/call/", status_code=302)
 
 
 @app.get("/admin/legacy", include_in_schema=False)
 def admin_legacy_entry() -> RedirectResponse:
-    return RedirectResponse(url="/admin/index.html", status_code=302)
+    return RedirectResponse(url="/admin/", status_code=302)
 
 
 @app.get("/h5/legacy", include_in_schema=False)
 def h5_legacy_entry() -> RedirectResponse:
-    return RedirectResponse(url="/h5/index.html", status_code=302)
+    return RedirectResponse(url="/h5/", status_code=302)
+
+
+@app.get("/admin/index.html", include_in_schema=False)
+def admin_index_legacy_entry() -> RedirectResponse:
+    """Retire the old hash admin shell without breaking saved bookmarks."""
+
+    return RedirectResponse(url="/admin/", status_code=302)
+
+
+@app.get("/h5/index.html", include_in_schema=False)
+def h5_index_legacy_entry() -> RedirectResponse:
+    """Retire the old franchise shell without exposing two active products."""
+
+    return RedirectResponse(url="/h5/", status_code=302)
+
+
+@app.get("/h5/supplier.html", include_in_schema=False)
+def h5_supplier_legacy_entry() -> RedirectResponse:
+    """Keep supplier bookmarks on the unified franchise workbench."""
+
+    return RedirectResponse(url="/h5/v12-workbench.html?view=leads&id=supply", status_code=302)
+
+
+@app.get("/admin/v12-leads.html", include_in_schema=False)
+def admin_lead_legacy_entry(request: Request) -> RedirectResponse:
+    """Retire the standalone lead page in favour of the platform workbench."""
+
+    query = {"view": "leads"}
+    for key in ("id", "status", "source"):
+        value = request.query_params.get(key)
+        if value:
+            query[key] = value
+    return RedirectResponse(url=f"/admin/v12-operations.html?{urlencode(query)}", status_code=302)
 
 
 for route, directory, name in [
+    ("/h5/call", ROOT / "apps" / "call-h5" / "public", "h5-call"),
+    ("/h5/admin", ROOT / "apps" / "admin" / "public" / "h5", "h5-admin"),
     ("/h5", ROOT / "apps" / "h5" / "public", "h5"),
-    ("/call", ROOT / "apps" / "call-h5" / "public", "call-h5"),
     ("/admin", ROOT / "apps" / "admin" / "public", "admin"),
 ]:
     directory.mkdir(parents=True, exist_ok=True)

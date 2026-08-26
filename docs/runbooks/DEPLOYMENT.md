@@ -8,7 +8,7 @@
 
 ## 2. 生产拓扑
 
-- Nginx：80 强制跳转 HTTPS，443 终止 TLS，配置安全响应头、限流和 25MB 上传限制；
+- 宝塔宿主 Nginx：终止 TLS 并将请求代理到 `127.0.0.1:${HTTP_PORT}`；容器 Nginx 仅提供回环 HTTP 网关，配置安全响应头、限流和 25MB 上传限制；
 - API：FastAPI，托管加盟商 H5、内部电销 H5、管理后台和业务接口；
 - Scheduler：处理通知 Outbox、领取/跟进任务、低积分提醒和每小时供应奖励结算；
 - PostgreSQL 16：唯一生产主库；
@@ -31,15 +31,17 @@
 
 ```bash
 cp .env.docker.example .env
-mkdir -p infra/certs backups dist
-# 放置 fullchain.pem、privkey.pem，并填写 .env 的真实配置
+mkdir -p backups dist
+# 在宝塔填写 TLS，并填写 .env 的真实配置
 python scripts/validate_production_env.py --env-file .env
-python scripts/verify_production.py --env-file .env --require-certificates
+python scripts/verify_production.py --env-file .env
 ```
 
 上述宿主机检查会在 `.env` 未显式提供 `DATABASE_URL` 时，按 `POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_DB` 生成 URL 编码后的 Compose 内部 PostgreSQL URL，仅用于配置一致性验证。API 与 Scheduler 容器启动时由 `docker/prepare-env.sh` 使用同一 URL 编码规则生成 `DATABASE_URL`，因此密码、用户名或数据库名包含 `/`、`#`、`@`、空格等保留字符时不会出现宿主机校验与容器实际连接语义不一致。
 
-`TRUST_PROXY_HEADERS` 必须在 `.env` 中显式声明为 `true`：本拓扑的 nginx 始终强制覆写 `x-real-ip`（`infra/nginx/production.conf.template`），API 信任该头后限流键与审计 IP 才能反映真实客户端地址；若缺失或设为 `false`，`validate_production_env.py` 会直接拒绝。生产校验一律要求 `true`；若确实要把 API 改为无反代直连部署，必须同步调整 `validate_production_settings` 的该校验，不允许仅改配置绕过。
+`TRUST_PROXY_HEADERS` 必须在 `.env` 中显式声明为 `true`：宝塔宿主 Nginx 必须强制覆写 `x-real-ip` 与 `x-forwarded-*`，回环容器网关（`infra/nginx/baota-proxy.conf.template`）只转发这些值。API 信任该头后限流键与审计 IP 才能反映真实客户端地址；若缺失或设为 `false`，`validate_production_env.py` 会直接拒绝。容器网关端口必须始终绑定 `127.0.0.1`；若确实要把 API 改为无反代直连部署，必须同步调整 `validate_production_settings` 的该校验，不允许仅改配置绕过。
+
+本项目的生产 Compose 默认对应宝塔拓扑，不在容器内挂载 TLS 证书。TLS 文件、证书续期和宿主反代配置由宝塔负责；执行 `verify_production.py` 与 `preflight_v12.py` 时不传 `--require-certificates`，并额外在宿主机执行 `nginx -t`、验证 HTTPS 证书和下方的公网健康检查。`infra/nginx/production.conf.template` 保留给独立 Docker TLS 部署使用，不能与宝塔 Compose 混用。
 
 真正的数据库 revision 和业务对账必须在 Compose 网络内执行。
 
@@ -57,7 +59,6 @@ python scripts/verify_production.py --env-file .env --require-certificates
 docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml pull
 python scripts/verify_production.py \
   --env-file .env \
-  --require-certificates \
   --require-image-digest \
   --require-image-inspect \
   --scan-subject scan-subject.json
@@ -71,8 +72,13 @@ docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml 
 首先进入维护窗口并停止业务写入：
 
 ```bash
+mkdir -p dist
+python scripts/export_five_role_migration_snapshot.py \
+  --output "dist/five-role-migration-snapshot-$(date +%Y%m%d-%H%M%S).json"
 ENV_FILE=.env BACKUP_RETENTION_DAYS=30 sh scripts/backup_postgres.sh
 ```
+
+快照只用于五角色迁移前的关联核对，不包含密码、邀请令牌、完整手机号或原始客资；该文件默认权限为 `0600`，不得提交或外发。
 
 显式执行 Alembic：
 
@@ -144,7 +150,6 @@ curl -fsS https://app.example.com/health/live
 curl -fsS https://app.example.com/health/ready
 python scripts/preflight_v12.py \
   --env-file .env \
-  --require-certificates \
   --compose-database \
   --storage-canary \
   --scan-subject scan-subject.json \

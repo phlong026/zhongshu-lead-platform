@@ -144,6 +144,7 @@ WECHAT_DEV_MOCK=false
 - `domain`: `wechat_template`
 - `key`: 业务事件名
 - `value.template_id`: 微信公众平台中审核通过的模板 ID
+- `value.field_map`: 公众号模板字段名到平台业务值的映射；右侧可为 `title`、`scene`、`body`、`remark`，或 `literal:` 开头的固定文案
 - `publish_immediately`: `true`
 
 例如，为新客资派发事件 `V12_ASSIGNMENT_DISPATCHED` 发布模板：
@@ -153,13 +154,26 @@ WECHAT_DEV_MOCK=false
   "domain": "wechat_template",
   "key": "V12_ASSIGNMENT_DISPATCHED",
   "value": {
-    "template_id": "replace-with-approved-template-id"
+    "template_id": "lY0K9b-7pB0bOnfjOJ6zPvPeL5fm0DjPhjxhRUZt3MU",
+    "field_map": {
+      "thing1": "title",
+      "const16": "literal:乡墅新客资"
+    }
   },
   "publish_immediately": true
 }
 ```
 
-由超级管理员通过 `POST /api/v1/system-configs` 创建。当前适配器发送字段为 `first`、`keyword1`、`keyword2`、`remark`，微信平台中选用的模板必须与这组字段匹配。
+由超级管理员通过 `POST /api/v1/system-configs` 创建。`field_map` 左侧必须与微信「我的模板 → 详情 → 详细内容」中 `{{...DATA}}` 的原始字段键完全一致；未填写时，为兼容旧配置，适配器仍使用 `first`、`keyword1`、`keyword2`、`remark` 的默认映射。完整的公众号后台操作与首批场景见 `docs/runbooks/WECHAT_TEMPLATE_CONFIGURATION_CHECKLIST.md`。
+
+类目模板若要求一个常量关键词，可用 `literal:` 写入固定文案。例如：
+
+```json
+"field_map": {
+  "thing1": "title",
+  "const16": "literal:乡墅新客资"
+}
+```
 
 建议至少核对这些 V1.2 事件：
 
@@ -168,9 +182,12 @@ WECHAT_DEV_MOCK=false
 - `V12_RETURN_SUBMITTED`
 - `V12_RETURN_APPROVED`
 - `V12_RETURN_REJECTED`
+- `V12_RETURN_NEED_MORE`
 - `V12_SUPPLIER_LEAD_SUBMITTED`
 - `V12_SUPPLIER_LEAD_APPROVED`
 - `V12_SUPPLIER_LEAD_REJECTED`
+- `V12_COMPANY_PROFILE_APPROVED`
+- `V12_COMPANY_PROFILE_REJECTED`
 - `V12_SUPPLIER_REWARD_OBSERVING`
 - `V12_SUPPLIER_REWARD_FROZEN`
 - `V12_SUPPLIER_REWARD_SETTLED`

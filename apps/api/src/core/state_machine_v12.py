@@ -21,9 +21,27 @@ class UnknownLegacyStatus(ValueError):
 
 
 LEAD_TRANSITIONS: Mapping[LeadV12Status, Set[LeadV12Status]] = {
-    LeadV12Status.DRAFT: {LeadV12Status.PENDING_REVIEW, LeadV12Status.READY_DISPATCH, LeadV12Status.CLOSED},
-    LeadV12Status.PENDING_REVIEW: {
+    LeadV12Status.DRAFT: {
+        LeadV12Status.PENDING_REVIEW,
+        LeadV12Status.PENDING_TELESALES_VERIFY,
         LeadV12Status.READY_DISPATCH,
+        LeadV12Status.CLOSED,
+    },
+    LeadV12Status.PENDING_REVIEW: {
+        LeadV12Status.PENDING_TELESALES_VERIFY,
+        LeadV12Status.READY_DISPATCH,
+        LeadV12Status.INVALID,
+        LeadV12Status.DUPLICATE,
+        LeadV12Status.CLOSED,
+    },
+    LeadV12Status.PENDING_TELESALES_VERIFY: {
+        LeadV12Status.PENDING_OPERATION_DISPOSITION,
+        LeadV12Status.PENDING_REVIEW,
+        LeadV12Status.CLOSED,
+    },
+    LeadV12Status.PENDING_OPERATION_DISPOSITION: {
+        LeadV12Status.READY_DISPATCH,
+        LeadV12Status.DRAFT,
         LeadV12Status.INVALID,
         LeadV12Status.DUPLICATE,
         LeadV12Status.CLOSED,
@@ -63,7 +81,7 @@ LEGACY_LEAD_STATUS_MAP: Mapping[str, LeadV12Status] = {
     "IMPORTED": LeadV12Status.DRAFT,
     "IMPORT_ERROR": LeadV12Status.INVALID,
     "DUPLICATE_REVIEW": LeadV12Status.DUPLICATE,
-    "VERIFYING": LeadV12Status.PENDING_REVIEW,
+    "VERIFYING": LeadV12Status.PENDING_TELESALES_VERIFY,
     "QUALIFIED": LeadV12Status.READY_DISPATCH,
     "INVALID": LeadV12Status.INVALID,
     "ASSIGNED": LeadV12Status.DISPATCHED,

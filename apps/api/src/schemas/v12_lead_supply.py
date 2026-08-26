@@ -44,13 +44,91 @@ class LeadDraftUpdateBody(BaseModel):
 
 
 class SupplierReviewBody(BaseModel):
-    decision: str = Field(pattern=r"^(APPROVE|REJECT)$")
+    decision: str = Field(min_length=1, max_length=32)
     note: str | None = Field(default=None, max_length=1000)
+    assignee_user_id: str | None = Field(default=None, max_length=36)
+    pre_dispatch_reason: str | None = Field(default=None, max_length=500)
+    template_code: str = Field(default="PRE_DISPATCH", min_length=2, max_length=64)
 
     @field_validator("decision")
     @classmethod
     def normalize_decision(cls, value: str) -> str:
-        return value.upper()
+        normalized = value.strip().upper()
+        if normalized not in {
+            "QUALIFIED",
+            "INFO_INCOMPLETE",
+            "DUPLICATE",
+            "INVALID",
+            "APPROVE",
+            "REJECT",
+        }:
+            raise ValueError("初审结论无效")
+        return normalized
+
+    @field_validator("note", "assignee_user_id", "pre_dispatch_reason")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        return value.strip() if value and value.strip() else None
+
+    @field_validator("template_code")
+    @classmethod
+    def normalize_template_code(cls, value: str) -> str:
+        return value.strip()
+
+    @model_validator(mode="after")
+    def require_telesales_assignment_before_supplier_dispatch(self) -> "SupplierReviewBody":
+        if self.decision in {"QUALIFIED", "APPROVE", "INFO_INCOMPLETE"}:
+            if not self.note:
+                raise ValueError("派发电销核实前必须填写初审说明")
+            if not self.assignee_user_id or not self.pre_dispatch_reason:
+                raise ValueError("加盟商客资派送前必须指定电销人员和核验重点")
+        elif self.decision in {"DUPLICATE", "INVALID", "REJECT"} and not self.note:
+            raise ValueError("重复或无效结论必须填写初审说明")
+        return self
+
+
+class PreDispatchAssignBody(BaseModel):
+    assignee_user_id: str = Field(min_length=1, max_length=36)
+    reason: str = Field(min_length=1, max_length=500)
+    template_code: str = Field(default="PRE_DISPATCH", min_length=2, max_length=64)
+
+    @field_validator("assignee_user_id", "reason", "template_code")
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        return value.strip()
+
+
+class PreDispatchSubmitBody(BaseModel):
+    contact_result: str = Field(min_length=1, max_length=64)
+    conclusion: str = Field(
+        pattern=r"^(QUALIFIED|INFO_INCOMPLETE|UNVERIFIABLE|INVALID|DUPLICATE)$"
+    )
+    note: str = Field(min_length=1, max_length=1000)
+
+    @field_validator("contact_result", "conclusion")
+    @classmethod
+    def normalize_submission_code(cls, value: str) -> str:
+        return value.strip().upper()
+
+    @field_validator("note")
+    @classmethod
+    def normalize_submission_note(cls, value: str) -> str:
+        return value.strip()
+
+
+class PreDispatchDispositionBody(BaseModel):
+    decision: str = Field(pattern=r"^(APPROVE_POOL|RETURN_REWORK|DUPLICATE|CLOSE)$")
+    note: str = Field(min_length=1, max_length=1000)
+
+    @field_validator("decision")
+    @classmethod
+    def normalize_disposition_code(cls, value: str) -> str:
+        return value.strip().upper()
+
+    @field_validator("note")
+    @classmethod
+    def normalize_disposition_note(cls, value: str) -> str:
+        return value.strip()
 
 
 class DedupOverrideBody(BaseModel):
@@ -81,6 +159,22 @@ class CapabilityReviewBody(BaseModel):
         if self.decision == "REJECT" and not (self.note and self.note.strip()):
             raise ValueError("驳回公司能力申请时必须填写原因")
         return self
+
+
+class CompanyCapabilityConfigureBody(BaseModel):
+    """Platform-side capability switch; companies do not apply for it themselves."""
+
+    active: bool
+    note: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("note")
+    @classmethod
+    def normalize_note(cls, value: str | None) -> str | None:
+        return value.strip() if value and value.strip() else None
+
+
+class CompanyProfileBulkApproveBody(BaseModel):
+    note: str | None = Field(default=None, max_length=1000)
 
 
 class ServiceAreaReplaceBody(BaseModel):

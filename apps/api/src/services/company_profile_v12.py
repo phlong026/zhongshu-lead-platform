@@ -114,6 +114,117 @@ def review_capability(
     return item
 
 
+def configure_capability(
+    db: Session,
+    *,
+    company_id: str,
+    capability_code: str,
+    active: bool,
+    reviewed_by: str,
+    note: str | None = None,
+) -> CompanyLeadCapability:
+    """Set a franchise capability from the platform configuration page.
+
+    New companies have receiving enabled by the creation flow. Supplier access is
+    intentionally opt-in here so the platform can verify the commercial setup
+    before the company uploads leads.
+    """
+
+    require_active_company(db, company_id)
+    code = capability_code.strip().upper()
+    if code not in VALID_CAPABILITIES:
+        raise AppError("CAPABILITY_INVALID", "公司客资能力编码无效", 422)
+    item = db.scalar(
+        select(CompanyLeadCapability).where(
+            CompanyLeadCapability.company_id == company_id,
+            CompanyLeadCapability.capability_code == code,
+        )
+    )
+    if item is None:
+        item = CompanyLeadCapability(
+            company_id=company_id,
+            capability_code=code,
+        )
+        db.add(item)
+    item.active = active
+    item.review_status = "APPROVED"
+    item.reviewed_by = reviewed_by
+    item.reviewed_at = datetime.now(timezone.utc)
+    item.review_note = note or "平台后台配置"
+    _sync_legacy_receiver_capability(db, item)
+    db.flush()
+    return item
+
+
+def approve_pending_profile(
+    db: Session,
+    *,
+    company_id: str,
+    reviewed_by: str,
+    note: str | None = None,
+) -> tuple[list[CompanyLeadCapability], list[CompanyServiceAreaV12]]:
+    """Approve every pending opening item for one company in one transaction.
+
+    A removal request is deliberately excluded: approving it turns off an
+    already-live dispatch region and therefore still needs a separate review.
+    """
+
+    capabilities = list(
+        db.scalars(
+            select(CompanyLeadCapability)
+            .where(
+                CompanyLeadCapability.company_id == company_id,
+                CompanyLeadCapability.review_status == "PENDING",
+            )
+            .order_by(CompanyLeadCapability.capability_code)
+        ).all()
+    )
+    pending_areas = list(
+        db.scalars(
+            select(CompanyServiceAreaV12)
+            .where(
+                CompanyServiceAreaV12.company_id == company_id,
+                CompanyServiceAreaV12.review_status == "PENDING",
+            )
+            .order_by(CompanyServiceAreaV12.is_primary_city.desc(), CompanyServiceAreaV12.region_code)
+        ).all()
+    )
+    opening_areas = [
+        item
+        for item in pending_areas
+        if not str(item.review_note or "").startswith(REMOVAL_REQUEST_PREFIX)
+    ]
+    if not capabilities and not opening_areas:
+        raise AppError(
+            "COMPANY_PROFILE_NOT_PENDING",
+            "该公司没有可一键通过的待开通申请",
+            409,
+        )
+
+    reviewed_capabilities = [
+        review_capability(
+            db,
+            company_id=company_id,
+            capability_code=item.capability_code,
+            approve=True,
+            reviewed_by=reviewed_by,
+            note=note,
+        )
+        for item in capabilities
+    ]
+    reviewed_areas = [
+        review_service_area(
+            db,
+            area_id=item.id,
+            approve=True,
+            reviewed_by=reviewed_by,
+            note=note,
+        )
+        for item in opening_areas
+    ]
+    return reviewed_capabilities, reviewed_areas
+
+
 def _sync_legacy_receiver_capability(db: Session, item: CompanyLeadCapability) -> None:
     if item.capability_code != CompanyLeadCapabilityCode.LEAD_RECEIVER.value:
         return

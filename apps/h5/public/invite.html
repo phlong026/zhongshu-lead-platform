@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#6f5a43">
+  <meta name="description" content="合家美宅加盟商负责人绑定">
+  <title>合家美宅 · 加盟商负责人绑定</title>
+  <link rel="stylesheet" href="./invite.css?v=20260826-franchise-onboarding">
+</head>
+<body>
+  <main class="invite-page">
+    <section class="invite-card" aria-live="polite">
+      <img class="invite-logo" src="./logo.png" alt="合家美宅">
+      <p class="invite-eyebrow">加盟商负责人绑定</p>
+      <h1>确认您的公司身份</h1>
+      <p class="invite-description">确认后将跳转微信授权，完成您与加盟商主体的绑定。</p>
+      <div class="invite-status" id="invite-status">正在核验邀请…</div>
+      <dl class="invite-details" id="invite-details" hidden>
+        <div><dt>加盟商</dt><dd id="invite-company">--</dd></div>
+        <div><dt>负责人</dt><dd id="invite-owner">--</dd></div>
+        <div><dt>有效期至</dt><dd id="invite-expires">--</dd></div>
+      </dl>
+      <button class="invite-primary" id="invite-confirm" type="button" disabled>确认并微信绑定</button>
+      <p class="invite-tip">请仅在您本人微信内完成绑定。链接仅可使用一次，过期或撤销后无法继续。</p>
+    </section>
+  </main>
+  <script src="./safe-html.js"></script>
+  <script type="module" src="./invite.js?v=20260826-franchise-onboarding"></script>
+</body>
+</html>

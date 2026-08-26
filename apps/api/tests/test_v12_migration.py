@@ -225,3 +225,10 @@ def test_v12_migration_upgrades_and_downgrades_from_v101(tmp_path: Path) -> None
     assert "uq_assignments_active_lead_v12" not in {
         item["name"] for item in inspector.get_indexes("assignments")
     }
+
+    # A release rollback may later need to move forward again.  Verify that
+    # SQLite's batch-table path can restore the current head after rollback.
+    _alembic(database_url, "upgrade", "head")
+    inspector = inspect(engine)
+    assignment_columns = {column["name"] for column in inspector.get_columns("assignments")}
+    assert {"internal_assignee_user_id", "internal_assigned_by", "internal_assigned_at"} <= assignment_columns

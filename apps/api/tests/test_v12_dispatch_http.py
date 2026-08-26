@@ -157,6 +157,77 @@ def test_candidate_api_hides_exact_points_from_operation(api_client) -> None:
     )
 
 
+def test_returned_receiver_is_excluded_until_operation_records_an_exception(api_client) -> None:
+    client, factory = api_client
+    lead_id, company_id = _prepare_dispatch_lead(factory, phone="13900139212")
+    with factory() as db:
+        lead = db.get(Lead, lead_id)
+        operation = db.scalar(select(User).where(User.username == "operation"))
+        assert lead is not None and operation is not None
+        db.add(
+            Assignment(
+                lead_id=lead.id,
+                company_id=company_id,
+                receiver_company_id=company_id,
+                status=AssignmentStatus.RETURNED.value,
+                points_price=100,
+                claim_points=100,
+                price_version=1,
+                lead_snapshot={},
+                assigned_by=operation.id,
+                assigned_at=datetime.now(timezone.utc),
+                claimed_at=datetime.now(timezone.utc),
+                released_at=datetime.now(timezone.utc),
+                release_reason="V12_RETURN_APPROVED",
+                idempotency_key="returned-receiver-history",
+            )
+        )
+        db.commit()
+
+    _login(client, "operation", "Operation123!")
+    candidates = client.get(f"/api/v1/v1.2/dispatch-pool/{lead_id}/candidates")
+    assert candidates.status_code == 200, candidates.text
+    candidate = next(
+        item
+        for item in candidates.json()["data"]["candidates"]
+        if item["company_id"] == company_id
+    )
+    assert candidate["eligible"] is False
+    assert "RETURNED_RECEIVER_EXCLUDED" in candidate["exclusion_reasons"]
+
+    blocked = client.post(
+        f"/api/v1/v1.2/dispatch-pool/{lead_id}/dispatch",
+        json={
+            "company_id": company_id,
+            "idempotency_key": "returned-receiver-blocked",
+        },
+    )
+    assert blocked.status_code == 409, blocked.text
+    assert "RETURNED_RECEIVER_EXCLUDED" in blocked.json()["details"]["reasons"]
+
+    override = client.post(
+        f"/api/v1/v1.2/dispatch-pool/{lead_id}/dispatch",
+        json={
+            "company_id": company_id,
+            "idempotency_key": "returned-receiver-override",
+            "return_receiver_override": True,
+            "return_receiver_override_reason": "运营复核后确认原公司可继续承接",
+        },
+    )
+    assert override.status_code == 200, override.text
+    assignment_id = override.json()["data"]["id"]
+    with factory() as db:
+        audit = db.scalar(
+            select(AuditLog).where(
+                AuditLog.action == "V12_MANUAL_DISPATCH",
+                AuditLog.resource_id == assignment_id,
+            )
+        )
+        assert audit is not None
+        assert audit.after_json["return_receiver_override"] is True
+        assert audit.metadata_json["reason"] == "运营复核后确认原公司可继续承接"
+
+
 def test_concurrent_manual_dispatch_replay_has_one_business_side_effect(api_client) -> None:
     client, factory = api_client
     lead_id, company_id = _prepare_dispatch_lead(factory, phone="13900139203")

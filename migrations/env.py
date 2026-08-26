@@ -11,7 +11,8 @@ from apps.api.src.core import auth_models, models  # noqa: F401
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # 保留宿主进程（测试、任务进程）的既有日志处理器；迁移不能静默关闭应用审计日志。
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 config.set_main_option("sqlalchemy.url", get_settings().database_url)
 target_metadata = Base.metadata
 

@@ -3,59 +3,70 @@ from __future__ import annotations
 from pathlib import Path
 
 
-ADMIN_APP = Path("apps/admin/public/app.js")
-INTERNAL_ROLES = (
-    "SUPER_ADMIN",
-    "OWNER",
-    "LEAD_ENTRY",
-    "OPERATION",
-    "TELESALES",
-    "FINANCE",
-    "RETURN_REVIEWER",
-)
+SOURCE = Path("apps/admin/public/v12-operations.js")
 
 
 def _source() -> str:
-    return ADMIN_APP.read_text(encoding="utf-8")
+    return SOURCE.read_text(encoding="utf-8")
 
 
-def test_admin_user_page_uses_internal_role_allowlist() -> None:
+def test_unified_desktop_settings_manage_only_internal_role_accounts() -> None:
     source = _source()
-    assert "INTERNAL_USER_ROLES" in source
-    for role in INTERNAL_ROLES:
+
+    assert "INTERNAL_ROLE_OPTIONS" in source
+    for role in ("SUPER_ADMIN", "OPERATION", "TELESALES"):
         assert role in source
+    assert "function internalUsers" in source
+    assert "内部账号" in source
+    internal_section = source[source.index("const INTERNAL_ROLE_OPTIONS") : source.index("async function companies")]
+    assert "FRANCHISE_OWNER" not in internal_section
+    assert "FRANCHISE_EMPLOYEE" not in internal_section
 
-    user_section = source[source.index("async function users") : source.index("async function configs")]
-    assert "FRANCHISE_OWNER" not in user_section
-    assert "加盟商负责人" not in user_section
-    assert "内部账号" in user_section
 
-
-def test_admin_user_page_calls_internal_lifecycle_apis() -> None:
+def test_unified_desktop_settings_call_internal_lifecycle_apis() -> None:
     source = _source()
-    user_section = source[source.index("async function users") : source.index("async function configs")]
 
-    assert "role_codes" in user_section
-    assert "role_code:" not in user_section
-    assert "company_id:null" not in user_section
-    assert "method:'PUT'" in user_section
-    assert "`/users/${id}/roles`" in user_section
-    assert "`/users/${id}/disable`" in user_section
-    assert "`/users/${id}/enable`" in user_section
-    assert "`/users/${id}/reset-password`" in user_section
-    assert "new_password" in user_section
+    for marker in (
+        "api('/users')",
+        "api('/users',{method:'POST'",
+        "`/users/${encodeURIComponent(user.id)}/roles`",
+        "`/users/${encodeURIComponent(user.id)}/${enabling?'enable':'disable'}`",
+        "`/users/${encodeURIComponent(user.id)}/reset-password`",
+        "role_codes:[role]",
+        "new_password",
+    ):
+        assert marker in source
 
 
-def test_admin_user_actions_have_busy_state_and_error_feedback() -> None:
+def test_internal_user_creation_relies_on_one_time_generated_password() -> None:
     source = _source()
-    user_section = source[source.index("async function runUserAction") : source.index("async function configs")]
+    creation = source[source.index("function internalUserModal") : source.index("function internalRoleModal")]
+    credentials = source[source.index("function showInternalUserCredentials") : source.index("function internalUserModal")]
 
-    assert "runUserAction" in user_section
-    assert ".disabled=true" in user_section
-    assert ".disabled=false" in user_section
-    assert "await users()" in user_section
-    assert "completed&&(e.code==='AUTH_REQUIRED'||e.code==='AUTH_INVALID')" in user_section
-    assert "请重新登录" in user_section
-    assert "toast(e.message,'error')" in user_section
-    assert "data-edit-user" in user_section
-    assert "data-reset-user" in user_section
+    assert "initial-password" not in creation
+    assert "password:" not in creation
+    assert "initial_password" in credentials
+    assert "copy-internal-user-password" in credentials
+    assert "复制账号与密码" in credentials
+    assert "账号已创建，但初始密码未返回" in credentials
+    assert "请输入姓名" in creation
+    assert "登录账号至少输入 2 个字符" in creation
+    assert "单选，仅限平台内部角色" in creation
+    assert "8 位以上初始密码" in creation
+    assert creation.index("showInternalUserCredentials(created)") < creation.index("await internalUsers()")
+    assert "账号已创建，但账号列表刷新失败" in creation
+
+
+def test_internal_user_actions_provide_busy_state_and_length_only_reset_policy() -> None:
+    source = _source()
+    action = source[source.index("async function runInternalUserAction") : source.index("function showInternalUserCredentials")]
+    reset = source[source.index("function resetInternalUserPassword") : source.index("async function internalUsers")]
+
+    assert ".disabled=true" in action
+    assert ".disabled=false" in action
+    assert "await internalUsers()" in action
+    assert "toast(error.message,true)" in action
+    assert "请输入8-128位密码，不限制字符组合" not in source
+    assert "密码需为 8-128 位" in reset
+    assert "minLength:8" in reset
+    assert "至少12位" not in source

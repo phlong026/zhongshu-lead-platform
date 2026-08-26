@@ -32,21 +32,11 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
-def validate_internal_password(password: str, username: str) -> None:
-    """Raise ``ValueError`` when an internal account password is too weak."""
+def validate_internal_password(password: str) -> None:
+    """Raise ``ValueError`` when an internal password is outside the agreed range."""
 
-    if not 12 <= len(password) <= 128:
-        raise ValueError("密码长度必须为 12 到 128 位")
-    requirements = (
-        any(character.islower() for character in password),
-        any(character.isupper() for character in password),
-        any(character.isdigit() for character in password),
-        any(not character.isalnum() for character in password),
-    )
-    if not all(requirements):
-        raise ValueError("密码必须同时包含大写字母、小写字母、数字和符号")
-    if username.casefold() in password.casefold():
-        raise ValueError("密码不能包含登录账号")
+    if not 8 <= len(password) <= 128:
+        raise ValueError("密码长度必须为 8 到 128 位")
 
 
 def ensure_canonical_jwt(token: str) -> None:

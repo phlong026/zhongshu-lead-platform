@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from sqlalchemy import delete, select
@@ -162,6 +163,8 @@ def _materialize_selected_regions(db: Session, body: CompanySimpleCreateBody) ->
 def create_simple_company(
     db: Session,
     body: CompanySimpleCreateBody,
+    *,
+    approved_by: str | None = None,
 ) -> tuple[Company, dict[str, str]]:
     regions = _simple_region_codes(db, body)
     company = Company(
@@ -178,15 +181,16 @@ def create_simple_company(
     db.add(PointsAccount(company_id=company.id, balance=0, version=1))
 
     region_codes = sorted(regions)
+    approved_at = datetime.now(timezone.utc)
     db.add(
         CompanyLeadCapability(
             company_id=company.id,
             capability_code=CompanyLeadCapabilityCode.LEAD_RECEIVER.value,
-            active=False,
-            review_status="PENDING",
-            reviewed_by=None,
-            reviewed_at=None,
-            review_note="后台创建加盟商后待审核接单资格",
+            active=True,
+            review_status="APPROVED",
+            reviewed_by=approved_by,
+            reviewed_at=approved_at,
+            review_note="后台创建加盟商时自动开通接单资格",
         )
     )
     for code in region_codes:
@@ -197,18 +201,18 @@ def create_simple_company(
                 region_code=code,
                 region_level=region.level,
                 is_primary_city=code == body.primary_city_code,
-                active=False,
-                review_status="PENDING",
-                reviewed_by=None,
-                reviewed_at=None,
-                review_note="后台创建加盟商后待审核服务地区",
+                active=True,
+                review_status="APPROVED",
+                reviewed_by=approved_by,
+                reviewed_at=approved_at,
+                review_note="后台创建加盟商时自动开通服务地区",
             )
         )
     db.flush()
     return company, {
         "points_account": "READY",
-        "receiver_capability": "PENDING_REVIEW",
-        "service_areas": "PENDING_REVIEW",
+        "receiver_capability": "READY",
+        "service_areas": "READY",
     }
 
 

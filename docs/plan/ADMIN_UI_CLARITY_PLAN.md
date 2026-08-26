@@ -13,7 +13,7 @@
 - `admin-design-system-v10.js` 会在每个后台页面标题下插入 `.adm-v10-scope` 提示条。它重复页面副标题的信息，并把指标卡整体下推。
 - `app.js` 在顶部同时展示 `display_name`、角色编码、头像和退出按钮，身份信息重复且暴露内部角色代码。
 - 主后台先输出 `⇩`、`☎`、`↗`、`◈` 等字符，再由 `svg-icon-system.js` 的 `MutationObserver` 猜测并替换为 SVG。最终格式虽是内联 SVG，但语义依赖文本启发式，容易出现“待领取=外链”“合格客资=普通列表”等错配。
-- `v12-leads.html` 与 `v12-operations.html` 尚未加载共享 SVG 图标系统，独立页面的图标表现与主后台不一致。
+- 原 `v12-leads.html` 已删除并迁入 `v12-operations.html`；统一运营台使用共享 SVG 图标系统，避免独立页面造成图标表现不一致。
 
 ## 设计决策
 

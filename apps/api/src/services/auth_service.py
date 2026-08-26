@@ -13,6 +13,7 @@ from ..core.auth_models import AuthLoginState
 from ..core.config import get_settings
 from ..core.errors import AppError
 from ..core.models import Company, InviteToken, User, WechatIdentity
+from ..core.role_contract import has_exactly_one_active_business_role
 from ..core.security import (
     create_access_token,
     generate_token,
@@ -59,7 +60,14 @@ class InternalAuthError(AppError):
 
 
 def role_codes_for_user(user: User) -> list[str]:
-    return sorted(role.code for role in user.roles)
+    role_codes = sorted(role.code for role in user.roles)
+    if not has_exactly_one_active_business_role(role_codes):
+        raise AppError(
+            "AUTH_ROLE_MIGRATION_REQUIRED",
+            "账号角色尚未完成迁移，请联系平台管理员处理",
+            403,
+        )
+    return role_codes
 
 
 def _new_login_state(db: Session, user_id: str) -> AuthLoginState:
@@ -220,7 +228,18 @@ def authenticate_internal(db: Session, username: str, password: str) -> Internal
     if state is not None:
         _clear_login_state(state)
     user.last_login_at = datetime.now(timezone.utc)
-    roles = role_codes_for_user(user)
+    try:
+        roles = role_codes_for_user(user)
+    except AppError as exc:
+        raise InternalAuthError(
+            exc.code,
+            exc.message,
+            exc.status_code,
+            audit_action="AUTH_LOGIN_BLOCKED",
+            user_id=user.id,
+            failure_count=state.failed_count if state else 0,
+            lock_released=lock_released,
+        ) from exc
     token = create_access_token(user.id, user.session_version, roles, user.company_id)
     return InternalAuthResult(user=user, token=token, lock_released=lock_released)
 

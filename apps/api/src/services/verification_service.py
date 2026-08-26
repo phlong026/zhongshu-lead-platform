@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from ..core.auth import Principal
 from ..core.enums import LeadStatus, VerificationResult, VerificationTaskStatus
 from ..core.errors import AppError
-from ..core.models import Lead, VerificationSubmission, VerificationTask, VerificationTemplate
+from ..core.models import Lead, User, VerificationSubmission, VerificationTask, VerificationTemplate
 from ..core.security import decrypt_text, mask_phone
 
 
@@ -42,11 +42,16 @@ def create_tasks(
     db: Session,
     *,
     lead_ids: list[str],
-    assignee_user_id: str | None,
+    assignee_user_id: str,
     assigned_by: str,
     template_code: str,
 ) -> list[VerificationTask]:
     template = latest_published_template(db, template_code)
+    assignee = db.scalar(select(User).where(User.id == assignee_user_id))
+    if assignee is None or "TELESALES" not in {role.code for role in assignee.roles}:
+        raise AppError("VERIFICATION_TELESALES_REQUIRED", "核验任务只能派发给启用中的电销人员", 422)
+    if assignee.status != "ACTIVE":
+        raise AppError("VERIFICATION_TELESALES_DISABLED", "不能向已停用的电销人员派发任务", 409)
     created: list[VerificationTask] = []
     for lead_id in lead_ids:
         lead = db.get(Lead, lead_id)
@@ -68,10 +73,10 @@ def create_tasks(
             lead_id=lead_id,
             template_id=template.id,
             template_version=template.version,
-            status=VerificationTaskStatus.ASSIGNED if assignee_user_id else VerificationTaskStatus.PENDING,
+            status=VerificationTaskStatus.ASSIGNED,
             assignee_user_id=assignee_user_id,
             assigned_by=assigned_by,
-            assigned_at=datetime.now(timezone.utc) if assignee_user_id else None,
+            assigned_at=datetime.now(timezone.utc),
         )
         lead.status = LeadStatus.VERIFYING
         lead.pending_reason = None
@@ -84,6 +89,11 @@ def create_tasks(
 def assign_task(db: Session, task: VerificationTask, assignee_user_id: str, assigned_by: str) -> VerificationTask:
     if task.status not in {VerificationTaskStatus.PENDING, VerificationTaskStatus.ASSIGNED}:
         raise AppError("VERIFICATION_TASK_NOT_ASSIGNABLE", "任务当前不可分配", 409)
+    assignee = db.scalar(select(User).where(User.id == assignee_user_id))
+    if assignee is None or "TELESALES" not in {role.code for role in assignee.roles}:
+        raise AppError("VERIFICATION_TELESALES_REQUIRED", "核验任务只能派发给启用中的电销人员", 422)
+    if assignee.status != "ACTIVE":
+        raise AppError("VERIFICATION_TELESALES_DISABLED", "不能向已停用的电销人员派发任务", 409)
     task.assignee_user_id = assignee_user_id
     task.assigned_by = assigned_by
     task.assigned_at = datetime.now(timezone.utc)
@@ -108,9 +118,10 @@ def claim_task(db: Session, task: VerificationTask, principal: Principal) -> Ver
         if task.assignee_user_id == principal.user_id and task.status == VerificationTaskStatus.IN_PROGRESS:
             return task
         raise AppError("VERIFICATION_TASK_CLAIMED", "任务已由其他人员处理", 409)
-    if task.assignee_user_id and task.assignee_user_id != principal.user_id:
+    if task.assignee_user_id is None:
+        raise AppError("VERIFICATION_TASK_NOT_ASSIGNED", "任务尚未由运营人员派发", 409)
+    if task.assignee_user_id != principal.user_id:
         raise AppError("FORBIDDEN", "任务已分配给其他电销人员", 403)
-    task.assignee_user_id = principal.user_id
     task.status = VerificationTaskStatus.IN_PROGRESS
     task.started_at = task.started_at or datetime.now(timezone.utc)
     task.lock_version += 1

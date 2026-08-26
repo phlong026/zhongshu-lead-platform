@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import secrets
+import string
+
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session, selectinload
 
@@ -13,12 +16,8 @@ from .rbac import assign_role
 INTERNAL_ROLE_CODES = frozenset(
     {
         "SUPER_ADMIN",
-        "OWNER",
-        "LEAD_ENTRY",
         "OPERATION",
         "TELESALES",
-        "FINANCE",
-        "RETURN_REVIEWER",
     }
 )
 _SUPERADMIN_LOCK_KEY = "zhongshu.internal-user.superadmin-roster"
@@ -28,6 +27,8 @@ def normalize_internal_roles(role_codes: list[str]) -> list[str]:
     normalized = sorted({code.strip() for code in role_codes if code.strip()})
     if not normalized:
         raise AppError("INTERNAL_ROLE_REQUIRED", "至少选择一个内部角色", 400)
+    if len(normalized) != 1:
+        raise AppError("INTERNAL_ROLE_SINGLE_REQUIRED", "一个账号只能选择一个业务角色", 400)
     invalid = sorted(set(normalized) - INTERNAL_ROLE_CODES)
     if invalid:
         raise AppError(
@@ -39,11 +40,28 @@ def normalize_internal_roles(role_codes: list[str]) -> list[str]:
     return normalized
 
 
-def validate_managed_password(password: str, username: str) -> None:
+def validate_managed_password(password: str) -> None:
     try:
-        validate_internal_password(password, username)
+        validate_internal_password(password)
     except ValueError as exc:
         raise AppError("PASSWORD_POLICY_INVALID", str(exc), 400) from exc
+
+
+def generate_initial_password(username: str) -> str:
+    """Generate a one-time internal account password that satisfies policy."""
+
+    normalized_username = username.strip()
+    if not normalized_username:
+        raise AppError(
+            "INTERNAL_IDENTITY_INVALID",
+            "登录账号不能为空或包含首尾空格",
+            400,
+        )
+    alphabet = string.ascii_letters + string.digits
+    rng = secrets.SystemRandom()
+    password = "".join(rng.choice(alphabet) for _ in range(8))
+    validate_internal_password(password)
+    return password
 
 
 def _validate_identity(username: str, display_name: str) -> tuple[str, str]:
@@ -167,7 +185,7 @@ def create_managed_internal_user(
         display_name,
     )
     roles = normalize_internal_roles(role_codes)
-    validate_managed_password(password, normalized_username)
+    validate_managed_password(password)
     if "SUPER_ADMIN" in roles:
         _acquire_superadmin_roster_lock(db)
     user = create_internal_user(
@@ -177,8 +195,6 @@ def create_managed_internal_user(
         display_name=normalized_display_name,
         role_code=roles[0],
     )
-    for role_code in roles[1:]:
-        assign_role(db, user, role_code)
     db.flush()
     db.refresh(user, attribute_names=["roles"])
     return user
@@ -238,7 +254,7 @@ def reset_internal_password(
     new_password: str,
 ) -> tuple[User, int]:
     user = _load_internal_user(db, user_id)
-    validate_managed_password(new_password, user.username or "")
+    validate_managed_password(new_password)
     previous_session_version = user.session_version
     user.password_hash = hash_password(new_password)
     user.session_version += 1

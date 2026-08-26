@@ -25,14 +25,14 @@ def _data(response):
 def test_role_aware_dashboard_and_candidate_projection(api_client):
     client, _ = api_client
     operation = _login(client, "operation", "Operation123!")
-    owner = _login(client, "owner", "Owner123!")
+    admin = _login(client, "admin", "Admin123!")
 
     operation_summary = _data(client.get("/api/v1/dashboard/summary", headers=operation))
     assert "business" in operation_summary
     assert "finance" not in operation_summary
 
-    owner_summary = _data(client.get("/api/v1/dashboard/summary", headers=owner))
-    assert owner_summary["finance"]["points_balance_total"] > 0
+    admin_summary = _data(client.get("/api/v1/dashboard/summary", headers=admin))
+    assert admin_summary["finance"]["points_balance_total"] > 0
 
     qualified = _data(client.get("/api/v1/dispatch/qualified-leads", headers=operation))
     lead = next(item for item in qualified["items"] if item["customer_name"] == "王女士")
@@ -47,7 +47,6 @@ def test_full_http_dispatch_claim_followup_return_refund(api_client):
     client, factory = api_client
     operation = _login(client, "operation", "Operation123!")
     franchise = _login(client, "franchise_demo", "Franchise123!")
-    reviewer = _login(client, "reviewer", "Reviewer123!")
     admin = _login(client, "admin", "Admin123!")
 
     qualified = _data(client.get("/api/v1/dispatch/qualified-leads", headers=operation))
@@ -134,7 +133,7 @@ def test_full_http_dispatch_claim_followup_return_refund(api_client):
     reviewed = _data(
         client.post(
             f"/api/v1/returns/{return_id}/review",
-            headers=reviewer,
+            headers=operation,
             json={"decision": "APPROVE", "note": "截图与录音证据完整，审核通过。"},
         )
     )
