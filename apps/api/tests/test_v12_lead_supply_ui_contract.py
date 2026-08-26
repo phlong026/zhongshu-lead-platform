@@ -42,7 +42,7 @@ def test_unified_operations_lead_ui_distinguishes_platform_and_supplier_flow() -
     js = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
     assert "/v1.2/platform/leads" in js
     assert "/v1.2/admin/supplier-leads" in js
-    assert "/master-data/regions" in js
+    assert "/master-data/region-tree" in js
     assert "READY_DISPATCH" in js
     assert "data-platform-pre-dispatch" in js
     assert "请先补充客户联系电话，再派发电话核验" in js

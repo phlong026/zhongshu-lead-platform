@@ -72,17 +72,18 @@ def test_admin_dashboard_and_role_kpis_link_to_existing_detail_pages() -> None:
     operations = read(ADMIN / "v12-operations.js")
 
     for destination in (
-        "?view=leads",
-        "?view=telesales",
-        "?view=dispatch",
-        "?view=returns",
-        "?view=companies",
-        "?view=finance",
-        "?view=audit",
+        "leads",
+        "telesales",
+        "dispatch",
+        "returns",
+        "companies",
+        "finance",
+        "audit",
     ):
-        assert destination in operations
+        assert f"{destination}:[" in operations
 
     assert "data-overview-view" in operations
+    assert "go(button.dataset.overviewView)" in operations
     assert "index.html" not in operations
     for mapping in (
         "FOLLOWING:'跟进中'",
@@ -95,10 +96,10 @@ def test_admin_dashboard_and_role_kpis_link_to_existing_detail_pages() -> None:
         assert mapping in operations
 
 
-def test_formal_admin_home_explains_the_five_role_boundaries() -> None:
+def test_formal_admin_home_distinguishes_platform_and_operation_boundaries() -> None:
     source = read(ADMIN / "v12-operations.js")
 
-    for copy in ("运营待办", "运营派发", "不具备自主领取", "不查看加盟商内部员工的客资分配明细"):
+    for copy in ("客资池", "电销与派发协同", "平台治理提示", "不具备自主领取", "加盟商内部员工分配仅由公司负责人处理"):
         assert copy in source
 
 

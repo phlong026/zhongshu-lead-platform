@@ -18,9 +18,9 @@ def test_franchise_home_prioritizes_one_role_specific_action_before_secondary_me
     assert "homeTaskList" in source
     assert "HOME_ASSIGNMENT_STATUSES" in source
     assert "assignments?status=${status}" in source
-    assert "公司可用积分" in source
+    assert "待领取客资" in source
     assert "今日待跟进" in source
-    assert "查看积分" in source
+    assert "去领取" in source
     assert "继续跟进" in source
     assert "greetingName" in source
 

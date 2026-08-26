@@ -450,7 +450,15 @@ def list_candidates(db: Session, *, lead: Lead) -> list[CandidateResult]:
                 duplicate_to_receiver=duplicate_to_receiver,
             )
         )
-    return results
+    return sorted(
+        results,
+        key=lambda item: (
+            not item.region_match,
+            not item.eligible,
+            item.company_name.casefold(),
+            item.company_id,
+        ),
+    )
 
 
 def list_dispatch_pool(

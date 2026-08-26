@@ -13,6 +13,7 @@ from ..core.models_v12 import LeadDedupEvent
 from ..core.security import decrypt_text, encrypt_text, fingerprint_phone, hash_phone, mask_phone, normalize_phone
 from ..core.v12_enums import LeadReviewStatus, LeadSourceKind, LeadV12Status
 from .company_profile_v12 import require_lead_capability
+from .china_regions import region_by_code
 from .dedup_v12 import DedupResult, apply_submission_decision, evaluate_phone
 
 
@@ -191,6 +192,44 @@ def _validate_submission(db: Session, lead: Lead) -> str:
     return phone
 
 
+def _materialize_nationwide_location(db: Session, lead: Lead) -> None:
+    """Persist only the selected nationwide location before it enters business flow."""
+
+    if not lead.region_code:
+        return
+    location = region_by_code(lead.region_code)
+    if location is None:
+        return
+    city_code = str(location["city_code"])
+    city = db.get(Region, city_code)
+    if city is None:
+        city = Region(
+            code=city_code,
+            name=str(location["city_name"]),
+            level="CITY",
+            parent_code=None,
+            aliases=[str(location["city_name"])],
+            active=True,
+        )
+        db.add(city)
+    district_code = location["district_code"]
+    district_name = location["district_name"]
+    if district_code and db.get(Region, district_code) is None:
+        db.add(
+            Region(
+                code=district_code,
+                name=str(district_name),
+                level="DISTRICT",
+                parent_code=city_code,
+                aliases=[str(district_name)],
+                active=True,
+            )
+        )
+    lead.city = str(location["city_name"])
+    lead.district = str(district_name) if district_name else None
+    db.flush()
+
+
 def submit_draft(
     db: Session,
     *,
@@ -203,6 +242,7 @@ def submit_draft(
     _assert_owner(lead, principal, supplier=supplier)
     if supplier:
         require_lead_capability(db, principal.company_id, "LEAD_SUPPLIER")
+    _materialize_nationwide_location(db, lead)
     phone = _validate_submission(db, lead)
     if supplier:
         lead.review_note = None

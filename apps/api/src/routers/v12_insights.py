@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -25,7 +25,7 @@ from ..core.models import (
     User,
     VerificationTask,
 )
-from ..core.models_v12 import SupplierLeadReward
+from ..core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12, SupplierLeadReward
 from ..core.responses import ok, page
 from ..core.security import decrypt_text, mask_phone
 from ..services.return_v12 import return_request_to_dict
@@ -52,6 +52,60 @@ def _summary(db: Session, model, filters: list[Any]) -> dict[str, Any]:
         "total": int(db.scalar(select(func.count(model.id)).where(*filters)) or 0),
         "by_status": _counts(db, model, filters),
     }
+
+
+def _count(db: Session, model, *filters: Any) -> int:
+    return int(db.scalar(select(func.count(model.id)).where(*filters)) or 0)
+
+
+def _management_overview(db: Session, principal: CurrentPrincipal) -> dict[str, Any]:
+    """Return bounded operational counts for the two desktop platform homepages."""
+
+    now = datetime.now(timezone.utc)
+    verification_open = ("PENDING", "ASSIGNED", "IN_PROGRESS")
+    problem_lead_statuses = (
+        "DRAFT",
+        "PENDING_TELESALES_VERIFY",
+        "PENDING_OPERATION_DISPOSITION",
+        "DUPLICATE",
+        "INVALID",
+    )
+    result = {
+        "lead_pool": {
+            "total": _count(db, Lead, Lead.source_kind.is_not(None)),
+            "unassigned": _count(db, Lead, Lead.status == "READY_DISPATCH"),
+            "dispatching": _count(db, Assignment, Assignment.status == "PENDING_CLAIM"),
+            "problem": _count(db, Lead, Lead.status.in_(problem_lead_statuses)),
+        },
+        "verification": {
+            "pending": _count(db, VerificationTask, VerificationTask.status.in_(("PENDING", "ASSIGNED"))),
+            "in_progress": _count(db, VerificationTask, VerificationTask.status == "IN_PROGRESS"),
+            "awaiting_operation": _count(db, VerificationTask, VerificationTask.status == "SUBMITTED"),
+            "overdue": _count(
+                db,
+                VerificationTask,
+                VerificationTask.status.in_(verification_open),
+                VerificationTask.due_at.is_not(None),
+                VerificationTask.due_at < now,
+            ),
+        },
+        "exceptions": {
+            "return_final_review": _count(db, ReturnRequest, ReturnRequest.status == "REVIEWING"),
+            "company_review": _count(db, CompanyLeadCapability, CompanyLeadCapability.review_status == "PENDING")
+            + _count(db, CompanyServiceAreaV12, CompanyServiceAreaV12.review_status == "PENDING"),
+            "failed_notification": _count(
+                db,
+                NotificationOutbox,
+                NotificationOutbox.status.in_(("FAILED", "DEAD", "MANUAL_ACTION_REQUIRED")),
+            ),
+            "disabled_company": _count(db, Company, Company.status == "DISABLED"),
+        },
+    }
+    if principal.can("points.read") or principal.can("*"):
+        result["funds"] = {
+            "frozen_reward": _count(db, SupplierLeadReward, SupplierLeadReward.status == "FROZEN"),
+        }
+    return result
 
 
 @router.get("/reports/overview")
@@ -82,6 +136,7 @@ def overview(
         "assignments": _summary(db, Assignment, assignment_f),
         "returns": _summary(db, ReturnRequest, return_f),
         "supplier_rewards": rewards,
+        "management": _management_overview(db, principal),
     }
     if any(principal.can(code) for code in ("*", "points.read", "dashboard.finance.read")):
         points = db.execute(
@@ -194,7 +249,20 @@ def audit_events(
     filters += _time(AuditLog.created_at, created_from, created_to)
     total = int(db.scalar(select(func.count(AuditLog.id)).where(*filters)) or 0)
     items = db.scalars(select(AuditLog).where(*filters).order_by(AuditLog.created_at.desc()).offset((page_no - 1) * page_size).limit(page_size)).all()
-    return ok(request, page([_audit(item) for item in items], total, page_no, page_size))
+    actor_ids = {item.actor_user_id for item in items if item.actor_user_id}
+    users = {
+        user.id: user
+        for user in db.scalars(select(User).where(User.id.in_(actor_ids))).all()
+    } if actor_ids else {}
+    return ok(
+        request,
+        page(
+            [_audit(item, actor_name=_display_name(users.get(item.actor_user_id))) for item in items],
+            total,
+            page_no,
+            page_size,
+        ),
+    )
 
 
 def _display_name(user: User | None) -> str | None:

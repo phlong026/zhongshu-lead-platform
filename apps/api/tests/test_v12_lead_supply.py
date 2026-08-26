@@ -104,6 +104,35 @@ def test_platform_manual_submission_enters_ready_pool_without_pre_verification(d
     assert lead.phone_fingerprint
 
 
+def test_nationwide_customer_location_is_materialized_before_submission(db) -> None:
+    _, user = _seed_identity(db, company_code="NATIONWIDE-LEAD")
+    principal = _principal(user.id, None, "lead.manual.manage")
+    lead = create_draft(
+        db,
+        principal=principal,
+        source_kind=LeadSourceKind.PLATFORM_MANUAL,
+        values={
+            "customer_name": "广州客户",
+            "phone": "13800138288",
+            "city": "广州市",
+            "district": "天河区",
+            "region_code": "440106",
+            "need_summary": "计划翻新自建房，需要预约上门沟通",
+            "consent_confirmed": True,
+        },
+    )
+
+    submit_draft(db, lead=lead, principal=principal)
+
+    city = db.get(Region, "440100")
+    district = db.get(Region, "440106")
+    assert city is not None and city.name == "广州市"
+    assert district is not None and district.name == "天河区"
+    assert district.parent_code == city.code
+    assert lead.city == "广州市"
+    assert lead.district == "天河区"
+
+
 def test_operation_can_rework_platform_draft_created_by_another_operator(db) -> None:
     _, creator = _seed_identity(db, company_code="PLATFORM-CREATOR")
     _, reworker = _seed_identity(db, company_code="PLATFORM-REWORKER")

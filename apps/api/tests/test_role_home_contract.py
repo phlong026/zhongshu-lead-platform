@@ -32,7 +32,9 @@ def test_five_roles_have_only_their_formal_workbenches() -> None:
 def test_platform_workbench_keeps_identity_left_and_top_actions_operational() -> None:
     source = _read(ADMIN_OPERATIONS)
 
-    assert "ops-side-foot" in source
+    assert "ops-account-zone" in source
+    assert "data-account-center" in source
+    assert "data-account-settings" in source
     assert "ops-top-actions" in source
     for label in ("刷新", "设置", "退出"):
         assert label in source
@@ -45,7 +47,7 @@ def test_operation_workbench_has_the_required_dispatch_and_account_boundaries() 
 
     for marker in (
         "派发前置电销核验",
-        "前置电销待处置",
+        "电销结论待处置",
         "运营处置电销结论",
         "派发退回电话核验",
         "派发或改派原因",

@@ -60,7 +60,8 @@ function franchiseHomeGreeting(){const role=isFranchiseOwner()?'加盟商负责�
 function franchiseHomeHero({labelText,value,description,actionLabel,view}){return `<section class="wb-hero wb-home-priority franchiseHomeHero"><div><p>${esc(labelText)}</p><strong>${esc(value)}</strong><span>${esc(description)}</span></div><button class="wb-btn wb-home-priority-action" data-go="${esc(view)}">${esc(actionLabel)}</button></section>`}
 function franchiseHomeMetrics(items){return `<section class="wb-home-metrics franchiseHomeMetrics" aria-label="业务概览">${items.map(({labelText,value,view})=>`<button type="button" class="wb-home-metric" data-go="${esc(view)}"><span>${esc(labelText)}</span><b>${esc(value)}</b></button>`).join('')}</section>`}
 function homeAssignmentRow(row){const view=row.status==='PENDING_CLAIM'&&canView('assignments')?'assignments':'followups';const customer=row.customer_name||row.lead?.customer_name||'待处理客户';const place=[row.city||row.lead?.city,row.district||row.lead?.district].filter(Boolean).join(' · ')||'地区待补充';return `<button type="button" class="wb-home-task" data-go="${view}"><span class="wb-home-task-avatar">${esc(String(customer).slice(0,1))}</span><span class="wb-home-task-copy"><b>${esc(customer)}</b><small>${esc(place)} · ${esc(readableLabel(row.status))}</small></span>${badge(row.status)}<i aria-hidden="true">${icon('chevron-right')}</i></button>`}
-function homeTaskList(rows,view){if(!rows.length)return'';const tasks=rows.slice(0,3).map(homeAssignmentRow).join('');return `<section class="wb-home-section"><div class="wb-home-section-head"><h2>待处理客资</h2><button class="wb-home-link" data-go="${esc(view)}">查看全部</button></div><div class="wb-home-task-list">${tasks}</div></section>`}
+function homeTaskList(rows,view,title='待处理客资'){if(!rows.length)return'';const tasks=rows.slice(0,3).map(homeAssignmentRow).join('');return `<section class="wb-home-section"><div class="wb-home-section-head"><h2>${esc(title)}</h2><button class="wb-home-link" data-go="${esc(view)}">查看全部</button></div><div class="wb-home-task-list">${tasks}</div></section>`}
+function companyTodoList({waitingClaim,following,supplyRework,returnProcessing}){const todos=[['待领取客资',waitingClaim,'有新客资等待公司领取','assignments'],['待补充资料',supplyRework,'补充后可重新提交平台审核','leads'],['客户跟进',following,'公司正在跟进的客资','followups'],['退回处理中',returnProcessing,'等待核验或平台审核结果','followups']].filter(([,count])=>Number(count)>0);if(!todos.length)return'';return `<section class="wb-home-section"><div class="wb-home-section-head"><h2>公司待办</h2><span class="wb-muted">按优先级处理</span></div><div class="wb-home-task-list">${todos.map(([name,count,description,view])=>`<button type="button" class="wb-home-task" data-go="${esc(view)}"><span class="wb-home-task-avatar">${icon(view==='assignments'?'hand-claim':view==='leads'?'plus':'clipboard-check')}</span><span class="wb-home-task-copy"><b>${esc(name)}</b><small>${esc(description)}</small></span><strong>${esc(count)} 条</strong><i aria-hidden="true">${icon('chevron-right')}</i></button>`).join('')}</div></section>`}
 async function render(){shell('<div class="wb-loading">加载中…</div>');try{if(S.view==='home')await home();else if(S.view==='profile')await profile();else if(S.view==='leads')await leadCenter();else if(S.view==='points')await points();else if(S.view==='assignments'||S.view==='followups')await assignments();else if(S.view==='returns')await returns();else if(S.view==='rewards')await rewards();else await notifications()}catch(e){shell(`<div class="wb-error">${esc(e.message)}</div>`);toast(e.message,true)}}
 async function home(){
   const companyId=S.me?.company_id;
@@ -75,16 +76,18 @@ async function home(){
   const following=Number(received.CLAIMED||0)+Number(received.FOLLOWING||0);
   const returnProcessing=Number(returnsByStatus.VERIFYING||0)+Number(returnsByStatus.REVIEWING||0)+Number(returnsByStatus.NEED_MORE_EVIDENCE||0);
   const supplierLeadTotal=Number(d.supplier_leads?.total||0);
+  const supplyRework=Number(d.supplier_leads?.by_status?.DRAFT||0)+Number(d.supplier_leads?.by_status?.INVALID||0);
   const followView='followups';
   const owner=isFranchiseOwner();
   const hero=owner
-    ?{labelText:'公司可用积分',value:`${num(account?.available_for_dispatch??account?.balance)} 分`,description:`待领取 ${waitingClaim} 条`,actionLabel:'查看积分',view:'points'}
+    ?{labelText:'待领取客资',value:`${waitingClaim} 条`,description:`待补充资料 ${supplyRework} 条 · 跟进中 ${following} 条`,actionLabel:'去领取',view:'assignments'}
     :{labelText:'今日待跟进',value:`${following} 条`,description:'本人待处理客资',actionLabel:'继续跟进',view:followView};
   const metrics=owner
-    ?[{labelText:'待领取',value:waitingClaim,view:'assignments'},{labelText:'待跟进',value:following,view:followView},{labelText:'退回审查',value:returnProcessing,view:'returns'}]
+    ?[{labelText:'进行中',value:following,view:followView},{labelText:'待补资料',value:supplyRework,view:'leads'},{labelText:'可用积分',value:num(account?.available_for_dispatch??account?.balance),view:'points'}]
     :[{labelText:'待跟进',value:following,view:followView},{labelText:'供资进度',value:supplierLeadTotal,view:'leads'},{labelText:'退回处理中',value:returnProcessing,view:'returns'}];
   const taskView=owner&&waitingClaim?'assignments':followView;
-  shell(`${franchiseHomeGreeting()}${franchiseHomeHero(hero)}${franchiseHomeMetrics(metrics)}${homeTaskList(assignmentRows,taskView)}`);
+  const ownerTodos=owner?companyTodoList({waitingClaim,following,supplyRework,returnProcessing}):'';
+  shell(`${franchiseHomeGreeting()}${franchiseHomeHero(hero)}${ownerTodos}${franchiseHomeMetrics(metrics)}${homeTaskList(assignmentRows,taskView,owner?'正在处理的客资':'待处理客资')}`);
 }
 const CAPABILITY_META={
   LEAD_SUPPLIER:{title:'客资供应能力',description:'审核通过后可上传客资并查看初审状态。'},
@@ -247,12 +250,16 @@ function supplyLeadActions(lead){
 }
 
 async function loadSupplyCities(){
-  if(!supplyState.cities.length)supplyState.cities=await api('/master-data/regions?level=CITY');
+  if(!supplyState.cities.length){
+    const tree=await api('/master-data/region-tree');
+    supplyState.cities=(tree.provinces||[]).flatMap(province=>(province.cities||[]).map(city=>({...city,province_name:province.name,option_name:`${province.name} · ${city.name}`})));
+  }
   return supplyState.cities;
 }
 
 async function loadSupplyDistricts(cityCode){
-  supplyState.districts=cityCode?await api(`/master-data/regions?parent_code=${encodeURIComponent(cityCode)}&level=DISTRICT`):[];
+  const cities=await loadSupplyCities();
+  supplyState.districts=cities.find(city=>city.code===cityCode)?.districts||[];
   return supplyState.districts;
 }
 
@@ -265,6 +272,17 @@ function normalizeSupplyPhone(value){
 function optionalSupplyNumber(value){
   const trimmed=String(value||'').trim();
   return trimmed===''?null:Number(trimmed);
+}
+
+function supplyBudgetToWan(value){
+  if(value==null||value==='')return '';
+  const amount=Number(value);
+  return Number.isFinite(amount)?String(Number((amount/10000).toFixed(4))):'';
+}
+
+function supplyBudgetFromWan(value){
+  const amount=optionalSupplyNumber(value);
+  return amount===null?null:Number.isFinite(amount)?Math.round(amount*10000):NaN;
 }
 
 function supplyPayload(){
@@ -281,8 +299,8 @@ function supplyPayload(){
     source_channel:document.querySelector('#supply-source')?.value||'',
     category_code:document.querySelector('#supply-category')?.value||'',
     need_summary:document.querySelector('#supply-need')?.value.trim()||'',
-    budget_min:optionalSupplyNumber(document.querySelector('#supply-budget-min')?.value),
-    budget_max:optionalSupplyNumber(document.querySelector('#supply-budget-max')?.value),
+    budget_min:supplyBudgetFromWan(document.querySelector('#supply-budget-min')?.value),
+    budget_max:supplyBudgetFromWan(document.querySelector('#supply-budget-max')?.value),
     consent_confirmed:Boolean(document.querySelector('#supply-consent')?.checked),
   };
 }
@@ -300,7 +318,7 @@ function validateSupplySubmission(payload){
   const errors=validateSupplyDraft(payload);
   if(!payload.customer_name||payload.customer_name==='未填写')errors.customer_name='请填写客户姓名';
   if(!/^1\d{10}$/.test(payload.phone))errors.phone='请填写 11 位手机号';
-  if(!payload.city||!payload.region_code)errors.city='请选择服务城市';
+  if(!payload.city||!payload.region_code)errors.city='请选择所在地城市';
   if(!payload.need_summary)errors.need_summary='请填写客户需求';
   if(!payload.consent_confirmed)errors.consent_confirmed='请确认已获得客户授权';
   return errors;
@@ -361,7 +379,7 @@ async function openSupplyForm(item=null){
   const selectedDistrict=districts.find(row=>row.name===item?.district||row.code===item?.region_code);
   const title=item?'完善客资资料':'上传客资';
   const note=item?.review_note?`<div class="wb-notice">平台修改说明：${esc(item.review_note)}</div>`:'';
-  openSheet(title,`${note}<form class="wb-form wb-supply-form" id="supply-form" novalidate><div class="wb-form-error" id="supply-form-error" role="alert" hidden></div><section class="wb-supply-section"><h3>客户信息</h3><div class="wb-row"><div class="wb-field"><label for="supply-name">客户姓名 *</label><input class="wb-input" id="supply-name" data-supply-field maxlength="64" autocomplete="name" value="${esc(item?.customer_name==='未填写'?'':item?.customer_name||'')}"></div><div class="wb-field"><label for="supply-phone">客户手机号 *</label><input class="wb-input" id="supply-phone" data-supply-field inputmode="tel" maxlength="32" autocomplete="tel" placeholder="请输入 11 位手机号" value="${esc(item?.phone||'')}"></div></div><div class="wb-row"><div class="wb-field"><label for="supply-city">服务城市 *</label><select class="wb-select" id="supply-city" data-supply-field><option value="">请选择城市</option>${cities.map(row=>`<option value="${esc(row.code)}" ${selectedCity?.code===row.code?'selected':''}>${esc(row.name)}</option>`).join('')}</select></div><div class="wb-field"><label for="supply-district">服务区县</label><select class="wb-select" id="supply-district"><option value="">暂不确定 / 全市范围</option>${districts.map(row=>`<option value="${esc(row.code)}" ${selectedDistrict?.code===row.code?'selected':''}>${esc(row.name)}</option>`).join('')}</select></div></div></section><section class="wb-supply-section"><h3>客户需求</h3><div class="wb-row"><div class="wb-field"><label for="supply-source">获客来源</label><select class="wb-select" id="supply-source">${supplyOptions(SUPPLY_SOURCES,item?.source_channel||'供应商推荐','请选择获客来源')}</select></div><div class="wb-field"><label for="supply-category">需求类型</label><select class="wb-select" id="supply-category">${supplyOptions(SUPPLY_CATEGORIES,item?.category_code||'','请选择需求类型')}</select></div></div><div class="wb-field"><label for="supply-need">需求说明 *</label><textarea class="wb-textarea" id="supply-need" data-supply-field maxlength="2000" placeholder="请填写建房或装修地点、计划、时间等关键信息">${esc(item?.need_summary||'')}</textarea></div><div class="wb-row"><div class="wb-field"><label for="supply-budget-min">预算最低（元）</label><input class="wb-input" id="supply-budget-min" data-supply-field type="number" min="0" inputmode="numeric" value="${esc(item?.budget_min??'')}"></div><div class="wb-field"><label for="supply-budget-max">预算最高（元）</label><input class="wb-input" id="supply-budget-max" data-supply-field type="number" min="0" inputmode="numeric" value="${esc(item?.budget_max??'')}"></div></div></section><label class="wb-choice wb-supply-consent"><input type="checkbox" id="supply-consent" data-supply-field ${item?.consent_confirmed?'checked':''}><span><b>我确认已获得客户授权 *</b><small>客户知晓其联系方式和需求将用于业务对接。</small></span></label><div class="wb-actions"><button class="wb-btn" type="button" id="supply-save-draft">保存草稿</button><button class="wb-btn primary" type="button" id="supply-submit">提交审核</button></div></form>`,()=>{
+  openSheet(title,`${note}<form class="wb-form wb-supply-form" id="supply-form" novalidate><div class="wb-form-error" id="supply-form-error" role="alert" hidden></div><section class="wb-supply-section"><h3>客户信息</h3><div class="wb-row"><div class="wb-field"><label for="supply-name">客户姓名 *</label><input class="wb-input" id="supply-name" data-supply-field maxlength="64" autocomplete="name" value="${esc(item?.customer_name==='未填写'?'':item?.customer_name||'')}"></div><div class="wb-field"><label for="supply-phone">客户手机号 *</label><input class="wb-input" id="supply-phone" data-supply-field inputmode="tel" maxlength="32" autocomplete="tel" placeholder="请输入 11 位手机号" value="${esc(item?.phone||'')}"></div></div><div class="wb-row"><div class="wb-field"><label for="supply-city">所在地城市 *</label><select class="wb-select" id="supply-city" data-supply-field><option value="">请选择全国城市</option>${cities.map(row=>`<option value="${esc(row.code)}" ${selectedCity?.code===row.code?'selected':''}>${esc(row.option_name||row.name)}</option>`).join('')}</select></div><div class="wb-field"><label for="supply-district">所在地区县</label><select class="wb-select" id="supply-district"><option value="">暂不确定 / 全市范围</option>${districts.map(row=>`<option value="${esc(row.code)}" ${selectedDistrict?.code===row.code?'selected':''}>${esc(row.name)}</option>`).join('')}</select></div></div></section><section class="wb-supply-section"><h3>客户需求</h3><div class="wb-row"><div class="wb-field"><label for="supply-source">获客来源</label><select class="wb-select" id="supply-source">${supplyOptions(SUPPLY_SOURCES,item?.source_channel||'供应商推荐','请选择获客来源')}</select></div><div class="wb-field"><label for="supply-category">需求类型</label><select class="wb-select" id="supply-category">${supplyOptions(SUPPLY_CATEGORIES,item?.category_code||'','请选择需求类型')}</select></div></div><div class="wb-field"><label for="supply-need">需求说明 *</label><textarea class="wb-textarea" id="supply-need" data-supply-field maxlength="2000" placeholder="请填写建房或装修地点、计划、时间等关键信息">${esc(item?.need_summary||'')}</textarea></div><div class="wb-row"><div class="wb-field"><label for="supply-budget-min">预算最低（万元）</label><input class="wb-input" id="supply-budget-min" data-supply-field type="number" min="0" step="0.1" inputmode="decimal" value="${esc(supplyBudgetToWan(item?.budget_min))}"></div><div class="wb-field"><label for="supply-budget-max">预算最高（万元）</label><input class="wb-input" id="supply-budget-max" data-supply-field type="number" min="0" step="0.1" inputmode="decimal" value="${esc(supplyBudgetToWan(item?.budget_max))}"></div></div></section><label class="wb-choice wb-supply-consent"><input type="checkbox" id="supply-consent" data-supply-field ${item?.consent_confirmed?'checked':''}><span><b>我确认已获得客户授权 *</b><small>客户知晓其联系方式和需求将用于业务对接。</small></span></label><div class="wb-actions"><button class="wb-btn" type="button" id="supply-save-draft">保存草稿</button><button class="wb-btn primary" type="button" id="supply-submit">提交审核</button></div></form>`,()=>{
     document.querySelector('#supply-form').onsubmit=event=>event.preventDefault();
     document.querySelector('#supply-city').onchange=async event=>{
       const districts=await loadSupplyDistricts(event.target.value);
@@ -431,7 +449,7 @@ async function leads(){
 
 async function leadDetail(id){
   const lead=await api(`/v1.2/supplier/leads/${encodeURIComponent(id)}`);
-  const fields=[['客户',lead.customer_name==='未填写'?'未填写':lead.customer_name],['手机号',lead.phone_masked],['服务地区',`${lead.city||''} ${lead.district||''}`.trim()],['当前进度',readableLabel(lead.status)],['资料审核',readableLabel(lead.review_status)],['重复情况',lead.duplicate_status?readableLabel(lead.duplicate_status,'平台复核中'):null],['提交时间',fmt(lead.submitted_at)],['最后更新',fmt(lead.updated_at)]].filter(([,value])=>value);
+  const fields=[['客户',lead.customer_name==='未填写'?'未填写':lead.customer_name],['手机号',lead.phone_masked],['所在地',`${lead.city||''} ${lead.district||''}`.trim()],['当前进度',readableLabel(lead.status)],['资料审核',readableLabel(lead.review_status)],['重复情况',lead.duplicate_status?readableLabel(lead.duplicate_status,'平台复核中'):null],['提交时间',fmt(lead.submitted_at)],['最后更新',fmt(lead.updated_at)]].filter(([,value])=>value);
   const actions=lead.status==='DRAFT'?`<button class="wb-btn primary" id="supply-detail-edit">继续填写</button><button class="wb-btn danger" id="supply-detail-delete">删除草稿</button>`:lead.status==='INVALID'&&lead.review_status==='REJECTED'?'<button class="wb-btn primary" id="supply-detail-revise">修改后重新提交</button>':'';
   openSheet('客资进度',`<div class="wb-detail-grid">${fields.map(([name,value])=>`<div class="wb-detail"><small>${esc(name)}</small><b>${esc(value)}</b></div>`).join('')}</div><div class="wb-card"><h3>客户需求</h3><p class="wb-muted">${esc(lead.need_summary||'尚未填写')}</p></div>${lead.review_note?`<div class="wb-notice">平台说明：${esc(lead.review_note)}</div>`:''}<div class="wb-actions">${actions}</div>`,()=>{
     document.querySelector('#supply-detail-edit')?.addEventListener('click',()=>launchSupplyForm(lead));

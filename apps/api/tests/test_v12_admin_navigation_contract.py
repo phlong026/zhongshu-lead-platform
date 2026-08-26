@@ -29,7 +29,8 @@ def test_v12_operations_exposes_only_formal_five_role_navigation() -> None:
         assert f"{view}:" in source
     for legacy_marker in ("SYSTEM_LINKS", "data-system-setting", "index.html#"):
         assert legacy_marker not in source
-    assert "ops-side-foot" in source
+    assert "ops-account-zone" in source
+    assert "data-account-center" in source
     assert "ops-top-actions" in source
     assert "company.account.manage" in source
     assert "/points/recharge" in source

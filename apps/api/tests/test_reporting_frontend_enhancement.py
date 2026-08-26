@@ -8,6 +8,6 @@ def test_unified_operations_home_uses_role_scoped_overview_metrics() -> None:
     assert "ROLE_HOME_CONTRACT" in script
     assert "ADMIN_ROLE_HOME_CONTENT" in script
     assert "roleMetricCards" in script
-    assert "运营待办" in script
-    assert "资金处理" in script
-    assert "?view=finance" in script
+    assert "今日运营" in script
+    assert "资金风险" in script
+    assert "data-overview-view" in script

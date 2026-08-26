@@ -14,16 +14,29 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..core.auth import CurrentPrincipal, require_permissions
+from ..core.auth import CurrentPrincipal, load_current_principal, require_permissions
 from ..core.config import get_settings
 from ..core.database import get_db
 from ..core.errors import AppError
 from ..core.models import Company, InviteToken, User
 from ..core.responses import ok
-from ..core.security import create_signed_state, decode_signed_state
+from ..core.security import (
+    create_access_token,
+    create_signed_state,
+    decode_signed_state,
+    hash_password,
+    validate_internal_password,
+    verify_password,
+)
 from ..core.time import as_utc
 from ..integrations.wechat import WechatOAuthClient
-from ..schemas.auth import InviteConfirmStartBody, InviteCreateBody, LoginBody, WechatMockCallbackBody
+from ..schemas.auth import (
+    ChangeOwnPasswordBody,
+    InviteConfirmStartBody,
+    InviteCreateBody,
+    LoginBody,
+    WechatMockCallbackBody,
+)
 from ..services.audit import write_audit
 from ..services.auth_service import (
     InternalAuthError,
@@ -305,9 +318,10 @@ def login(body: LoginBody, request: Request, response: Response, db: Annotated[S
     user = result.user
     if result.lock_released:
         _audit_unlock(db, user_id=user.id, request=request)
+    principal = load_current_principal(db, user.id, user.session_version)
     write_audit(
         db,
-        principal=None,
+        principal=principal,
         action="AUTH_LOGIN",
         resource_type="user",
         resource_id=user.id,
@@ -346,14 +360,74 @@ def logout(request: Request, response: Response, principal: CurrentPrincipal, db
     return ok(request, message="已退出")
 
 
+@router.post("/change-password")
+def change_own_password(
+    body: ChangeOwnPasswordBody,
+    request: Request,
+    response: Response,
+    principal: CurrentPrincipal,
+    db: Annotated[Session, Depends(get_db)],
+):
+    user = db.get(User, principal.user_id)
+    if user is None or not verify_password(body.current_password, user.password_hash):
+        write_audit(
+            db,
+            principal=principal,
+            action="AUTH_PASSWORD_CHANGE_FAILED",
+            resource_type="user",
+            resource_id=principal.user_id,
+            metadata={"reason_code": "CURRENT_PASSWORD_INVALID"},
+            request_id=request.state.request_id,
+            ip_address=_request_ip(request),
+            user_agent=request.headers.get("user-agent"),
+        )
+        db.commit()
+        raise AppError("AUTH_CURRENT_PASSWORD_INVALID", "当前密码不正确", 422)
+    try:
+        validate_internal_password(body.new_password)
+    except ValueError as exc:
+        raise AppError("AUTH_PASSWORD_INVALID", str(exc), 422) from exc
+
+    previous_session_version = user.session_version
+    user.password_hash = hash_password(body.new_password)
+    user.session_version += 1
+    write_audit(
+        db,
+        principal=principal,
+        action="AUTH_PASSWORD_CHANGE",
+        resource_type="user",
+        resource_id=user.id,
+        before={"session_version": previous_session_version},
+        after={"session_version": user.session_version},
+        request_id=request.state.request_id,
+        ip_address=_request_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    db.commit()
+    _set_session_cookie(
+        response,
+        create_access_token(
+            user.id,
+            user.session_version,
+            sorted(principal.role_codes),
+            user.company_id,
+        ),
+    )
+    return ok(request, message="密码已更新，其他登录会话已失效")
+
+
 @router.get("/me")
-def me(request: Request, principal: CurrentPrincipal):
+def me(request: Request, principal: CurrentPrincipal, db: Annotated[Session, Depends(get_db)]):
+    user = db.get(User, principal.user_id)
+    company = db.get(Company, principal.company_id) if principal.company_id else None
     return ok(
         request,
         {
             "id": principal.user_id,
             "display_name": principal.display_name,
+            "username": user.username if user else None,
             "company_id": principal.company_id,
+            "company_name": company.name if company else "合家美宅平台",
             "roles": sorted(principal.role_codes),
             "permissions": sorted(principal.permission_codes),
         },

@@ -18,12 +18,13 @@ def test_unified_desktop_shell_places_identity_and_actions_in_their_role_areas()
     script = (ADMIN / "v12-operations.js").read_text(encoding="utf-8")
     css = (ADMIN / "v12-operations.css").read_text(encoding="utf-8")
 
-    assert "ops-side-foot" in script
+    assert "ops-account-zone" in script
+    assert "data-account-center" in script
+    assert "data-account-settings" in script
     assert "ops-top-actions" in script
     assert "刷新" in script
-    assert "设置" in script
     assert "退出" in script
-    assert "ops-side-foot" in css
+    assert "ops-account-zone" in css
     assert "ops-role-hero" in css
     assert "ops-trace-layout" in css
 

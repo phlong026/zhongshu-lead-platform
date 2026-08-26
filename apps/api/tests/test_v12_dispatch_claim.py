@@ -173,6 +173,16 @@ def test_city_service_area_covers_child_district_leads(db, dispatch_setup) -> No
     assert listed[receiver.id].eligible is True
 
 
+def test_candidate_list_prioritizes_matching_service_area(db, dispatch_setup) -> None:
+    supplier, _, receiver, _, lead = dispatch_setup
+
+    candidates = list_candidates(db, lead=lead)
+
+    assert candidates[0].company_id == receiver.id
+    assert candidates[0].region_match is True
+    assert any(item.company_id == supplier.id and not item.region_match for item in candidates)
+
+
 def test_candidate_list_matches_individual_evaluation_with_bounded_queries(db, dispatch_setup) -> None:
     supplier, _, receiver, _, lead = dispatch_setup
     expected = {

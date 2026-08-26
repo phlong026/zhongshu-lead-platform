@@ -2,8 +2,8 @@
 
 ## Source of truth
 
-- Status: Draft — awaiting product confirmation before implementation.
-- Last refreshed: 2026-08-25.
+- Status: Active.
+- Last refreshed: 2026-08-26.
 - Primary product surfaces: platform operations desktop (`/admin/`), platform mobile workbench (`/h5/admin/`), franchise workbench (`/h5/`), and telesales console (`/h5/call/`).
 - Evidence reviewed:
   - `apps/admin/public/v12-operations.js` and `v12-operations.css`
@@ -58,20 +58,21 @@
 
 ### Shared shell rules
 
-- Desktop left sidebar: role-relevant navigation, then a fixed bottom account card with avatar, name, account, role, company where applicable, and personal actions.
-- Desktop top bar: page title and breadcrumb on the left; refresh, settings where permitted, and sign-out on the right. No account identity in the top bar.
+- Desktop left sidebar: role-relevant navigation, then a fixed bottom account card with avatar, name, account, role, company where applicable, and personal actions. Platform settings is a separate control in the same lower-left zone and only appears to the super administrator.
+- Desktop top bar: page title and breadcrumb on the left; refresh and sign-out on the right. No account identity or settings entry appears in the top bar.
 - Each list item exposes: current status, current owner, source, latest action, deadline, and a `查看全流程` entry.
 - Every detail page uses one chronological timeline. The timeline combines business actions, audit actions, points events, verification conclusions, and notification delivery state.
 - “Settings” is not a generic link. It is a named, permission-scoped navigation group.
 
 ### Super-admin information architecture
 
-1. 系统总览
-2. 账号与组织
-3. 加盟商治理
-4. 积分与资金
-5. 业务规则
-6. 审计与通知
+1. 首页（经营总览）
+2. 客资总览
+3. 加盟商
+4. 资金
+5. 异常
+6. 日志
+7. 平台设置（左下角，仅内部账号、工作日历、加盟商治理）
 
 ### Operations-admin information architecture
 

@@ -123,14 +123,36 @@ def update_company_endpoint(
     company_id: str,
     body: CompanyUpdateBody,
     request: Request,
-    principal=Depends(require_permissions("*")),
+    principal=Depends(require_permissions("company.profile.review")),
     db: Session = Depends(get_db),
 ):
     company = db.scalar(select(Company).options(selectinload(Company.members), selectinload(Company.service_regions), selectinload(Company.capabilities)).where(Company.id == company_id))
     if not company:
         raise AppError("COMPANY_NOT_FOUND", "加盟商公司不存在", 404)
-    before = {"name": company.name, "status": company.status, "level_code": company.level_code}
+    before = {
+        "name": company.name,
+        "owner_name": company.owner_name,
+        "status": company.status,
+        "level_code": company.level_code,
+        "notes": company.notes,
+    }
     update_company(db, company, body)
-    write_audit(db, principal=principal, action="COMPANY_UPDATE", resource_type="company", resource_id=company.id, company_id=company.id, before=before, after={"name": company.name, "status": company.status, "level_code": company.level_code}, request_id=request.state.request_id)
+    write_audit(
+        db,
+        principal=principal,
+        action="COMPANY_UPDATE",
+        resource_type="company",
+        resource_id=company.id,
+        company_id=company.id,
+        before=before,
+        after={
+            "name": company.name,
+            "owner_name": company.owner_name,
+            "status": company.status,
+            "level_code": company.level_code,
+            "notes": company.notes,
+        },
+        request_id=request.state.request_id,
+    )
     db.commit()
     return ok(request, {"id": company.id}, "更新成功")

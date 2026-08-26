@@ -46,6 +46,19 @@ def test_franchise_h5_keeps_role_specific_two_character_navigation() -> None:
     assert "grid-template-columns:repeat(${tabs.length},minmax(0,1fr))" in source
 
 
+def test_franchise_owner_home_prioritizes_company_todos_and_internal_collaboration() -> None:
+    source = Path("apps/h5/public/v12-workbench.js").read_text(encoding="utf-8")
+
+    assert "公司待办" in source
+    assert "待领取客资" in source
+    assert "待补充资料" in source
+    assert "公司内部直接分配，无需运营审批" in source
+    assert "所在地" in source
+    assert "预算最低（万元）" in source
+    assert "supplyBudgetToWan" in source
+    assert "supplyBudgetFromWan" in source
+
+
 def test_employee_own_report_hides_company_peers_and_rewards(api_client) -> None:
     client, factory = api_client
     with factory() as db:
