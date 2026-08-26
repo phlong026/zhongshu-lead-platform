@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
-from apps.api.src.core.models import AuditLog
+from apps.api.src.core.models import AuditLog, Company, PointsAccount, PointsLedger
 
 
 def login(client, username: str, password: str) -> None:
@@ -56,11 +56,39 @@ def test_superadmin_can_read_management_and_finance_decision_dashboards(api_clie
     } <= set(data["kpis"])
     assert {"trend", "funnel", "source_distribution", "region_distribution", "provider_distribution", "exceptions"} <= set(data)
 
+    with _factory() as db:
+        company = Company(code="FINANCE-DASHBOARD", name="充值看板测试加盟商", status="ACTIVE")
+        db.add(company)
+        db.flush()
+        account = PointsAccount(company_id=company.id, balance=345)
+        db.add(account)
+        db.flush()
+        db.add(
+            PointsLedger(
+                account_id=account.id,
+                company_id=company.id,
+                ledger_type="RECHARGE",
+                delta=500,
+                balance_after=345,
+                business_type="TEST",
+                business_id="finance-dashboard",
+                idempotency_key="finance-dashboard-recharge",
+                external_reference="TEST-FINANCE-RECHARGE",
+            )
+        )
+        db.commit()
+
     finance = client.get("/api/v1/v1.2/reports/finance-dashboard?days=30")
     assert finance.status_code == 200, finance.text
     finance_data = finance.json()["data"]
     assert {"pending_settlement", "settled", "disputed", "voided"} <= set(finance_data["summary"])
     assert {"trend", "source_ranking", "details"} <= set(finance_data)
+    assert {"period_recharged_points", "period_recharge_count", "total_recharged_points", "total_recharge_count", "remaining_points"} <= set(finance_data["recharge_summary"])
+    assert {"trend", "recent_records"} <= set(finance_data["recharge"])
+    assert finance_data["recharge_summary"]["period_recharged_points"] >= 500
+    assert finance_data["recharge_summary"]["total_recharge_count"] >= 1
+    assert finance_data["recharge_summary"]["remaining_points"] >= 345
+    assert any(record["external_reference"] == "TEST-FINANCE-RECHARGE" for record in finance_data["recharge"]["recent_records"])
 
 
 def test_operation_can_read_report_and_audit_after_sprint5_rbac(api_client):

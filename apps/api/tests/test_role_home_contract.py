@@ -75,7 +75,7 @@ def test_superadmin_can_manage_franchise_accounts_and_recharge_with_audit_copy()
         "重置加盟商人员账号密码",
         "超级管理员操作必须填写至少",
         "仅展示一次",
-        "线下充值",
+        "加盟商积分充值",
         "外部收款凭据号",
         "无需第二位超级管理员复核",
     ):

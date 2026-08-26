@@ -38,7 +38,7 @@ def test_unified_desktop_uses_svg_icons_without_legacy_v10_assets() -> None:
     script = (ADMIN / "v12-operations.js").read_text(encoding="utf-8")
 
     assert "window.ZSIconSystem?.svg" in script
-    for icon_name in ("layout-dashboard", "phone", "user-check", "hand-claim", "building", "coins", "calendar"):
+    for icon_name in ("layout-dashboard", "phone", "user-check", "hand-claim", "building", "wallet", "calendar"):
         assert f"'{icon_name}'" in script
     assert not (ADMIN / "admin-design-system-v10.js").exists()
     assert not (ADMIN / "admin-extended-pages-v10.js").exists()

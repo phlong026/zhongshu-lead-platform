@@ -43,7 +43,7 @@ def test_v12_operations_exposes_company_detail_and_platform_configuration() -> N
     assert "province_code:province.code" in js
     assert "district_codes" in js
     assert "serve_all_districts:false" in js
-    assert "v12-operations.js?v=20260826-decision-dashboard" in html
+    assert "v12-operations.js?v=20260826-recharge-first" in html
     assert "加盟商能力与服务区域审核申请" not in js
 
 
@@ -66,7 +66,7 @@ def test_stage6_company_review_and_internal_collaboration_actions_are_role_scope
 
     assert "data-company-profile-approve" not in admin
     assert "一键审核" not in admin
-    assert "平台统一配置；加盟商仅查看与使用已开通功能。" in admin
+    assert "平台统一配置。" in admin
     assert "/account-directory" in franchise
     assert "/internal-assignee" in franchise
     assert "公司内部直接分配，无需运营审批" in franchise

@@ -123,7 +123,7 @@
 | 系统总览 | 高风险审计、异常通知、账户/公司停用、资金异常、积压告警 | Drill into risk, assign governance follow-up | Normal lead review queues |
 | 账号与组织 | Internal accounts, franchise account lifecycle, role/status history | Create, invite, enable, disable, bind company accounts; record reasoned franchise-account actions | Customer details |
 | 加盟商治理 | Company status, service districts, receive/supply switches, owner binding state | View details, configure switches, create/revoke owner invitation, emergency suspend | Daily dispatch actions |
-| 积分与资金 | Recharge, balance exception, price rules, rewards, immutable ledger | Recharge, adjustment, reversal, publish rule | Operations-owned review controls |
+| 积分与资金 | Prominent recharge entry, remaining points, recharge records, balance exception, price rules, rewards, immutable ledger | Recharge, adjustment, reversal, publish rule | Operations-owned review controls |
 | 业务规则 | Workday calendar, notification templates/configuration, master data | Configure and publish | Individual task queues |
 | 审计与通知 | Unified audit search, failed notification delivery | Retry notification, export audit | Mutable business actions |
 
@@ -216,7 +216,7 @@ H5 navigation interaction rules:
 |---|---|---|---|
 | 超级管理员 · 首页 | 待办、资金异常、失败通知、高风险操作、待处理账号/公司事项 | Open and resolve a single urgent item | Batch search, long audit exports, broad rule editing |
 | 超级管理员 · 治理 | 账号/公司申请、停用风险、关键规则变更记录 | Approve or reject a single request, emergency disable | Bulk account management and role migration |
-| 超级管理员 · 资金 | 待处理充值、异常余额、冻结奖励、最近资金流水 | Recharge, adjustment, reversal, publish one reviewed rule | Batch reconciliation and large ledger analysis |
+| 超级管理员 · 资金 | 充值入口、当前剩余积分、累计/周期充值汇总、最近充值记录 | Recharge, adjustment, reversal, publish one reviewed rule | Batch reconciliation, rewards and large ledger analysis |
 | 超级管理员 · 我的 | Identity, actionable messages, help, sign-out | Read personal messages | System configuration |
 | 运营管理员 · 首页 | 待初审、待电销结论、待运营处置、待派发、待终审 | Open the highest-priority item | Historical reports and batch actions |
 | 运营管理员 · 客资 | Source-aware queues with one clear filter at a time | Review, send to telesales, return for correction, close, approve to pool | Bulk import/export and complex dedup investigation |
@@ -260,10 +260,10 @@ Tradeoffs:
 - Role identity card at the bottom of desktop navigation.
 - Identity-card workspace: concise account identity, login security, and only the required governance tools (system settings, exceptions, audit) in one page.
 - Management overview: seven decision KPIs, trend chart, flow funnel, distribution chart, and a small actionable exception queue.
-- Funds overview: time/status/source filters, settlement/paid/disputed/voided summaries, trend and ranking, with ledger data behind drill-down.
+- Funds overview: a prominent franchise recharge entry, current remaining points, period and cumulative recharge totals, and recent recharge records. Reward settlement, pricing rules, adjustment and the full immutable ledger are visible as secondary drill-down content.
 - Compact message bell with an actionable unread-count badge.
 - Cascading service-area picker: one control containing province and city dropdowns plus multi-select district/county checkboxes; it submits only canonical region codes.
-  - Franchise detail: identity, service-area chips, receive/supply switches, account list and invitation lifecycle in one modal.
+  - Franchise detail: a compact, single-screen identity card with service-area chips, receive/supply switches and owner-binding state; invitation history remains available only on demand.
   - Owner-binding invitation: one expiring link, copyable message, lifecycle record and a dedicated H5 confirmation page; no raw token is stored after the creation response.
   - `我的待办` priority queue card with SLA and next-owner metadata.
   - Source-aware lead status chip: source + state + next owner.

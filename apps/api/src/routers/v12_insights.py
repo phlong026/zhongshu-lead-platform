@@ -20,6 +20,7 @@ from ..core.models import (
     Lead,
     Notification,
     NotificationOutbox,
+    PointsAccount,
     PointsLedger,
     ReturnRequest,
     User,
@@ -28,6 +29,7 @@ from ..core.models import (
 from ..core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12, SupplierLeadReward
 from ..core.responses import ok, page
 from ..core.security import decrypt_text, mask_phone
+from ..core.time import as_utc
 from ..services.return_v12 import return_request_to_dict
 from ..services.storage import create_file_access_token
 
@@ -355,6 +357,26 @@ def finance_dashboard(
         item["points"] = int(item["points"]) + int(reward.reward_points or 0)
         if reward.status == "SETTLED":
             item["settled_points"] = int(item["settled_points"]) + int(reward.reward_points or 0)
+    recharge_rows = list(
+        db.scalars(
+            select(PointsLedger)
+            .where(PointsLedger.ledger_type == "RECHARGE")
+            .order_by(PointsLedger.created_at.desc())
+        ).all()
+    )
+    period_recharges = [item for item in recharge_rows if (as_utc(item.created_at) or item.created_at) >= start]
+    recharge_company_ids = {item.company_id for item in recharge_rows}
+    recharge_company_names = {
+        company.id: company.name
+        for company in db.scalars(select(Company).where(Company.id.in_(recharge_company_ids))).all()
+    } if recharge_company_ids else {}
+    recharge_trend: dict[str, dict[str, int | str]] = {}
+    for item in period_recharges:
+        date_key = _dashboard_date(item.created_at) or now.date().isoformat()
+        bucket = recharge_trend.setdefault(date_key, {"date": date_key, "points": 0, "count": 0})
+        bucket["points"] = int(bucket["points"]) + int(item.delta)
+        bucket["count"] = int(bucket["count"]) + 1
+    remaining_points = int(db.scalar(select(func.coalesce(func.sum(PointsAccount.balance), 0))) or 0)
     return ok(request, {
         "period": {"days": days, "from": start.date().isoformat(), "to": now.date().isoformat()},
         "filters": {"status": normalized_status, "source": normalized_source},
@@ -369,6 +391,28 @@ def finance_dashboard(
         },
         "trend": [trend_map[key] for key in sorted(trend_map)],
         "source_ranking": sorted(ranking.values(), key=lambda item: (-int(item["points"]), str(item["label"])))[:10],
+        "recharge_summary": {
+            "period_recharged_points": int(sum(item.delta for item in period_recharges)),
+            "period_recharge_count": len(period_recharges),
+            "total_recharged_points": int(sum(item.delta for item in recharge_rows)),
+            "total_recharge_count": len(recharge_rows),
+            "remaining_points": remaining_points,
+        },
+        "recharge": {
+            "trend": [recharge_trend[key] for key in sorted(recharge_trend)],
+            "recent_records": [
+                {
+                    "id": item.id,
+                    "company_id": item.company_id,
+                    "company_name": recharge_company_names.get(item.company_id, "加盟商"),
+                    "points": int(item.delta),
+                    "balance_after": int(item.balance_after),
+                    "external_reference": item.external_reference,
+                    "created_at": _iso(item.created_at),
+                }
+                for item in recharge_rows[:20]
+            ],
+        },
         "details": [
             {
                 "id": reward.id,
