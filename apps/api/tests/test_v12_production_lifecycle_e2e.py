@@ -357,21 +357,19 @@ def _submit_supplier_lead(
             headers=supplier,
         )
     )
-    assert submitted["lead"]["status"] == "PENDING_REVIEW"
-    reviewed = _data(
+    assert submitted["lead"]["status"] == "PENDING_TELESALES_VERIFY"
+    assigned = _data(
         client.post(
-            f"/api/v1/v1.2/admin/supplier-leads/{lead_id}/review",
+            f"/api/v1/v1.2/admin/leads/{lead_id}/pre-dispatch-verification",
             headers=operation,
             json={
-                "decision": "QUALIFIED",
-                "note": "E2E 供应客资初审通过，进入电话核实",
                 "assignee_user_id": telesales_user_id,
-                "pre_dispatch_reason": "E2E 确认客户意向、预算和可联系时间",
+                "reason": "E2E 确认客户意向、预算和可联系时间",
             },
         )
     )
-    task_id = reviewed["task"]["id"]
-    assert reviewed["lead"]["status"] == "PENDING_TELESALES_VERIFY"
+    task_id = assigned["id"]
+    assert assigned["status"] == "ASSIGNED"
     _data(
         client.post(
             f"/api/v1/v1.2/pre-dispatch-verifications/tasks/{task_id}/start",
@@ -452,7 +450,7 @@ def _dispatch_and_claim(
     assert len(unlocked_phone) == 11
     assert "*" not in unlocked_phone
     assert claimed["idempotent"] is False
-    assert claimed["reward"]["status"] == "OBSERVING"
+    assert claimed["reward"]["status"] == "WAITING_CLAIM"
     replay_claim = _data(
         client.post(
             f"/api/v1/v1.2/assignments/{assignment['id']}/claim",
@@ -728,6 +726,14 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
         )
     )
     assert followup["status"] == "CONTACTED"
+    effective_confirmation = _data(
+        client.post(
+            f"/api/v1/followups/assignments/{assignment_one}",
+            headers=receiver,
+            json={"status": "DEAL", "note": "E2E 电话确认客资有效"},
+        )
+    )
+    assert effective_confirmation["status"] == "DEAL"
     _make_reward_due(factory, reward_one)
     missing_settlement_note = client.post(
         f"/api/v1/v1.2/admin/supplier-rewards/{reward_one}/settle",
@@ -812,6 +818,14 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
         assignment_id=assignment_three,
         decision="REJECT",
     )
+    resumed_confirmation = _data(
+        client.post(
+            f"/api/v1/followups/assignments/{assignment_three}",
+            headers=receiver,
+            json={"status": "DEAL", "note": "E2E 退回复核可用后电话确认有效"},
+        )
+    )
+    assert resumed_confirmation["status"] == "DEAL"
     _make_reward_due(factory, reward_three)
     rejected_reward_settlement = _data(
         client.post(
@@ -893,8 +907,8 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
         assert db.get(ReturnRequest, return_approved).status == "APPROVED"
         assert db.get(ReturnRequest, return_rejected).status == "REJECTED"
         assert db.get(Assignment, assignment_two).status == "RETURNED"
-        assert db.get(Lead, lead_two).status == "READY_DISPATCH"
-        assert db.get(Assignment, assignment_three).status == "CLAIMED"
+        assert db.get(Lead, lead_two).status == "CLOSED"
+        assert db.get(Assignment, assignment_three).status == "COMPLETED"
         _assert_account_reconciles(db, supplier_company_id)
         _assert_account_reconciles(db, receiver_company_id)
         reward_ledgers = db.scalars(

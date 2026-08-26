@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -144,6 +144,243 @@ def overview(
         ).one()
         data["points_ledger"] = {"count": int(points[0]), "net_delta": int(points[1])}
     return ok(request, data)
+
+
+def _dashboard_date(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    return (value.astimezone(timezone.utc) if value.tzinfo else value).date().isoformat()
+
+
+def _dashboard_amount(rows: list[SupplierLeadReward]) -> dict[str, int]:
+    return {
+        "count": len(rows),
+        "points": int(sum(int(item.reward_points or 0) for item in rows)),
+    }
+
+
+@router.get("/reports/management-dashboard")
+def management_dashboard(
+    request: Request,
+    principal=Depends(require_permissions("report.v12.read")),
+    db: Session = Depends(get_db),
+    days: int = Query(default=30, ge=7, le=365),
+):
+    """Return the compact decision view used by the platform operating overview."""
+
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(days=days - 1)
+    leads = list(
+        db.scalars(
+            select(Lead)
+            .where(Lead.source_kind.is_not(None))
+            .order_by(Lead.created_at.asc())
+        ).all()
+    )
+    period_leads = [item for item in leads if item.created_at >= start]
+    assignments = list(db.scalars(select(Assignment)).all())
+    returns = list(
+        db.scalars(
+            select(ReturnRequest).where(
+                ReturnRequest.status.in_(("VERIFYING", "REVIEWING", "NEED_MORE_EVIDENCE"))
+            )
+        ).all()
+    )
+    rewards = list(db.scalars(select(SupplierLeadReward)).all())
+    followups = list(
+        db.scalars(
+            select(FollowUp).where(FollowUp.status == "DEAL", FollowUp.created_at >= start)
+        ).all()
+    )
+    completed_lead_ids = {
+        item.lead_id for item in assignments if item.status == "COMPLETED"
+    }
+    claimed_statuses = {"CLAIMED", "FOLLOWING", "RETURN_PENDING", "COMPLETED"}
+    claimed = sum(1 for item in assignments if item.status in claimed_statuses)
+    completed = sum(1 for item in assignments if item.status == "COMPLETED")
+    pending_rewards = [item for item in rewards if item.status == "OBSERVING"]
+    return_exceptions = len(returns)
+
+    trend_rows = {
+        (start + timedelta(days=offset)).date().isoformat(): {
+            "date": (start + timedelta(days=offset)).date().isoformat(),
+            "new_leads": 0,
+            "effective_completed": 0,
+        }
+        for offset in range(days)
+    }
+    for lead in period_leads:
+        key = _dashboard_date(lead.created_at)
+        if key in trend_rows:
+            trend_rows[key]["new_leads"] += 1
+    for followup in followups:
+        key = _dashboard_date(followup.created_at)
+        if key in trend_rows:
+            trend_rows[key]["effective_completed"] += 1
+    trend = [
+        {
+            **item,
+            "effective_rate": round(
+                item["effective_completed"] / item["new_leads"] * 100, 1
+            )
+            if item["new_leads"]
+            else 0,
+        }
+        for item in trend_rows.values()
+    ]
+
+    source_names = {"PLATFORM_MANUAL": "平台录入", "SUPPLIER_H5": "加盟商提供"}
+    source_totals: dict[str, dict[str, int | str]] = {}
+    region_totals: dict[str, dict[str, int | str]] = {}
+    provider_totals: dict[str, dict[str, int | str]] = {}
+    company_ids = {lead.supplier_company_id for lead in period_leads if lead.supplier_company_id}
+    company_names = {
+        item.id: item.name
+        for item in db.scalars(select(Company).where(Company.id.in_(company_ids))).all()
+    } if company_ids else {}
+    for lead in period_leads:
+        for key, label, bucket in (
+            (lead.source_kind or "UNKNOWN", source_names.get(lead.source_kind or "", "其他来源"), source_totals),
+            (lead.city or "未填写地区", lead.city or "未填写地区", region_totals),
+            (
+                lead.supplier_company_id or "PLATFORM",
+                company_names.get(lead.supplier_company_id or "", "平台运营"),
+                provider_totals,
+            ),
+        ):
+            item = bucket.setdefault(key, {"key": key, "label": label, "leads": 0, "completed": 0})
+            item["leads"] = int(item["leads"]) + 1
+            item["completed"] = int(item["completed"]) + int(lead.id in completed_lead_ids)
+    def distribution(bucket: dict[str, dict[str, int | str]]) -> list[dict[str, int | str | float]]:
+        rows = []
+        for item in bucket.values():
+            leads_count = int(item["leads"])
+            completed_count = int(item["completed"])
+            rows.append({
+                **item,
+                "effective_rate": round(completed_count / leads_count * 100, 1) if leads_count else 0,
+            })
+        return sorted(rows, key=lambda item: (-int(item["leads"]), str(item["label"])))[:8]
+
+    data = {
+        "period": {"days": days, "from": start.date().isoformat(), "to": now.date().isoformat()},
+        "kpis": {
+            "new_leads": len(period_leads),
+            "pending_verification": sum(
+                1 for item in leads
+                if item.status in {"PENDING_TELESALES_VERIFY", "PENDING_OPERATION_DISPOSITION"}
+            ),
+            "ready_dispatch": sum(1 for item in leads if item.status == "READY_DISPATCH"),
+            "claimed": claimed,
+            "effective_completed": completed,
+            "effective_completion_rate": round(completed / claimed * 100, 1) if claimed else 0,
+            "returned_exceptions": return_exceptions,
+            "pending_reward_settlement": _dashboard_amount(pending_rewards),
+        },
+        "trend": trend,
+        "funnel": [
+            {"key": "submitted", "label": "录入", "value": len(leads)},
+            {"key": "verified", "label": "核实", "value": sum(1 for item in leads if item.status not in {"DRAFT", "PENDING_REVIEW"})},
+            {"key": "dispatched", "label": "派送", "value": len(assignments)},
+            {"key": "claimed", "label": "领取", "value": claimed},
+            {"key": "completed", "label": "确认完成", "value": completed},
+        ],
+        "source_distribution": distribution(source_totals),
+        "region_distribution": distribution(region_totals),
+        "provider_distribution": distribution(provider_totals),
+        "exceptions": [
+            {"label": "待退回终审", "count": return_exceptions, "view": "returns"},
+            {"label": "待运营处置", "count": sum(1 for item in leads if item.status == "PENDING_OPERATION_DISPOSITION"), "view": "telesales"},
+            {"label": "待派发", "count": sum(1 for item in leads if item.status == "READY_DISPATCH"), "view": "dispatch"},
+        ],
+    }
+    return ok(request, data)
+
+
+@router.get("/reports/finance-dashboard")
+def finance_dashboard(
+    request: Request,
+    principal=Depends(require_permissions("report.v12.read")),
+    db: Session = Depends(get_db),
+    days: int = Query(default=30, ge=7, le=365),
+    status: str | None = Query(default=None),
+    source: str | None = Query(default=None),
+):
+    """Return finance summaries first; the existing finance pages remain the drill-down surface."""
+
+    if not (principal.can("*") or principal.can("points.read") or principal.can("dashboard.finance.read")):
+        raise AppError("FORBIDDEN", "无权查看资金经营看板", 403)
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(days=days - 1)
+    rows = list(
+        db.execute(
+            select(SupplierLeadReward, Lead)
+            .join(Lead, Lead.id == SupplierLeadReward.lead_id)
+            .where(SupplierLeadReward.created_at >= start)
+            .order_by(SupplierLeadReward.created_at.desc())
+        ).all()
+    )
+    normalized_status = status.strip().upper() if status else None
+    normalized_source = source.strip().upper() if source else None
+    rows = [
+        (reward, lead) for reward, lead in rows
+        if (not normalized_status or reward.status == normalized_status)
+        and (not normalized_source or lead.source_kind == normalized_source)
+    ]
+    reward_rows = [reward for reward, _lead in rows]
+    by_status = {
+        item: _dashboard_amount([reward for reward in reward_rows if reward.status == item])
+        for item in ("OBSERVING", "SETTLED", "FROZEN", "CANCELLED", "REVERSED")
+    }
+    trend_map: dict[str, dict[str, int | str]] = {}
+    for reward, _lead in rows:
+        date_key = _dashboard_date(reward.created_at) or now.date().isoformat()
+        item = trend_map.setdefault(date_key, {"date": date_key, "pending_points": 0, "settled_points": 0})
+        if reward.status == "SETTLED":
+            item["settled_points"] = int(item["settled_points"]) + int(reward.reward_points or 0)
+        elif reward.status == "OBSERVING":
+            item["pending_points"] = int(item["pending_points"]) + int(reward.reward_points or 0)
+    company_ids = {reward.supplier_company_id for reward in reward_rows}
+    company_names = {
+        company.id: company.name
+        for company in db.scalars(select(Company).where(Company.id.in_(company_ids))).all()
+    } if company_ids else {}
+    ranking: dict[str, dict[str, int | str]] = {}
+    for reward in reward_rows:
+        item = ranking.setdefault(
+            reward.supplier_company_id,
+            {"company_id": reward.supplier_company_id, "label": company_names.get(reward.supplier_company_id, "加盟商"), "rewards": 0, "points": 0, "settled_points": 0},
+        )
+        item["rewards"] = int(item["rewards"]) + 1
+        item["points"] = int(item["points"]) + int(reward.reward_points or 0)
+        if reward.status == "SETTLED":
+            item["settled_points"] = int(item["settled_points"]) + int(reward.reward_points or 0)
+    return ok(request, {
+        "period": {"days": days, "from": start.date().isoformat(), "to": now.date().isoformat()},
+        "filters": {"status": normalized_status, "source": normalized_source},
+        "summary": {
+            "pending_settlement": by_status["OBSERVING"],
+            "settled": by_status["SETTLED"],
+            "disputed": by_status["FROZEN"],
+            "voided": {
+                "count": by_status["CANCELLED"]["count"] + by_status["REVERSED"]["count"],
+                "points": by_status["CANCELLED"]["points"] + by_status["REVERSED"]["points"],
+            },
+        },
+        "trend": [trend_map[key] for key in sorted(trend_map)],
+        "source_ranking": sorted(ranking.values(), key=lambda item: (-int(item["points"]), str(item["label"])))[:10],
+        "details": [
+            {
+                "id": reward.id,
+                "status": reward.status,
+                "points": int(reward.reward_points or 0),
+                "source": lead.source_kind,
+                "provider": company_names.get(reward.supplier_company_id, "加盟商"),
+                "created_at": _iso(reward.created_at),
+            }
+            for reward, lead in rows[:20]
+        ],
+    })
 
 
 @router.get("/reports/own")

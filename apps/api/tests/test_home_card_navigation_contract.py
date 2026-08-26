@@ -100,8 +100,9 @@ def test_formal_admin_home_distinguishes_platform_and_operation_boundaries() -> 
     source = read(ADMIN / "v12-operations.js")
     overview = source[source.index("async function overview"):source.index("async function review")]
 
-    for copy in ("当前待办", "经营风险", "当前待办分布", "不具备自主领取", "加盟商内部员工分配仅由公司负责人处理"):
-        assert copy in source
+    for copy in ("/v1.2/reports/management-dashboard", "客资新增与有效率趋势", "流转漏斗", "当前没有需要处理的异常待办"):
+        assert copy in overview
+    assert "经营风险" not in overview
     assert "statusSummary(" not in overview
     assert "ops-summary-columns" not in overview
 
@@ -110,7 +111,7 @@ def test_formal_lead_page_uses_the_unified_operation_view() -> None:
     source = read(ADMIN / "v12-operations.js")
 
     assert "async function review" in source
-    assert "派发电销核验" in source
+    assert "分配电销核实" in source
     assert "history.pushState" in source
     assert "window.addEventListener('popstate'" in source
 

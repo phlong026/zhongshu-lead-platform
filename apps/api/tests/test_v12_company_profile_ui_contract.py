@@ -21,7 +21,7 @@ def test_v12_workbench_shows_platform_managed_company_profile() -> None:
     assert "data-capability-request" not in js
     assert "service-area-edit" not in js
     assert "申请/更新服务区域" not in js
-    assert "v12-workbench.js?v=20260826-franchise-onboarding" in html
+    assert "v12-workbench.js?v=20260826-decision-dashboard" in html
 
 
 def test_v12_operations_exposes_company_detail_and_platform_configuration() -> None:
@@ -43,7 +43,7 @@ def test_v12_operations_exposes_company_detail_and_platform_configuration() -> N
     assert "province_code:province.code" in js
     assert "district_codes" in js
     assert "serve_all_districts:false" in js
-    assert "v12-operations.js?v=20260826-franchise-onboarding" in html
+    assert "v12-operations.js?v=20260826-decision-dashboard" in html
     assert "加盟商能力与服务区域审核申请" not in js
 
 

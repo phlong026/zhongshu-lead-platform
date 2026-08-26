@@ -27,7 +27,7 @@ def test_desktop_workbench_uses_the_unified_brand_without_a_visible_version_suff
     entry = ENTRY.read_text(encoding="utf-8")
     source = WORKBENCH.read_text(encoding="utf-8")
 
-    assert "合家美宅统一工作台" in entry
-    assert "合家美宅统一工作台" in source
+    assert "客资管理平台" in entry
+    assert "客资管理平台" in source
     assert "合家美宅 · 客资运营台" not in entry
     assert "V1.2 统一工作台" not in source

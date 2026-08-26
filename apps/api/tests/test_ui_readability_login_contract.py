@@ -43,7 +43,7 @@ def test_formal_workbenches_use_business_labels_without_old_page_links() -> None
         assert "供应商工作台" not in source
         assert "JSON.stringify(x.rule_snapshot" not in source
 
-    assert "加盟商客资初审" in operations
+    assert "加盟商客资队列" in operations
     assert "供客奖励" in operations
     assert "加盟商工作台" in franchise
     assert "奖励说明" in franchise

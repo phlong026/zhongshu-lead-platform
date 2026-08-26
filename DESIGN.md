@@ -18,6 +18,7 @@
 - Personality: professional, dependable, calm, operationally clear.
 - Trust signals: masked personal data by default, explicit status and owner, visible deadlines, irreversible-operation confirmations, traceability link on every business detail.
 - Avoid: role-mixed dashboards, unexplained technical status codes, hidden state changes, finance actions in operational workspaces, and links that open the legacy shell.
+- Every workbench header uses one fixed two-line signature: `合家美宅` followed by the smaller `客资管理平台`. Do not use “统一工作台” or “平台管理” as a user-facing product name.
 
 ## Product goals
 
@@ -34,6 +35,8 @@
   - Each role completes its primary daily flow without leaving its workbench.
   - No V1.2 navigation link points to `index.html#/...` or another legacy page.
   - Every blocked item exposes its next owner, reason, deadline, and direct next action.
+  - A franchise-supplied lead never enters the dispatch pool before the required telesales verification and an operations disposition.
+  - Provider rewards become eligible only after a later recipient completes an effective customer confirmation; the system never pays merely because a lead was claimed.
 
 ## Personas and jobs
 
@@ -59,9 +62,11 @@
 
 ### Shared shell rules
 
-- Desktop left sidebar: role-relevant navigation followed by one fixed identity card. The card shows avatar, account, role and company where applicable, and is the only entry to personal account operations.
+- Desktop left sidebar: role-relevant navigation followed by one fixed identity card. The card has exactly two text rows: login name and a Chinese identity (`系统管理员` / `运营人员` / `电销人员` / `加盟商` / `加盟商员工`). It is the only entry to personal account operations; do not display “平台超级管理员”, “平台管理员”, company name, or a duplicate account heading there.
 - Desktop business pages have no persistent top title/action bar. Each page owns its primary heading and actions inside the content area so there is no duplicated page title. Sign-out lives behind the identity card.
+- The identity card opens one concise account center. Security actions, user name changes, exceptions, logs, and platform settings live in that page; platform settings must not open a second standalone settings page.
 - `异常` and `日志` are secondary governance surfaces reached from the identity-card workspace, not permanent business-navigation items.
+- The identity card or compact header message bell shows a red dot/count only for actionable unread items. The message center is reached from that affordance; generic “平台治理提示” never occupies the business overview.
 - Each list item exposes: current status, current owner, source, latest action, deadline, and a `查看全流程` entry.
 - Every detail page uses one chronological timeline. The timeline combines business actions, audit actions, points events, verification conclusions, and notification delivery state.
 - “Settings” is not a generic link. It is a named, permission-scoped navigation group.
@@ -122,7 +127,7 @@
 | 业务规则 | Workday calendar, notification templates/configuration, master data | Configure and publish | Individual task queues |
 | 审计与通知 | Unified audit search, failed notification delivery | Retry notification, export audit | Mutable business actions |
 
-Home metrics: high-risk operations, failed notifications, frozen rewards, unreconciled points, pending account requests, disabled-company impact.
+Home metrics: new leads, pending verification, ready dispatch, claimed, effective completion rate, returned exceptions, and pending reward settlement. The first screen adds: lead-volume/effective-rate trend, `录入 → 核实 → 派送 → 领取 → 确认完成` funnel, source/region/provider performance distribution, and only actionable exception queues.
 
 ### Operations admin
 
@@ -160,6 +165,14 @@ Home metrics: due today, overdue, in progress, awaiting clarification, submitted
 | 公司信息 | Read-only service areas and receive/supply status, employee roster | View current platform configuration and contact platform for changes | Cannot request service areas or business permissions from H5 |
 | 积分与奖励 | Balance, reservations, ledger, reward status | Read-only and contact platform for recharge | Cannot recharge, adjust, or reverse |
 
+Franchise-supplied leads always follow: submit → telesales verification → operations disposition → ready dispatch. An invalid verification records its reason, returns the lead to the supplying franchise for revision, and never enters the dispatch pool. Franchise H5 only displays service areas and the platform-configured receive/supply switches; it cannot apply for them.
+
+Reward rules are intentionally separate from return decisions:
+
+- Provider reward belongs only to the supplying franchise and becomes eligible after a recipient completes an effective customer confirmation.
+- A return appeal records whether the return itself is supported, while lead quality records whether the customer remains usable. If telesales confirms the customer remains usable, the original recipient continues follow-up; a confirmed-invalid lead is closed with no provider reward.
+- A separate service/processing reward is out of scope until the recipient, trigger, and compensation policy have been explicitly approved.
+
 Home metrics: available points, waiting to claim, active follow-up, supplier rework required, return pending, employee requests pending.
 
 ### Franchise employee
@@ -193,6 +206,7 @@ H5 navigation interaction rules:
 - Return, evidence rework, company review, and telesales conclusion are deep-linked task states, not always-visible tabs.
 - A user never sees another role's workflow as an empty tab. For example, franchise staff never see points, and telesales never see dispatch.
 - H5 deep links must stay in the V1.2 role workbench and must never open legacy `/h5/index.html` or `/admin/index.html#/...` routes.
+- H5 has no standalone avatar ring. It uses the shared two-line brand at top left and a compact message bell with an unread badge at top right; identity, account, and sign-out remain under `我的`.
 
 ### Internal mobile page contracts
 
@@ -245,6 +259,9 @@ Tradeoffs:
 - New or changed components:
 - Role identity card at the bottom of desktop navigation.
 - Identity-card workspace: concise account identity, login security, and only the required governance tools (system settings, exceptions, audit) in one page.
+- Management overview: seven decision KPIs, trend chart, flow funnel, distribution chart, and a small actionable exception queue.
+- Funds overview: time/status/source filters, settlement/paid/disputed/voided summaries, trend and ranking, with ledger data behind drill-down.
+- Compact message bell with an actionable unread-count badge.
 - Cascading service-area picker: one control containing province and city dropdowns plus multi-select district/county checkboxes; it submits only canonical region codes.
   - Franchise detail: identity, service-area chips, receive/supply switches, account list and invitation lifecycle in one modal.
   - Owner-binding invitation: one expiring link, copyable message, lifecycle record and a dedicated H5 confirmation page; no raw token is stored after the creation response.
@@ -299,6 +316,8 @@ Tradeoffs:
 - Test/screenshot expectations: role-based browser tests must cover menu visibility, next-action CTA, blocked action explanation, no legacy routes, keyboard modal behavior, and mobile franchise workbench.
 
 ## Open questions
+
+- [ ] Whether a future service/processing reward compensates the recipient after a supported return; define recipient, trigger, amount, and reversal policy before implementation.
 
 - No unresolved role, terminal, or finance-approval decision remains in this design scope.
 - Franchise employees may submit supply leads directly, while franchise owners may submit as well.

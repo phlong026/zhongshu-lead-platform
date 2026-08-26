@@ -21,6 +21,7 @@ from .verification_service import latest_published_template
 
 
 _ACTIVE_TASK_STATUSES = {
+    VerificationTaskStatus.PENDING.value,
     VerificationTaskStatus.ASSIGNED.value,
     VerificationTaskStatus.IN_PROGRESS.value,
 }
@@ -106,6 +107,47 @@ def _assignment_snapshot(task: VerificationTask) -> dict[str, Any]:
     }
 
 
+def queue_pre_dispatch_task(
+    db: Session,
+    *,
+    lead_id: str,
+    reason: str,
+) -> VerificationTask:
+    """Place a lead into the telesales queue before anyone can dispatch it."""
+
+    normalized_reason = reason.strip()
+    if not normalized_reason:
+        raise AppError("PRE_DISPATCH_REASON_REQUIRED", "派发前置核验必须填写原因", 422)
+    lead = _lead_or_raise(db, lead_id, lock=True)
+    if lead.status == LeadV12Status.PENDING_TELESALES_VERIFY.value:
+        existing = db.scalar(
+            select(VerificationTask)
+            .where(
+                VerificationTask.lead_id == lead.id,
+                VerificationTask.task_type == VerificationTaskType.PRE_DISPATCH_VERIFY.value,
+                VerificationTask.status.in_(_ACTIVE_TASK_STATUSES),
+            )
+            .order_by(VerificationTask.created_at.desc())
+            .with_for_update()
+        )
+        if existing is not None:
+            return existing
+    elif lead.status != LeadV12Status.PENDING_REVIEW.value:
+        raise AppError("PRE_DISPATCH_LEAD_STATE_INVALID", "当前客资不可进入前置电销核验队列", 409)
+
+    task = VerificationTask(
+        lead_id=lead.id,
+        task_type=VerificationTaskType.PRE_DISPATCH_VERIFY.value,
+        status=VerificationTaskStatus.PENDING.value,
+    )
+    db.add(task)
+    assert_lead_transition(lead.status, LeadV12Status.PENDING_TELESALES_VERIFY)
+    lead.status = LeadV12Status.PENDING_TELESALES_VERIFY.value
+    lead.pending_reason = normalized_reason
+    db.flush()
+    return task
+
+
 def assign_pre_dispatch_task(
     db: Session,
     *,
@@ -125,7 +167,7 @@ def assign_pre_dispatch_task(
     }
     if lead.status == LeadV12Status.DRAFT.value:
         if lead.source_kind != LeadSourceKind.PLATFORM_MANUAL.value:
-            raise AppError("PRE_DISPATCH_LEAD_STATE_INVALID", "加盟商草稿须先完成运营初审", 409)
+            raise AppError("PRE_DISPATCH_LEAD_STATE_INVALID", "加盟商草稿须先提交后进入电销核实", 409)
     elif lead.status not in allowed_statuses:
         raise AppError("PRE_DISPATCH_LEAD_STATE_INVALID", "当前客资不可派发前置电销核验", 409)
     if not normalize_phone(decrypt_text(lead.phone_encrypted) or ""):
@@ -297,9 +339,10 @@ def decide_pre_dispatch_disposition(
         lead.review_status = "PENDING"
         lead.pending_reason = "PRE_DISPATCH_DUPLICATE"
     else:
-        target = LeadV12Status.CLOSED
+        supplier = lead.source_kind == LeadSourceKind.SUPPLIER_H5.value
+        target = LeadV12Status.INVALID if supplier else LeadV12Status.CLOSED
         lead.review_status = "REJECTED"
-        lead.pending_reason = "PRE_DISPATCH_CLOSED"
+        lead.pending_reason = "PRE_DISPATCH_SUPPLIER_INVALID" if supplier else "PRE_DISPATCH_CLOSED"
     assert_lead_transition(lead.status, target)
     lead.status = target.value
     lead.review_note = normalized_note

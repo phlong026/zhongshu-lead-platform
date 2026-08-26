@@ -66,7 +66,7 @@ def test_company_workbench_uses_user_language_and_real_unread_count() -> None:
 def test_unified_lead_review_explains_outcomes_without_security_or_process_jargon() -> None:
     source = _read(ADMIN, "v12-operations.js")
     assert "HMAC" not in source
-    assert "信息不足时必须派发给指定电销人员" in source
+    assert "加盟商来源会直接进入待电销核实" in source
     assert "运营处置电销结论" in source
 
 

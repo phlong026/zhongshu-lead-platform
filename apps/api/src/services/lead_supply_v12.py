@@ -15,6 +15,7 @@ from ..core.v12_enums import LeadReviewStatus, LeadSourceKind, LeadV12Status
 from .company_profile_v12 import require_lead_capability
 from .china_regions import region_by_code
 from .dedup_v12 import DedupResult, apply_submission_decision, evaluate_phone
+from .pre_dispatch_v12 import queue_pre_dispatch_task
 
 
 EDITABLE_FIELDS = {
@@ -252,6 +253,12 @@ def submit_draft(
     lead.imported_at = lead.imported_at or now
     result = evaluate_phone(db, lead=lead, normalized_phone=phone, checkpoint=checkpoint, now=now)
     apply_submission_decision(lead, result)
+    if supplier and not result.blocks_dispatch:
+        queue_pre_dispatch_task(
+            db,
+            lead_id=lead.id,
+            reason="SUPPLIER_SUBMISSION_REQUIRES_TELESALES_VERIFY",
+        )
     db.flush()
     return result
 
@@ -312,9 +319,12 @@ def review_supplier_lead(
         lead.status = LeadV12Status.DUPLICATE.value
         lead.pending_reason = result.decision.value
     else:
-        lead.review_status = LeadReviewStatus.APPROVED.value
-        lead.status = LeadV12Status.READY_DISPATCH.value
-        lead.pending_reason = None
+        queue_pre_dispatch_task(
+            db,
+            lead_id=lead.id,
+            reason="SUPPLIER_SUBMISSION_REQUIRES_TELESALES_VERIFY",
+        )
+        lead.review_status = LeadReviewStatus.PENDING.value
     db.flush()
     return result
 

@@ -272,8 +272,8 @@ def project_v12_notifications(
                 event_key=f"v12:lead:{lead.id}:submitted:{event_round}",
                 event_type="V12_SUPPLIER_LEAD_SUBMITTED",
                 company_id=lead.supplier_company_id,
-                title="客资已提交初审",
-                body="平台已收到客资资料，审核结果会通过消息通知。",
+                title="客资已进入电销核实",
+                body="平台已收到客资资料，电销核实与运营处置结果会通过消息通知。",
                 target="lead",
                 business_id=lead.id,
                 business_ids={"lead_id": lead.id},
@@ -283,9 +283,9 @@ def project_v12_notifications(
                 event_key=f"v12:lead:{lead.id}:submitted:{event_round}:platform",
                 event_type="V12_SUPPLIER_LEAD_REVIEW_REQUIRED",
                 role_codes={"OPERATION", "SUPER_ADMIN"},
-                title="有新的供应商客资待初审",
-                body="请核对资料完整性、客户授权和去重结果。",
-                target="review",
+                title="有新的加盟商客资待分配电销核实",
+                body="请分配电销人员核对客户意向、资料完整性和去重结果。",
+                target="telesales",
                 business_id=lead.id,
                 business_ids={"lead_id": lead.id},
             )
@@ -571,6 +571,7 @@ def project_v12_notifications(
         copy_by_status = {
             "DRAFT": (f"{source_title}需要补充", "请补充资料后重新处理。"),
             "DUPLICATE": (f"{source_title}进入重复处理", "平台正在处理重复记录，请留意后续结果。"),
+            "INVALID": (f"{source_title}无法核实", "请查看运营填写的原因，补充资料后可重新提交。"),
             "CLOSED": (f"{source_title}已关闭", "该条客资已完成关闭处置。"),
             "READY_DISPATCH": (f"{source_title}已进入待派发池", "客资将按派发规则匹配接收公司。"),
         }

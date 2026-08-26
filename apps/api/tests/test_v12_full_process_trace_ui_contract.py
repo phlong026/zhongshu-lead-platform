@@ -15,7 +15,7 @@ def test_operations_exposes_a_dedicated_full_process_trace_view() -> None:
     assert "申诉证据" in source
     assert "积分与奖励" in source
     assert "go('trace',x.id)" in source
-    assert "等待补齐客户信息后提交初审" in source
+    assert "等待补齐客户信息后提交核实" in source
     assert "ops-trace-layout" in styles
     assert "ops-trace-timeline" in styles
     assert "v12-full-process-detail.png" in browser_smoke

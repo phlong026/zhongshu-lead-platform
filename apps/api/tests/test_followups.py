@@ -3,7 +3,9 @@ import pytest
 from apps.api.src.core.auth import Principal
 from apps.api.src.core.errors import AppError
 from apps.api.src.core.models import Assignment, Lead
+from apps.api.src.core.models_v12 import SupplierLeadReward
 from apps.api.src.core.security import encrypt_text, hash_phone
+from apps.api.src.core.v12_enums import RewardStatus
 from apps.api.src.services.followup_service import add_followup
 
 
@@ -64,6 +66,59 @@ def test_invalid_followup_requires_a_formal_return_request(db) -> None:
     assert assignment.status == "CLAIMED"
     assert lead.status == "CLAIMED"
     assert lead.current_follow_status is None
+
+
+def test_effective_confirmation_starts_supplier_reward_settlement_window(db) -> None:
+    lead = Lead(
+        customer_name="有效确认客户",
+        phone_encrypted=encrypt_text("13800138011"),
+        phone_hash=hash_phone("13800138011"),
+        status="CLAIMED",
+    )
+    db.add(lead)
+    db.flush()
+    assignment = Assignment(
+        lead_id=lead.id,
+        company_id="receiver-company",
+        status="CLAIMED",
+        points_price=100,
+        price_version=1,
+        lead_snapshot={},
+        assigned_by="operator",
+    )
+    db.add(assignment)
+    db.flush()
+    reward = SupplierLeadReward(
+        lead_id=lead.id,
+        assignment_id=assignment.id,
+        supplier_company_id="supplier-company",
+        receiver_company_id="receiver-company",
+        status=RewardStatus.WAITING_CLAIM.value,
+        claim_points=100,
+        reward_points=30,
+    )
+    db.add(reward)
+    principal = Principal(
+        user_id="owner",
+        display_name="负责人",
+        company_id="receiver-company",
+        role_codes=frozenset({"FRANCHISE_OWNER"}),
+        permission_codes=frozenset({"followup.own.manage"}),
+        session_version=1,
+    )
+
+    add_followup(
+        db,
+        assignment=assignment,
+        principal=principal,
+        status="DEAL",
+        note="电话确认客户需求有效，完成处理",
+        next_followup_at=None,
+    )
+
+    assert reward.status == RewardStatus.OBSERVING.value
+    assert reward.observed_at is not None
+    assert reward.reward_due_at is not None
 
 
 def test_overdue_job_is_idempotent(db):

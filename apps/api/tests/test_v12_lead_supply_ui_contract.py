@@ -62,12 +62,14 @@ def test_platform_lead_district_options_use_dom_nodes_not_html_injection() -> No
     assert ".innerHTML=platformSelectOptions" not in js
 
 
-def test_operations_review_exposes_four_initial_decisions_and_one_step_telesales_assignment() -> None:
+def test_supplier_submission_goes_directly_to_telesales_assignment() -> None:
     source = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
 
-    for decision in ("QUALIFIED", "INFO_INCOMPLETE", "DUPLICATE", "INVALID"):
+    for decision in ("PENDING_TELESALES_VERIFY", "data-pre-assign", "分配电销核实"):
         assert decision in source
-    assert "pre_dispatch_reason" in source
+    assert "/admin/leads/${encodeURIComponent(leadId)}/pre-dispatch-verification" in source
+    assert "pre_dispatch_reason" not in source
+    assert "data-review=" not in source
     assert "信息不全并派发电销" in source
 
 

@@ -270,8 +270,46 @@ def test_cross_company_delete_and_revise_do_not_expose_lead_state(api_client) ->
 def test_rejected_supplier_lead_can_revise_and_resubmit_over_http(api_client) -> None:
     client, factory = api_client
     company_id, _ = _approve_supplier_capability(factory)
+    with factory() as db:
+        telesales_user = db.scalar(select(User).where(User.username == "telesales"))
+        assert telesales_user is not None
+        telesales_id = telesales_user.id
     supplier = _login(client, "franchise_demo", "Franchise123!")
     admin = _login(client, "admin", "Admin123!")
+    telesales = _login(client, "telesales", "Telesales123!")
+
+    def close_after_telesales_verification(note: str) -> dict:
+        assigned = _data(
+            client.post(
+                f"/api/v1/v1.2/admin/leads/{lead['id']}/pre-dispatch-verification",
+                headers=admin,
+                json={"assignee_user_id": telesales_id, "reason": "电销核实客资有效性"},
+            )
+        )
+        _data(
+            client.post(
+                f"/api/v1/v1.2/pre-dispatch-verifications/tasks/{assigned['id']}/start",
+                headers=telesales,
+            )
+        )
+        _data(
+            client.post(
+                f"/api/v1/v1.2/pre-dispatch-verifications/tasks/{assigned['id']}/submit",
+                headers=telesales,
+                json={
+                    "contact_result": "UNREACHABLE",
+                    "conclusion": "INVALID",
+                    "note": note,
+                },
+            )
+        )
+        return _data(
+            client.post(
+                f"/api/v1/v1.2/admin/leads/{lead['id']}/pre-dispatch-disposition",
+                headers=admin,
+                json={"decision": "CLOSE", "note": note},
+            )
+        )
 
     lead = _data(
         client.post(
@@ -286,16 +324,10 @@ def test_rejected_supplier_lead_can_revise_and_resubmit_over_http(api_client) ->
             headers=supplier,
         )
     )
-    assert submitted["lead"]["status"] == "PENDING_REVIEW"
+    assert submitted["lead"]["status"] == "PENDING_TELESALES_VERIFY"
 
-    rejected = _data(
-        client.post(
-            f"/api/v1/v1.2/admin/supplier-leads/{lead['id']}/review",
-            headers=admin,
-            json={"decision": "REJECT", "note": "请补充更具体的施工计划"},
-        )
-    )
-    assert rejected["lead"]["status"] == "INVALID"
+    rejected = close_after_telesales_verification("请补充更具体的施工计划")
+    assert rejected["status"] == "INVALID"
 
     revised = _data(
         client.post(
@@ -319,7 +351,7 @@ def test_rejected_supplier_lead_can_revise_and_resubmit_over_http(api_client) ->
             headers=supplier,
         )
     )
-    assert resubmitted["lead"]["status"] == "PENDING_REVIEW"
+    assert resubmitted["lead"]["status"] == "PENDING_TELESALES_VERIFY"
     assert resubmitted["lead"]["review_status"] == "PENDING"
     assert resubmitted["lead"]["review_note"] is None
 
@@ -330,14 +362,8 @@ def test_rejected_supplier_lead_can_revise_and_resubmit_over_http(api_client) ->
     assert blocked.status_code == 409
     assert blocked.json()["code"] == "LEAD_REVISION_NOT_ALLOWED"
 
-    rejected_again = _data(
-        client.post(
-            f"/api/v1/v1.2/admin/supplier-leads/{lead['id']}/review",
-            headers=admin,
-            json={"decision": "INVALID", "note": "补正后仍缺少可核验的客户意向说明"},
-        )
-    )
-    assert rejected_again["lead"]["status"] == "INVALID"
+    rejected_again = close_after_telesales_verification("补正后仍缺少可核验的客户意向说明")
+    assert rejected_again["status"] == "INVALID"
 
     with factory() as db:
         audit = db.scalar(
@@ -368,7 +394,7 @@ def test_rejected_supplier_lead_can_revise_and_resubmit_over_http(api_client) ->
         rejected_notifications = db.scalars(
             select(Notification).where(
                 Notification.company_id == company_id,
-                Notification.scene == "V12_SUPPLIER_LEAD_REJECTED",
+                Notification.scene == "V12_SUPPLIER_LEAD_DISPOSITION",
             )
         ).all()
         submission_outboxes = db.scalars(
@@ -408,54 +434,37 @@ def test_supplier_initial_review_can_require_assigned_telesales_verification(api
             json=initial_body,
         )
     )
-    _data(
+    submitted = _data(
         client.post(
             f"/api/v1/v1.2/supplier/leads/{lead['id']}/submit",
             headers=supplier,
         )
     )
+    assert submitted["lead"]["status"] == LeadV12Status.PENDING_TELESALES_VERIFY.value
 
-    reviewed = _data(
+    assigned = _data(
         client.post(
-            f"/api/v1/v1.2/admin/supplier-leads/{lead['id']}/review",
+            f"/api/v1/v1.2/admin/leads/{lead['id']}/pre-dispatch-verification",
             headers=operation,
             json={
-                "decision": "INFO_INCOMPLETE",
-                "note": "客户意向与预算还需要电话确认",
                 "assignee_user_id": telesales_id,
-                "pre_dispatch_reason": "补齐客户意向、预算和可联系时间",
+                "reason": "补齐客户意向、预算和可联系时间",
             },
         )
     )
-    assert reviewed["lead"]["status"] == LeadV12Status.PENDING_TELESALES_VERIFY.value
-    assert reviewed["lead"]["review_status"] == "PENDING"
-    assert reviewed["task"]["task_type"] == VerificationTaskType.PRE_DISPATCH_VERIFY.value
-    assert reviewed["task"]["assignee_user_id"] == telesales_id
-    assert reviewed["task"]["due_at"] is not None
+    assert assigned["lead"]["status"] == LeadV12Status.PENDING_TELESALES_VERIFY.value
+    assert assigned["task_type"] == VerificationTaskType.PRE_DISPATCH_VERIFY.value
+    assert assigned["assignee_user_id"] == telesales_id
+    assert assigned["due_at"] is not None
 
     with factory() as db:
-        review_audit = db.scalar(
-            select(AuditLog).where(
-                AuditLog.action == "V12_SUPPLIER_LEAD_REVIEW",
-                AuditLog.resource_id == lead["id"],
-            )
-        )
-        assert review_audit is not None
-        assert review_audit.after_json["review_decision"] == "INFO_INCOMPLETE"
-        assert review_audit.after_json["submission_snapshot"]["need_summary"] == initial_body["need_summary"]
         task_audit = db.scalar(
             select(AuditLog).where(
                 AuditLog.action == "V12_PRE_DISPATCH_VERIFY_ASSIGN",
-                AuditLog.resource_id == reviewed["task"]["id"],
+                AuditLog.resource_id == assigned["id"],
             )
         )
         assert task_audit is not None
-        notification = db.scalar(
-            select(Notification).where(
-                Notification.scene == "V12_SUPPLIER_LEAD_TELESALES_VERIFY_REQUIRED"
-            )
-        )
-        assert notification is not None
 
 
 def test_supplier_qualified_submission_still_requires_telesales_before_dispatch(api_client) -> None:
@@ -477,30 +486,29 @@ def test_supplier_qualified_submission_still_requires_telesales_before_dispatch(
             json=_valid_lead_body("13900139038"),
         )
     )
-    _data(client.post(f"/api/v1/v1.2/supplier/leads/{lead['id']}/submit", headers=supplier))
+    submitted = _data(client.post(f"/api/v1/v1.2/supplier/leads/{lead['id']}/submit", headers=supplier))
+    assert submitted["lead"]["status"] == LeadV12Status.PENDING_TELESALES_VERIFY.value
 
     missing_assignee = client.post(
-        f"/api/v1/v1.2/admin/supplier-leads/{lead['id']}/review",
+        f"/api/v1/v1.2/admin/leads/{lead['id']}/pre-dispatch-verification",
         headers=operation,
-        json={"decision": "QUALIFIED", "note": "资料完整，仍需电话核实"},
+        json={"reason": "资料完整，仍需电话核实"},
     )
     assert missing_assignee.status_code == 422, missing_assignee.text
 
-    reviewed = _data(
+    assigned = _data(
         client.post(
-            f"/api/v1/v1.2/admin/supplier-leads/{lead['id']}/review",
+            f"/api/v1/v1.2/admin/leads/{lead['id']}/pre-dispatch-verification",
             headers=operation,
             json={
-                "decision": "QUALIFIED",
-                "note": "资料完整，转电销核实后才能派送",
                 "assignee_user_id": telesales_id,
-                "pre_dispatch_reason": "确认客户意向、预算和可联系时间",
+                "reason": "确认客户意向、预算和可联系时间",
             },
         )
     )
-    assert reviewed["lead"]["status"] == LeadV12Status.PENDING_TELESALES_VERIFY.value
-    assert reviewed["lead"]["status"] != LeadV12Status.READY_DISPATCH.value
-    assert reviewed["task"]["assignee_user_id"] == telesales_id
+    assert assigned["lead"]["status"] == LeadV12Status.PENDING_TELESALES_VERIFY.value
+    assert assigned["lead"]["status"] != LeadV12Status.READY_DISPATCH.value
+    assert assigned["assignee_user_id"] == telesales_id
 
 
 def test_supplier_approval_notification_keys_fit_outbox_limit(api_client) -> None:
@@ -527,24 +535,22 @@ def test_supplier_approval_notification_keys_fit_outbox_limit(api_client) -> Non
             headers=supplier,
         )
     )
-    reviewed = _data(
+    assigned = _data(
         client.post(
-            f"/api/v1/v1.2/admin/supplier-leads/{lead['id']}/review",
+            f"/api/v1/v1.2/admin/leads/{lead['id']}/pre-dispatch-verification",
             headers=operation,
             json={
-                "decision": "QUALIFIED",
-                "note": "资料完整，仍需电话核实",
                 "assignee_user_id": telesales_id,
-                "pre_dispatch_reason": "确认客户意向、预算和可联系时间",
+                "reason": "确认客户意向、预算和可联系时间",
             },
         )
     )
-    assert reviewed["lead"]["status"] == LeadV12Status.PENDING_TELESALES_VERIFY.value
+    assert assigned["lead"]["status"] == LeadV12Status.PENDING_TELESALES_VERIFY.value
 
     with factory() as db:
         outboxes = db.scalars(
             select(NotificationOutbox).where(
-                NotificationOutbox.aggregate_id == reviewed["task"]["id"]
+                NotificationOutbox.aggregate_id == assigned["id"]
             )
         ).all()
         assert any(item.event_type == "V12_PRE_DISPATCH_VERIFY_ASSIGNED" for item in outboxes)

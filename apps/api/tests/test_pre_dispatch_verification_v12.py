@@ -121,6 +121,64 @@ def test_pre_dispatch_verification_returns_control_to_operations(db) -> None:
     assert lead.review_status == "APPROVED"
 
 
+def test_supplier_submission_queue_can_be_assigned_without_creating_a_second_task(db) -> None:
+    from apps.api.src.services.pre_dispatch_v12 import (
+        assign_pre_dispatch_task,
+        queue_pre_dispatch_task,
+    )
+
+    operation = create_internal_user(
+        db,
+        username="queued-operation",
+        password="simple88",
+        display_name="运营",
+        role_code="OPERATION",
+    )
+    telesales = create_internal_user(
+        db,
+        username="queued-telesales",
+        password="simple88",
+        display_name="电销",
+        role_code="TELESALES",
+    )
+    lead = Lead(
+        source_type="SUPPLIER_H5",
+        source_kind="SUPPLIER_H5",
+        customer_name="默认待核验客户",
+        phone_encrypted=encrypt_text("13900139019"),
+        phone_hash=hash_phone("13900139019"),
+        city="上海市",
+        region_code="310000",
+        need_summary="加盟商提交后默认等待电销核实",
+        consent_confirmed=True,
+        status=LeadV12Status.PENDING_REVIEW.value,
+        review_status="PENDING",
+        duplicate_status="CLEAR",
+        raw_payload={},
+    )
+    db.add(lead)
+    publish_template(db, code="PRE_QUEUED", name="默认前置核验", schema={"fields": []})
+    db.flush()
+
+    queued = queue_pre_dispatch_task(
+        db,
+        lead_id=lead.id,
+        reason="加盟商提交客资，等待电销核实",
+    )
+    assigned = assign_pre_dispatch_task(
+        db,
+        lead_id=lead.id,
+        assignee_user_id=telesales.id,
+        assigned_by=operation.id,
+        reason="运营分配默认待核验任务",
+        template_code="PRE_QUEUED",
+    )
+
+    assert queued.id == assigned.task.id
+    assert assigned.task.status == "ASSIGNED"
+    assert assigned.task.assignee_user_id == telesales.id
+
+
 def test_overdue_pre_dispatch_task_blocks_telesales_and_allows_operation_reassignment(db) -> None:
     from apps.api.src.services.pre_dispatch_v12 import (
         assign_pre_dispatch_task,

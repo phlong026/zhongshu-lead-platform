@@ -14,6 +14,7 @@ border-bottom:1px solid rgba(111,90,67,.08);display:flex;align-items:center;just
 .wb-header-actions{display:flex;gap:8px}.wb-icon-btn,.wb-btn{border:1px solid var(--line);background:var(--surface);color:var(--ink);
 border-radius:12px;padding:9px 12px;cursor:pointer;transition:transform .14s ease,box-shadow .14s ease,border-color .14s ease,background .14s ease}.wb-btn.primary{background:var(--brand);border-color:var(--brand);color:#fff}
 .wb-icon-btn{display:inline-flex;align-items:center;gap:6px}.wb-icon-btn .zs-svg-icon{width:16px;height:16px}
+.wb-message-entry{position:relative;min-width:42px;justify-content:center}.wb-message-badge{position:absolute;top:-5px;right:-5px;min-width:17px;height:17px;padding:0 4px;border:2px solid var(--bg);border-radius:999px;background:var(--bad);color:#fff;font-size:10px;line-height:13px;text-align:center}
 .wb-btn{white-space:nowrap}
 .wb-icon-btn:focus-visible,.wb-btn:focus-visible,.wb-nav:focus-visible,.wb-action-card:focus-visible,.wb-kpi:focus-visible{outline:3px solid rgba(169,129,79,.38);outline-offset:2px}
 .wb-icon-btn:active,.wb-btn:active,.wb-nav:active,.wb-action-card:active,.wb-kpi:active{transform:scale(.98)}

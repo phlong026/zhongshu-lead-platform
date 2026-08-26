@@ -4,7 +4,7 @@ import pytest
 
 from apps.api.src.core.auth import Principal
 from apps.api.src.core.errors import AppError
-from apps.api.src.core.models import Company, Lead, Region, User
+from apps.api.src.core.models import Company, Lead, Region, User, VerificationTask
 from apps.api.src.core.models_v12 import CompanyLeadCapability
 from apps.api.src.core.security import fingerprint_phone
 from apps.api.src.core.v12_enums import DuplicateDecision, LeadSourceKind, LeadV12Status
@@ -204,7 +204,7 @@ def test_recent_duplicate_is_blocked_and_can_be_audited_override(db) -> None:
     assert second.duplicate_status == DuplicateDecision.OVERRIDDEN.value
 
 
-def test_supplier_upload_requires_approved_capability_and_review(db) -> None:
+def test_supplier_upload_requires_approved_capability_and_telesales_verification(db) -> None:
     db.add(Region(code="420100", name="武汉市", level="CITY", aliases=[], active=True))
     company, user = _seed_identity(db, company_code="SUP001")
     principal = _principal(user.id, company.id, "supplier.lead.manage")
@@ -224,62 +224,39 @@ def test_supplier_upload_requires_approved_capability_and_review(db) -> None:
     lead = create_draft(db, principal=principal, source_kind=LeadSourceKind.SUPPLIER_H5, values=_valid_values())
     result = submit_draft(db, lead=lead, principal=principal)
     assert result.decision is DuplicateDecision.CLEAR
-    assert lead.status == LeadV12Status.PENDING_REVIEW.value
-
-    review_result = review_supplier_lead(
-        db,
-        lead=lead,
-        reviewer=principal,
-        approve=True,
-        note="资料与授权完整",
-    )
-    db.commit()
-    assert review_result is not None
-    assert lead.review_status == "APPROVED"
-    assert lead.status == LeadV12Status.READY_DISPATCH.value
+    assert lead.status == LeadV12Status.PENDING_TELESALES_VERIFY.value
+    assert lead.review_status == "PENDING"
+    assert lead.pending_reason == "SUPPLIER_SUBMISSION_REQUIRES_TELESALES_VERIFY"
+    task = db.query(VerificationTask).filter_by(lead_id=lead.id).one()
+    assert task.status == "PENDING"
+    assert task.assignee_user_id is None
 
 
-def test_supplier_initial_review_distinguishes_duplicate_and_invalid(db) -> None:
+def test_supplier_submission_cannot_bypass_telesales_verification_with_initial_review(db) -> None:
     db.add(Region(code="420100", name="武汉市", level="CITY", aliases=[], active=True))
     company, user = _seed_identity(db, company_code="SUP-REVIEW-DECISIONS")
     _approve_supplier_capability(db, company, user)
     principal = _principal(user.id, company.id, "supplier.lead.manage")
 
-    duplicate = create_draft(
+    lead = create_draft(
         db,
         principal=principal,
         source_kind=LeadSourceKind.SUPPLIER_H5,
         values=_valid_values("13700137001"),
     )
-    submit_draft(db, lead=duplicate, principal=principal)
-    review_supplier_lead(
-        db,
-        lead=duplicate,
-        reviewer=principal,
-        decision="DUPLICATE",
-        note="与既有登记信息高度相似，需要人工核查",
-    )
-    assert duplicate.status == LeadV12Status.DUPLICATE.value
-    assert duplicate.review_status == "PENDING"
-    assert duplicate.pending_reason == "SUPPLIER_REVIEW_DUPLICATE"
+    submit_draft(db, lead=lead, principal=principal)
 
-    invalid = create_draft(
-        db,
-        principal=principal,
-        source_kind=LeadSourceKind.SUPPLIER_H5,
-        values=_valid_values("13700137002"),
-    )
-    submit_draft(db, lead=invalid, principal=principal)
-    review_supplier_lead(
-        db,
-        lead=invalid,
-        reviewer=principal,
-        decision="INVALID",
-        note="客户明确表示并无建房或装修需求",
-    )
-    assert invalid.status == LeadV12Status.INVALID.value
-    assert invalid.review_status == "REJECTED"
-    assert invalid.pending_reason == "SUPPLIER_REVIEW_INVALID"
+    with pytest.raises(AppError) as exc_info:
+        review_supplier_lead(
+            db,
+            lead=lead,
+            reviewer=principal,
+            decision="QUALIFIED",
+            note="不能绕过电销核实直接入池",
+        )
+
+    assert exc_info.value.code == "LEAD_REVIEW_STATE_INVALID"
+    assert lead.status == LeadV12Status.PENDING_TELESALES_VERIFY.value
 
 
 def test_supplier_can_discard_own_draft(db) -> None:
@@ -372,13 +349,10 @@ def test_rejected_supplier_lead_can_be_revised_and_resubmitted(db) -> None:
         values=_valid_values("13600136000"),
     )
     submit_draft(db, lead=lead, principal=principal)
-    review_supplier_lead(
-        db,
-        lead=lead,
-        reviewer=principal,
-        approve=False,
-        note="请补充更具体的建房需求",
-    )
+    lead.status = LeadV12Status.INVALID.value
+    lead.review_status = "REJECTED"
+    lead.review_note = "请补充更具体的建房需求"
+    lead.pending_reason = "PRE_DISPATCH_SUPPLIER_INVALID"
     assert lead.status == LeadV12Status.INVALID.value
 
     reopen_rejected_supplier_lead(db, lead=lead, principal=principal)
@@ -392,7 +366,7 @@ def test_rejected_supplier_lead_can_be_revised_and_resubmitted(db) -> None:
     lead.need_summary = "计划在武汉建设两层自住房，近期确认设计方案"
     submit_draft(db, lead=lead, principal=principal)
 
-    assert lead.status == LeadV12Status.PENDING_REVIEW.value
+    assert lead.status == LeadV12Status.PENDING_TELESALES_VERIFY.value
     assert lead.review_status == "PENDING"
     assert lead.review_note is None
 

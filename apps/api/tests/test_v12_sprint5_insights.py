@@ -38,6 +38,31 @@ def test_superadmin_can_read_v12_overview_and_audit(api_client):
     assert {"items", "total", "page", "page_size"} <= set(audit.json()["data"])
 
 
+def test_superadmin_can_read_management_and_finance_decision_dashboards(api_client):
+    client, _factory = api_client
+    login(client, "admin", "Admin123!")
+
+    management = client.get("/api/v1/v1.2/reports/management-dashboard?days=30")
+    assert management.status_code == 200, management.text
+    data = management.json()["data"]
+    assert {
+        "new_leads",
+        "pending_verification",
+        "ready_dispatch",
+        "claimed",
+        "effective_completion_rate",
+        "returned_exceptions",
+        "pending_reward_settlement",
+    } <= set(data["kpis"])
+    assert {"trend", "funnel", "source_distribution", "region_distribution", "provider_distribution", "exceptions"} <= set(data)
+
+    finance = client.get("/api/v1/v1.2/reports/finance-dashboard?days=30")
+    assert finance.status_code == 200, finance.text
+    finance_data = finance.json()["data"]
+    assert {"pending_settlement", "settled", "disputed", "voided"} <= set(finance_data["summary"])
+    assert {"trend", "source_ranking", "details"} <= set(finance_data)
+
+
 def test_operation_can_read_report_and_audit_after_sprint5_rbac(api_client):
     client, _factory = api_client
     login(client, "operation", "Operation123!")

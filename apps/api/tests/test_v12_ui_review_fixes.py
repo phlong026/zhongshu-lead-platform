@@ -73,7 +73,8 @@ def test_unified_operations_workspace_keeps_source_specific_lead_actions() -> No
     assert "PLATFORM_MANUAL" in js
     assert "SUPPLIER_H5" in js
     assert "data-platform-pre-dispatch" in js
-    assert "data-review-info" in js
+    assert "data-pre-assign" in js
+    assert "data-review-info" not in js
     assert "平台补充资料后再处理" in js
 
 

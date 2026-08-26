@@ -260,7 +260,9 @@ def test_manual_dispatch_does_not_deduct_points_and_claim_is_atomic_and_idempote
     reward = db.scalar(select(SupplierLeadReward).where(SupplierLeadReward.assignment_id == assignment.id))
     assert reward is not None
     assert reward.supplier_company_id == supplier.id
-    assert reward.status == RewardStatus.OBSERVING.value
+    assert reward.status == RewardStatus.WAITING_CLAIM.value
+    assert reward.observed_at is None
+    assert reward.reward_due_at is None
     assert reward.reward_ratio_bps == 3000
     assert reward.reward_points == 30
     assert reward.rule_version == 1

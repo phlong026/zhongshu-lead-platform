@@ -472,7 +472,7 @@ def _submit_and_verify(db, setup, *, conclusion: str = "SUPPORT_RETURN"):
     return request, task
 
 
-def test_final_approve_refunds_once_recovers_lead_and_cancels_reward(db) -> None:
+def test_final_approve_refunds_once_closes_invalid_lead_and_cancels_reward(db) -> None:
     setup = _workflow_setup(db)
     request, _ = _submit_and_verify(db, setup)
     reviewer = _principal(setup["reviewer"], "return.review")
@@ -497,7 +497,7 @@ def test_final_approve_refunds_once_recovers_lead_and_cancels_reward(db) -> None
     assert persisted_request.review_note == "证据和电销事实均支持退回"
     assert persisted_request.final_decision_reason == "证据和电销事实均支持退回"
     assert setup["assignment"].status == AssignmentStatus.RETURNED.value
-    assert setup["lead"].status == LeadV12Status.READY_DISPATCH.value
+    assert setup["lead"].status == LeadV12Status.CLOSED.value
     assert setup["lead"].current_assignment_id is None
     assert setup["reward"].status == RewardStatus.CANCELLED.value
     assert db.get(PointsAccount, setup["account"].id).balance == 1000
@@ -541,6 +541,23 @@ def test_final_reject_restores_following_and_unfreezes_reward(db) -> None:
     assert setup["lead"].status == LeadV12Status.FOLLOWING.value
     assert setup["reward"].status == RewardStatus.OBSERVING.value
     assert db.get(PointsAccount, setup["account"].id).balance == 900
+
+
+def test_final_review_must_match_the_telesales_fact_conclusion(db) -> None:
+    setup = _workflow_setup(db)
+    request, _ = _submit_and_verify(db, setup, conclusion="DOES_NOT_SUPPORT_RETURN")
+    reviewer = _principal(setup["reviewer"], "return.review")
+
+    with pytest.raises(AppError) as exc_info:
+        final_review_return(
+            db,
+            return_id=request.id,
+            principal=reviewer,
+            decision="APPROVE",
+            note="不能在电销确认客资可用时仍批准退回",
+        )
+
+    assert exc_info.value.code == "RETURN_FINAL_DECISION_CONFLICT"
 
 
 def test_need_more_allows_new_evidence_and_creates_second_verification_round(db) -> None:
