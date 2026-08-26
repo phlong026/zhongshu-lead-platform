@@ -142,7 +142,7 @@ def test_create_invite_enqueues_outbox_event_without_raw_token(api_client) -> No
         assert item.status == "PENDING"
         assert item.payload["company_name"] == "通知测试公司"
         assert item.payload["invitee_name"] == "李负责人"
-        assert item.payload["deep_link"] == "/h5/#/login"
+        assert item.payload["deep_link"] == "/h5/invite.html"
         # 安全红线：raw token 不落 Outbox（失败队列/DB 都不暴露邀请原文）。
         assert raw_token not in json.dumps(item.payload, ensure_ascii=False)
 

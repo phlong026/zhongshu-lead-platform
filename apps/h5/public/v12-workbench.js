@@ -90,28 +90,19 @@ async function home(){
   shell(`${franchiseHomeGreeting()}${franchiseHomeHero(hero)}${ownerTodos}${franchiseHomeMetrics(metrics)}${homeTaskList(assignmentRows,taskView,owner?'正在处理的客资':'待处理客资')}`);
 }
 const CAPABILITY_META={
-  LEAD_SUPPLIER:{title:'客资供应能力',description:'审核通过后可上传客资并查看初审状态。'},
-  LEAD_RECEIVER:{title:'客资接收能力',description:'审核通过且服务区域生效后可进入派单候选。'},
+  LEAD_SUPPLIER:{title:'提供客资',description:'由平台统一配置；开通后可上传客资并查看核实进度。'},
+  LEAD_RECEIVER:{title:'接收客资',description:'由平台统一配置；开通后可接收所属服务区域内的客资。'},
 };
-const REMOVAL_REQUEST_PREFIX='[REMOVE_REQUEST]';
-const cleanReviewNote=note=>String(note||'').replace(/^\[REMOVE_REQUEST\]\s*/,'');
-const removalPending=item=>String(item.review_note||'').startsWith(REMOVAL_REQUEST_PREFIX);
 function capabilityCard(capabilities,code){
   const meta=CAPABILITY_META[code];
   const capability=capabilities.find(item=>item.capability_code===code);
   const approved=Boolean(capability?.active&&capability?.review_status==='APPROVED');
-  const state=approved?'已开通':capability?.review_status==='PENDING'?'审核中':capability?.review_status==='REJECTED'?'已驳回':'未申请';
-  const action=approved
-    ?'<span class="wb-muted">能力已开通；如需停用，请联系平台管理员。</span>'
-    :capability?.review_status==='PENDING'
-      ?'<span class="wb-muted">申请正在审核中，无需重复提交。</span>'
-      :'<button class="wb-btn primary" data-capability-request="'+esc(code)+'">'+(capability?'重新申请':'提交申请')+'</button>';
-  const note=capability?.review_note?'<div class="wb-notice">平台说明：'+esc(cleanReviewNote(capability.review_note))+'</div>':'';
-  return '<article class="wb-item"><div class="wb-item-top"><div><h3>'+esc(meta.title)+'</h3><p>'+esc(meta.description)+'</p></div>'+(capability?badge(capability.review_status):'<span class="wb-status warn">未申请</span>')+'</div><div class="wb-detail-grid">'+[
-    ['审核状态',state],
+  const note=capability?.review_note?'<div class="wb-notice">平台说明：'+esc(capability.review_note)+'</div>':'';
+  return '<article class="wb-item"><div class="wb-item-top"><div><h3>'+esc(meta.title)+'</h3><p>'+esc(meta.description)+'</p></div>'+badge(approved?'APPROVED':'REJECTED')+'</div><div class="wb-detail-grid">'+[
+    ['当前状态',approved?'已开通':'未开通'],
     ['当前可用',approved?'是':'否'],
-    ['审核时间',fmt(capability?.reviewed_at)],
-  ].map(([name,value])=>'<div class="wb-detail"><small>'+esc(name)+'</small><b>'+esc(value||'--')+'</b></div>').join('')+'</div>'+note+'<div class="wb-actions">'+action+'</div></article>';
+    ['配置时间',fmt(capability?.reviewed_at)],
+  ].map(([name,value])=>'<div class="wb-detail"><small>'+esc(name)+'</small><b>'+esc(value||'--')+'</b></div>').join('')+'</div>'+note+'<div class="wb-actions"><span class="wb-muted">平台统一配置；如需调整，请联系平台运营人员。</span></div></article>';
 }
 async function profile(){
   if(!can('company.profile.manage')){
@@ -122,89 +113,23 @@ async function profile(){
     document.querySelector('[data-go="notifications"]')?.addEventListener('click',()=>go('notifications'));
     return;
   }
-  const [report,capabilities,areas,cities]=await Promise.all([
+  const [report,capabilities,areas]=await Promise.all([
     api('/v1.2/reports/own'),
     api('/v1.2/company/capabilities'),
     api('/v1.2/company/service-areas'),
-    api('/master-data/regions?level=CITY'),
   ]);
-  const cityCodes=[...new Set(areas.filter(item=>item.region_level==='CITY').map(item=>item.region_code))];
-  const districtGroups=await Promise.all(cityCodes.map(code=>api('/master-data/regions?parent_code='+encodeURIComponent(code)+'&level=DISTRICT')));
-  const regions=[...cities,...districtGroups.flat()];
-  const regionNames=Object.fromEntries(regions.map(region=>[region.code,region.name]));
   const approvedCapabilities=capabilities.filter(item=>item.active&&item.review_status==='APPROVED').length;
-  const pendingCapabilities=capabilities.filter(item=>item.review_status==='PENDING').length;
-  const approvedAreas=areas.filter(item=>item.active&&(item.review_status==='APPROVED'||removalPending(item))).length;
+  const approvedAreas=areas.filter(item=>item.active&&item.review_status==='APPROVED').length;
   const primaryCities=new Set(areas.filter(item=>item.is_primary_city&&item.active).map(item=>item.region_code));
   const unreadNotifications=Number(report?.unread_notifications||0);
   const areaCards=areas.length?areas.map(item=>{
-    const state=removalPending(item)&&item.active?'待审核移除（当前仍生效）':item.active?'已生效':'未生效';
-    const note=item.review_note?'<p>平台说明：'+esc(cleanReviewNote(item.review_note))+'</p>':'';
-    return '<article class="wb-item"><div class="wb-item-top"><div><h3>'+esc(item.is_primary_city?'主要城市':'服务区域')+' · '+esc(regionNames[item.region_code]||'待补充地区名称')+'</h3><p>'+esc(state)+'</p>'+note+'<p>审核时间 '+fmt(item.reviewed_at)+'</p></div>'+badge(item.review_status)+'</div></article>';
-  }).join(''):'<div class="wb-empty service-area-empty">暂无服务区域申请</div>';
+    const active=Boolean(item.active&&item.review_status==='APPROVED');
+    const note=item.review_note?'<p>平台说明：'+esc(item.review_note)+'</p>':'';
+    return '<article class="wb-item"><div class="wb-item-top"><div><h3>'+esc(item.is_primary_city?'主要城市':'服务区域')+' · '+esc(item.region_name||'地区待补充')+'</h3><p>'+esc(active?'已生效':'未开通')+'</p>'+note+'<p>配置时间 '+fmt(item.reviewed_at)+'</p></div>'+badge(active?'APPROVED':'REJECTED')+'</div></article>';
+  }).join(''):'<div class="wb-empty">平台尚未配置服务区域</div>';
   const messageCard=canView('notifications')?`<section class="wb-card wb-profile-message"><div class="wb-card-head"><div><h2>消息中心</h2><p>平台通知、审核提醒和进度更新都在这里。</p></div><button class="wb-btn primary" data-go="notifications">查看 ${unreadNotifications} 条未读消息</button></div></section>`:'';
-  shell('<section class="wb-hero"><h1>公司资料与接单能力</h1><p>供客能力、接收能力和服务区域分别审核。点击数字可直达对应资料。</p><div class="wb-kpis">'+metricCard('已开通能力',approvedCapabilities,{scroll:'company-capabilities'})+metricCard('待审能力',pendingCapabilities,{scroll:'company-capabilities'})+metricCard('当前有效区域',approvedAreas,{scroll:'service-areas'})+metricCard('主要城市',primaryCities.size,{scroll:'service-areas'})+'</div></section>'+messageCard+'<div class="wb-profile-grid"><section class="wb-card" id="company-capabilities"><div class="wb-card-head"><div><h2>公司客资能力</h2><p>供客与接收能力独立申请、独立启停。</p></div></div><div class="wb-list">'+Object.keys(CAPABILITY_META).map(code=>capabilityCard(capabilities,code)).join('')+'</div></section><section class="wb-card" id="service-areas"><div class="wb-card-head"><div><h2>服务区域</h2><p>主要城市必须包含在申请中，区县与城市一起审核。</p></div><button class="wb-btn primary" id="service-area-edit">申请/更新</button></div><div class="wb-list" id="service-area-list">'+areaCards+'</div></section></div>');
-  document.querySelectorAll('[data-capability-request]').forEach(button=>button.onclick=()=>requestCapability(button));
+  shell('<section class="wb-hero"><h1>公司资料</h1><p>服务区域与客资功能由平台统一配置；如需调整，请联系平台运营人员。</p><div class="wb-kpis">'+metricCard('已开通功能',approvedCapabilities,{scroll:'company-capabilities'})+metricCard('已生效区域',approvedAreas,{scroll:'service-areas'})+metricCard('主要城市',primaryCities.size,{scroll:'service-areas'})+'</div></section>'+messageCard+'<div class="wb-profile-grid"><section class="wb-card" id="company-capabilities"><div class="wb-card-head"><div><h2>客资功能</h2><p>仅展示当前平台已配置的功能状态。</p></div></div><div class="wb-list">'+Object.keys(CAPABILITY_META).map(code=>capabilityCard(capabilities,code)).join('')+'</div></section><section class="wb-card" id="service-areas"><div class="wb-card-head"><div><h2>服务区域</h2><p>仅展示当前可经营与接收客资的区域。</p></div></div><div class="wb-list">'+areaCards+'</div></section></div>');
   document.querySelectorAll('[data-go]').forEach(button=>button.onclick=()=>go(button.dataset.go));
-  document.querySelector('#service-area-edit').onclick=()=>editServiceAreas(areas);
-}
-async function requestCapability(button){
-  if(button.dataset.busy==='1')return;
-  const capabilityCode=button.dataset.capabilityRequest;
-  button.dataset.busy='1';button.disabled=true;
-  try{
-    await api('/v1.2/company/capabilities',{method:'POST',body:JSON.stringify({capability_code:capabilityCode})});
-    toast(CAPABILITY_META[capabilityCode].title+'申请已提交');
-    await profile();
-  }catch(error){
-    delete button.dataset.busy;button.disabled=false;toast(error.message,true);
-  }
-}
-async function editServiceAreas(existingAreas){
-  const cities=await api('/master-data/regions?level=CITY');
-  const effectiveAreas=existingAreas.filter(item=>item.active);
-  const desiredAreas=existingAreas.filter(item=>!removalPending(item));
-  const currentPrimary=desiredAreas.find(item=>item.is_primary_city&&item.region_level==='CITY')?.region_code||effectiveAreas.find(item=>item.is_primary_city&&item.region_level==='CITY')?.region_code||desiredAreas.find(item=>item.region_level==='CITY')?.region_code||effectiveAreas.find(item=>item.region_level==='CITY')?.region_code||cities[0]?.code||'';
-  let selectedCity=currentPrimary;
-  let districts=[];
-  let selectedDistrictCodes=new Set(desiredAreas.filter(item=>item.region_level==='DISTRICT').map(item=>item.region_code));
-  const renderDistrictChoices=()=>{
-    const root=document.querySelector('#service-area-districts');
-    if(!root)return;
-    const html=districts.length
-      ?districts.map(item=>'<label class="wb-choice"><input type="checkbox" value="'+esc(item.code)+'" '+(selectedDistrictCodes.has(item.code)?'checked':'')+'><span>'+esc(item.name)+'</span></label>').join('')
-      :'<div class="wb-empty service-area-empty">该城市暂无可选区县</div>';
-    zsSetSafeHtml(root,html);
-  };
-  const loadDistricts=async cityCode=>{
-    districts=cityCode?await api('/master-data/regions?parent_code='+encodeURIComponent(cityCode)+'&level=DISTRICT'):[];
-    renderDistrictChoices();
-  };
-  const cityOptions=cities.map(item=>'<option value="'+esc(item.code)+'" '+(item.code===selectedCity?'selected':'')+'>'+esc(item.name)+'</option>').join('');
-  openSheet('申请/更新服务区域','<form class="wb-form" id="service-area-form"><div class="wb-notice">待移除区域在审核前仍生效；重新勾选并提交可撤销移除申请。</div><div class="wb-field"><label>主要城市</label><select class="wb-select" name="city" id="service-area-city">'+cityOptions+'</select><small class="wb-muted">主要城市必须包含在申请区域中。</small></div><div class="wb-field"><label>服务区县</label><div class="wb-list" id="service-area-districts"><div class="wb-empty service-area-empty">正在加载区县…</div></div><small class="wb-muted">可以只提交城市，也可以叠加多个区县。</small></div><button class="wb-btn primary" id="service-area-submit">提交审核</button></form>',()=>{
-    const form=document.querySelector('#service-area-form');
-    const citySelect=document.querySelector('#service-area-city');
-    const submitButton=document.querySelector('#service-area-submit');
-    let submitting=false;
-    const syncSelection=()=>{selectedDistrictCodes=new Set([...document.querySelectorAll('#service-area-districts input:checked')].map(item=>item.value))};
-    citySelect.onchange=async event=>{selectedCity=event.target.value;selectedDistrictCodes=new Set();await loadDistricts(selectedCity)};
-    document.querySelector('#service-area-districts').addEventListener('change',syncSelection);
-    form.onsubmit=async event=>{
-      event.preventDefault();
-      if(submitting)return;
-      syncSelection();
-      if(!selectedCity){toast('请选择主要城市',true);return}
-      submitting=true;submitButton.disabled=true;
-      const regionCodes=[selectedCity,...selectedDistrictCodes];
-      try{
-        await api('/v1.2/company/service-areas',{method:'PUT',body:JSON.stringify({primary_city_code:selectedCity,region_codes:[...new Set(regionCodes)]})});
-        closeSheet();toast('服务区域申请已提交');await profile();
-      }catch(error){
-        submitting=false;submitButton.disabled=false;toast(error.message,true);
-      }
-    };
-    loadDistricts(selectedCity);
-  });
 }
 async function leadCenter(){await leads()}
 function ledgerLabel(type){return {RECHARGE:'充值入账',CLAIM:'领取扣分',RETURN:'退回返分',REWARD:'奖励到账',ADJUST:'人工调整',REVERSAL:'冲正调整'}[type]||readableLabel(type,'积分变动')}
@@ -421,11 +346,11 @@ async function leads(){
   const canUpload=Boolean(supplierCapability?.active&&supplierCapability?.review_status==='APPROVED');
   const rows=page.items||[];
   const list=rows.map(lead=>item(lead.customer_name==='未填写'?'未填写姓名':lead.customer_name||'未填写姓名',lead.status,`<p>${esc(lead.phone_masked||'手机号待补充')} · ${esc(lead.city||'地区待补充')} ${esc(lead.district||'')}</p>${supplyProgress(lead)?`<p>${esc(supplyProgress(lead))}</p>`:''}`,supplyLeadActions(lead))).join('');
-  const capabilityAction=canUpload?'<button class="wb-btn primary" id="supply-create">上传客资</button>':isFranchiseOwner()?'<button class="wb-btn primary" data-go="profile">开通供资</button>':'<span class="wb-muted">供资能力未开通，请联系负责人处理。</span>';
+  const capabilityAction=canUpload?'<button class="wb-btn primary" id="supply-create">上传客资</button>':'<span class="wb-muted">供资功能未开通，请联系平台管理员。</span>';
   const statusFilter=`<label class="wb-filter-field">进度<select class="wb-select" id="supply-status"><option value="">全部</option>${SUPPLY_STATUSES.map(value=>`<option value="${value}" ${status===value?'selected':''}>${esc(readableLabel(value))}</option>`).join('')}</select></label>`;
   const totalPages=Math.max(1,Math.ceil(Number(page.total||0)/20));
   const pager=totalPages>1?`<div class="wb-pager"><button class="wb-btn" id="supply-prev" ${S.page<=1?'disabled':''}>上一页</button><span class="wb-muted">第 ${S.page} / ${totalPages} 页</span><button class="wb-btn" id="supply-next" ${S.page>=totalPages?'disabled':''}>下一页</button></div>`:'';
-  const empty=canUpload?'<div class="wb-empty">还没有供应客资<br><button class="wb-btn primary" id="supply-empty-create">上传第一条客资</button></div>':'<div class="wb-empty">开通供资能力后可在这里提交客资。</div>';
+  const empty=canUpload?'<div class="wb-empty">还没有供应客资<br><button class="wb-btn primary" id="supply-empty-create">上传第一条客资</button></div>':'<div class="wb-empty">供资功能未开通，请联系平台管理员。</div>';
   shell(`<section class="wb-card-head wb-supply-head"><div><h1>供资</h1><p>提交后默认由电销核实；无效客资将附原因退回修改，核实通过后才可派送。</p></div>${capabilityAction}</section>${rows.length||status?`<section class="wb-filter">${statusFilter}</section>`:''}<div class="wb-list">${list||empty}</div>${pager}`);
   document.querySelector('#supply-create')?.addEventListener('click',()=>launchSupplyForm());
   document.querySelector('#supply-empty-create')?.addEventListener('click',()=>launchSupplyForm());

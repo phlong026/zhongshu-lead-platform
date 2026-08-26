@@ -489,7 +489,7 @@ def create_invite(
     company_id: str,
     body: InviteCreateBody,
     request: Request,
-    principal=Depends(require_permissions("*")),
+    principal=Depends(require_permissions("company.account.manage")),
     db: Session = Depends(get_db),
 ):
     invite, raw, superseded_ids = create_company_invite(db, company_id, principal.user_id, body.expires_hours)
@@ -519,13 +519,13 @@ def create_invite(
             "company_name": invite.company_name_snapshot,
             "invitee_name": invite.invitee_name_snapshot,
             "expires_at": invite.expires_at.isoformat(),
-            "deep_link": "/h5/#/login",
+            "deep_link": "/h5/invite.html",
         },
     )
     db.commit()
     company = db.get(Company, company_id)
     assert company is not None
-    url = f"{settings.app_base_url}/h5/#/login?invite={raw}"
+    url = f"{settings.app_base_url.rstrip('/')}/h5/invite.html?invite={raw}"
     expires_at = invite.expires_at.isoformat()
     return ok(
         request,
@@ -627,7 +627,7 @@ def invite_confirm_start(
 def list_company_invites_endpoint(
     company_id: str,
     request: Request,
-    principal=Depends(require_permissions("*")),
+    principal=Depends(require_permissions("company.account.manage")),
     db: Session = Depends(get_db),
 ):
     """P1-01/P1-02：公司邀请记录与使用追溯（只读，绝不返回 token 原文或哈希）。"""
@@ -639,7 +639,7 @@ def list_company_invites_endpoint(
 def revoke_invite(
     invite_id: str,
     request: Request,
-    principal=Depends(require_permissions("*")),
+    principal=Depends(require_permissions("company.account.manage")),
     db: Session = Depends(get_db),
 ):
     """N4：撤销业务全部下沉 auth_service.revoke_company_invite——router

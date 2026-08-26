@@ -153,6 +153,14 @@ def test_simple_company_creation_automatically_opens_v12_dispatch_profile(api_cl
         assert receiver.active is True
         assert receiver.review_status == "APPROVED"
 
+        supplier = db.scalar(
+            select(CompanyLeadCapability).where(
+                CompanyLeadCapability.company_id == company.id,
+                CompanyLeadCapability.capability_code == "LEAD_SUPPLIER",
+            )
+        )
+        assert supplier is None
+
         service_areas = db.scalars(
             select(CompanyServiceAreaV12).where(
                 CompanyServiceAreaV12.company_id == company.id
@@ -170,6 +178,47 @@ def test_simple_company_creation_automatically_opens_v12_dispatch_profile(api_cl
             )
         )
         assert audit is not None
+
+
+def test_platform_can_enable_supplier_capability_for_new_franchise(api_client) -> None:
+    client, _ = api_client
+    admin = _login_admin(client)
+    created = client.post(
+        "/api/v1/companies/simple",
+        headers=admin,
+        json={
+            "name": "供资配置测试加盟商",
+            "primary_city_code": "310000",
+            "district_codes": ["310104"],
+            "serve_all_districts": False,
+        },
+    )
+    assert created.status_code == 200, created.text
+    company_id = created.json()["data"]["id"]
+
+    configured = client.put(
+        f"/api/v1/v1.2/admin/companies/{company_id}/capabilities/LEAD_SUPPLIER",
+        headers=admin,
+        json={"active": True, "note": "运营开通供资"},
+    )
+    assert configured.status_code == 200, configured.text
+    capability = configured.json()["data"]
+    assert capability["capability_code"] == "LEAD_SUPPLIER"
+    assert capability["active"] is True
+    assert capability["review_status"] == "APPROVED"
+
+    detail = client.get(
+        f"/api/v1/v1.2/admin/companies/{company_id}/profile",
+        headers=admin,
+    )
+    assert detail.status_code == 200, detail.text
+    data = detail.json()["data"]
+    assert data["company"]["id"] == company_id
+    assert {item["capability_code"] for item in data["capabilities"]} == {
+        "LEAD_RECEIVER",
+        "LEAD_SUPPLIER",
+    }
+    assert data["service_areas"]
 
 
 def test_simple_company_creation_rejects_region_outside_primary_city(api_client) -> None:

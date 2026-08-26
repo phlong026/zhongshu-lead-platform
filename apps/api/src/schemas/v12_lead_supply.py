@@ -161,6 +161,18 @@ class CapabilityReviewBody(BaseModel):
         return self
 
 
+class CompanyCapabilityConfigureBody(BaseModel):
+    """Platform-side capability switch; companies do not apply for it themselves."""
+
+    active: bool
+    note: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("note")
+    @classmethod
+    def normalize_note(cls, value: str | None) -> str | None:
+        return value.strip() if value and value.strip() else None
+
+
 class CompanyProfileBulkApproveBody(BaseModel):
     note: str | None = Field(default=None, max_length=1000)
 

@@ -55,6 +55,7 @@
 - `/h5/`: franchise owner and franchise employee responsive company workbench. Mobile is primary; it remains usable in a desktop browser without a second franchise administration shell.
 - `/call/` is retained only as a compatibility redirect to `/h5/call/`; `/m/` is not introduced.
 - An account has exactly one business role. Super administrators and operations administrators remain separate accounts; a super administrator may directly create, enable, disable, or bind franchise accounts when necessary, and every such operation requires a reason and high-risk audit record.
+- Franchise onboarding is company first, then one-time owner invitation. The platform creates a company with approved service districts and lead-receiving ability; it generates a single expiring link for the intended owner to confirm in WeChat. The owner’s confirmation atomically becomes the company’s primary account.
 
 ### Shared shell rules
 
@@ -116,7 +117,7 @@
 |---|---|---|---|
 | 系统总览 | 高风险审计、异常通知、账户/公司停用、资金异常、积压告警 | Drill into risk, assign governance follow-up | Normal lead review queues |
 | 账号与组织 | Internal accounts, franchise account lifecycle, role/status history | Create, invite, enable, disable, bind company accounts; record reasoned franchise-account actions | Customer details |
-| 加盟商治理 | Company status, capability/area approval state, owner binding state | View, emergency suspend, audit | Daily dispatch actions |
+| 加盟商治理 | Company status, service districts, receive/supply switches, owner binding state | View details, configure switches, create/revoke owner invitation, emergency suspend | Daily dispatch actions |
 | 积分与资金 | Recharge, balance exception, price rules, rewards, immutable ledger | Recharge, adjustment, reversal, publish rule | Operations-owned review controls |
 | 业务规则 | Workday calendar, notification templates/configuration, master data | Configure and publish | Individual task queues |
 | 审计与通知 | Unified audit search, failed notification delivery | Retry notification, export audit | Mutable business actions |
@@ -131,7 +132,7 @@ Home metrics: high-risk operations, failed notifications, frozen rewards, unreco
 | 客资中心 | Unified source-aware lead list with queue tabs | Initial review, dedup decision, send to telesales, return to supplier, close invalid, approve to pool | Lead enters verification, pool, rework, duplicate, or closed state |
 | 电销核验协同 | Pre-dispatch verification and return verification are distinct tabs | Assign/reassign, view conclusion, send back for clarification | Operations decision queue or return final review |
 | 派发中心 | Ready-dispatch pool, candidate eligibility, claimed/unclaimed status | Manual dispatch, release expired assignment | Assignment created or lead remains actionable |
-| 加盟商审核 | Company applications; capability and service-area changes together | One-click profile approval or reject/request changes | Company receives usable status and notification |
+| 加盟商 | Company list and company detail | Create company, configure service/receive/supply switches, create owner invitation | Franchise-side applications or duplicated approval queues |
 | 异常与退回 | Return cases, evidence, telesales conclusion, deadline | Approve, reject, require more evidence | Refund/repool, restore follow-up, or evidence rework |
 | 业务追溯 | Search by lead/company/assignment/task ID | View timeline, export business record | Read-only evidence |
 
@@ -156,7 +157,7 @@ Home metrics: due today, overdue, in progress, awaiting clarification, submitted
 | 领取与分配 | Pending claims, claimed leads, employee assignment status | Claim lead, assign/reassign employee | Claim is the only company-side action that spends points |
 | 供资管理 | New supply, drafts, review feedback, rework queue | Create/submit supply, assign supplier-entry work | Cannot self-approve or put leads in pool |
 | 跟进与退回 | Company lead progress, return drafts, evidence and outcomes | Review follow-up, submit return, supplement evidence | Return outcome is platform-owned |
-| 公司与人员申请 | Company profile/area/capability status, employee roster and requests | Submit profile update and employee add/disable request | Cannot grant roles or see passwords |
+| 公司信息 | Read-only service areas and receive/supply status, employee roster | View current platform configuration and contact platform for changes | Cannot request service areas or business permissions from H5 |
 | 积分与奖励 | Balance, reservations, ledger, reward status | Read-only and contact platform for recharge | Cannot recharge, adjust, or reverse |
 
 Home metrics: available points, waiting to claim, active follow-up, supplier rework required, return pending, employee requests pending.
@@ -245,6 +246,8 @@ Tradeoffs:
 - Role identity card at the bottom of desktop navigation.
 - Identity-card workspace: concise account identity, login security, and only the required governance tools (system settings, exceptions, audit) in one page.
 - Cascading service-area picker: one control containing province and city dropdowns plus multi-select district/county checkboxes; it submits only canonical region codes.
+  - Franchise detail: identity, service-area chips, receive/supply switches, account list and invitation lifecycle in one modal.
+  - Owner-binding invitation: one expiring link, copyable message, lifecycle record and a dedicated H5 confirmation page; no raw token is stored after the creation response.
   - `我的待办` priority queue card with SLA and next-owner metadata.
   - Source-aware lead status chip: source + state + next owner.
   - Decision panel with required reason/evidence fields and result preview.

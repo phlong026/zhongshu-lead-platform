@@ -1,5 +1,5 @@
 const API='/api/v1',app=document.querySelector('#app'),toastEl=document.querySelector('#toast'),modalRoot=document.querySelector('#modal-root');
-const S={me:null,view:'overview',id:'',status:'',page:1,leadSource:'',platformLeads:[],supplierLeads:[],platformLeadPage:1,supplierLeadPage:1,financeRewardPage:1,financeCompanyKeyword:'',financeCompanyStatus:'',financeCompanyPage:1,financeCompanyId:'',financeLedgerType:'',platformCities:null,platformDistricts:[],companyKeyword:'',companyLifecycleStatus:'',companyPage:1,companyStatus:'PENDING',companyCapabilityPage:1,companyAreaPage:1,telesalesUsers:null,calendarMonth:''};
+const S={me:null,view:'overview',id:'',status:'',page:1,leadSource:'',platformLeads:[],supplierLeads:[],platformLeadPage:1,supplierLeadPage:1,financeRewardPage:1,financeCompanyKeyword:'',financeCompanyStatus:'',financeCompanyPage:1,financeCompanyId:'',financeLedgerType:'',platformCities:null,platformDistricts:[],companyKeyword:'',companyLifecycleStatus:'',companyPage:1,telesalesUsers:null,calendarMonth:''};
 const P={overview:['首页','layout-dashboard',['*','dashboard.operation.read']],leads:['客资','user-check',['*','lead.manual.manage','lead.supplier.review']],telesales:['电销','phone',['*','verification.read']],dispatch:['派发','hand-claim',['*','lead.dispatch']],companies:['加盟商','building',['*','company.profile.review','company.account.manage']],returns:['异常','rotate-ccw',['*','return.read']],finance:['资金','coins',['*']],audit:['日志','search',['*','audit.read']],trace:['客资详情','file-text',['*','audit.read'],true],settings:['平台设置','settings',['*'],true],users:['内部账号','users',['*'],true],calendar:['工作日历','calendar',['*'],true],account:['账号中心','user',['*','dashboard.operation.read'],true]};
 const ADMIN_VIEW_CONTRACT={SUPER_ADMIN:['overview','leads','companies','finance'],OPERATION:['overview','leads','telesales','dispatch','companies']};
 const ROLE_HOME_PRIORITY=['SUPER_ADMIN','OPERATION'];
@@ -14,6 +14,7 @@ const EVIDENCE_LABEL={CHAT_SCREENSHOT:'沟通截图',CALL_RECORDING:'通话录�
 const AUDIT_ACTION_LABEL={AUTH_LOGIN:'登录账号',AUTH_LOGOUT:'退出账号',AUTH_USERNAME_CHANGE:'修改登录账号',AUTH_USERNAME_CHANGE_FAILED:'修改登录账号失败',FOLLOWUP_CREATE:'记录客户跟进',WECHAT_OAUTH_START_FAILED:'微信授权未完成',COMPANY_CREATE:'创建加盟商主体',COMPANY_SIMPLE_CREATE:'快速创建加盟商主体',COMPANY_ACCOUNT_CREATE:'开通加盟商人员账号',COMPANY_ACCOUNT_ENABLE:'启用加盟商人员账号',COMPANY_ACCOUNT_DISABLE:'停用加盟商人员账号',COMPANY_ACCOUNT_PASSWORD_RESET:'重置加盟商人员账号密码',POINTS_RECHARGE:'加盟商积分充值',V12_COMPANY_CAPABILITY_REQUEST:'提交加盟商能力申请',V12_PLATFORM_LEAD_DRAFT_CREATE:'新建平台客资草稿',V12_PLATFORM_LEAD_DRAFT_UPDATE:'更新平台客资草稿',V12_PLATFORM_LEAD_SUBMIT:'提交平台客资',V12_SUPPLIER_LEAD_DRAFT_CREATE:'新建加盟商客资草稿',V12_SUPPLIER_LEAD_DRAFT_UPDATE:'更新加盟商客资草稿',V12_SUPPLIER_LEAD_SUBMIT:'提交加盟商客资',V12_SUPPLIER_LEAD_REVIEW:'初审加盟商客资',V12_PRE_DISPATCH_VERIFY_ASSIGN:'派发前置电销核验',V12_PRE_DISPATCH_VERIFY_START:'开始前置电销核验',V12_PRE_DISPATCH_DIAL_CLICK:'拨打前置核验电话',V12_PRE_DISPATCH_VERIFY_SUBMIT:'提交前置核验结论',V12_PRE_DISPATCH_DISPOSITION:'运营处置前置核验结论',V12_DEDUP_OVERRIDE:'确认客资不重复',V12_MANUAL_DISPATCH:'人工派发客资',V12_ASSIGNMENT_CLAIM:'领取客资',V12_RETURN_DRAFT_SAVE:'保存退回草稿',V12_RETURN_EVIDENCE_UPLOAD:'上传申诉证据',V12_RETURN_EVIDENCE_READ:'查看申诉证据',V12_RETURN_SUBMIT:'提交退回申诉',V12_RETURN_VERIFY_ASSIGN:'分配电话核验',V12_RETURN_VERIFY_CLAIM:'领取电话核验',V12_RETURN_VERIFY_DIAL:'拨打核验电话',V12_RETURN_VERIFY_SUBMIT:'提交电话核验',V12_RETURN_FINAL_REVIEW:'完成退回终审',V12_SUPPLIER_REWARD_RULE_CREATE:'新建奖励规则',V12_SUPPLIER_REWARD_RULE_PUBLISH:'发布奖励规则',V12_SUPPLIER_REWARD_SETTLE:'结算供客奖励',V12_SUPPLIER_REWARD_SETTLE_DUE:'批量结算到期奖励',V12_SUPPLIER_REWARD_REVERSE:'撤销供客奖励'};
 Object.assign(AUDIT_ACTION_LABEL,{POINTS_ADJUST:'人工积分调账',POINTS_REVERSE:'人工积分冲正',POINTS_RECONCILE:'积分账目核对',NOTIFICATION_RETRY:'重新发送消息'});
 Object.assign(AUDIT_ACTION_LABEL,{AUTH_PASSWORD_CHANGE:'修改登录密码',AUTH_PASSWORD_CHANGE_FAILED:'修改密码失败'});
+Object.assign(AUDIT_ACTION_LABEL,{INVITE_CREATE:'发起负责人绑定邀请',INVITE_REVOKE:'撤销负责人绑定邀请',V12_COMPANY_CAPABILITY_CONFIGURE:'配置加盟商客资功能'});
 const AUDIT_RESOURCE_LABEL={user:'账号',lead:'客资',assignment:'派发单',calendar_day:'工作日历',company:'加盟商公司',company_capability:'加盟商能力',company_lead_capability:'加盟商客资能力',company_service_area:'服务区域',company_service_area_v12:'服务区域',dictionary:'业务选项',followup:'跟进记录',invite:'加盟邀请',job:'系统任务',lead_price_rule:'客资积分规则',notification:'消息',outbox:'通知任务',points_account:'积分账户',points_ledger:'积分记录',points_package:'充值档位',rbac:'账号权限',return_evidence:'申诉证据',return_request:'退回申诉',supplier_lead_reward:'供客奖励',supplier_reward:'供客奖励',supplier_reward_batch:'奖励批次',supplier_reward_rule:'供客奖励规则',sync_batch:'客资导入批次',system_config:'规则配置',verification_task:'电话核验任务',verification_template:'电话核验内容',wechat_bind:'微信绑定'};
 const EXCLUSION_REASON_LABEL={COMPANY_INACTIVE:'加盟商当前未启用',RECEIVER_CAPABILITY_REQUIRED:'尚未开通接收客资能力',SELF_SUPPLY_FORBIDDEN:'不能接收自己提交的客资',SERVICE_REGION_MISMATCH:'服务区域不匹配',DUPLICATE_TO_RECEIVER:'接收方已有相同客户',RETURNED_RECEIVER_EXCLUDED:'该公司曾领取后退回，默认不再次派发',POINTS_INSUFFICIENT:'可用积分不足'};
 const NOTIFICATION_EVENT_LABEL={ASSIGNMENT_DISPATCHED:'客资派发提醒',INVITE_CREATED:'账号开通提醒',POINTS_RECHARGED:'积分到账提醒',V12_COMPANY_PROFILE_APPROVED:'加盟商审核结果',V12_SUPPLIER_LEAD_SUBMITTED:'客资提交提醒',V12_SUPPLIER_LEAD_REJECTED:'客资补正提醒'};
@@ -363,18 +364,6 @@ function disposePreDispatch(leadId,sourceKind=''){
     };
   });
 }
-const CAPABILITY_LABEL={LEAD_SUPPLIER:'客资供应能力',LEAD_RECEIVER:'客资接收能力'};
-const cleanProfileNote=note=>String(note||'').replace(/^\[REMOVE_REQUEST\]\s*/,'');
-function capabilityReviewActions(item){
-  if(item.review_status==='PENDING')return `<button class="ops-btn primary" data-cap-company="${esc(item.company_id)}" data-cap-code="${esc(item.capability_code)}" data-cap-decision="APPROVE">通过</button> <button class="ops-btn danger" data-cap-company="${esc(item.company_id)}" data-cap-code="${esc(item.capability_code)}" data-cap-decision="REJECT">驳回</button>`;
-  if(item.review_status==='APPROVED'&&item.active)return `<button class="ops-btn danger" data-cap-company="${esc(item.company_id)}" data-cap-code="${esc(item.capability_code)}" data-cap-decision="REJECT">停用</button>`;
-  return `<button class="ops-btn primary" data-cap-company="${esc(item.company_id)}" data-cap-code="${esc(item.capability_code)}" data-cap-decision="APPROVE">重新通过</button>`;
-}
-function areaReviewActions(item){
-  if(item.review_status!=='PENDING')return '--';
-  const removal=String(item.review_note||'').startsWith('[REMOVE_REQUEST]');
-  return `<button class="ops-btn primary" data-area-id="${esc(item.id)}" data-area-decision="APPROVE">${removal?'同意移除':'通过'}</button> <button class="ops-btn danger" data-area-id="${esc(item.id)}" data-area-decision="REJECT">${removal?'驳回移除':'驳回'}</button>`;
-}
 function companyQueuePager(data,prefix,currentPage){
   const pages=Math.max(1,Math.ceil((data.total||0)/(data.page_size||20)));
   return `<div class="ops-pager"><button class="ops-btn" id="${prefix}-prev" ${currentPage<=1?'disabled':''}>上一页</button><span>${currentPage}/${pages}，共 ${data.total||0} 条</span><button class="ops-btn" id="${prefix}-next" ${currentPage>=pages?'disabled':''}>下一页</button></div>`;
@@ -498,32 +487,79 @@ function changeOwnPassword(){
   });
 }
 async function companies(){
-  const [companyPage,capabilities,areas]=await Promise.all([
-    api(`/companies${qs({keyword:S.companyKeyword,status:S.companyLifecycleStatus,page:S.companyPage,page_size:20})}`),
-    api(`/v1.2/admin/company-capabilities${qs({review_status:S.companyStatus,page:S.companyCapabilityPage,page_size:20})}`),
-    api(`/v1.2/admin/service-areas${qs({review_status:S.companyStatus,page:S.companyAreaPage,page_size:20})}`),
-  ]);
+  const companyPage=await api(`/companies${qs({keyword:S.companyKeyword,status:S.companyLifecycleStatus,page:S.companyPage,page_size:20})}`);
   const companyAssignmentSummary=summary=>{
     const byStatus=summary?.by_status||{};
     const statuses=Object.entries(byStatus).map(([status,count])=>`${label(status)} ${Number(count||0)} 条`).join('、');
     return `<small>共 ${Number(summary?.total||0)} 条</small><br><small>${esc(statuses||'暂无已派发客资')}</small>`;
   };
-  const companyRows=(companyPage.items||[]).map(company=>`<tr><td><b>${esc(company.name)}</b><br><small>${esc(company.code)}</small></td><td>${badge(company.status)}</td><td>${companyAssignmentSummary(company.assignment_summary)}</td><td>${esc(company.owner_name||'--')}</td><td><button class="ops-btn" data-company-edit="${esc(company.id)}">编辑资料</button> <button class="ops-btn primary" data-company-accounts="${esc(company.id)}" data-company-name="${esc(company.name)}">账号与人员</button></td></tr>`);
-  const capabilityRows=(capabilities.items||[]).map(item=>`<tr><td><b>${esc(item.company_name)}</b><br><small>${esc(recordCode(item.company_id,'加盟商'))}</small></td><td>${esc(CAPABILITY_LABEL[item.capability_code]||readableLabel(item.capability_code,'其他能力'))}</td><td>${badge(item.review_status)}<br><small>${item.active?'已启用':'未启用'}</small></td><td>${esc(cleanProfileNote(item.review_note)||'--')}</td><td>${fmt(item.reviewed_at)}</td><td>${capabilityReviewActions(item)} <button class="ops-btn" data-company-accounts="${esc(item.company_id)}" data-company-name="${esc(item.company_name)}">账号与人员</button></td></tr>`);
-  const areaRows=(areas.items||[]).map(item=>{const removal=String(item.review_note||'').startsWith('[REMOVE_REQUEST]');return `<tr><td><b>${esc(item.company_name)}</b><br><small>${esc(recordCode(item.company_id,'加盟商'))}</small></td><td>${esc(item.region_name||recordCode(item.region_code,'区域'))}<br><small>${esc(item.is_primary_city?'主要城市':readableLabel(item.region_level,'服务区域'))}</small></td><td>${badge(item.review_status)}<br><small>${removal&&item.active?'待移除，当前仍生效':item.active?'已生效':'未生效'}</small></td><td>${esc(cleanProfileNote(item.review_note)||'--')}</td><td>${fmt(item.reviewed_at)}</td><td>${areaReviewActions(item)}</td></tr>`});
-  shell(`<section class="ops-card company-review"><div class="ops-card-head"><div><h2>加盟商主体</h2><p>在这里新建独立加盟商主体，例如“北京合家美宅”；服务范围按省、市、区县登记，创建后立即开通接单资格并同步到加盟商 H5。</p></div><button class="ops-btn primary" id="new-franchise-company" type="button">新建加盟商</button></div><form class="ops-filter-row" id="company-filter-form"><input class="ops-input" id="company-keyword" value="${esc(S.companyKeyword)}" placeholder="搜索公司名称或编号"><select class="ops-input" id="company-lifecycle-status"><option value="" ${S.companyLifecycleStatus===''?'selected':''}>全部状态</option><option value="ACTIVE" ${S.companyLifecycleStatus==='ACTIVE'?'selected':''}>正常</option><option value="PENDING" ${S.companyLifecycleStatus==='PENDING'?'selected':''}>待审核</option><option value="DISABLED" ${S.companyLifecycleStatus==='DISABLED'?'selected':''}>已停用</option></select><button class="ops-btn primary" type="submit">查询</button><button class="ops-btn" id="company-filter-reset" type="button">重置</button></form>${table(['加盟商','公司状态','公司客资状态','负责人','操作'],companyRows)}${companyQueuePager(companyPage,'company-list',S.companyPage)}</section><section class="ops-card company-review"><div class="ops-card-head"><div><h2>加盟商能力与服务区域审核申请</h2><p>新加盟商在创建时已自动开通；这里仅处理后续提交的能力或服务区域变更。</p></div><select class="ops-input" id="company-review-status" style="width:auto"><option value="PENDING" ${S.companyStatus==='PENDING'?'selected':''}>待审核</option><option value="APPROVED" ${S.companyStatus==='APPROVED'?'selected':''}>已通过</option><option value="REJECTED" ${S.companyStatus==='REJECTED'?'selected':''}>已驳回</option></select></div><h3>公司能力（${capabilities.total||0}）</h3>${table(['加盟商','能力','状态','审核说明','审核时间','操作'],capabilityRows)}${companyQueuePager(capabilities,'capability',S.companyCapabilityPage)}</section><section class="ops-card company-review"><h3>服务区域（${areas.total||0}）</h3>${table(['加盟商','区域','状态','审核说明','审核时间','操作'],areaRows)}${companyQueuePager(areas,'area',S.companyAreaPage)}</section>`);
+  const companyRows=(companyPage.items||[]).map(company=>`<tr><td><button class="ops-company-link" data-company-detail="${esc(company.id)}" type="button">${esc(company.name)}</button><br><small>${esc(company.code)}</small></td><td>${badge(company.status)}</td><td>${companyAssignmentSummary(company.assignment_summary)}</td><td>${esc(company.owner_name||'--')}</td><td><button class="ops-btn primary" data-company-accounts="${esc(company.id)}" data-company-name="${esc(company.name)}">账号与人员</button></td></tr>`);
+  shell(`<section class="ops-card"><div class="ops-card-head"><div><h2>加盟商</h2><p>新建主体后，所选服务区域与接收客资功能会立即生效。点击加盟商名称查看服务区域、客资功能和负责人绑定状态。</p></div><button class="ops-btn primary" id="new-franchise-company" type="button">新建加盟商</button></div><form class="ops-filter-row" id="company-filter-form"><input class="ops-input" id="company-keyword" value="${esc(S.companyKeyword)}" placeholder="搜索公司名称或编号"><select class="ops-input" id="company-lifecycle-status"><option value="" ${S.companyLifecycleStatus===''?'selected':''}>全部状态</option><option value="ACTIVE" ${S.companyLifecycleStatus==='ACTIVE'?'selected':''}>正常</option><option value="PENDING" ${S.companyLifecycleStatus==='PENDING'?'selected':''}>待审核</option><option value="DISABLED" ${S.companyLifecycleStatus==='DISABLED'?'selected':''}>已停用</option></select><button class="ops-btn primary" type="submit">查询</button><button class="ops-btn" id="company-filter-reset" type="button">重置</button></form>${table(['加盟商','公司状态','已派发客资','负责人','操作'],companyRows)}${companyQueuePager(companyPage,'company-list',S.companyPage)}</section>`);
   document.querySelector('#company-filter-form').onsubmit=event=>{event.preventDefault();S.companyKeyword=document.querySelector('#company-keyword').value.trim();S.companyLifecycleStatus=document.querySelector('#company-lifecycle-status').value;S.companyPage=1;companies()};
   document.querySelector('#company-filter-reset').onclick=()=>{S.companyKeyword='';S.companyLifecycleStatus='';S.companyPage=1;companies()};
   document.querySelector('#new-franchise-company').onclick=openNewFranchiseCompany;
-  document.querySelector('#company-review-status').onchange=event=>{S.companyStatus=event.target.value;S.companyCapabilityPage=1;S.companyAreaPage=1;companies()};
   bindCompanyQueuePager(companyPage,'company-list','companyPage');
-  bindCompanyQueuePager(capabilities,'capability','companyCapabilityPage');
-  bindCompanyQueuePager(areas,'area','companyAreaPage');
-  document.querySelectorAll('[data-cap-decision]').forEach(button=>button.onclick=()=>reviewCompanyCapability(button));
-  document.querySelectorAll('[data-area-decision]').forEach(button=>button.onclick=()=>reviewCompanyArea(button));
   const companiesById=Object.fromEntries((companyPage.items||[]).map(company=>[company.id,company]));
-  document.querySelectorAll('[data-company-edit]').forEach(button=>button.onclick=()=>editCompany(companiesById[button.dataset.companyEdit]));
+  document.querySelectorAll('[data-company-detail]').forEach(button=>button.onclick=()=>companyDetail(companiesById[button.dataset.companyDetail]));
   document.querySelectorAll('[data-company-accounts]').forEach(button=>button.onclick=()=>companyAccounts(button.dataset.companyAccounts,button.dataset.companyName));
+}
+const COMPANY_CAPABILITY_LABEL={LEAD_SUPPLIER:'提供客资',LEAD_RECEIVER:'接收客资'};
+const INVITE_STATUS_LABEL={ACTIVE:'等待绑定',USED:'已完成绑定',REVOKED:'已撤销',EXPIRED:'已过期'};
+function companyCapabilitySetting(capabilities,code){
+  const item=(capabilities||[]).find(capability=>capability.capability_code===code);
+  const active=Boolean(item?.active&&item?.review_status==='APPROVED');
+  return `<article class="ops-company-capability"><div><small>${esc(COMPANY_CAPABILITY_LABEL[code])}</small><b>${active?'已开通':'未开通'}</b><p>${active?'加盟商当前可以使用此功能。':'加盟商当前无法使用此功能。'}</p></div><button class="ops-btn ${active?'danger':'primary'}" data-company-capability="${esc(code)}" data-capability-active="${active?'true':'false'}" type="button">${active?'停用功能':'开通功能'}</button></article>`;
+}
+async function companyDetail(company){
+  if(!company)return;
+  const [profile,inviteResult]=await Promise.all([
+    api(`/v1.2/admin/companies/${encodeURIComponent(company.id)}/profile`),
+    api(`/auth/companies/${encodeURIComponent(company.id)}/invites`),
+  ]);
+  const detail=profile.company;
+  const areas=(profile.service_areas||[]).filter(item=>item.active&&item.review_status==='APPROVED');
+  const activeInvite=(inviteResult.items||[]).find(item=>item.status==='ACTIVE');
+  const areaCards=areas.length?areas.map(item=>`<span class="ops-area-chip">${esc(item.region_name||recordCode(item.region_code,'区域'))}</span>`).join(''):'<span class="ops-muted">尚未配置服务区域</span>';
+  const inviteRows=(inviteResult.items||[]).slice(0,4).map(item=>`<tr><td>${badge(item.status)}<br><small>${fmt(item.created_at)}</small></td><td>${esc(item.invitee_name||detail.owner_name||'未记录')}</td><td>${fmt(item.expires_at)}</td><td>${item.status==='ACTIVE'?`<button class="ops-btn danger" data-invite-revoke="${esc(item.id)}">撤销</button>`:esc(item.used_by_name||'--')}</td></tr>`);
+  modal(`${detail.name} · 加盟商信息`,`<section class="ops-company-detail"><div class="ops-detail-grid"><div class="ops-detail"><small>主体状态</small><b>${esc(label(detail.status))}</b></div><div class="ops-detail"><small>负责人</small><b>${esc(detail.owner_name||'未填写')}</b></div><div class="ops-detail"><small>联系电话</small><b>${esc(detail.contact_phone_masked||'未填写')}</b></div><div class="ops-detail"><small>负责人微信</small><b>${detail.wechat_bound?'已绑定':'待绑定'}</b></div></div><section class="ops-company-section"><div class="ops-company-section-head"><div><h3>服务区域</h3><p>创建时已同步开通，区域内可承接平台派发的客资。</p></div></div><div class="ops-area-chips">${areaCards}</div></section><section class="ops-company-section"><div class="ops-company-section-head"><div><h3>客资功能</h3><p>由平台统一配置；加盟商仅查看与使用已开通功能。</p></div></div><div class="ops-company-capabilities">${['LEAD_RECEIVER','LEAD_SUPPLIER'].map(code=>companyCapabilitySetting(profile.capabilities,code)).join('')}</div></section><section class="ops-company-section"><div class="ops-company-section-head"><div><h3>负责人绑定</h3><p>${detail.wechat_bound?'负责人已完成微信绑定。':'生成一次性邀请后，通过微信或其他已确认渠道发送给负责人。'}</p></div>${detail.wechat_bound?'':`<button class="ops-btn primary" data-invite-create="${esc(detail.id)}">发起负责人绑定</button>`}</div>${table(['状态 / 发起时间','受邀人','有效期','操作'],inviteRows)}</section><div class="ops-actions"><button class="ops-btn" data-company-detail-edit="${esc(detail.id)}">编辑资料</button><button class="ops-btn" data-company-detail-accounts="${esc(detail.id)}">账号与人员</button></div></section>`,()=>{
+    document.querySelectorAll('[data-company-capability]').forEach(button=>button.onclick=()=>configureCompanyCapability(detail.id,button.dataset.companyCapability,button.dataset.capabilityActive!=='true',company));
+    document.querySelector('[data-invite-create]')?.addEventListener('click',()=>createCompanyInvite(detail));
+    document.querySelectorAll('[data-invite-revoke]').forEach(button=>button.onclick=()=>revokeCompanyInvite(button.dataset.inviteRevoke,company));
+    document.querySelector('[data-company-detail-edit]')?.addEventListener('click',()=>editCompany(company));
+    document.querySelector('[data-company-detail-accounts]')?.addEventListener('click',()=>companyAccounts(detail.id,detail.name));
+  });
+}
+function configureCompanyCapability(companyId,capabilityCode,active,company){
+  const name=COMPANY_CAPABILITY_LABEL[capabilityCode]||'客资功能';
+  actionForm({title:active?`开通${name}`:`停用${name}`,message:active?'开通后加盟商可以立即使用该功能。':'停用后加盟商无法继续使用该功能，不影响已留存业务记录。',labelText:'配置说明',value:active?'平台开通':'平台停用',submitLabel:active?'确认开通':'确认停用',danger:!active},async note=>{
+    await api(`/v1.2/admin/companies/${encodeURIComponent(companyId)}/capabilities/${encodeURIComponent(capabilityCode)}`,{method:'PUT',body:JSON.stringify({active,note:note||null})});
+    toast(`${name}已${active?'开通':'停用'}`);
+    await companyDetail(company);
+  });
+}
+function copyText(text,success){
+  if(!navigator.clipboard){toast('浏览器不支持自动复制，请手动复制',true);return}
+  navigator.clipboard.writeText(text).then(()=>toast(success)).catch(()=>toast('浏览器不支持自动复制，请手动复制',true));
+}
+function createCompanyInvite(company){
+  actionForm({title:'发起负责人绑定',message:'系统会生成一次性邀请链接。请通过微信或其他已确认渠道发送给负责人；平台不会在未绑定前自动发送消息。',labelText:'邀请有效期（小时）',value:'72',inputType:'number',submitLabel:'生成邀请链接',validate:value=>{const hours=Number(value);return Number.isInteger(hours)&&hours>=1&&hours<=720?'':'请输入 1 到 720 小时'}} ,async raw=>{
+    const invitation=await api(`/auth/companies/${encodeURIComponent(company.id)}/invites`,{method:'POST',body:JSON.stringify({expires_hours:Number(raw)})});
+    showCompanyInvite(invitation,company);
+  });
+}
+function showCompanyInvite(invitation,company){
+  modal('邀请链接已生成',`<div class="ops-notice">链接仅在本窗口展示一次。请复制后通过已确认的渠道发送给负责人；负责人打开后确认微信授权即可完成绑定。</div><div class="ops-detail-grid"><div class="ops-detail"><small>加盟商</small><b>${esc(invitation.company_name)}</b></div><div class="ops-detail"><small>负责人</small><b>${esc(invitation.owner_name||'待确认')}</b></div><div class="ops-detail"><small>有效期至</small><b>${fmt(invitation.expires_at)}</b></div></div><div class="ops-field"><label for="company-invite-link">邀请链接</label><textarea class="ops-textarea ops-copy-text" id="company-invite-link" readonly>${esc(invitation.url)}</textarea></div><div class="ops-field"><label for="company-invite-copy">邀请内容</label><textarea class="ops-textarea ops-copy-text" id="company-invite-copy" readonly>${esc(invitation.copy_text)}</textarea></div><div class="ops-actions"><button class="ops-btn" id="copy-company-invite-link">复制链接</button><button class="ops-btn primary" id="copy-company-invite-text">复制邀请内容</button><button class="ops-btn" id="company-invite-close">完成</button></div>`,()=>{
+    document.querySelector('#copy-company-invite-link').onclick=()=>copyText(invitation.url,'邀请链接已复制');
+    document.querySelector('#copy-company-invite-text').onclick=()=>copyText(invitation.copy_text,'邀请内容已复制');
+    document.querySelector('#company-invite-close').onclick=()=>{closeModal();companyDetail(company)};
+  });
+}
+function revokeCompanyInvite(inviteId,company){
+  actionForm({title:'撤销负责人邀请',message:'撤销后该邀请链接将立即失效，需重新发起绑定时可生成新链接。',labelText:'撤销说明',value:'负责人信息变更',submitLabel:'确认撤销',danger:true},async()=>{
+    await api(`/auth/invites/${encodeURIComponent(inviteId)}/revoke`,{method:'POST'});
+    toast('负责人邀请已撤销');
+    await companyDetail(company);
+  });
 }
 async function openNewFranchiseCompany(){
   const cities=await platformCities();
@@ -537,7 +573,7 @@ async function openNewFranchiseCompany(){
     picker.onclick=()=>{const opening=panel.hidden;panel.hidden=!opening;picker.setAttribute('aria-expanded',String(opening))};
     provinceSelect.onchange=()=>{const provinceCities=cities.filter(city=>city.province_code===provinceSelect.value);replacePlatformSelectOptions(citySelect,provinceCities,'','','请选择城市');citySelect.disabled=!provinceSelect.value;districtOptions.innerHTML='<span class="ops-muted">请先选择城市</span>';updateSummary()};
     citySelect.onchange=async()=>{const districts=await platformDistricts(citySelect.value);districtOptions.innerHTML=districts.length?districts.map(district=>`<label><input type="checkbox" name="new-franchise-district" value="${esc(district.code)}" data-name="${esc(district.name)}"> ${esc(district.name)}</label>`).join(''):'<span class="ops-muted">该城市暂无可选区县</span>';districtOptions.querySelectorAll('input').forEach(input=>input.onchange=updateSummary);updateSummary()};
-    form.onsubmit=async event=>{event.preventDefault();const name=document.querySelector('#new-franchise-name').value.trim(),primary_city_code=citySelect.value,district_codes=selectedDistrictCodes();if(name.length<2||!provinceSelect.value||!primary_city_code||!district_codes.length){toast('请填写加盟商名称并在服务范围中选择省、市及至少一个区/县',true);return}submit.disabled=true;try{const company=await api('/companies/simple',{method:'POST',body:JSON.stringify({name,owner_name:document.querySelector('#new-franchise-owner').value.trim()||null,contact_phone:document.querySelector('#new-franchise-phone').value.trim()||null,primary_city_code,district_codes,serve_all_districts:false,notes:document.querySelector('#new-franchise-notes').value.trim()||null})});closeModal();toast(`${company.name} 已创建并开通，加盟商 H5 可立即使用`);await companies()}catch(error){submit.disabled=false;toast(error.message,true)}};
+    form.onsubmit=async event=>{event.preventDefault();const name=document.querySelector('#new-franchise-name').value.trim(),primary_city_code=citySelect.value,district_codes=selectedDistrictCodes();if(name.length<2||!provinceSelect.value||!primary_city_code||!district_codes.length){toast('请填写加盟商名称并在服务范围中选择省、市及至少一个区/县',true);return}submit.disabled=true;try{const company=await api('/companies/simple',{method:'POST',body:JSON.stringify({name,owner_name:document.querySelector('#new-franchise-owner').value.trim()||null,contact_phone:document.querySelector('#new-franchise-phone').value.trim()||null,primary_city_code,district_codes,serve_all_districts:false,notes:document.querySelector('#new-franchise-notes').value.trim()||null})});closeModal();toast(`${company.name} 已创建，所选区域与接收客资已开通；请发起负责人绑定`);await companies();await companyDetail(company)}catch(error){submit.disabled=false;toast(error.message,true)}};
   });
 }
 function editCompany(company){
@@ -547,14 +583,6 @@ function editCompany(company){
     document.querySelector('#company-edit-cancel').onclick=closeModal;
     form.onsubmit=async event=>{event.preventDefault();const name=document.querySelector('#company-edit-name').value.trim(),phone=document.querySelector('#company-edit-phone').value.trim();if(name.length<2){toast('公司名称至少 2 个字符',true);return}submit.disabled=true;try{const body={name,owner_name:document.querySelector('#company-edit-owner').value.trim()||null,level_code:document.querySelector('#company-edit-level').value.trim()||'V1',status:document.querySelector('#company-edit-status').value,notes:document.querySelector('#company-edit-notes').value.trim()||null};if(phone)body.contact_phone=phone;await api(`/companies/${encodeURIComponent(company.id)}`,{method:'PATCH',body:JSON.stringify(body)});toast('加盟商资料已保存');closeModal();await companies()}catch(error){submit.disabled=false;toast(error.message,true)}};
   });
-}
-async function reviewCompanyCapability(button){
-  const decision=button.dataset.capDecision;
-  actionForm({title:decision==='REJECT'?'驳回或停用公司能力':'通过公司能力',message:'能力状态会影响加盟商能否供应或接收客资。',labelText:'审核说明',required:decision==='REJECT',minLength:2,submitLabel:decision==='REJECT'?'确认驳回或停用':'确认通过',danger:decision==='REJECT'},async note=>{await api(`/v1.2/admin/companies/${encodeURIComponent(button.dataset.capCompany)}/capabilities/${encodeURIComponent(button.dataset.capCode)}/review`,{method:'POST',body:JSON.stringify({decision,note:note||null})});toast('公司能力审核已完成');await companies()});
-}
-async function reviewCompanyArea(button){
-  const decision=button.dataset.areaDecision;
-  actionForm({title:decision==='REJECT'?'驳回服务区域':'通过服务区域',message:'移除申请在审核通过前仍保持原服务资格。',labelText:'审核说明',required:decision==='REJECT',minLength:2,submitLabel:decision==='REJECT'?'确认驳回':'确认通过',danger:decision==='REJECT'},async note=>{await api(`/v1.2/admin/service-areas/${encodeURIComponent(button.dataset.areaId)}/review`,{method:'POST',body:JSON.stringify({decision,note:note||null})});toast('服务区域审核已完成');await companies()});
 }
 const COMPANY_ACCOUNT_ROLE_LABEL={FRANCHISE_OWNER:'加盟商负责人',FRANCHISE_EMPLOYEE:'加盟商员工'};
 const isSuperAdmin=()=>primaryRole()==='SUPER_ADMIN';
