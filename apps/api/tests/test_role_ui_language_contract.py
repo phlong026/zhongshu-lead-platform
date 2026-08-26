@@ -64,6 +64,22 @@ def test_company_workbench_uses_user_language_and_real_unread_count() -> None:
     assert "url.origin!==location.origin" in source
 
 
+def test_company_workbench_opens_existing_legacy_assignment_message_links() -> None:
+    source = _read(H5, "v12-workbench.js")
+
+    assert "function legacyAssignmentLinkToken" in source
+    assert "/claims/resolve-link?token=" in source
+    assert "searchParams.set('view','assignments')" in source
+    assert "history.replaceState(null,'',url)" in source
+
+
+def test_dispatch_messages_use_the_v12_assignment_detail_route() -> None:
+    source = Path("apps/api/src/services/dispatch_service.py").read_text(encoding="utf-8")
+
+    assert 'deep_link = f"/h5/v12-workbench.html?view=assignments&id={assignment.id}"' in source
+    assert "/h5/#/link/" not in source
+
+
 def test_unified_lead_review_explains_outcomes_without_security_or_process_jargon() -> None:
     source = _read(ADMIN, "v12-operations.js")
     assert "HMAC" not in source
