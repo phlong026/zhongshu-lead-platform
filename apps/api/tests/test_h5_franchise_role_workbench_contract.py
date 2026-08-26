@@ -57,7 +57,7 @@ def test_franchise_owner_home_prioritizes_company_todos_and_internal_collaborati
 
     assert "公司待办" in source
     assert "待领取客资" in source
-    assert "待补充资料" in source
+    assert "待补资料" in source
     assert "公司内部直接分配，无需运营审批" in source
     assert "所在地" in source
     assert "预算最低（万元）" in source

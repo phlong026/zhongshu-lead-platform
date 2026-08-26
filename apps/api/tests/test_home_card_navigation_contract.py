@@ -32,10 +32,11 @@ def test_franchise_home_metrics_open_existing_business_details() -> None:
 def test_franchise_secondary_metrics_scroll_or_filter_to_existing_details() -> None:
     workbench = read(H5 / "v12-workbench.js")
 
-    assert "scroll:'company-capabilities'" in workbench
-    assert "scroll:'service-areas'" in workbench
-    assert 'id="company-capabilities"' in workbench
+    assert "scroll:'company-capabilities'" not in workbench
+    assert "scroll:'service-areas'" not in workbench
+    assert 'id="company-capabilities"' not in workbench
     assert 'id="service-areas"' in workbench
+    assert "经营区域" in workbench
     assert "REWARD_FILTERS" in workbench
     for status in ("SETTLED", "OBSERVING", "FROZEN"):
         assert f"id:'{status}'" in workbench

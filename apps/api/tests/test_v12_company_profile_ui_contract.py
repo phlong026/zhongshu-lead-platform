@@ -9,9 +9,11 @@ def test_v12_workbench_shows_platform_managed_company_profile() -> None:
 
     assert "/v1.2/company/capabilities" in js
     assert "/v1.2/company/service-areas" in js
-    assert "LEAD_RECEIVER" in js
     assert "LEAD_SUPPLIER" in js
-    assert "平台统一配置" in js
+    assert "CAPABILITY_META" not in js
+    assert 'id="company-capabilities"' not in js
+    assert 'id="wb-profile-logout"' in js
+    assert "经营区域" in js
     assert "供资功能未开通，请联系平台管理员。" in js
     assert "company.profile.manage" in js
     assert "WORKBENCH_REPORT_PERMISSIONS" in js
@@ -21,7 +23,7 @@ def test_v12_workbench_shows_platform_managed_company_profile() -> None:
     assert "data-capability-request" not in js
     assert "service-area-edit" not in js
     assert "申请/更新服务区域" not in js
-    assert "v12-workbench.js?v=20260826-decision-dashboard" in html
+    assert "v12-workbench.js?v=20260826-franchise-focus" in html
 
 
 def test_v12_operations_exposes_company_detail_and_platform_configuration() -> None:

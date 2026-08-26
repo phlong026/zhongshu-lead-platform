@@ -52,7 +52,8 @@ function toast(msg,err=false){toastBox.textContent=msg;toastBox.className=`workb
 function closeSheet(){sheet.innerHTML=''}
 function openSheet(title,html,bind){zsSetSafeHtml(sheet, `<div class="wb-overlay"><section class="wb-sheet"><div class="wb-sheet-head"><h2>${esc(title)}</h2><button class="wb-btn" id="sheet-close">关闭</button></div>${html}</section></div>`);document.querySelector('#sheet-close').onclick=closeSheet;bind?.()}
 function nav(){return franchiseTabs().map(([view,iconName,labelText])=>{const active=S.view===view||(view==='followups'&&S.view==='returns')||(view==='profile'&&S.view==='notifications');return `<button class="wb-nav ${active?'active':''}" data-nav="${view}"><span>${icon(iconName)}</span><span>${labelText}</span></button>`}).join('')}
-function shell(body){const tabs=franchiseTabs(),hasMessages=canView('notifications'),badgeCount=Number(S.unreadNotifications||0);zsSetSafeHtml(app, `<div class="workbench-shell"><header class="wb-header"><div class="wb-brand"><img class="wb-mark" src="./logo.png" alt="合家美宅"><div><strong>合家美宅</strong><small>客资管理平台</small></div></div><div class="wb-header-actions">${hasMessages?`<button class="wb-icon-btn wb-message-entry" data-go="notifications" aria-label="消息中心${badgeCount?`，${badgeCount} 条未读`:''}">${icon('bell')}${badgeCount?`<b class="wb-message-badge">${badgeCount>99?'99+':badgeCount}</b>`:''}</button>`:''}<button class="wb-icon-btn" id="wb-refresh">${icon('rotate-ccw')}<span>刷新</span></button><button class="wb-icon-btn" id="wb-logout">${icon('log-out')}<span>退出</span></button></div></header><main class="wb-main">${body}</main><nav class="wb-bottom" style="--wb-tabs:${tabs.length};grid-template-columns:repeat(${tabs.length},minmax(0,1fr))">${nav()}</nav></div>`);document.querySelectorAll('[data-nav]').forEach(b=>b.onclick=()=>go(b.dataset.nav));document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>go(b.dataset.go,b.dataset.id||''));document.querySelectorAll('[data-scroll]').forEach(b=>b.onclick=()=>document.getElementById(b.dataset.scroll)?.scrollIntoView({behavior:'smooth',block:'start'}));document.querySelector('#wb-refresh').onclick=render;document.querySelector('#wb-logout').onclick=async()=>{await api('/auth/logout',{method:'POST'}).catch(()=>{});location.replace('/h5/')}}
+async function logout(){await api('/auth/logout',{method:'POST'}).catch(()=>{});location.replace('/h5/')}
+function shell(body){const tabs=franchiseTabs(),hasMessages=canView('notifications'),badgeCount=Number(S.unreadNotifications||0);zsSetSafeHtml(app, `<div class="workbench-shell"><header class="wb-header"><div class="wb-brand"><img class="wb-mark" src="./logo.png" alt="合家美宅"><div><strong>合家美宅</strong><small>客资管理平台</small></div></div><div class="wb-header-actions">${hasMessages?`<button class="wb-icon-btn wb-message-entry" data-go="notifications" aria-label="消息中心${badgeCount?`，${badgeCount} 条未读`:''}">${icon('bell')}${badgeCount?`<b class="wb-message-badge">${badgeCount>99?'99+':badgeCount}</b>`:''}</button>`:''}</div></header><main class="wb-main">${body}</main><nav class="wb-bottom" style="--wb-tabs:${tabs.length};grid-template-columns:repeat(${tabs.length},minmax(0,1fr))">${nav()}</nav></div>`);document.querySelectorAll('[data-nav]').forEach(b=>b.onclick=()=>go(b.dataset.nav));document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>go(b.dataset.go,b.dataset.id||''));document.querySelectorAll('[data-scroll]').forEach(b=>b.onclick=()=>document.getElementById(b.dataset.scroll)?.scrollIntoView({behavior:'smooth',block:'start'}));document.querySelectorAll('[data-logout]').forEach(b=>b.onclick=logout)}
 function go(view,id=''){if(!canView(view)){toast('当前账号暂未开通该栏目');view=defaultWorkbenchView();id=''}S.view=view;S.id=id;S.page=1;const u=new URL(location.href);u.searchParams.set('view',view);id?u.searchParams.set('id',id):u.searchParams.delete('id');history.replaceState(null,'',u);render()}
 function item(title,status,body,actions=''){return `<article class="wb-item"><div class="wb-item-top"><div><h3>${esc(title)}</h3>${body}</div>${badge(status)}</div>${actions?`<div class="wb-actions">${actions}</div>`:''}</article>`}
 function metricCard(labelText,value,{view='',id='',scroll='',main=false}={}){const destination=view?`data-go="${esc(view)}"${id?` data-id="${esc(id)}"`:''}`:scroll?`data-scroll="${esc(scroll)}"`:'';return `<button type="button" class="wb-kpi${main?' main':''}" ${destination} aria-label="${esc(labelText)}：${esc(value??0)}，查看详情"><b>${esc(value??0)}</b><span>${esc(labelText)}</span><i aria-hidden="true">${icon('chevron-right')}</i></button>`}
@@ -61,7 +62,7 @@ function franchiseHomeHero({labelText,value,description,actionLabel,view}){retur
 function franchiseHomeMetrics(items){return `<section class="wb-home-metrics franchiseHomeMetrics" aria-label="业务概览">${items.map(({labelText,value,view})=>`<button type="button" class="wb-home-metric" data-go="${esc(view)}"><span>${esc(labelText)}</span><b>${esc(value)}</b></button>`).join('')}</section>`}
 function homeAssignmentRow(row){const view=row.status==='PENDING_CLAIM'&&canView('assignments')?'assignments':'followups';const customer=row.customer_name||row.lead?.customer_name||'待处理客户';const place=[row.city||row.lead?.city,row.district||row.lead?.district].filter(Boolean).join(' · ')||'地区待补充';return `<button type="button" class="wb-home-task" data-go="${view}"><span class="wb-home-task-avatar">${esc(String(customer).slice(0,1))}</span><span class="wb-home-task-copy"><b>${esc(customer)}</b><small>${esc(place)} · ${esc(readableLabel(row.status))}</small></span>${badge(row.status)}<i aria-hidden="true">${icon('chevron-right')}</i></button>`}
 function homeTaskList(rows,view,title='待处理客资'){if(!rows.length)return'';const tasks=rows.slice(0,3).map(homeAssignmentRow).join('');return `<section class="wb-home-section"><div class="wb-home-section-head"><h2>${esc(title)}</h2><button class="wb-home-link" data-go="${esc(view)}">查看全部</button></div><div class="wb-home-task-list">${tasks}</div></section>`}
-function companyTodoList({waitingClaim,following,supplyRework,returnProcessing}){const todos=[['待领取客资',waitingClaim,'有新客资等待公司领取','assignments'],['待补充资料',supplyRework,'补充后可重新提交平台审核','leads'],['客户跟进',following,'公司正在跟进的客资','followups'],['退回处理中',returnProcessing,'等待核验或平台审核结果','followups']].filter(([,count])=>Number(count)>0);if(!todos.length)return'';return `<section class="wb-home-section"><div class="wb-home-section-head"><h2>公司待办</h2><span class="wb-muted">按优先级处理</span></div><div class="wb-home-task-list">${todos.map(([name,count,description,view])=>`<button type="button" class="wb-home-task" data-go="${esc(view)}"><span class="wb-home-task-avatar">${icon(view==='assignments'?'hand-claim':view==='leads'?'plus':'clipboard-check')}</span><span class="wb-home-task-copy"><b>${esc(name)}</b><small>${esc(description)}</small></span><strong>${esc(count)} 条</strong><i aria-hidden="true">${icon('chevron-right')}</i></button>`).join('')}</div></section>`}
+function companyTodoList({waitingClaim,following,supplyRework,returnProcessing}){const todos=[['待领取客资',waitingClaim,'有客资等待领取','assignments'],['待补资料',supplyRework,'补充后重新提交','leads'],['待跟进',following,'继续联系客户','followups'],['退回处理中',returnProcessing,'等待处理结果','followups']].filter(([,count])=>Number(count)>0);if(!todos.length)return'';return `<section class="wb-home-section"><div class="wb-home-section-head"><h2>公司待办</h2><span class="wb-muted">按优先级处理</span></div><div class="wb-home-task-list">${todos.map(([name,count,description,view])=>`<button type="button" class="wb-home-task" data-go="${esc(view)}"><span class="wb-home-task-avatar">${icon(view==='assignments'?'hand-claim':view==='leads'?'plus':'clipboard-check')}</span><span class="wb-home-task-copy"><b>${esc(name)}</b><small>${esc(description)}</small></span><strong>${esc(count)} 条</strong><i aria-hidden="true">${icon('chevron-right')}</i></button>`).join('')}</div></section>`}
 async function render(){shell('<div class="wb-loading">加载中…</div>');try{if(S.view==='home')await home();else if(S.view==='profile')await profile();else if(S.view==='leads')await leadCenter();else if(S.view==='points')await points();else if(S.view==='assignments'||S.view==='followups')await assignments();else if(S.view==='returns')await returns();else if(S.view==='rewards')await rewards();else await notifications()}catch(e){shell(`<div class="wb-error">${esc(e.message)}</div>`);toast(e.message,true)}}
 async function home(){
   const companyId=S.me?.company_id;
@@ -81,57 +82,25 @@ async function home(){
   const followView='followups';
   const owner=isFranchiseOwner();
   const hero=owner
-    ?{labelText:'待领取客资',value:`${waitingClaim} 条`,description:`待补充资料 ${supplyRework} 条 · 跟进中 ${following} 条`,actionLabel:'去领取',view:'assignments'}
+    ?{labelText:'可用积分',value:`${num(account?.available_for_dispatch??account?.balance)} 分`,description:'可用于领取客资',actionLabel:'查看积分',view:'points'}
     :{labelText:'今日待跟进',value:`${following} 条`,description:'本人待处理客资',actionLabel:'继续跟进',view:followView};
-  const metrics=owner
-    ?[{labelText:'进行中',value:following,view:followView},{labelText:'待补资料',value:supplyRework,view:'leads'},{labelText:'可用积分',value:num(account?.available_for_dispatch??account?.balance),view:'points'}]
-    :[{labelText:'待跟进',value:following,view:followView},{labelText:'供资进度',value:supplierLeadTotal,view:'leads'},{labelText:'退回处理中',value:returnProcessing,view:'returns'}];
+  const secondaryMetrics=owner?'':franchiseHomeMetrics([{labelText:'待跟进',value:following,view:followView},{labelText:'供资进度',value:supplierLeadTotal,view:'leads'},{labelText:'退回处理中',value:returnProcessing,view:'returns'}]);
   const taskView=owner&&waitingClaim?'assignments':followView;
   const ownerTodos=owner?companyTodoList({waitingClaim,following,supplyRework,returnProcessing}):'';
-  shell(`${franchiseHomeGreeting()}${franchiseHomeHero(hero)}${ownerTodos}${franchiseHomeMetrics(metrics)}${homeTaskList(assignmentRows,taskView,owner?'正在处理的客资':'待处理客资')}`);
+  shell(`${franchiseHomeGreeting()}${franchiseHomeHero(hero)}${ownerTodos}${secondaryMetrics}${homeTaskList(assignmentRows,taskView,owner?'进行中的客资':'待处理客资')}`);
 }
-const CAPABILITY_META={
-  LEAD_SUPPLIER:{title:'提供客资',description:'由平台统一配置；开通后可上传客资并查看核实进度。'},
-  LEAD_RECEIVER:{title:'接收客资',description:'由平台统一配置；开通后可接收所属服务区域内的客资。'},
-};
-function capabilityCard(capabilities,code){
-  const meta=CAPABILITY_META[code];
-  const capability=capabilities.find(item=>item.capability_code===code);
-  const approved=Boolean(capability?.active&&capability?.review_status==='APPROVED');
-  const note=capability?.review_note?'<div class="wb-notice">平台说明：'+esc(capability.review_note)+'</div>':'';
-  return '<article class="wb-item"><div class="wb-item-top"><div><h3>'+esc(meta.title)+'</h3><p>'+esc(meta.description)+'</p></div>'+badge(approved?'APPROVED':'REJECTED')+'</div><div class="wb-detail-grid">'+[
-    ['当前状态',approved?'已开通':'未开通'],
-    ['当前可用',approved?'是':'否'],
-    ['配置时间',fmt(capability?.reviewed_at)],
-  ].map(([name,value])=>'<div class="wb-detail"><small>'+esc(name)+'</small><b>'+esc(value||'--')+'</b></div>').join('')+'</div>'+note+'<div class="wb-actions"><span class="wb-muted">平台统一配置；如需调整，请联系平台运营人员。</span></div></article>';
-}
+function profileIdentity(role){return `<section class="wb-card wb-profile-identity"><div class="wb-card-head"><div><h1>我的</h1><p>${esc(role)}</p></div></div><div class="wb-detail-grid"><div class="wb-detail"><small>姓名</small><b>${esc(S.me.display_name)}</b></div><div class="wb-detail"><small>登录账号</small><b>${esc(S.me.username)}</b></div></div></section>`}
+function profileLogout(){return `<section class="wb-card wb-profile-signout"><button class="wb-btn danger" id="wb-profile-logout" data-logout>${icon('log-out')}退出登录</button></section>`}
 async function profile(){
+  const identity=profileIdentity(isFranchiseOwner()?'加盟商负责人':'加盟商员工');
   if(!can('company.profile.manage')){
-    const notifications=canView('notifications')?await api('/notifications?page=1&page_size=20'):{items:[]};
-    const unread=(notifications.items||[]).filter(item=>!item.read_at).length;
-    const messages=(notifications.items||[]).slice(0,5).map(item=>`<article class="wb-item"><div class="wb-item-top"><div><h3>${esc(item.title||'系统提醒')}</h3><p>${esc(item.body||'请进入对应任务处理。')}</p><p>${fmt(item.created_at)}</p></div>${badge(item.read_at?'READ':'UNREAD')}</div></article>`).join('');
-    shell(`<section class="wb-card"><div class="wb-card-head"><div><h1>我的</h1><p>身份、消息与账号操作集中在这里。</p></div></div><div class="wb-detail-grid"><div class="wb-detail"><small>姓名</small><b>${esc(S.me.display_name)}</b></div><div class="wb-detail"><small>岗位</small><b>加盟商员工</b></div><div class="wb-detail"><small>账号</small><b>${esc(S.me.username)}</b></div><div class="wb-detail"><small>未读提醒</small><b>${unread} 条</b></div></div></section><section class="wb-card"><div class="wb-card-head"><div><h2>行动提醒</h2><p>仅展示与当前账号相关的消息。</p></div>${canView('notifications')?'<button class="wb-btn" data-go="notifications">全部消息</button>':''}</div><div class="wb-list">${messages||'<div class="wb-empty">暂无行动提醒</div>'}</div></section>`);
-    document.querySelector('[data-go="notifications"]')?.addEventListener('click',()=>go('notifications'));
+    shell(identity+profileLogout());
     return;
   }
-  const [report,capabilities,areas]=await Promise.all([
-    api('/v1.2/reports/own'),
-    api('/v1.2/company/capabilities'),
-    api('/v1.2/company/service-areas'),
-  ]);
-  const approvedCapabilities=capabilities.filter(item=>item.active&&item.review_status==='APPROVED').length;
+  const areas=await api('/v1.2/company/service-areas');
   const approvedAreas=areas.filter(item=>item.active&&item.review_status==='APPROVED').length;
-  const primaryCities=new Set(areas.filter(item=>item.is_primary_city&&item.active).map(item=>item.region_code));
-  const unreadNotifications=Number(report?.unread_notifications||0);
-  S.unreadNotifications=unreadNotifications;
-  const areaCards=areas.length?areas.map(item=>{
-    const active=Boolean(item.active&&item.review_status==='APPROVED');
-    const note=item.review_note?'<p>平台说明：'+esc(item.review_note)+'</p>':'';
-    return '<article class="wb-item"><div class="wb-item-top"><div><h3>'+esc(item.is_primary_city?'主要城市':'服务区域')+' · '+esc(item.region_name||'地区待补充')+'</h3><p>'+esc(active?'已生效':'未开通')+'</p>'+note+'<p>配置时间 '+fmt(item.reviewed_at)+'</p></div>'+badge(active?'APPROVED':'REJECTED')+'</div></article>';
-  }).join(''):'<div class="wb-empty">平台尚未配置服务区域</div>';
-  const messageCard=canView('notifications')?`<section class="wb-card wb-profile-message"><div class="wb-card-head"><div><h2>消息中心</h2><p>平台通知、审核提醒和进度更新都在这里。</p></div><button class="wb-btn primary" data-go="notifications">查看 ${unreadNotifications} 条未读消息</button></div></section>`:'';
-  shell('<section class="wb-hero"><h1>公司资料</h1><p>服务区域与客资功能由平台统一配置；如需调整，请联系平台运营人员。</p><div class="wb-kpis">'+metricCard('已开通功能',approvedCapabilities,{scroll:'company-capabilities'})+metricCard('已生效区域',approvedAreas,{scroll:'service-areas'})+metricCard('主要城市',primaryCities.size,{scroll:'service-areas'})+'</div></section>'+messageCard+'<div class="wb-profile-grid"><section class="wb-card" id="company-capabilities"><div class="wb-card-head"><div><h2>客资功能</h2><p>仅展示当前平台已配置的功能状态。</p></div></div><div class="wb-list">'+Object.keys(CAPABILITY_META).map(code=>capabilityCard(capabilities,code)).join('')+'</div></section><section class="wb-card" id="service-areas"><div class="wb-card-head"><div><h2>服务区域</h2><p>仅展示当前可经营与接收客资的区域。</p></div></div><div class="wb-list">'+areaCards+'</div></section></div>');
-  document.querySelectorAll('[data-go]').forEach(button=>button.onclick=()=>go(button.dataset.go));
+  const areaCards=approvedAreas?areas.filter(item=>item.active&&item.review_status==='APPROVED').map(item=>'<article class="wb-item"><div class="wb-item-top"><div><h3>'+esc(item.region_name||'地区待补充')+'</h3><p>'+esc(item.is_primary_city?'主要经营城市':'经营区域')+'</p></div></div></article>').join(''):'<div class="wb-empty">平台暂未配置经营区域</div>';
+  shell(identity+`<section class="wb-card" id="service-areas"><div class="wb-card-head"><div><h2>经营区域</h2><p>当前已生效 ${approvedAreas} 个区域</p></div></div><div class="wb-list">${areaCards}</div></section>`+profileLogout());
 }
 async function leadCenter(){await leads()}
 function ledgerLabel(type){return {RECHARGE:'充值入账',CLAIM:'领取扣分',RETURN:'退回返分',REWARD:'奖励到账',ADJUST:'人工调整',REVERSAL:'冲正调整'}[type]||readableLabel(type,'积分变动')}

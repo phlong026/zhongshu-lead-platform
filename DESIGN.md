@@ -162,10 +162,10 @@ Home metrics: due today, overdue, in progress, awaiting clarification, submitted
 | 领取与分配 | Pending claims, claimed leads, employee assignment status | Claim lead, assign/reassign employee | Claim is the only company-side action that spends points |
 | 供资管理 | New supply, drafts, review feedback, rework queue | Create/submit supply, assign supplier-entry work | Cannot self-approve or put leads in pool |
 | 跟进与退回 | Company lead progress, return drafts, evidence and outcomes | Review follow-up, submit return, supplement evidence | Return outcome is platform-owned |
-| 公司信息 | Read-only service areas and receive/supply status, employee roster | View current platform configuration and contact platform for changes | Cannot request service areas or business permissions from H5 |
+| 我的 | Identity, read-only operating areas, and account exit | View current service areas and exit the account | Cannot view, request, or change receive/supply permissions from H5 |
 | 积分与奖励 | Balance, reservations, ledger, reward status | Read-only and contact platform for recharge | Cannot recharge, adjust, or reverse |
 
-Franchise-supplied leads always follow: submit → telesales verification → operations disposition → ready dispatch. An invalid verification records its reason, returns the lead to the supplying franchise for revision, and never enters the dispatch pool. Franchise H5 only displays service areas and the platform-configured receive/supply switches; it cannot apply for them.
+Franchise-supplied leads always follow: submit → telesales verification → operations disposition → ready dispatch. An invalid verification records its reason, returns the lead to the supplying franchise for revision, and never enters the dispatch pool. Franchise H5 only displays current service areas and cannot apply for or change service-area or receive/supply configuration.
 
 Reward rules are intentionally separate from return decisions:
 
@@ -173,7 +173,7 @@ Reward rules are intentionally separate from return decisions:
 - A return appeal records whether the return itself is supported, while lead quality records whether the customer remains usable. If telesales confirms the customer remains usable, the original recipient continues follow-up; a confirmed-invalid lead is closed with no provider reward.
 - A separate service/processing reward is out of scope until the recipient, trigger, and compensation policy have been explicitly approved.
 
-Home metrics: available points, waiting to claim, active follow-up, supplier rework required, return pending, employee requests pending.
+Home hierarchy: available points is the single primary card; waiting claims, supplier rework, active follow-up and pending returns belong to the actionable company-todo list rather than repeated metric cards.
 
 ### Franchise employee
 
@@ -201,12 +201,12 @@ The bottom navigation is a role-specific task switcher, not a sitemap. It has at
 H5 navigation interaction rules:
 
 - The first tab is always `首页`. Its first module is `待办`, and it becomes the default focus when a user has overdue or assigned work.
-- `我的` contains identity, messages, password/help, and role-appropriate secondary settings; it is not a catch-all business menu.
+- `我的` contains identity, read-only operating areas, password/help, and the separated sign-out action; it is not a catch-all business menu. Receive/supply capability configuration remains management-only and is not repeated here.
 - The home/queue has no more than four KPI cards. Every card must lead to a filtered actionable list.
 - Return, evidence rework, company review, and telesales conclusion are deep-linked task states, not always-visible tabs.
 - A user never sees another role's workflow as an empty tab. For example, franchise staff never see points, and telesales never see dispatch.
 - H5 deep links must stay in the V1.2 role workbench and must never open legacy `/h5/index.html` or `/admin/index.html#/...` routes.
-- H5 has no standalone avatar ring. It uses the shared two-line brand at top left and a compact message bell with an unread badge at top right; identity, account, and sign-out remain under `我的`.
+- H5 has no standalone avatar ring. It uses the shared two-line brand at top left and a compact message bell with an unread badge at top right. The header has no manual refresh or sign-out action; identity, account, and a deliberately separated sign-out action remain under `我的`.
 
 ### Internal mobile page contracts
 
@@ -261,6 +261,7 @@ Tradeoffs:
 - Identity-card workspace: concise account identity, login security, and only the required governance tools (system settings, exceptions, audit) in one page.
 - Management overview: seven decision KPIs, trend chart, flow funnel, distribution chart, and a small actionable exception queue.
 - Funds overview: a prominent franchise recharge entry, current remaining points, period and cumulative recharge totals, and recent recharge records. Reward settlement, pricing rules, adjustment and the full immutable ledger are visible as secondary drill-down content.
+- Franchise H5 home: one available-points priority card, followed by the company todo list. Do not repeat rework counts as KPI cards; `待补资料` is a todo that opens the supply rework queue.
 - Compact message bell with an actionable unread-count badge.
 - Cascading service-area picker: one control containing province and city dropdowns plus multi-select district/county checkboxes; it submits only canonical region codes.
   - Franchise detail: a compact, single-screen identity card with service-area chips, receive/supply switches and owner-binding state; invitation history remains available only on demand.
