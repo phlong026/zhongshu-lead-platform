@@ -39,6 +39,10 @@ def test_v12_operations_exposes_company_detail_and_platform_configuration() -> N
     assert "/auth/companies/${encodeURIComponent(company.id)}/invites" in js
     assert "company.profile.review" in js
     assert "data-company-detail" in js
+    assert "data-company-lifecycle" in js
+    assert "删除测试主体" in js
+    assert "请准确输入加盟商编码" in js
+    assert "confirmation_code" in js
     assert "负责人绑定" in js
     assert "接收客资" in js
     assert "提供客资" in js
@@ -49,7 +53,7 @@ def test_v12_operations_exposes_company_detail_and_platform_configuration() -> N
     assert "province_code:province.code" in js
     assert "district_codes" in js
     assert "serve_all_districts:false" in js
-    assert "v12-operations.js?v=20260826-login-polish" in html
+    assert "v12-operations.js?v=20260826-company-lifecycle" in html
     assert "加盟商能力与服务区域审核申请" not in js
 
 
@@ -64,6 +68,15 @@ def test_company_invitation_has_a_dedicated_h5_confirmation_page() -> None:
     assert "authorization_url" in js
     assert "history.replaceState" in js
     assert "确认并微信绑定" in html
+
+
+def test_company_invitation_link_modal_is_not_closed_after_rendering() -> None:
+    js = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
+
+    assert "if(await onSubmit(raw)!==false)closeModal()" in js
+    invitation_start = js.index("function createCompanyInvite")
+    invitation_end = js.index("function showCompanyInvite", invitation_start)
+    assert "return false;" in js[invitation_start:invitation_end]
 
 
 def test_stage6_company_review_and_internal_collaboration_actions_are_role_scoped() -> None:

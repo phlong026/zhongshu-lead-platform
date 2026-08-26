@@ -45,6 +45,10 @@ class CompanyUpdateBody(BaseModel):
     notes: str | None = Field(default=None, max_length=500)
 
 
+class CompanyDeleteBody(BaseModel):
+    confirmation_code: str = Field(min_length=2, max_length=32)
+
+
 class DictionaryItemBody(BaseModel):
     domain: str = Field(min_length=2, max_length=64)
     code: str = Field(min_length=1, max_length=64)

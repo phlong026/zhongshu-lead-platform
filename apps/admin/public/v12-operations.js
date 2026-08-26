@@ -15,6 +15,7 @@ const AUDIT_ACTION_LABEL={AUTH_LOGIN:'登录账号',AUTH_LOGOUT:'退出账号',A
 Object.assign(AUDIT_ACTION_LABEL,{POINTS_ADJUST:'人工积分调账',POINTS_REVERSE:'人工积分冲正',POINTS_RECONCILE:'积分账目核对',NOTIFICATION_RETRY:'重新发送消息'});
 Object.assign(AUDIT_ACTION_LABEL,{AUTH_PASSWORD_CHANGE:'修改登录密码',AUTH_PASSWORD_CHANGE_FAILED:'修改密码失败'});
 Object.assign(AUDIT_ACTION_LABEL,{INVITE_CREATE:'发起负责人绑定邀请',INVITE_REVOKE:'撤销负责人绑定邀请',V12_COMPANY_CAPABILITY_CONFIGURE:'配置加盟商客资功能'});
+Object.assign(AUDIT_ACTION_LABEL,{COMPANY_ENABLE:'启用加盟商主体',COMPANY_DISABLE:'停用加盟商主体',COMPANY_DELETE:'删除测试加盟商主体'});
 const AUDIT_RESOURCE_LABEL={user:'账号',lead:'客资',assignment:'派发单',calendar_day:'工作日历',company:'加盟商公司',company_capability:'加盟商能力',company_lead_capability:'加盟商客资能力',company_service_area:'服务区域',company_service_area_v12:'服务区域',dictionary:'业务选项',followup:'跟进记录',invite:'加盟邀请',job:'系统任务',lead_price_rule:'客资积分规则',notification:'消息',outbox:'通知任务',points_account:'积分账户',points_ledger:'积分记录',points_package:'充值档位',rbac:'账号权限',return_evidence:'申诉证据',return_request:'退回申诉',supplier_lead_reward:'供客奖励',supplier_reward:'供客奖励',supplier_reward_batch:'奖励批次',supplier_reward_rule:'供客奖励规则',sync_batch:'客资导入批次',system_config:'规则配置',verification_task:'电话核验任务',verification_template:'电话核验内容',wechat_bind:'微信绑定'};
 const EXCLUSION_REASON_LABEL={COMPANY_INACTIVE:'加盟商当前未启用',RECEIVER_CAPABILITY_REQUIRED:'尚未开通接收客资能力',SELF_SUPPLY_FORBIDDEN:'不能接收自己提交的客资',SERVICE_REGION_MISMATCH:'服务区域不匹配',DUPLICATE_TO_RECEIVER:'接收方已有相同客户',RETURNED_RECEIVER_EXCLUDED:'该公司曾领取后退回，默认不再次派发',POINTS_INSUFFICIENT:'可用积分不足'};
 const NOTIFICATION_EVENT_LABEL={ASSIGNMENT_DISPATCHED:'客资派发提醒',INVITE_CREATED:'账号开通提醒',POINTS_RECHARGED:'积分到账提醒',V12_COMPANY_PROFILE_APPROVED:'加盟商审核结果',V12_SUPPLIER_LEAD_SUBMITTED:'客资提交提醒',V12_SUPPLIER_LEAD_REJECTED:'客资补正提醒'};
@@ -39,6 +40,8 @@ function actionForm(options,onSubmit){
   const {title,message='',labelText='处理说明',value='',required=false,minLength=0,inputType='textarea',submitLabel='确认提交',danger=false,validate}=options;
   const control=inputType==='number'
     ?`<input class="ops-input" id="action-value" type="number" value="${esc(value)}" inputmode="decimal">`
+    :inputType==='text'
+      ?`<input class="ops-input" id="action-value" type="text" value="${esc(value)}">`
     :`<textarea class="ops-textarea" id="action-value" placeholder="请填写${esc(labelText)}">${esc(value)}</textarea>`;
   modal(title,`<form class="ops-form" id="action-form">${message?`<div class="ops-notice">${esc(message)}</div>`:''}<div class="ops-field"><label for="action-value">${esc(labelText)}${required?' *':''}</label>${control}<small class="ops-muted" id="action-hint">${required?`至少填写 ${minLength||1} 个字符`:'可选填写，便于后续追溯'}</small></div><div class="ops-actions"><button type="button" class="ops-btn" id="action-cancel">取消</button><button class="ops-btn ${danger?'danger':'primary'}" id="action-submit">${esc(submitLabel)}</button></div></form>`,()=>{
     const form=document.querySelector('#action-form'),input=document.querySelector('#action-value'),submit=document.querySelector('#action-submit');
@@ -49,7 +52,7 @@ function actionForm(options,onSubmit){
       const validationMessage=(required&&raw.length<Math.max(1,minLength))?`请至少填写 ${Math.max(1,minLength)} 个字符`:validate?.(raw);
       if(validationMessage){toast(validationMessage,true);input.focus();return}
       submit.disabled=true;
-      try{await onSubmit(raw);closeModal()}catch(error){submit.disabled=false;toast(error.message,true)}
+      try{if(await onSubmit(raw)!==false)closeModal()}catch(error){submit.disabled=false;toast(error.message,true)}
     };
     input.focus();
   });
@@ -468,7 +471,7 @@ async function companies(){
     const statuses=Object.entries(byStatus).map(([status,count])=>`${label(status)} ${Number(count||0)} 条`).join('、');
     return `<small>共 ${Number(summary?.total||0)} 条</small><br><small>${esc(statuses||'暂无已派发客资')}</small>`;
   };
-  const companyRows=(companyPage.items||[]).map(company=>`<tr><td><button class="ops-company-link" data-company-detail="${esc(company.id)}" type="button">${esc(company.name)}</button><br><small>${esc(company.code)}</small></td><td>${badge(company.status)}</td><td>${companyAssignmentSummary(company.assignment_summary)}</td><td>${esc(company.owner_name||'--')}</td><td><button class="ops-btn primary" data-company-accounts="${esc(company.id)}" data-company-name="${esc(company.name)}">账号与人员</button></td></tr>`);
+  const companyRows=(companyPage.items||[]).map(company=>{const active=company.status==='ACTIVE',lifecycle=active?'disable':'enable',lifecycleLabel=active?'停用':'启用',deleteAction=company.can_delete?` <button class="ops-btn danger" data-company-delete="${esc(company.id)}">删除测试主体</button>`:'';return `<tr><td><button class="ops-company-link" data-company-detail="${esc(company.id)}" type="button">${esc(company.name)}</button><br><small>${esc(company.code)}</small></td><td>${badge(company.status)}</td><td>${companyAssignmentSummary(company.assignment_summary)}</td><td>${esc(company.owner_name||'--')}</td><td><button class="ops-btn ${active?'danger':'primary'}" data-company-lifecycle="${esc(company.id)}:${lifecycle}">${lifecycleLabel}</button> <button class="ops-btn primary" data-company-accounts="${esc(company.id)}" data-company-name="${esc(company.name)}">账号与人员</button>${deleteAction}</td></tr>`});
   shell(`<section class="ops-card"><div class="ops-card-head"><div><h2>加盟商</h2><p>新建主体后，所选服务区域与接收客资功能会立即生效。点击加盟商名称查看服务区域、客资功能和负责人绑定状态。</p></div><button class="ops-btn primary" id="new-franchise-company" type="button">新建加盟商</button></div><form class="ops-filter-row" id="company-filter-form"><input class="ops-input" id="company-keyword" value="${esc(S.companyKeyword)}" placeholder="搜索公司名称或编号"><select class="ops-input" id="company-lifecycle-status"><option value="" ${S.companyLifecycleStatus===''?'selected':''}>全部状态</option><option value="ACTIVE" ${S.companyLifecycleStatus==='ACTIVE'?'selected':''}>正常</option><option value="PENDING" ${S.companyLifecycleStatus==='PENDING'?'selected':''}>待审核</option><option value="DISABLED" ${S.companyLifecycleStatus==='DISABLED'?'selected':''}>已停用</option></select><button class="ops-btn primary" type="submit">查询</button><button class="ops-btn" id="company-filter-reset" type="button">重置</button></form>${table(['加盟商','公司状态','已派发客资','负责人','操作'],companyRows)}${companyQueuePager(companyPage,'company-list',S.companyPage)}</section>`);
   document.querySelector('#company-filter-form').onsubmit=event=>{event.preventDefault();S.companyKeyword=document.querySelector('#company-keyword').value.trim();S.companyLifecycleStatus=document.querySelector('#company-lifecycle-status').value;S.companyPage=1;companies()};
   document.querySelector('#company-filter-reset').onclick=()=>{S.companyKeyword='';S.companyLifecycleStatus='';S.companyPage=1;companies()};
@@ -477,6 +480,25 @@ async function companies(){
   const companiesById=Object.fromEntries((companyPage.items||[]).map(company=>[company.id,company]));
   document.querySelectorAll('[data-company-detail]').forEach(button=>button.onclick=()=>companyDetail(companiesById[button.dataset.companyDetail]));
   document.querySelectorAll('[data-company-accounts]').forEach(button=>button.onclick=()=>companyAccounts(button.dataset.companyAccounts,button.dataset.companyName));
+  document.querySelectorAll('[data-company-lifecycle]').forEach(button=>button.onclick=()=>{const [companyId,action]=button.dataset.companyLifecycle.split(':');changeCompanyLifecycle(companiesById[companyId],action)});
+  document.querySelectorAll('[data-company-delete]').forEach(button=>button.onclick=()=>deleteTestCompany(companiesById[button.dataset.companyDelete]));
+}
+function changeCompanyLifecycle(company,action){
+  if(!company)return;
+  const enabling=action==='enable';
+  actionForm({title:enabling?'启用加盟商':'停用加盟商',message:enabling?'启用后，该加盟商及其人员可重新登录和接收业务。':'停用后，该加盟商及其人员将立即无法登录、接收或处理新业务；历史数据会保留。',labelText:'操作说明',submitLabel:enabling?'确认启用':'确认停用',danger:!enabling},async()=>{
+    await api(`/companies/${encodeURIComponent(company.id)}/${enabling?'enable':'disable'}`,{method:'POST'});
+    toast(enabling?'加盟商已启用':'加盟商已停用');
+    await companies();
+  });
+}
+function deleteTestCompany(company){
+  if(!company)return;
+  actionForm({title:'删除测试加盟商',message:`此操作会永久删除“${company.name}”及其空白配置，无法恢复。只有未绑定人员且没有客资、派发、积分等业务记录的测试主体才能删除。`,labelText:'确认编码',inputType:'text',required:true,submitLabel:'确认永久删除',danger:true,validate:value=>value===company.code?'':'请准确输入加盟商编码'},async confirmation_code=>{
+    await api(`/companies/${encodeURIComponent(company.id)}`,{method:'DELETE',body:JSON.stringify({confirmation_code})});
+    toast('测试加盟商已删除');
+    await companies();
+  });
 }
 const COMPANY_CAPABILITY_LABEL={LEAD_SUPPLIER:'提供客资',LEAD_RECEIVER:'接收客资'};
 const INVITE_STATUS_LABEL={ACTIVE:'等待绑定',USED:'已完成绑定',REVOKED:'已撤销',EXPIRED:'已过期'};
@@ -526,6 +548,7 @@ function createCompanyInvite(company){
   actionForm({title:'发起负责人绑定',message:'系统会生成一次性邀请链接。请通过微信或其他已确认渠道发送给负责人；平台不会在未绑定前自动发送消息。',labelText:'邀请有效期（小时）',value:'72',inputType:'number',submitLabel:'生成邀请链接',validate:value=>{const hours=Number(value);return Number.isInteger(hours)&&hours>=1&&hours<=720?'':'请输入 1 到 720 小时'}} ,async raw=>{
     const invitation=await api(`/auth/companies/${encodeURIComponent(company.id)}/invites`,{method:'POST',body:JSON.stringify({expires_hours:Number(raw)})});
     showCompanyInvite(invitation,company);
+    return false;
   });
 }
 function showCompanyInvite(invitation,company){
@@ -559,10 +582,10 @@ async function openNewFranchiseCompany(){
 }
 function editCompany(company){
   if(!company)return;
-  modal(`编辑${company.name}资料`,`<form class="ops-form" id="company-edit-form"><div class="ops-notice">编辑与启停会保留原公司、账号及客资历史。联系电话仅在确需变更时填写，留空不会覆盖原信息。</div><div class="ops-field"><label for="company-edit-name">公司名称 *</label><input class="ops-input" id="company-edit-name" maxlength="128" value="${esc(company.name||'')}"></div><div class="ops-field"><label for="company-edit-owner">负责人</label><input class="ops-input" id="company-edit-owner" maxlength="64" value="${esc(company.owner_name||'')}"></div><div class="ops-field"><label for="company-edit-phone">联系电话</label><input class="ops-input" id="company-edit-phone" inputmode="tel" maxlength="32" placeholder="当前：${esc(company.contact_phone_masked||'未填写')}；留空不修改"></div><div class="ops-field"><label for="company-edit-level">合作等级</label><input class="ops-input" id="company-edit-level" maxlength="32" value="${esc(company.level_code||'V1')}"></div><div class="ops-field"><label for="company-edit-status">公司状态 *</label><select class="ops-input" id="company-edit-status"><option value="ACTIVE" ${company.status==='ACTIVE'?'selected':''}>正常</option><option value="PENDING" ${company.status==='PENDING'?'selected':''}>待审核</option><option value="DISABLED" ${company.status==='DISABLED'?'selected':''}>停用</option></select></div><div class="ops-field"><label for="company-edit-notes">备注</label><textarea class="ops-textarea" id="company-edit-notes" maxlength="500">${esc(company.notes||'')}</textarea></div><div class="ops-actions"><button class="ops-btn" type="button" id="company-edit-cancel">取消</button><button class="ops-btn primary" id="company-edit-submit">保存资料</button></div></form>`,()=>{
+  modal(`编辑${company.name}资料`,`<form class="ops-form" id="company-edit-form"><div class="ops-notice">编辑资料不会改变加盟商的启用状态；如需停用或恢复，请使用列表中的启用/停用按钮。联系电话仅在确需变更时填写，留空不会覆盖原信息。</div><div class="ops-field"><label for="company-edit-name">公司名称 *</label><input class="ops-input" id="company-edit-name" maxlength="128" value="${esc(company.name||'')}"></div><div class="ops-field"><label for="company-edit-owner">负责人</label><input class="ops-input" id="company-edit-owner" maxlength="64" value="${esc(company.owner_name||'')}"></div><div class="ops-field"><label for="company-edit-phone">联系电话</label><input class="ops-input" id="company-edit-phone" inputmode="tel" maxlength="32" placeholder="当前：${esc(company.contact_phone_masked||'未填写')}；留空不修改"></div><div class="ops-field"><label for="company-edit-level">合作等级</label><input class="ops-input" id="company-edit-level" maxlength="32" value="${esc(company.level_code||'V1')}"></div><div class="ops-field"><label for="company-edit-notes">备注</label><textarea class="ops-textarea" id="company-edit-notes" maxlength="500">${esc(company.notes||'')}</textarea></div><div class="ops-actions"><button class="ops-btn" type="button" id="company-edit-cancel">取消</button><button class="ops-btn primary" id="company-edit-submit">保存资料</button></div></form>`,()=>{
     const form=document.querySelector('#company-edit-form'),submit=document.querySelector('#company-edit-submit');
     document.querySelector('#company-edit-cancel').onclick=closeModal;
-    form.onsubmit=async event=>{event.preventDefault();const name=document.querySelector('#company-edit-name').value.trim(),phone=document.querySelector('#company-edit-phone').value.trim();if(name.length<2){toast('公司名称至少 2 个字符',true);return}submit.disabled=true;try{const body={name,owner_name:document.querySelector('#company-edit-owner').value.trim()||null,level_code:document.querySelector('#company-edit-level').value.trim()||'V1',status:document.querySelector('#company-edit-status').value,notes:document.querySelector('#company-edit-notes').value.trim()||null};if(phone)body.contact_phone=phone;await api(`/companies/${encodeURIComponent(company.id)}`,{method:'PATCH',body:JSON.stringify(body)});toast('加盟商资料已保存');closeModal();await companies()}catch(error){submit.disabled=false;toast(error.message,true)}};
+    form.onsubmit=async event=>{event.preventDefault();const name=document.querySelector('#company-edit-name').value.trim(),phone=document.querySelector('#company-edit-phone').value.trim();if(name.length<2){toast('公司名称至少 2 个字符',true);return}submit.disabled=true;try{const body={name,owner_name:document.querySelector('#company-edit-owner').value.trim()||null,level_code:document.querySelector('#company-edit-level').value.trim()||'V1',notes:document.querySelector('#company-edit-notes').value.trim()||null};if(phone)body.contact_phone=phone;await api(`/companies/${encodeURIComponent(company.id)}`,{method:'PATCH',body:JSON.stringify(body)});toast('加盟商资料已保存');closeModal();await companies()}catch(error){submit.disabled=false;toast(error.message,true)}};
   });
 }
 const COMPANY_ACCOUNT_ROLE_LABEL={FRANCHISE_OWNER:'加盟商负责人',FRANCHISE_EMPLOYEE:'加盟商员工'};
