@@ -154,26 +154,24 @@ WECHAT_DEV_MOCK=false
   "domain": "wechat_template",
   "key": "V12_ASSIGNMENT_DISPATCHED",
   "value": {
-    "template_id": "replace-with-approved-template-id",
+    "template_id": "lY0K9b-7pB0bOnfjOJ6zPvPeL5fm0DjPhjxhRUZt3MU",
     "field_map": {
-      "first": "title",
-      "keyword1": "scene",
-      "keyword2": "body",
-      "remark": "remark"
+      "thing1": "body",
+      "const16": "literal:家装新客资"
     }
   },
   "publish_immediately": true
 }
 ```
 
-由超级管理员通过 `POST /api/v1/system-configs` 创建。`field_map` 左侧必须与微信「我的模板」中的字段名完全一致；未填写时，为兼容旧配置，适配器仍使用 `first`、`keyword1`、`keyword2`、`remark` 的默认映射。完整的公众号后台操作与首批场景见 `docs/runbooks/WECHAT_TEMPLATE_CONFIGURATION_CHECKLIST.md`。
+由超级管理员通过 `POST /api/v1/system-configs` 创建。`field_map` 左侧必须与微信「我的模板 → 详情 → 详细内容」中 `{{...DATA}}` 的原始字段键完全一致；未填写时，为兼容旧配置，适配器仍使用 `first`、`keyword1`、`keyword2`、`remark` 的默认映射。完整的公众号后台操作与首批场景见 `docs/runbooks/WECHAT_TEMPLATE_CONFIGURATION_CHECKLIST.md`。
 
 类目模板若要求一个常量关键词，可用 `literal:` 写入固定文案。例如：
 
 ```json
 "field_map": {
   "thing1": "body",
-  "const1": "literal:家装新客资"
+  "const16": "literal:家装新客资"
 }
 ```
 

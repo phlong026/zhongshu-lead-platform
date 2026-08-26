@@ -69,8 +69,8 @@ def test_official_account_client_uses_configured_template_field_map(monkeypatch)
     }
 
 
-def test_official_account_client_supports_configured_template_literal(monkeypatch) -> None:
-    """类目模板的常量关键词可用已发布配置填充，无需滥用业务字段。"""
+def test_official_account_client_sends_v12_dispatch_template(monkeypatch) -> None:
+    """新客资派发必须使用已核验的模板 ID 与字段键，避免升级时静默错配。"""
 
     from apps.api.src.integrations.wechat import WechatOfficialAccountClient
 
@@ -102,18 +102,18 @@ def test_official_account_client_supports_configured_template_literal(monkeypatc
         title="您有一条新客资待领取",
         body="上海·浦东｜旧改客资",
         url="https://zszhj.cn/h5/#/leads",
-        template_id="approved-template-id",
-        field_map={"thing1": "body", "const1": "literal:家装新客资"},
+        template_id="lY0K9b-7pB0bOnfjOJ6zPvPeL5fm0DjPhjxhRUZt3MU",
+        field_map={"thing1": "body", "const16": "literal:家装新客资"},
     )
 
     assert result.success is True
     assert sent["json"] == {
         "touser": "o-test-user",
-        "template_id": "approved-template-id",
+        "template_id": "lY0K9b-7pB0bOnfjOJ6zPvPeL5fm0DjPhjxhRUZt3MU",
         "url": "https://zszhj.cn/h5/#/leads",
         "data": {
             "thing1": {"value": "上海·浦东｜旧改客资"},
-            "const1": {"value": "家装新客资"},
+            "const16": {"value": "家装新客资"},
         },
     }
 
