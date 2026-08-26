@@ -14,17 +14,22 @@ def test_unified_desktop_assets_load_the_single_formal_operations_shell() -> Non
     assert not (ADMIN / "index.html").exists()
 
 
-def test_unified_desktop_shell_places_identity_and_actions_in_their_role_areas() -> None:
+def test_unified_desktop_shell_keeps_one_compact_account_entry() -> None:
     script = (ADMIN / "v12-operations.js").read_text(encoding="utf-8")
     css = (ADMIN / "v12-operations.css").read_text(encoding="utf-8")
 
     assert "ops-account-zone" in script
     assert "data-account-center" in script
-    assert "data-account-settings" in script
-    assert "ops-top-actions" in script
-    assert "刷新" in script
-    assert "退出" in script
+    assert "data-account-settings" not in script
+    assert "ops-account-tools" in script
+    assert "S.me?.username||'当前账号'" in script
+    assert "ops-top-actions" not in script
+    assert "ops-personal-menu" not in script
+    assert "ops-account-workspace" not in script
+    assert "刷新账号状态" not in script
+    assert "退出当前账号" in script
     assert "ops-account-zone" in css
+    assert "ops-account-settings" not in css
     assert "ops-role-hero" in css
     assert "ops-trace-layout" in css
 

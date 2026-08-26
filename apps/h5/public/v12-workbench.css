@@ -38,19 +38,6 @@ background:linear-gradient(135deg,#3f3428,#7b6043);color:#fff;box-shadow:var(--s
   text-overflow:ellipsis;
   white-space:nowrap
 }
-.wb-home-avatar {
-  display:grid;
-  flex:none;
-  width:54px;
-  height:54px;
-  place-items:center;
-  border-radius:50%;
-  background:linear-gradient(135deg,#e8c99d,#b18258);
-  color:#624126;
-  font-size:24px;
-  font-weight:800;
-  box-shadow:0 10px 22px rgba(106,74,42,.14)
-}
 .wb-home-priority {
   position:relative;
   display:flex;

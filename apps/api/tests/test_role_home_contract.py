@@ -29,14 +29,20 @@ def test_five_roles_have_only_their_formal_workbenches() -> None:
         assert removed_role not in source
 
 
-def test_platform_workbench_keeps_identity_left_and_top_actions_operational() -> None:
+def test_platform_workbench_keeps_identity_and_account_center_on_the_left() -> None:
     source = _read(ADMIN_OPERATIONS)
 
     assert "ops-account-zone" in source
     assert "data-account-center" in source
-    assert "data-account-settings" in source
-    assert "ops-top-actions" in source
-    for label in ("刷新", "设置", "退出"):
+    assert "data-account-settings" not in source
+    assert "ops-account-tools" in source
+    assert "ROLE_IDENTITY_LABEL" in source
+    assert "修改登录账号" in source
+    assert "S.me?.username||'当前账号'" in source
+    assert "ops-personal-menu" not in source
+    assert "data-account-workspace" not in source
+    assert "ops-top" not in source[source.index("function shell"):source.index("function firstAllowedView")]
+    for label in ("安全与登录", "退出当前账号"):
         assert label in source
     assert "data-view=\"companies\"" in source
     assert "index.html" not in source
@@ -51,8 +57,8 @@ def test_operation_workbench_has_the_required_dispatch_and_account_boundaries() 
         "运营处置电销结论",
         "派发退回电话核验",
         "派发或改派原因",
-        "公司级状态",
-        "不查看加盟商内部员工的客资分配明细",
+        "加盟商主体",
+        "加盟商内部客资分配不在此页面展示",
     ):
         assert marker in source
     assert "/v1.2/admin/leads/" in source
@@ -65,8 +71,8 @@ def test_superadmin_can_manage_franchise_accounts_and_recharge_with_audit_copy()
     source = _read(ADMIN_OPERATIONS)
 
     for marker in (
-        "开通加盟商账号",
-        "重置加盟商账号密码",
+        "开通加盟商人员账号",
+        "重置加盟商人员账号密码",
         "超级管理员操作必须填写至少",
         "仅展示一次",
         "线下充值",

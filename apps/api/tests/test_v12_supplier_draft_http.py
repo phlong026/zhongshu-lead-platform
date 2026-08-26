@@ -458,9 +458,60 @@ def test_supplier_initial_review_can_require_assigned_telesales_verification(api
         assert notification is not None
 
 
+def test_supplier_qualified_submission_still_requires_telesales_before_dispatch(api_client) -> None:
+    client, factory = api_client
+    _approve_supplier_capability(factory)
+    with factory() as db:
+        telesales = db.scalar(select(User).where(User.username == "telesales"))
+        assert telesales is not None
+        publish_template(db, code="PRE_DISPATCH", name="前置事实核验", schema={"fields": []})
+        db.commit()
+        telesales_id = telesales.id
+
+    supplier = _login(client, "franchise_demo", "Franchise123!")
+    operation = _login(client, "operation", "Operation123!")
+    lead = _data(
+        client.post(
+            "/api/v1/v1.2/supplier/leads",
+            headers=supplier,
+            json=_valid_lead_body("13900139038"),
+        )
+    )
+    _data(client.post(f"/api/v1/v1.2/supplier/leads/{lead['id']}/submit", headers=supplier))
+
+    missing_assignee = client.post(
+        f"/api/v1/v1.2/admin/supplier-leads/{lead['id']}/review",
+        headers=operation,
+        json={"decision": "QUALIFIED", "note": "资料完整，仍需电话核实"},
+    )
+    assert missing_assignee.status_code == 422, missing_assignee.text
+
+    reviewed = _data(
+        client.post(
+            f"/api/v1/v1.2/admin/supplier-leads/{lead['id']}/review",
+            headers=operation,
+            json={
+                "decision": "QUALIFIED",
+                "note": "资料完整，转电销核实后才能派送",
+                "assignee_user_id": telesales_id,
+                "pre_dispatch_reason": "确认客户意向、预算和可联系时间",
+            },
+        )
+    )
+    assert reviewed["lead"]["status"] == LeadV12Status.PENDING_TELESALES_VERIFY.value
+    assert reviewed["lead"]["status"] != LeadV12Status.READY_DISPATCH.value
+    assert reviewed["task"]["assignee_user_id"] == telesales_id
+
+
 def test_supplier_approval_notification_keys_fit_outbox_limit(api_client) -> None:
     client, factory = api_client
     _approve_supplier_capability(factory)
+    with factory() as db:
+        telesales = db.scalar(select(User).where(User.username == "telesales"))
+        assert telesales is not None
+        publish_template(db, code="PRE_DISPATCH", name="前置事实核验", schema={"fields": []})
+        db.commit()
+        telesales_id = telesales.id
     supplier = _login(client, "franchise_demo", "Franchise123!")
     operation = _login(client, "operation", "Operation123!")
     lead = _data(
@@ -480,16 +531,23 @@ def test_supplier_approval_notification_keys_fit_outbox_limit(api_client) -> Non
         client.post(
             f"/api/v1/v1.2/admin/supplier-leads/{lead['id']}/review",
             headers=operation,
-            json={"decision": "QUALIFIED", "note": "资料完整，可进入待派发池"},
+            json={
+                "decision": "QUALIFIED",
+                "note": "资料完整，仍需电话核实",
+                "assignee_user_id": telesales_id,
+                "pre_dispatch_reason": "确认客户意向、预算和可联系时间",
+            },
         )
     )
-    assert reviewed["lead"]["status"] == LeadV12Status.READY_DISPATCH.value
+    assert reviewed["lead"]["status"] == LeadV12Status.PENDING_TELESALES_VERIFY.value
 
     with factory() as db:
         outboxes = db.scalars(
-            select(NotificationOutbox).where(NotificationOutbox.aggregate_id == lead["id"])
+            select(NotificationOutbox).where(
+                NotificationOutbox.aggregate_id == reviewed["task"]["id"]
+            )
         ).all()
-        assert any(item.event_type == "V12_LEAD_DISPATCH_REQUIRED" for item in outboxes)
+        assert any(item.event_type == "V12_PRE_DISPATCH_VERIFY_ASSIGNED" for item in outboxes)
         assert all(len(item.event_key) <= 128 for item in outboxes)
 
 

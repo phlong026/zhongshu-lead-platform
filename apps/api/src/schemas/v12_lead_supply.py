@@ -76,12 +76,12 @@ class SupplierReviewBody(BaseModel):
         return value.strip()
 
     @model_validator(mode="after")
-    def require_telesales_assignment_for_incomplete_information(self) -> "SupplierReviewBody":
-        if self.decision == "INFO_INCOMPLETE":
+    def require_telesales_assignment_before_supplier_dispatch(self) -> "SupplierReviewBody":
+        if self.decision in {"QUALIFIED", "APPROVE", "INFO_INCOMPLETE"}:
             if not self.note:
-                raise ValueError("资料不全时必须填写初审说明")
+                raise ValueError("派发电销核实前必须填写初审说明")
             if not self.assignee_user_id or not self.pre_dispatch_reason:
-                raise ValueError("资料不全时必须指定电销人员和核验重点")
+                raise ValueError("加盟商客资派送前必须指定电销人员和核验重点")
         elif self.decision in {"DUPLICATE", "INVALID", "REJECT"} and not self.note:
             raise ValueError("重复或无效结论必须填写初审说明")
         return self

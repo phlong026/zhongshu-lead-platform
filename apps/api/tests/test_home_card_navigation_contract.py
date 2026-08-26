@@ -63,7 +63,7 @@ def test_supplier_submodule_navigation_uses_progress_and_upload_semantics() -> N
     source = read(H5 / "v12-workbench.js")
 
     assert "leads:['供资','plus']" in source
-    assert "录入客户资料，查看审核与处理进度" in source
+    assert "提交后默认由电销核实" in source
     assert "上传第一条客资" in source
     assert "我的客资" not in source
 
@@ -99,7 +99,7 @@ def test_admin_dashboard_and_role_kpis_link_to_existing_detail_pages() -> None:
 def test_formal_admin_home_distinguishes_platform_and_operation_boundaries() -> None:
     source = read(ADMIN / "v12-operations.js")
 
-    for copy in ("客资池", "电销与派发协同", "平台治理提示", "不具备自主领取", "加盟商内部员工分配仅由公司负责人处理"):
+    for copy in ("客资流转", "电销协同", "经营流转概览", "不具备自主领取", "加盟商内部员工分配仅由公司负责人处理"):
         assert copy in source
 
 

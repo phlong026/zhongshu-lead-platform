@@ -29,6 +29,7 @@ from apps.api.src.core.models import (
 from apps.api.src.core.models_v12 import SupplierLeadReward
 from apps.api.src.services.bootstrap import seed_reference_data
 from apps.api.src.services.superadmin_bootstrap import bootstrap_superadmin
+from apps.api.src.services.verification_service import publish_template
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -324,6 +325,8 @@ def _submit_supplier_lead(
     client,
     supplier: dict[str, str],
     operation: dict[str, str],
+    telesales: dict[str, str],
+    telesales_user_id: str,
     *,
     phone: str,
     label: str,
@@ -359,10 +362,42 @@ def _submit_supplier_lead(
         client.post(
             f"/api/v1/v1.2/admin/supplier-leads/{lead_id}/review",
             headers=operation,
-            json={"decision": "APPROVE", "note": "E2E 供应客资初审通过"},
+            json={
+                "decision": "QUALIFIED",
+                "note": "E2E 供应客资初审通过，进入电话核实",
+                "assignee_user_id": telesales_user_id,
+                "pre_dispatch_reason": "E2E 确认客户意向、预算和可联系时间",
+            },
         )
     )
-    assert reviewed["lead"]["status"] == "READY_DISPATCH"
+    task_id = reviewed["task"]["id"]
+    assert reviewed["lead"]["status"] == "PENDING_TELESALES_VERIFY"
+    _data(
+        client.post(
+            f"/api/v1/v1.2/pre-dispatch-verifications/tasks/{task_id}/start",
+            headers=telesales,
+        )
+    )
+    submitted = _data(
+        client.post(
+            f"/api/v1/v1.2/pre-dispatch-verifications/tasks/{task_id}/submit",
+            headers=telesales,
+            json={
+                "contact_result": "CONNECTED",
+                "conclusion": "QUALIFIED",
+                "note": "E2E 客户确认存在装修需求且可继续跟进",
+            },
+        )
+    )
+    assert submitted["result"] == "QUALIFIED"
+    disposed = _data(
+        client.post(
+            f"/api/v1/v1.2/admin/leads/{lead_id}/pre-dispatch-disposition",
+            headers=operation,
+            json={"decision": "APPROVE_POOL", "note": "E2E 电销核实合格，进入派发池"},
+        )
+    )
+    assert disposed["status"] == "READY_DISPATCH"
     return lead_id
 
 
@@ -554,6 +589,9 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
     telesales = _login(client, "e2e_telesales", "E2E-Telesales9!")
     internal_users = _data(client.get("/api/v1/users", headers=admin))
     telesales_user_id = next(item["id"] for item in internal_users if item["username"] == "e2e_telesales")
+    with factory() as db:
+        publish_template(db, code="PRE_DISPATCH", name="E2E 前置事实核验", schema={"fields": []})
+        db.commit()
 
     supplier_company_id = _create_company(client, admin, "E2E-SUPPLIER", "E2E 供应商")
     receiver_company_id = _create_company(client, admin, "E2E-RECEIVER", "E2E 接收商")
@@ -630,6 +668,8 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
         client,
         supplier,
         operation,
+        telesales,
+        telesales_user_id,
         phone="13900001001",
         label="奖励结算",
     )
@@ -721,6 +761,8 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
         client,
         supplier,
         operation,
+        telesales,
+        telesales_user_id,
         phone="13900001002",
         label="退回通过",
     )
@@ -747,6 +789,8 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
         client,
         supplier,
         operation,
+        telesales,
+        telesales_user_id,
         phone="13900001003",
         label="退回驳回",
     )
@@ -782,6 +826,8 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
         client,
         supplier,
         operation,
+        telesales,
+        telesales_user_id,
         phone="13900001004",
         label="超期申诉",
     )
@@ -859,7 +905,17 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
         assert {item.business_id for item in reward_ledgers} == {reward_one, reward_three}
         assert db.scalar(select(func.count(NotificationOutbox.id))) >= 1
         assert db.scalar(select(func.count(AuditLog.id))) >= 30
-        assert db.scalar(select(func.count(VerificationTask.id))) == 2
+        assert db.scalar(select(func.count(VerificationTask.id))) == 6
+        assert db.scalar(
+            select(func.count(VerificationTask.id)).where(
+                VerificationTask.task_type == "PRE_DISPATCH_VERIFY"
+            )
+        ) == 4
+        assert db.scalar(
+            select(func.count(VerificationTask.id)).where(
+                VerificationTask.task_type == "RETURN_VERIFY"
+            )
+        ) == 2
         assert db.scalar(select(func.count(User.id))) == 6
         expected_negative_paths = {
             "cross_company_isolation",

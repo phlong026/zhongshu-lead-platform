@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class LoginBody(BaseModel):
@@ -11,6 +11,18 @@ class LoginBody(BaseModel):
 class ChangeOwnPasswordBody(BaseModel):
     current_password: str = Field(min_length=8, max_length=128)
     new_password: str = Field(min_length=8, max_length=128)
+
+
+class ChangeOwnUsernameBody(BaseModel):
+    current_password: str = Field(min_length=8, max_length=128)
+    username: str = Field(min_length=2, max_length=64)
+
+    @field_validator("username")
+    @classmethod
+    def reject_surrounding_whitespace(cls, value: str) -> str:
+        if value != value.strip():
+            raise ValueError("登录账号首尾不能有空格")
+        return value
 
 
 class InviteCreateBody(BaseModel):

@@ -58,8 +58,9 @@
 
 ### Shared shell rules
 
-- Desktop left sidebar: role-relevant navigation, then a fixed bottom account card with avatar, name, account, role, company where applicable, and personal actions. Platform settings is a separate control in the same lower-left zone and only appears to the super administrator.
-- Desktop top bar: page title and breadcrumb on the left; refresh and sign-out on the right. No account identity or settings entry appears in the top bar.
+- Desktop left sidebar: role-relevant navigation followed by one fixed identity card. The card shows avatar, account, role and company where applicable, and is the only entry to personal account operations.
+- Desktop business pages have no persistent top title/action bar. Each page owns its primary heading and actions inside the content area so there is no duplicated page title. Sign-out lives behind the identity card.
+- `异常` and `日志` are secondary governance surfaces reached from the identity-card workspace, not permanent business-navigation items.
 - Each list item exposes: current status, current owner, source, latest action, deadline, and a `查看全流程` entry.
 - Every detail page uses one chronological timeline. The timeline combines business actions, audit actions, points events, verification conclusions, and notification delivery state.
 - “Settings” is not a generic link. It is a named, permission-scoped navigation group.
@@ -70,9 +71,7 @@
 2. 客资总览
 3. 加盟商
 4. 资金
-5. 异常
-6. 日志
-7. 平台设置（左下角，仅内部账号、工作日历、加盟商治理）
+5. 身份卡片入口（安全、平台设置、异常与日志）
 
 ### Operations-admin information architecture
 
@@ -81,8 +80,7 @@
 3. 电销核验协同
 4. 派发中心
 5. 加盟商审核
-6. 异常与退回
-7. 业务追溯
+6. 身份卡片入口（安全、异常与日志）
 
 ### Telesales information architecture
 
@@ -244,7 +242,9 @@ Tradeoffs:
 
 - Existing components to reuse: V1.2 sidebar shell, KPI cards, table rows, status badges, modal/sheet, toast, safe HTML helpers, SVG icons.
 - New or changed components:
-  - Role identity card at the bottom of desktop navigation.
+- Role identity card at the bottom of desktop navigation.
+- Identity-card workspace: concise account identity, login security, and only the required governance tools (system settings, exceptions, audit) in one page.
+- Cascading service-area picker: one control containing province and city dropdowns plus multi-select district/county checkboxes; it submits only canonical region codes.
   - `我的待办` priority queue card with SLA and next-owner metadata.
   - Source-aware lead status chip: source + state + next owner.
   - Decision panel with required reason/evidence fields and result preview.

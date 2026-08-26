@@ -74,7 +74,7 @@ def list_companies(
 def create_company_endpoint(
     body: CompanyCreateBody,
     request: Request,
-    principal=Depends(require_permissions("*")),
+    principal=Depends(require_permissions("company.profile.review")),
     db: Session = Depends(get_db),
 ):
     company = create_company(db, body)
@@ -88,10 +88,10 @@ def create_company_endpoint(
 def create_simple_company_endpoint(
     body: CompanySimpleCreateBody,
     request: Request,
-    principal=Depends(require_permissions("*")),
+    principal=Depends(require_permissions("company.profile.review")),
     db: Session = Depends(get_db),
 ):
-    company, readiness = create_simple_company(db, body)
+    company, readiness = create_simple_company(db, body, approved_by=principal.user_id)
     write_audit(
         db,
         principal=principal,

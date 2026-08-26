@@ -31,7 +31,9 @@ def test_v12_operations_exposes_only_formal_five_role_navigation() -> None:
         assert legacy_marker not in source
     assert "ops-account-zone" in source
     assert "data-account-center" in source
-    assert "ops-top-actions" in source
+    assert "ops-top-actions" not in source
+    assert "ops-personal-menu" not in source
+    assert "data-account-tool" in source
     assert "company.account.manage" in source
     assert "/points/recharge" in source
 

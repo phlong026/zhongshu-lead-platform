@@ -34,6 +34,7 @@ from ..services.company_profile_v12 import (
     review_service_area,
 )
 from ..services.dedup_v12 import override_duplicate
+from ..services.china_regions import region_by_code
 from ..services.lead_supply_v12 import (
     create_draft,
     discard_draft,
@@ -103,10 +104,17 @@ def _area_dict(
     company_name: str | None = None,
     company_code: str | None = None,
 ) -> dict:
+    region = region_by_code(item.region_code)
+    region_name = None
+    if region is not None:
+        region_name = " · ".join(
+            part for part in (region["city_name"], region["district_name"]) if part
+        )
     result = {
         "id": item.id,
         "company_id": item.company_id,
         "region_code": item.region_code,
+        "region_name": region_name,
         "region_level": item.region_level,
         "is_primary_city": item.is_primary_city,
         "active": item.active,
@@ -414,15 +422,16 @@ def admin_review_supplier_lead(
         body.decision,
         body.decision,
     )
+    requires_telesales = review_decision in {"QUALIFIED", "INFO_INCOMPLETE"}
     result = review_supplier_lead(
         db,
         lead=lead,
         reviewer=principal,
-        decision=review_decision,
+        decision="INFO_INCOMPLETE" if requires_telesales else review_decision,
         note=body.note,
     )
     task = None
-    if review_decision == "INFO_INCOMPLETE":
+    if requires_telesales:
         assignment = assign_pre_dispatch_task(
             db,
             lead_id=lead.id,
@@ -466,7 +475,7 @@ def admin_review_supplier_lead(
             "dedup": _dedup_dict(result),
             "task": _pre_dispatch_task_dict(task) if task else None,
         },
-        "资料初审已完成",
+        "已派发电销核实" if task is not None else "资料初审已完成",
     )
 
 

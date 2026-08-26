@@ -32,6 +32,7 @@ from ..core.time import as_utc
 from ..integrations.wechat import WechatOAuthClient
 from ..schemas.auth import (
     ChangeOwnPasswordBody,
+    ChangeOwnUsernameBody,
     InviteConfirmStartBody,
     InviteCreateBody,
     LoginBody,
@@ -414,6 +415,55 @@ def change_own_password(
         ),
     )
     return ok(request, message="密码已更新，其他登录会话已失效")
+
+
+@router.post("/change-username")
+def change_own_username(
+    body: ChangeOwnUsernameBody,
+    request: Request,
+    principal: CurrentPrincipal,
+    db: Annotated[Session, Depends(get_db)],
+):
+    user = db.get(User, principal.user_id)
+    if user is None or not verify_password(body.current_password, user.password_hash):
+        write_audit(
+            db,
+            principal=principal,
+            action="AUTH_USERNAME_CHANGE_FAILED",
+            resource_type="user",
+            resource_id=principal.user_id,
+            metadata={"reason_code": "CURRENT_PASSWORD_INVALID"},
+            request_id=request.state.request_id,
+            ip_address=_request_ip(request),
+            user_agent=request.headers.get("user-agent"),
+        )
+        db.commit()
+        raise AppError("AUTH_CURRENT_PASSWORD_INVALID", "当前密码不正确", 422)
+    if user.username == body.username:
+        return ok(request, {"username": user.username}, "登录账号未变化")
+    if db.scalar(select(User.id).where(User.username == body.username, User.id != user.id)):
+        raise AppError("AUTH_USERNAME_EXISTS", "该登录账号已被使用", 409)
+
+    previous_username = user.username
+    user.username = body.username
+    write_audit(
+        db,
+        principal=principal,
+        action="AUTH_USERNAME_CHANGE",
+        resource_type="user",
+        resource_id=user.id,
+        before={"username": previous_username},
+        after={"username": user.username},
+        request_id=request.state.request_id,
+        ip_address=_request_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise AppError("AUTH_USERNAME_EXISTS", "该登录账号已被使用", 409) from exc
+    return ok(request, {"username": user.username}, "登录账号已更新")
 
 
 @router.get("/me")

@@ -46,6 +46,12 @@ def test_franchise_h5_keeps_role_specific_two_character_navigation() -> None:
     assert "grid-template-columns:repeat(${tabs.length},minmax(0,1fr))" in source
 
 
+def test_employee_deep_links_canonicalize_to_the_allowed_followup_page() -> None:
+    source = Path("apps/h5/public/v12-workbench.js").read_text(encoding="utf-8")
+
+    assert "if(!isFranchiseOwner()&&S.view==='assignments'){S.view='followups';u.searchParams.set('view','followups');history.replaceState(null,'',u)}" in source
+
+
 def test_franchise_owner_home_prioritizes_company_todos_and_internal_collaboration() -> None:
     source = Path("apps/h5/public/v12-workbench.js").read_text(encoding="utf-8")
 

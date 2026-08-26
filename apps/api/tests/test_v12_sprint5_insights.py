@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from sqlalchemy import select
+
+from apps.api.src.core.models import AuditLog
+
 
 def login(client, username: str, password: str) -> None:
     response = client.post(
@@ -131,6 +135,36 @@ def test_platform_user_can_change_own_password_and_keep_current_session(api_clie
         "/api/v1/auth/login",
         json={"username": "operation", "password": "Operation456!"},
     ).status_code == 200
+
+
+def test_platform_user_can_change_own_username_and_keep_current_session(api_client):
+    client, factory = api_client
+    login(client, "operation", "Operation123!")
+
+    response = client.post(
+        "/api/v1/auth/change-username",
+        json={"current_password": "Operation123!", "username": "operation-renamed"},
+    )
+
+    assert response.status_code == 200, response.text
+    client.headers.pop("Authorization", None)
+    assert client.get("/api/v1/auth/me").json()["data"]["username"] == "operation-renamed"
+    assert client.post(
+        "/api/v1/auth/login",
+        json={"username": "operation", "password": "Operation123!"},
+    ).status_code == 401
+    assert client.post(
+        "/api/v1/auth/login",
+        json={"username": "operation-renamed", "password": "Operation123!"},
+    ).status_code == 200
+
+    with factory() as db:
+        audit = db.scalar(
+            select(AuditLog).where(AuditLog.action == "AUTH_USERNAME_CHANGE").order_by(AuditLog.created_at.desc())
+        )
+        assert audit is not None
+        assert audit.before_json == {"username": "operation"}
+        assert audit.after_json == {"username": "operation-renamed"}
 
 
 def test_franchise_has_company_report_but_not_platform_overview(api_client):
