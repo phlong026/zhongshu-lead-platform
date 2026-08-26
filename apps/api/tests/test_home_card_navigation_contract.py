@@ -64,7 +64,8 @@ def test_supplier_submodule_navigation_uses_progress_and_upload_semantics() -> N
     source = read(H5 / "v12-workbench.js")
 
     assert "leads:['供资','plus']" in source
-    assert "提交后默认由电销核实" in source
+    assert "供资暂未开通" in source
+    assert "提交后默认由电销核实" not in source
     assert "上传第一条客资" in source
     assert "我的客资" not in source
 

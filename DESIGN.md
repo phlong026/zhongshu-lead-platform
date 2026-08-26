@@ -162,7 +162,7 @@ Home metrics: due today, overdue, in progress, awaiting clarification, submitted
 | 领取与分配 | Pending claims, claimed leads, employee assignment status | Claim lead, assign/reassign employee | Claim is the only company-side action that spends points |
 | 供资管理 | New supply, drafts, review feedback, rework queue | Create/submit supply, assign supplier-entry work | Cannot self-approve or put leads in pool |
 | 跟进与退回 | Company lead progress, return drafts, evidence and outcomes | Review follow-up, submit return, supplement evidence | Return outcome is platform-owned |
-| 我的 | Identity, read-only operating areas, and account exit | View current service areas and exit the account | Cannot view, request, or change receive/supply permissions from H5 |
+| 我的 | Identity, company association, login account/password, read-only operating areas, and account exit | Change own login account/password, view current service areas, and exit the account | Cannot view, request, or change receive/supply permissions from H5 |
 | 积分与奖励 | Balance, reservations, ledger, reward status | Read-only and contact platform for recharge | Cannot recharge, adjust, or reverse |
 
 Franchise-supplied leads always follow: submit → telesales verification → operations disposition → ready dispatch. An invalid verification records its reason, returns the lead to the supplying franchise for revision, and never enters the dispatch pool. Franchise H5 only displays current service areas and cannot apply for or change service-area or receive/supply configuration.
@@ -201,7 +201,7 @@ The bottom navigation is a role-specific task switcher, not a sitemap. It has at
 H5 navigation interaction rules:
 
 - The first tab is always `首页`. Its first module is `待办`, and it becomes the default focus when a user has overdue or assigned work.
-- `我的` contains identity, read-only operating areas, password/help, and the separated sign-out action; it is not a catch-all business menu. Receive/supply capability configuration remains management-only and is not repeated here.
+- `我的` contains identity, company association, login account/password, read-only operating areas, and the separated sign-out action; it is not a catch-all business menu. Receive/supply capability configuration, repeated messages, and placeholder help entries are not repeated here.
 - The home/queue has no more than four KPI cards. Every card must lead to a filtered actionable list.
 - Return, evidence rework, company review, and telesales conclusion are deep-linked task states, not always-visible tabs.
 - A user never sees another role's workflow as an empty tab. For example, franchise staff never see points, and telesales never see dispatch.
@@ -262,6 +262,8 @@ Tradeoffs:
 - Management overview: seven decision KPIs, trend chart, flow funnel, distribution chart, and a small actionable exception queue.
 - Funds overview: a prominent franchise recharge entry, current remaining points, period and cumulative recharge totals, and recent recharge records. Reward settlement, pricing rules, adjustment and the full immutable ledger are visible as secondary drill-down content.
 - Franchise H5 home: one available-points priority card, followed by the company todo list. Do not repeat rework counts as KPI cards; `待补资料` is a todo that opens the supply rework queue.
+- Franchise H5 account: one compact identity card, then account security and operating areas. Reuse the existing self-service username/password APIs; do not invent profile settings, support contacts, or capability switches without a working backend action.
+- Franchise H5 supply: an action-first title row, one progress filter, and the lead list. Do not place the telesales/dispatch process explanation in the page header; when supply is unavailable, display one compact unavailable state only.
 - Compact message bell with an actionable unread-count badge.
 - Cascading service-area picker: one control containing province and city dropdowns plus multi-select district/county checkboxes; it submits only canonical region codes.
   - Franchise detail: a compact, single-screen identity card with service-area chips, receive/supply switches and owner-binding state; invitation history remains available only on demand.
@@ -306,7 +308,7 @@ Tradeoffs:
   - Use “事实核验结论”, not “审核通过/驳回” for telesales.
   - Use “退回加盟商补正” for source-data rework and “退回申请” for a receiver’s post-claim appeal.
   - Use “待派发池”, “待领取”, “跟进中”, “待补证”, and “已关闭”.
-- Microcopy rules: each irreversible button names its result; require an explanatory reason when rejecting, returning, closing, adjusting points, or changing access.
+- Microcopy rules: each irreversible button names its result; require an explanatory reason when rejecting, returning, closing, adjusting points, or changing access. Page headers do not repeat background permissions, review flows, or data-scope explanations; retain only one concise unavailable/error state and legally required consent or evidence guidance.
 
 ## Implementation constraints
 

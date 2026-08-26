@@ -46,6 +46,27 @@ def test_franchise_profile_removes_platform_capability_display_and_moves_logout_
     assert "经营区域" in source
 
 
+def test_franchise_profile_keeps_only_account_security_and_operating_information() -> None:
+    source = read("apps/h5/public/v12-workbench.js")
+
+    assert "账户与安全" in source
+    assert 'id="profile-username"' in source
+    assert 'id="profile-password"' in source
+    assert "/auth/change-username" in source
+    assert "/auth/change-password" in source
+    assert "S.me?.company_name" in source
+
+
+def test_franchise_pages_do_not_repeat_background_or_permission_explanations() -> None:
+    source = read("apps/h5/public/v12-workbench.js")
+
+    assert "只展示当前账号可处理的跟进和退回任务。" not in source
+    assert "负责人可在公司内部直接分配，无需运营审批；员工仅可看到分配给自己的客资。" not in source
+    assert "提交后默认由电销核实；无效客资将附原因退回修改，核实通过后才可派送。" not in source
+    assert "供资功能未开通，请联系平台管理员。" not in source
+    assert "供资暂未开通" in source
+
+
 def test_telesales_home_uses_the_same_mobile_priority_hierarchy() -> None:
     source = read("apps/call-h5/public/app.js")
 
