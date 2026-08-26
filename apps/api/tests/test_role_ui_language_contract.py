@@ -56,7 +56,8 @@ def test_company_workbench_uses_user_language_and_real_unread_count() -> None:
         assert developer_copy not in source
     assert "unread_notifications" in source
     assert "x.read_at?'READ':'UNREAD'" in source
-    assert "未读消息" in source
+    assert "wb-message-entry" in source
+    assert "wb-message-badge" in source
     assert "已读" in source
     assert "未读" in source
     assert "function safeDeepLink" in source
