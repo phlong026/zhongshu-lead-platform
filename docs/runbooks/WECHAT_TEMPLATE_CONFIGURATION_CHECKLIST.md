@@ -56,6 +56,7 @@
 | `scene` | 平台事件 key，用于审计与排障 |
 | `body` | 该笔业务的地点、时限、原因或结果摘要 |
 | `remark` | 固定的“点击查看详情”提示 |
+| `literal:固定文案` | 为类目模板的常量关键词写入固定文字，例如 `literal:家装新客资` |
 
 旧配置只有 `template_id` 时，系统继续按 `first`、`keyword1`、`keyword2`、`remark` 的默认映射发送；新模板应始终显式填写 `field_map`，避免换模板后字段错配。
 

@@ -69,6 +69,55 @@ def test_official_account_client_uses_configured_template_field_map(monkeypatch)
     }
 
 
+def test_official_account_client_supports_configured_template_literal(monkeypatch) -> None:
+    """类目模板的常量关键词可用已发布配置填充，无需滥用业务字段。"""
+
+    from apps.api.src.integrations.wechat import WechatOfficialAccountClient
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict[str, int]:
+            return {"errcode": 0, "msgid": 124}
+
+    sent: dict[str, object] = {}
+
+    def fake_post(url: str, *, json: dict[str, object], timeout: int):
+        sent["json"] = json
+        return _Response()
+
+    monkeypatch.setattr(wechat_module.settings, "wechat_dev_mock", False)
+    monkeypatch.setattr(wechat_module.httpx, "post", fake_post)
+    client = WechatOfficialAccountClient()
+    client._access_token = "test-access-token"
+    client._expires_at = (
+        wechat_module.datetime.now(wechat_module.timezone.utc)
+        + wechat_module.timedelta(hours=1)
+    )
+
+    result = client.send_scene_message(
+        openid="o-test-user",
+        scene="V12_ASSIGNMENT_DISPATCHED",
+        title="您有一条新客资待领取",
+        body="上海·浦东｜旧改客资",
+        url="https://zszhj.cn/h5/#/leads",
+        template_id="approved-template-id",
+        field_map={"thing1": "body", "const1": "literal:家装新客资"},
+    )
+
+    assert result.success is True
+    assert sent["json"] == {
+        "touser": "o-test-user",
+        "template_id": "approved-template-id",
+        "url": "https://zszhj.cn/h5/#/leads",
+        "data": {
+            "thing1": {"value": "上海·浦东｜旧改客资"},
+            "const1": {"value": "家装新客资"},
+        },
+    }
+
+
 def test_official_account_client_rejects_unknown_template_field_source(monkeypatch) -> None:
     from apps.api.src.integrations.wechat import WechatOfficialAccountClient
 
