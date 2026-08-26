@@ -41,5 +41,6 @@ def test_browser_smoke_covers_only_the_formal_role_workbenches() -> None:
     assert 'page.locator(".ops-account-card").click()' in script
     assert 'page.locator("#account-username")' in script
     assert 'page.locator(".ops-account-card").click()' in script
-    assert 'data-account-tool="settings"' in script
-    assert "系统设置" in script
+    assert 'page.wait_for_selector("#new-franchise-company"' in script
+    assert 'page.get_by_role("heading", name="平台设置")' in script
+    assert "data-account-tool=\"settings\"" not in script

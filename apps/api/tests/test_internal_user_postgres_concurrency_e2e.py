@@ -65,7 +65,11 @@ def test_postgres_serializes_concurrent_superadmin_demotions() -> None:
                     update_internal_roles(
                         db,
                         user_id=user_id,
-                        role_codes=["OWNER"],
+                        # OWNER is a retired role.  A demotion must keep the
+                        # account on one of the current internal roles so this
+                        # test exercises advisory-lock serialization instead
+                        # of role validation.
+                        role_codes=["OPERATION"],
                     )
                     db.commit()
                     return "UPDATED"

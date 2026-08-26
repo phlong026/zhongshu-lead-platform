@@ -137,7 +137,10 @@ def _admin_smoke(browser: Browser, base_url: str, output: Path, errors: list[str
         page.screenshot(path=str(trace_screenshot), full_page=True)
         page.locator('.ops-menu [data-view="companies"]').click()
         page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=companies")
-        page.wait_for_selector(".company-review", timeout=15000)
+        # New franchisees become active immediately.  The former review queue
+        # was removed from the business flow, so this verifies the current
+        # company-management entry instead of a retired approval card.
+        page.wait_for_selector("#new-franchise-company", timeout=15000)
         account_button = page.locator("[data-company-accounts]").first
         if account_button.count():
             account_button.click()
@@ -160,18 +163,17 @@ def _admin_smoke(browser: Browser, base_url: str, output: Path, errors: list[str
         page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=account")
         page.locator("#account-username").wait_for(timeout=15000)
         page.get_by_role("heading", name="安全与登录").wait_for(timeout=15000)
-        page.locator('[data-account-tool="settings"]').click()
-        page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=settings")
-        page.get_by_text("系统设置", exact=True).wait_for(timeout=15000)
-        settings_screenshot = output / "v12-admin-settings.png"
-        page.screenshot(path=str(settings_screenshot), full_page=True)
+        page.get_by_role("heading", name="平台设置").wait_for(timeout=15000)
+        page.locator('[data-view="users"]').wait_for(timeout=15000)
+        account_screenshot = output / "v12-admin-account.png"
+        page.screenshot(path=str(account_screenshot), full_page=True)
         return {
             "valid": True,
             "title": page.title(),
             "navigation_count": page.locator(".ops-menu [data-view]").count(),
             "overview_screenshot": str(overview_screenshot),
             "trace_screenshot": str(trace_screenshot),
-            "settings_screenshot": str(settings_screenshot),
+            "account_screenshot": str(account_screenshot),
             "browser_history_valid": True,
         }
     finally:
