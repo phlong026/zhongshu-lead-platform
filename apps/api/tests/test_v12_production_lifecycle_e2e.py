@@ -210,6 +210,8 @@ def _bind_franchise(
             json={"expires_hours": 24},
         )
     )
+    # 负责人邀请必须在不带任何已登录平台会话的微信浏览器中打开。
+    client.cookies.clear()
     confirm = _data(
         client.post(
             "/api/v1/auth/invites/confirm-start",

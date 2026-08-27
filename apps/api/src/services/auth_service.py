@@ -225,6 +225,21 @@ def authenticate_internal(db: Session, username: str, password: str) -> Internal
             lock_released=lock_released,
         )
 
+    if user.company_id:
+        company = db.get(Company, user.company_id)
+        if company is None or company.status != "ACTIVE":
+            if state is not None:
+                _clear_login_state(state)
+            raise InternalAuthError(
+                "AUTH_COMPANY_DISABLED",
+                "加盟商已停用，暂时无法登录",
+                403,
+                audit_action="AUTH_LOGIN_BLOCKED",
+                user_id=user.id,
+                failure_count=state.failed_count if state else 0,
+                lock_released=lock_released,
+            )
+
     if state is not None:
         _clear_login_state(state)
     user.last_login_at = datetime.now(timezone.utc)
@@ -561,6 +576,13 @@ def _login_bound_identity(
     company = db.get(Company, user.company_id) if user.company_id else None
     if not company or company.status != "ACTIVE":
         raise AppError("AUTH_COMPANY_DISABLED", "加盟商公司不可用", 403)
+    role_codes = role_codes_for_user(user)
+    if role_codes != ["FRANCHISE_OWNER"] or company.primary_user_id != user.id:
+        raise AppError(
+            "AUTH_WECHAT_IDENTITY_CONFLICT",
+            "该微信身份与加盟商负责人记录不一致，请联系平台处理",
+            409,
+        )
     if invite_token or invite_id:
         invite = validate_invite(db, raw_token=invite_token, invite_id=invite_id)
         if expected_company_id and invite.company_id != expected_company_id:
@@ -578,7 +600,7 @@ def _login_bound_identity(
     identity.unionid = unionid or identity.unionid
     identity.nickname = nickname or identity.nickname
     user.last_login_at = utcnow()
-    token = create_access_token(user.id, user.session_version, role_codes_for_user(user), company.id)
+    token = create_access_token(user.id, user.session_version, role_codes, company.id)
     return user, token
 
 

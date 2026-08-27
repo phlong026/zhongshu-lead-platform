@@ -130,12 +130,42 @@ function emptyState(title, description) {
 async function auth() {
   try {
     me = await api('/auth/me');
-    if (!me.roles.includes('TELESALES')) throw new Error('当前账号不是电销人员');
+    if (redirectWrongWorkbenchRole()) return false;
     return true;
   } catch (error) {
-    renderLogin(error.code ? '' : error.message);
+    if (['AUTH_REQUIRED', 'AUTH_INVALID'].includes(error.code)) renderLogin();
+    else renderLoadError(error.message);
     return false;
   }
+}
+
+function redirectWrongWorkbenchRole() {
+  const roles = new Set(me?.roles || []);
+  if (roles.has('TELESALES')) return false;
+  if (roles.has('SUPER_ADMIN') || roles.has('OPERATION')) {
+    location.replace('/h5/admin/');
+    return true;
+  }
+  if (roles.has('FRANCHISE_OWNER') || roles.has('FRANCHISE_EMPLOYEE')) {
+    location.replace('/h5/');
+    return true;
+  }
+  renderAccessDenied();
+  return true;
+}
+
+function renderAccessDenied() {
+  zsSetSafeHtml(app, `<section class="login"><div class="panel login-card"><h1>无权访问</h1><p>当前账号没有可用的电销角色，请联系管理员核对。</p></div></section>`);
+}
+
+function renderLoadError(message = '页面加载失败') {
+  zsSetSafeHtml(app, `<section class="login"><div class="panel login-card"><h1>暂时无法加载</h1><p>${esc(message)}</p><button class="btn primary block" id="retry-route">重试</button></div></section>`);
+  document.querySelector('#retry-route').onclick = route;
+}
+
+function renderInvalidLink() {
+  zsSetSafeHtml(app, `<section class="login"><div class="panel login-card"><h1>链接已失效</h1><p>该任务链接已迁移或不完整，请从本人任务列表重新进入。</p><button class="btn primary block" id="return-call-home">返回电销首页</button></div></section>`);
+  document.querySelector('#return-call-home').onclick = () => go('home');
 }
 
 function renderLogin(message = '') {
@@ -294,7 +324,7 @@ async function profile() {
   if (!await auth()) return;
   zsSetSafeHtml(app, shell(`<h1>我的工作台</h1><section class="card"><div class="brand"><img src="./logo.png" alt="合家美宅"><div>${esc(me.display_name)}<small>电销人员</small></div></div><dl class="detail"><div><dt>工作范围</dt><dd>仅查看和处理运营派发给您的任务；不具备自主领取、转派、派发、终审、退款或积分操作权限。</dd></div></dl></section><section class="card"><button id="logout" class="btn danger block">退出登录</button></section>`, 'profile', '个人中心'));
   bind();
-  document.querySelector('#logout').onclick = async () => { await api('/auth/logout', { method: 'POST' }).catch(() => {}); me = null; location.hash = '#/home'; await route(); };
+  document.querySelector('#logout').onclick = async () => { try { await api('/auth/logout', { method: 'POST' }); me = null; location.hash = '#/home'; await route(); } catch (error) { toast(`退出失败：${error.message}`, 'error'); } };
 }
 
 async function route() {
@@ -305,7 +335,7 @@ async function route() {
     if (parts[0] === 'records') return await records();
     if (parts[0] === 'task' && parts[1] && parts[2]) return await task(parts[1], parts[2]);
     if (parts[0] === 'profile') return await profile();
-    return await home();
+    return renderInvalidLink();
   } catch (error) { toast(error.message || '加载失败', 'error'); }
 }
 

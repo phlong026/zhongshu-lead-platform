@@ -29,7 +29,7 @@ const franchiseTabs=()=>FRANCHISE_NAV[franchiseRole()]||[];
 const canReadAssignments=()=>can('assignment.own.read')||can('assignment.employee.read');
 const HOME_ASSIGNMENT_STATUSES=['PENDING_CLAIM','CLAIMED','FOLLOWING','RETURN_PENDING'];
 const greetingName=value=>{const name=String(value||'').trim();return name.length>6?`${name.slice(0,6)}…`:name};
-function safeDeepLink(raw){const value=String(raw||'').trim();if(!value)return '';try{const url=new URL(value,location.origin);if(url.origin!==location.origin||(!url.pathname.startsWith('/h5/')&&!url.pathname.startsWith('/admin/')))return '';return `${url.pathname}${url.search}${url.hash}`}catch{return ''}}
+function safeDeepLink(raw){const value=String(raw||'').trim();if(!value)return '';try{const url=new URL(value,location.origin);if(url.origin!==location.origin||!url.pathname.startsWith('/h5/'))return '';return `${url.pathname}${url.search}${url.hash}`}catch{return ''}}
 function legacyAssignmentLinkToken(hash=location.hash){const match=String(hash||'').match(/^#\/link\/([^/?#]+)$/);return match?match[1]:''}
 async function resolveLegacyAssignmentMessageLink(){const token=legacyAssignmentLinkToken();if(!token)return'';const url=new URL(location.href);url.hash='';try{const resolved=await api(`/claims/resolve-link?token=${encodeURIComponent(token)}`);const assignmentId=String(resolved?.assignment_id||'').trim();if(!assignmentId)throw new Error('消息链接未找到对应客资');url.searchParams.set('view','assignments');url.searchParams.set('id',assignmentId);history.replaceState(null,'',url);return''}catch(error){history.replaceState(null,'',url);return error.message||'消息链接已失效，请从接收列表查看客资'}}
 const WORKBENCH_REPORT_PERMISSIONS=['assignment.own.read','assignment.employee.read','supplier.lead.manage','supplier.reward.own.read','points.own.read'];
@@ -51,12 +51,13 @@ function defaultWorkbenchView(){
   if(canView('returns'))return 'returns';
   return 'home';
 }
+function redirectWrongWorkbenchRole(){const roles=new Set(S.me?.roles||[]);if(roles.has('FRANCHISE_OWNER')||roles.has('FRANCHISE_EMPLOYEE'))return false;if(roles.has('TELESALES'))location.replace('/h5/call/');else if(roles.has('SUPER_ADMIN')||roles.has('OPERATION'))location.replace('/h5/admin/');else renderLoadError('当前账号没有可用的业务角色，请联系管理员核对');return true}
 async function api(path,opt={}){const h={...(opt.headers||{})};if(opt.body&&!(opt.body instanceof FormData))h['Content-Type']='application/json';const r=await fetch(API+path,{...opt,headers:h,credentials:'include'});let j={};try{j=await r.json()}catch{}if(!r.ok||j.code!=='OK'){const error=new Error(j.message||'请求失败');error.code=j.code;throw error}return j.data}
 function toast(msg,err=false){toastBox.textContent=msg;toastBox.className=`workbench-toast show ${err?'error':''}`;clearTimeout(toast.t);toast.t=setTimeout(()=>toastBox.className='workbench-toast',2200)}
 function closeSheet(){sheet.innerHTML=''}
 function openSheet(title,html,bind){zsSetSafeHtml(sheet, `<div class="wb-overlay"><section class="wb-sheet"><div class="wb-sheet-head"><h2>${esc(title)}</h2><button class="wb-btn" id="sheet-close">关闭</button></div>${html}</section></div>`);document.querySelector('#sheet-close').onclick=closeSheet;bind?.()}
 function nav(){return franchiseTabs().map(([view,iconName,labelText])=>{const active=S.view===view||(view==='followups'&&S.view==='returns')||(view==='profile'&&S.view==='notifications');return `<button class="wb-nav ${active?'active':''}" data-nav="${view}"><span>${icon(iconName)}</span><span>${labelText}</span></button>`}).join('')}
-async function logout(){await api('/auth/logout',{method:'POST'}).catch(()=>{});location.replace('/h5/')}
+async function logout(){try{await api('/auth/logout',{method:'POST'});location.replace('/h5/')}catch(error){toast(`退出失败：${error.message}`,true)}}
 function shell(body){const tabs=franchiseTabs(),hasMessages=canView('notifications'),badgeCount=Number(S.unreadNotifications||0);zsSetSafeHtml(app, `<div class="workbench-shell"><header class="wb-header"><div class="wb-brand"><img class="wb-mark" src="./logo.png" alt="合家美宅"><div><strong>合家美宅</strong><small>客资管理平台</small></div></div><div class="wb-header-actions">${hasMessages?`<button class="wb-icon-btn wb-message-entry" data-go="notifications" aria-label="消息中心${badgeCount?`，${badgeCount} 条未读`:''}">${icon('bell')}${badgeCount?`<b class="wb-message-badge">${badgeCount>99?'99+':badgeCount}</b>`:''}</button>`:''}</div></header><main class="wb-main">${body}</main><nav class="wb-bottom" style="--wb-tabs:${tabs.length};grid-template-columns:repeat(${tabs.length},minmax(0,1fr))">${nav()}</nav></div>`);document.querySelectorAll('[data-nav]').forEach(b=>b.onclick=()=>go(b.dataset.nav));document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>go(b.dataset.go,b.dataset.id||''));document.querySelectorAll('[data-scroll]').forEach(b=>b.onclick=()=>document.getElementById(b.dataset.scroll)?.scrollIntoView({behavior:'smooth',block:'start'}));document.querySelectorAll('[data-logout]').forEach(b=>b.onclick=logout)}
 function go(view,id=''){if(!canView(view)){toast('当前账号暂未开通该栏目');view=defaultWorkbenchView();id=''}S.view=view;S.id=id;S.page=1;const u=new URL(location.href);u.searchParams.set('view',view);id?u.searchParams.set('id',id):u.searchParams.delete('id');history.replaceState(null,'',u);render()}
 function item(title,status,body,actions=''){return `<article class="wb-item"><div class="wb-item-top"><div><h3>${esc(title)}</h3>${body}</div>${badge(status)}</div>${actions?`<div class="wb-actions">${actions}</div>`:''}</article>`}
@@ -469,4 +470,34 @@ function renderLogin(message=''){
     }catch(error){submit.disabled=false;toast(error.message,true)}
   };
 }
-async function boot(){try{S.me=await api('/auth/me');const legacyLinkError=await resolveLegacyAssignmentMessageLink();const u=new URL(location.href);const fallbackView=defaultWorkbenchView();S.view=u.searchParams.get('view')||fallbackView;S.id=u.searchParams.get('id')||'';S.view=({lead:'leads',assignment:'assignments',return:'returns',reward:'rewards',notification:'notifications'}[S.view]||S.view);if(!isFranchiseOwner()&&S.view==='assignments'){S.view='followups';u.searchParams.set('view','followups');history.replaceState(null,'',u)}if(S.view==='leads'&&S.id==='supply')S.id='';if(!VIEWS[S.view]||!canView(S.view))S.view=fallbackView;render();if(legacyLinkError)toast(legacyLinkError,true)}catch(error){renderLogin(error.message||'请登录后继续')}}boot();
+function renderLoadError(message){zsSetSafeHtml(app,`<main class="wb-auth"><section class="wb-login"><h1>页面加载失败</h1><p>${esc(message||'暂时无法加载，请稍后重试')}</p><button class="wb-btn primary" id="workbench-retry" type="button">重新加载</button></section></main>`);document.querySelector('#workbench-retry').onclick=()=>location.reload()}
+function renderInvalidLink(message='该页面链接已迁移或不完整，请从工作台首页重新进入。'){
+  zsSetSafeHtml(app,`<main class="wb-auth"><section class="wb-login"><h1>链接已失效</h1><p>${esc(message)}</p><button class="wb-btn primary" id="return-workbench-home" type="button">返回首页</button></section></main>`);
+  document.querySelector('#return-workbench-home').onclick=()=>go(defaultWorkbenchView());
+}
+async function boot(){
+  try{
+    S.me=await api('/auth/me');
+    if(redirectWrongWorkbenchRole())return;
+    const legacyLinkError=await resolveLegacyAssignmentMessageLink();
+    const u=new URL(location.href);
+    const fallbackView=defaultWorkbenchView();
+    S.view=u.searchParams.get('view')||fallbackView;
+    S.id=u.searchParams.get('id')||'';
+    S.view=({lead:'leads',assignment:'assignments',return:'returns',reward:'rewards',notification:'notifications'}[S.view]||S.view);
+    if(!VIEWS[S.view])return renderInvalidLink();
+    if(!isFranchiseOwner()&&S.view==='assignments'){
+      S.view='followups';
+      u.searchParams.set('view','followups');
+      history.replaceState(null,'',u);
+    }
+    if(S.view==='leads'&&S.id==='supply')S.id='';
+    if(!canView(S.view))return renderInvalidLink('当前账号未开通该栏目，请联系管理员核对权限。');
+    render();
+    if(legacyLinkError)toast(legacyLinkError,true);
+  }catch(error){
+    if(['AUTH_REQUIRED','AUTH_INVALID'].includes(error.code))renderLogin(error.message||'请登录后继续');
+    else renderLoadError(error.message);
+  }
+}
+boot();

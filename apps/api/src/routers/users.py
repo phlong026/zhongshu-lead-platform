@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
@@ -11,14 +13,17 @@ from ..schemas.auth import PasswordResetBody
 from ..services.audit import write_audit
 from ..services.internal_user_management import (
     create_managed_internal_user,
+    delete_test_internal_user,
     generate_initial_password,
     list_internal_users,
+    mark_internal_user_as_test,
     reset_internal_password,
     set_internal_user_status,
     update_internal_roles,
 )
 
 router = APIRouter(prefix="/users", tags=["users"])
+logger = logging.getLogger(__name__)
 
 
 class UserCreateBody(BaseModel):
@@ -28,6 +33,7 @@ class UserCreateBody(BaseModel):
     role_codes: list[str] | None = Field(default=None, min_length=1, max_length=1)
     role_code: str | None = None
     company_id: str | None = None
+    is_test: bool = False
 
     @model_validator(mode="after")
     def resolve_role_contract(self) -> "UserCreateBody":
@@ -45,12 +51,18 @@ class UserRolesBody(BaseModel):
     role_codes: list[str] = Field(min_length=1, max_length=1)
 
 
+class InternalUserDestructiveBody(BaseModel):
+    confirm_username: str = Field(min_length=2, max_length=64)
+    reason: str = Field(min_length=2, max_length=500)
+
+
 def _serialize_user(user) -> dict:
     return {
         "id": user.id,
         "username": user.username,
         "display_name": user.display_name,
         "status": user.status,
+        "is_test": user.is_test,
         "company_id": user.company_id,
         "roles": sorted(role.code for role in user.roles),
         "session_version": user.session_version,
@@ -81,6 +93,7 @@ def create_user(
         display_name=body.display_name,
         role_codes=body.resolved_role_codes(),
         company_id=body.company_id,
+        is_test=body.is_test,
     )
     write_audit(
         db,
@@ -93,6 +106,7 @@ def create_user(
             "display_name": user.display_name,
             "roles": sorted(role.code for role in user.roles),
             "status": user.status,
+            "is_test": user.is_test,
         },
         request_id=request.state.request_id,
     )
@@ -132,6 +146,74 @@ def update_roles(
         )
         db.commit()
     return ok(request, _serialize_user(user))
+
+
+@router.post("/{user_id}/mark-test")
+def mark_test_user(
+    user_id: str,
+    body: InternalUserDestructiveBody,
+    request: Request,
+    principal=Depends(require_permissions("*")),
+    db: Session = Depends(get_db),
+):
+    user, counts, changed = mark_internal_user_as_test(
+        db,
+        user_id=user_id,
+        confirm_username=body.confirm_username,
+    )
+    if changed:
+        write_audit(
+            db,
+            principal=principal,
+            action="USER_TEST_MARK",
+            resource_type="user",
+            resource_id=user.id,
+            before={"is_test": False},
+            after={"is_test": True},
+            metadata={"business_reference_counts": counts},
+            reason=body.reason,
+            request_id=request.state.request_id,
+        )
+        db.commit()
+        logger.warning(
+            "internal user marked as test user_id=%s actor_user_id=%s",
+            user.id,
+            principal.user_id,
+        )
+    return ok(request, _serialize_user(user))
+
+
+@router.delete("/{user_id}")
+def delete_internal_user(
+    user_id: str,
+    body: InternalUserDestructiveBody,
+    request: Request,
+    principal=Depends(require_permissions("*")),
+    db: Session = Depends(get_db),
+):
+    snapshot = delete_test_internal_user(
+        db,
+        user_id=user_id,
+        confirm_username=body.confirm_username,
+    )
+    write_audit(
+        db,
+        principal=principal,
+        action="USER_TEST_DELETE",
+        resource_type="user",
+        resource_id=user_id,
+        before=snapshot,
+        after={"deleted": True},
+        reason=body.reason,
+        request_id=request.state.request_id,
+    )
+    db.commit()
+    logger.warning(
+        "internal test user deleted user_id=%s actor_user_id=%s",
+        user_id,
+        principal.user_id,
+    )
+    return ok(request, {"id": user_id, "deleted": True})
 
 
 def _change_status(
