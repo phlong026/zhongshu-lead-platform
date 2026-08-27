@@ -182,7 +182,8 @@ def _run_lifecycle(database_url: str, evidence_path: str, junit_xml: str) -> int
         }
     )
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", *TARGET_TESTS, "--junitxml", str(junit)],
+        ["python", "-m", "pytest", "-q", *TARGET_TESTS, "--junitxml", str(junit)],
+        executable=sys.executable,
         cwd=ROOT,
         text=True,
         env=env,
