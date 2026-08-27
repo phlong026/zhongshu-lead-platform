@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from sqlalchemy import func, select
 
@@ -12,6 +13,17 @@ from apps.api.src.core.v12_enums import LeadV12Status
 from apps.api.src.schemas.company import CompanyCreateBody
 from apps.api.src.services.auth_service import create_internal_user
 from apps.api.src.services.company_service import create_company
+
+
+ROOT = Path(__file__).resolve().parents[3]
+
+
+def test_followup_deal_option_uses_shared_business_label() -> None:
+    source = (ROOT / "apps" / "h5" / "public" / "v12-workbench.js").read_text(encoding="utf-8")
+    followup_form = source[source.index("function followupDraft") : source.index("function returnDraft")]
+
+    assert "${esc(readableLabel('DEAL'))}" in followup_form
+    assert ">已成交</option>" not in followup_form
 
 
 def _login(client, username: str, password: str) -> dict[str, str]:

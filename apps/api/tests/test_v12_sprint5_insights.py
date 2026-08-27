@@ -1,8 +1,22 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from datetime import datetime, timedelta, timezone
 
-from apps.api.src.core.models import AuditLog, Company, PointsAccount, PointsLedger
+from sqlalchemy import event, func, select
+
+from apps.api.src.core.models import (
+    Assignment,
+    AuditLog,
+    Company,
+    FollowUp,
+    Lead,
+    PointsAccount,
+    PointsLedger,
+    ReturnRequest,
+    User,
+)
+from apps.api.src.core.models_v12 import SupplierLeadReward
+from apps.api.src.services.points_service import reverse_ledger
 
 
 def login(client, username: str, password: str) -> None:
@@ -89,6 +103,189 @@ def test_superadmin_can_read_management_and_finance_decision_dashboards(api_clie
     assert finance_data["recharge_summary"]["total_recharge_count"] >= 1
     assert finance_data["recharge_summary"]["remaining_points"] >= 345
     assert any(record["external_reference"] == "TEST-FINANCE-RECHARGE" for record in finance_data["recharge"]["recent_records"])
+
+
+def _dashboard_lead(*, name: str, created_at: datetime, status: str = "READY_DISPATCH") -> Lead:
+    return Lead(
+        source_type="H5",
+        source_kind="SUPPLIER_H5",
+        customer_name=name,
+        phone_encrypted=f"encrypted-{name}",
+        phone_hash=f"hash-{name}",
+        status=status,
+        created_at=created_at,
+        updated_at=created_at,
+    )
+
+
+def test_management_dashboard_uses_each_new_lead_cohort_for_effective_rate(api_client) -> None:
+    client, factory = api_client
+    login(client, "admin", "Admin123!")
+    cohort_at = datetime.now(timezone.utc) - timedelta(days=20)
+
+    with factory() as db:
+        company = db.scalar(select(Company).where(Company.status == "ACTIVE"))
+        actor = db.scalar(select(User).where(User.username == "admin"))
+        assert company is not None and actor is not None
+
+        completed_lead = _dashboard_lead(name="同批已完成", created_at=cohort_at)
+        pending_lead = _dashboard_lead(
+            name="同批待审核",
+            created_at=cohort_at,
+            status="PENDING_REVIEW",
+        )
+        old_lead_one = _dashboard_lead(
+            name="旧批次一",
+            created_at=cohort_at - timedelta(days=60),
+        )
+        old_lead_two = _dashboard_lead(
+            name="旧批次二",
+            created_at=cohort_at - timedelta(days=61),
+        )
+        db.add_all([completed_lead, pending_lead, old_lead_one, old_lead_two])
+        db.flush()
+
+        completed_assignment = Assignment(
+            lead_id=completed_lead.id,
+            company_id=company.id,
+            status="COMPLETED",
+            points_price=100,
+            assigned_by=actor.id,
+        )
+        old_assignments = [
+            Assignment(
+                lead_id=lead.id,
+                company_id=company.id,
+                status="FOLLOWING",
+                points_price=100,
+                assigned_by=actor.id,
+            )
+            for lead in (old_lead_one, old_lead_two)
+        ]
+        db.add_all([completed_assignment, *old_assignments])
+        db.flush()
+        db.add_all(
+            [
+                FollowUp(
+                    assignment_id=assignment.id,
+                    company_id=company.id,
+                    status="DEAL",
+                    created_by=actor.id,
+                    created_at=cohort_at,
+                )
+                for assignment in old_assignments
+            ]
+        )
+        expected_pending = int(
+            db.scalar(
+                select(func.count(Lead.id)).where(
+                    Lead.source_kind.is_not(None),
+                    Lead.status.in_(
+                        (
+                            "PENDING_REVIEW",
+                            "PENDING_TELESALES_VERIFY",
+                            "PENDING_OPERATION_DISPOSITION",
+                        )
+                    ),
+                )
+            )
+            or 0
+        )
+        db.commit()
+
+    response = client.get("/api/v1/v1.2/reports/management-dashboard?days=30")
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    cohort = next(item for item in data["trend"] if item["date"] == cohort_at.date().isoformat())
+    assert cohort == {
+        "date": cohort_at.date().isoformat(),
+        "new_leads": 2,
+        "effective_completed": 1,
+        "effective_rate": 50.0,
+    }
+    assert data["kpis"]["pending_verification"] == expected_pending
+
+
+def test_decision_dashboards_do_not_materialize_unbounded_business_entities(api_client) -> None:
+    client, _factory = api_client
+    login(client, "admin", "Admin123!")
+    loaded: list[str] = []
+    tracked = (Lead, Assignment, ReturnRequest, SupplierLeadReward, PointsLedger)
+
+    def remember_loaded(target, _context) -> None:
+        loaded.append(type(target).__name__)
+
+    for model in tracked:
+        event.listen(model, "load", remember_loaded)
+    try:
+        management = client.get("/api/v1/v1.2/reports/management-dashboard?days=30")
+        finance = client.get("/api/v1/v1.2/reports/finance-dashboard?days=30")
+    finally:
+        for model in tracked:
+            event.remove(model, "load", remember_loaded)
+
+    assert management.status_code == 200, management.text
+    assert finance.status_code == 200, finance.text
+    assert loaded == []
+
+
+def test_finance_dashboard_nets_reversed_recharges_and_marks_recent_record(api_client) -> None:
+    client, factory = api_client
+    login(client, "admin", "Admin123!")
+    before = client.get("/api/v1/v1.2/reports/finance-dashboard?days=30")
+    assert before.status_code == 200, before.text
+    baseline = before.json()["data"]["recharge_summary"]
+
+    with factory() as db:
+        actor = db.scalar(select(User).where(User.username == "admin"))
+        assert actor is not None
+        company = Company(code="REVERSED-DASHBOARD", name="冲正看板测试加盟商", status="ACTIVE")
+        db.add(company)
+        db.flush()
+        account = PointsAccount(company_id=company.id, balance=500)
+        db.add(account)
+        db.flush()
+        recharge = PointsLedger(
+            account_id=account.id,
+            company_id=company.id,
+            ledger_type="RECHARGE",
+            delta=500,
+            balance_after=500,
+            business_type="TEST",
+            business_id="reversed-finance-dashboard",
+            idempotency_key="reversed-finance-dashboard-recharge",
+            external_reference="TEST-FINANCE-REVERSED",
+        )
+        db.add(recharge)
+        db.flush()
+        reverse_ledger(
+            db,
+            recharge,
+            reason="看板冲正口径回归测试",
+            idempotency_key="reversed-finance-dashboard-reversal",
+            created_by=actor.id,
+        )
+        db.commit()
+
+    response = client.get("/api/v1/v1.2/reports/finance-dashboard?days=30")
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    summary = data["recharge_summary"]
+    assert summary["period_recharged_points"] == baseline["period_recharged_points"]
+    assert summary["period_recharge_count"] == baseline["period_recharge_count"]
+    assert summary["total_recharged_points"] == baseline["total_recharged_points"]
+    assert summary["total_recharge_count"] == baseline["total_recharge_count"]
+    record = next(
+        item
+        for item in data["recharge"]["recent_records"]
+        if item["external_reference"] == "TEST-FINANCE-REVERSED"
+    )
+    assert record["original_points"] == 500
+    assert record["points"] == 0
+    assert record["reversed"] is True
+    assert record["reversed_at"]
 
 
 def test_operation_can_read_report_and_audit_after_sprint5_rbac(api_client):

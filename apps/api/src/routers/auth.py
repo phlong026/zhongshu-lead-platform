@@ -26,7 +26,6 @@ from ..core.security import (
     decode_signed_state,
     hash_password,
     validate_internal_password,
-    verify_password,
 )
 from ..core.time import as_utc
 from ..integrations.wechat import WechatOAuthClient
@@ -48,6 +47,7 @@ from ..services.auth_service import (
     login_or_bind_wechat,
     revoke_company_invite,
     validate_invite,
+    verify_internal_password_for_sensitive_action,
 )
 from ..services.notification_service import enqueue_outbox
 
@@ -187,6 +187,36 @@ def _set_session_cookie(response: Response, token: str) -> None:
         max_age=settings.jwt_expire_minutes * 60,
         path="/",
     )
+
+
+def _verify_current_password_or_audit(
+    db: Session,
+    *,
+    user: User | None,
+    password: str,
+    principal: CurrentPrincipal,
+    action: str,
+    request: Request,
+) -> None:
+    try:
+        if user is None:
+            raise AppError("AUTH_CURRENT_PASSWORD_INVALID", "当前密码不正确", 422)
+        verify_internal_password_for_sensitive_action(db, user, password)
+    except AppError as exc:
+        if exc.code in {"AUTH_CURRENT_PASSWORD_INVALID", "AUTH_SENSITIVE_ACTION_LOCKED"}:
+            write_audit(
+                db,
+                principal=principal,
+                action=action,
+                resource_type="user",
+                resource_id=principal.user_id,
+                metadata={"reason_code": exc.code, **dict(exc.details or {})},
+                request_id=request.state.request_id,
+                ip_address=_request_ip(request),
+                user_agent=request.headers.get("user-agent"),
+            )
+            db.commit()
+        raise
 
 
 def _resolve_binding_intent(state: str) -> tuple[str | None, str | None, str]:
@@ -369,21 +399,16 @@ def change_own_password(
     principal: CurrentPrincipal,
     db: Annotated[Session, Depends(get_db)],
 ):
-    user = db.get(User, principal.user_id)
-    if user is None or not verify_password(body.current_password, user.password_hash):
-        write_audit(
-            db,
-            principal=principal,
-            action="AUTH_PASSWORD_CHANGE_FAILED",
-            resource_type="user",
-            resource_id=principal.user_id,
-            metadata={"reason_code": "CURRENT_PASSWORD_INVALID"},
-            request_id=request.state.request_id,
-            ip_address=_request_ip(request),
-            user_agent=request.headers.get("user-agent"),
-        )
-        db.commit()
-        raise AppError("AUTH_CURRENT_PASSWORD_INVALID", "当前密码不正确", 422)
+    user = db.scalar(select(User).where(User.id == principal.user_id).with_for_update())
+    _verify_current_password_or_audit(
+        db,
+        user=user,
+        password=body.current_password,
+        principal=principal,
+        action="AUTH_PASSWORD_CHANGE_FAILED",
+        request=request,
+    )
+    assert user is not None
     try:
         validate_internal_password(body.new_password)
     except ValueError as exc:
@@ -424,21 +449,16 @@ def change_own_username(
     principal: CurrentPrincipal,
     db: Annotated[Session, Depends(get_db)],
 ):
-    user = db.get(User, principal.user_id)
-    if user is None or not verify_password(body.current_password, user.password_hash):
-        write_audit(
-            db,
-            principal=principal,
-            action="AUTH_USERNAME_CHANGE_FAILED",
-            resource_type="user",
-            resource_id=principal.user_id,
-            metadata={"reason_code": "CURRENT_PASSWORD_INVALID"},
-            request_id=request.state.request_id,
-            ip_address=_request_ip(request),
-            user_agent=request.headers.get("user-agent"),
-        )
-        db.commit()
-        raise AppError("AUTH_CURRENT_PASSWORD_INVALID", "当前密码不正确", 422)
+    user = db.scalar(select(User).where(User.id == principal.user_id).with_for_update())
+    _verify_current_password_or_audit(
+        db,
+        user=user,
+        password=body.current_password,
+        principal=principal,
+        action="AUTH_USERNAME_CHANGE_FAILED",
+        request=request,
+    )
+    assert user is not None
     if user.username == body.username:
         return ok(request, {"username": user.username}, "登录账号未变化")
     if db.scalar(select(User.id).where(User.username == body.username, User.id != user.id)):
@@ -525,7 +545,7 @@ def create_invite(
     db.commit()
     company = db.get(Company, company_id)
     assert company is not None
-    url = f"{settings.app_base_url.rstrip('/')}/h5/invite.html?invite={raw}"
+    url = f"{settings.app_base_url.rstrip('/')}/h5/invite.html#invite={raw}"
     expires_at = invite.expires_at.isoformat()
     return ok(
         request,

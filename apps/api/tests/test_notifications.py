@@ -3,14 +3,99 @@ import json
 from sqlalchemy import select
 
 import apps.api.src.integrations.wechat as wechat_module
-from apps.api.src.core.models import NotificationOutbox, SystemConfig
+from apps.api.src.core.models import Notification, NotificationOutbox, SystemConfig, User
 from apps.api.src.schemas.company import CompanyCreateBody
 from apps.api.src.services.auth_service import create_internal_user
 from apps.api.src.services.company_service import create_company
 from apps.api.src.services.notification_service import enqueue_outbox
-from apps.api.src.services.outbox_worker import process_outbox
+from apps.api.src.services.outbox_worker import _default_title, process_outbox
 # I19/N13：admin 登录头与 test_auth_company 单一来源，不再手写样板。
 from test_auth_company import _admin_headers
+
+
+def test_notification_list_returns_total_unread_independent_of_current_page(api_client) -> None:
+    client, factory = api_client
+    headers = _admin_headers(client)
+
+    with factory() as db:
+        actor = db.scalar(select(User).where(User.username == "admin"))
+        assert actor is not None
+        db.add_all(
+            [
+                Notification(
+                    user_id=actor.id,
+                    company_id=None,
+                    scene=f"TEST_UNREAD_{index}",
+                    title=f"未读消息 {index}",
+                    body="用于验证分页外总未读数",
+                    deep_link=None,
+                    status="CREATED",
+                )
+                for index in range(3)
+            ]
+        )
+        db.commit()
+
+    response = client.get("/api/v1/notifications?page=1&page_size=1", headers=headers)
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert len(data["items"]) == 1
+    assert data["unread_total"] >= 3
+
+
+def test_publish_wechat_template_config_rejects_invalid_field_map(api_client) -> None:
+    client, _factory = api_client
+    headers = _admin_headers(client)
+
+    response = client.post(
+        "/api/v1/system-configs",
+        headers=headers,
+        json={
+            "domain": "wechat_template",
+            "key": "V12_ASSIGNMENT_DISPATCHED",
+            "value": {
+                "template_id": "tmpl-test",
+                "field_map": {"thing1": "unsupported_source"},
+            },
+            "publish_immediately": True,
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "WECHAT_TEMPLATE_CONFIG_INVALID"
+
+
+def test_outbox_default_title_keeps_v12_copy_in_config_not_worker_fallback() -> None:
+    assert _default_title("V12_ASSIGNMENT_DISPATCHED") == "业务通知"
+
+
+def test_publishing_draft_wechat_template_revalidates_empty_literal(api_client) -> None:
+    client, _factory = api_client
+    headers = _admin_headers(client)
+    draft = client.post(
+        "/api/v1/system-configs",
+        headers=headers,
+        json={
+            "domain": "wechat_template",
+            "key": "V12_ASSIGNMENT_DISPATCHED",
+            "value": {
+                "template_id": "tmpl-test",
+                "field_map": {"thing1": "literal:   "},
+            },
+            "publish_immediately": False,
+        },
+    )
+    assert draft.status_code == 200, draft.text
+
+    response = client.post(
+        f"/api/v1/system-configs/{draft.json()['data']['id']}/publish",
+        headers=headers,
+        json={},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "WECHAT_TEMPLATE_CONFIG_INVALID"
 
 
 def test_official_account_client_uses_configured_template_field_map(monkeypatch) -> None:

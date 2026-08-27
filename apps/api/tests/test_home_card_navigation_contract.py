@@ -102,8 +102,9 @@ def test_formal_admin_home_distinguishes_platform_and_operation_boundaries() -> 
     source = read(ADMIN / "v12-operations.js")
     overview = source[source.index("async function overview"):source.index("async function review")]
 
-    for copy in ("/v1.2/reports/management-dashboard", "客资新增与有效率趋势", "流转漏斗", "当前没有需要处理的异常待办"):
+    for copy in ("/v1.2/reports/management-dashboard", "客资新增趋势", "流转漏斗", "当前没有需要处理的异常待办"):
         assert copy in overview
+    assert "客资新增与有效率趋势" not in overview
     assert "经营风险" not in overview
     assert "statusSummary(" not in overview
     assert "ops-summary-columns" not in overview

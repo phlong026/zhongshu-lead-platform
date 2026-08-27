@@ -73,20 +73,22 @@
 
 ### Super-admin information architecture
 
-1. 首页（经营总览）
-2. 客资总览
+1. 首页
+2. 客资
 3. 加盟商
 4. 资金
 5. 身份卡片入口（安全、平台设置、异常与日志）
 
 ### Operations-admin information architecture
 
-1. 今日待办
-2. 客资中心
-3. 电销核验协同
-4. 派发中心
-5. 加盟商审核
+1. 首页
+2. 客资
+3. 电销
+4. 派发
+5. 加盟商
 6. 身份卡片入口（安全、异常与日志）
+
+侧边栏使用上述简称；进入页面后再用“经营总览”“今日运营”等完整标题说明当前任务边界。
 
 ### Telesales information architecture
 

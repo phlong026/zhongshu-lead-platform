@@ -5,7 +5,13 @@ const confirmButton=document.querySelector('#invite-confirm');
 const companyEl=document.querySelector('#invite-company');
 const ownerEl=document.querySelector('#invite-owner');
 const expiresEl=document.querySelector('#invite-expires');
-const rawInvite=new URLSearchParams(location.search).get('invite')||'';
+function inviteFromUrl(){
+  const hashToken=new URLSearchParams(String(location.hash||'').replace(/^#/,'')).get('invite');
+  const queryToken=new URLSearchParams(location.search).get('invite');
+  return hashToken||queryToken||'';
+}
+const rawInvite=inviteFromUrl();
+history.replaceState(null,'',location.pathname);
 
 function formatTime(value){
   if(!value)return'--';
@@ -35,7 +41,10 @@ async function loadInvite(){
     return;
   }
   try{
-    const invite=await request(`/auth/invites/preview?invite=${encodeURIComponent(rawInvite)}`);
+    const invite=await request('/auth/invites/preview',{
+      method:'POST',
+      body:JSON.stringify({invite:rawInvite}),
+    });
     companyEl.textContent=invite.company_name||'--';
     ownerEl.textContent=invite.owner_name||'待确认';
     expiresEl.textContent=formatTime(invite.expires_at);
@@ -43,8 +52,6 @@ async function loadInvite(){
     statusEl.textContent='邀请有效，请确认绑定。';
     statusEl.className='invite-status success';
     confirmButton.disabled=false;
-    // Token only needs to live in this page's memory after validation.
-    history.replaceState(null,'',`${location.pathname}`);
   }catch(error){
     showError(error.message);
   }

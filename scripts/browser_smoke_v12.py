@@ -139,8 +139,10 @@ def _admin_smoke(browser: Browser, base_url: str, output: Path, errors: list[str
         page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=companies")
         # New franchisees become active immediately.  The former review queue
         # was removed from the business flow, so this verifies the current
-        # company-management entry instead of a retired approval card.
+        # company-management entry and the searchable lifecycle list instead of
+        # a retired approval card.
         page.wait_for_selector("#new-franchise-company", timeout=15000)
+        page.wait_for_selector("#company-filter-form", timeout=15000)
         account_button = page.locator("[data-company-accounts]").first
         if account_button.count():
             account_button.click()
@@ -154,19 +156,26 @@ def _admin_smoke(browser: Browser, base_url: str, output: Path, errors: list[str
         page.locator('.ops-menu [data-view="finance"]').click()
         page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=finance")
         page.wait_for_selector(".ops-card", timeout=15000)
-        page.locator(".ops-account-card").click()
+        page.locator(".ops-account-zone .ops-account-card").click()
         page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=account")
         page.locator('[data-account-tool="audit"]').click()
         page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=audit")
         page.get_by_text("通知发送异常", exact=True).wait_for(timeout=15000)
-        page.locator(".ops-account-card").click()
+        page.locator(".ops-account-zone .ops-account-card").click()
         page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=account")
         page.locator("#account-username").wait_for(timeout=15000)
         page.get_by_role("heading", name="安全与登录").wait_for(timeout=15000)
         page.get_by_role("heading", name="平台设置").wait_for(timeout=15000)
-        page.locator('[data-view="users"]').wait_for(timeout=15000)
         account_screenshot = output / "v12-admin-account.png"
         page.screenshot(path=str(account_screenshot), full_page=True)
+        page.locator('[data-view="users"]').first.click()
+        page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=users")
+        page.get_by_text("内部账号", exact=True).wait_for(timeout=15000)
+        page.locator(".ops-account-zone .ops-account-card").click()
+        page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=account")
+        page.locator('[data-view="calendar"]').first.click()
+        page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=calendar")
+        page.get_by_text("工作日历", exact=False).first.wait_for(timeout=15000)
         return {
             "valid": True,
             "title": page.title(),

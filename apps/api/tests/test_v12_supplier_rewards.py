@@ -306,6 +306,29 @@ def test_due_reward_settles_once_and_credits_supplier(db) -> None:
     assert db.get(PointsAccount, account.id).balance == 30
 
 
+def test_waiting_claim_reward_cannot_be_settled_directly_or_by_due_batch(db) -> None:
+    supplier, _, user, _, _, reward = _reward_setup(
+        db,
+        status=RewardStatus.WAITING_CLAIM.value,
+        due_at=datetime.now(timezone.utc) - timedelta(days=1),
+    )
+
+    with pytest.raises(AppError) as exc_info:
+        settle_supplier_reward(db, reward_id=reward.id, settled_by=user.id)
+
+    assert exc_info.value.code == "REWARD_NOT_SETTLEABLE"
+    batch = run_due_supplier_reward_settlement(db, limit=100, settled_by=user.id)
+    db.commit()
+    assert batch["scanned"] == 0
+    assert batch["settled"] == 0
+    assert batch["processed_reward_ids"] == []
+    assert batch["errors"] == []
+    assert reward.status == RewardStatus.WAITING_CLAIM.value
+    assert reward.ledger_id is None
+    account = db.scalar(select(PointsAccount).where(PointsAccount.company_id == supplier.id))
+    assert account is None or account.balance == 0
+
+
 def test_due_settlement_freezes_if_active_appeal_exists(db) -> None:
     _, _, user, lead, assignment, reward = _reward_setup(db)
     request = ReturnRequest(

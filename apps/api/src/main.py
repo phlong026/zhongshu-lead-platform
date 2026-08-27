@@ -12,6 +12,7 @@ from jwt import InvalidTokenError
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -83,6 +84,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.add_middleware(LegacyWriteGuardMiddleware)
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(
     InFlightLimitMiddleware,
     limit=settings.max_in_flight_requests,

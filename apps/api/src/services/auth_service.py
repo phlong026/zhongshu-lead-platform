@@ -244,6 +244,63 @@ def authenticate_internal(db: Session, username: str, password: str) -> Internal
     return InternalAuthResult(user=user, token=token, lock_released=lock_released)
 
 
+def verify_internal_password_for_sensitive_action(db: Session, user: User, password: str) -> None:
+    """Use the same account-level failure state for password-gated profile changes."""
+
+    now = utcnow()
+    state = db.get(AuthLoginState, user.id)
+    locked_until = as_utc(state.locked_until) if state else None
+    if locked_until and locked_until > now:
+        raise AppError(
+            "AUTH_SENSITIVE_ACTION_LOCKED",
+            "当前密码连续输错次数过多，请稍后再试",
+            429,
+            {"failure_count": state.failed_count if state else 0, "locked_until": locked_until.isoformat()},
+        )
+
+    last_failed_at = as_utc(state.last_failed_at) if state else None
+    failure_window = timedelta(minutes=settings.login_failure_window_minutes)
+    reset_state = bool(
+        state
+        and (
+            (locked_until and locked_until <= now)
+            or (last_failed_at and now - last_failed_at > failure_window)
+        )
+    )
+
+    if not user.password_hash or not verify_password(password, user.password_hash):
+        if db.get_bind().dialect.name == "sqlite":
+            failure_count, next_locked_until = _record_failed_attempt_sqlite(db, user_id=user.id, now=now)
+        else:
+            if state is None:
+                state = _new_login_state(db, user.id)
+            elif reset_state:
+                _clear_login_state(state)
+            state.failed_count += 1
+            state.last_failed_at = now
+            if state.failed_count >= settings.login_max_failed_attempts:
+                state.locked_until = now + timedelta(minutes=settings.login_lock_minutes)
+            failure_count = state.failed_count
+            next_locked_until = as_utc(state.locked_until)
+
+        if next_locked_until and next_locked_until > now and failure_count >= settings.login_max_failed_attempts:
+            raise AppError(
+                "AUTH_SENSITIVE_ACTION_LOCKED",
+                "当前密码连续输错次数过多，请稍后再试",
+                429,
+                {"failure_count": failure_count, "locked_until": next_locked_until.isoformat()},
+            )
+        raise AppError(
+            "AUTH_CURRENT_PASSWORD_INVALID",
+            "当前密码不正确",
+            422,
+            {"failure_count": failure_count},
+        )
+
+    if state is not None:
+        _clear_login_state(state)
+
+
 def create_company_invite(
     db: Session,
     company_id: str,

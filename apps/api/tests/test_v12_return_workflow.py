@@ -560,6 +560,35 @@ def test_final_review_must_match_the_telesales_fact_conclusion(db) -> None:
     assert exc_info.value.code == "RETURN_FINAL_DECISION_CONFLICT"
 
 
+@pytest.mark.parametrize(
+    ("conclusion", "decision"),
+    [
+        ("SUPPORT_RETURN", "REJECT"),
+        ("INCONCLUSIVE", "APPROVE"),
+        ("INCONCLUSIVE", "REJECT"),
+    ],
+)
+def test_final_review_rejects_all_opposite_or_inconclusive_decisions(
+    db,
+    conclusion: str,
+    decision: str,
+) -> None:
+    setup = _workflow_setup(db)
+    request, _ = _submit_and_verify(db, setup, conclusion=conclusion)
+    reviewer = _principal(setup["reviewer"], "return.review")
+
+    with pytest.raises(AppError) as exc_info:
+        final_review_return(
+            db,
+            return_id=request.id,
+            principal=reviewer,
+            decision=decision,
+            note="终审不能越过电销事实结论",
+        )
+
+    assert exc_info.value.code == "RETURN_FINAL_DECISION_CONFLICT"
+
+
 def test_need_more_allows_new_evidence_and_creates_second_verification_round(db) -> None:
     setup = _workflow_setup(db)
     request, first_task = _submit_and_verify(db, setup, conclusion="INCONCLUSIVE")

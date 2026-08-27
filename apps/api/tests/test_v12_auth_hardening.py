@@ -219,6 +219,87 @@ def test_logout_invalidates_previous_bearer_token_via_session_version(api_client
     assert old_token.json()["code"] == "AUTH_INVALID"
 
 
+def test_password_change_invalidates_every_older_bearer_token(api_client) -> None:
+    client, _ = api_client
+    first_login = _login(client, "operation", "Operation123!")
+    second_login = _login(client, "operation", "Operation123!")
+    first_token = first_login.cookies.get("access_token")
+    second_token = second_login.cookies.get("access_token")
+    assert first_token and second_token
+
+    changed = client.post(
+        "/api/v1/auth/change-password",
+        json={"current_password": "Operation123!", "new_password": "Operation456!"},
+        headers={"Authorization": f"Bearer {first_token}"},
+    )
+
+    assert changed.status_code == 200, changed.text
+    current_token = changed.cookies.get("access_token")
+    assert current_token
+    for old_token in (first_token, second_token):
+        response = client.get(
+            "/api/v1/auth/me",
+            headers={"Authorization": f"Bearer {old_token}"},
+        )
+        assert response.status_code == 401
+        assert response.json()["code"] == "AUTH_INVALID"
+    assert client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {current_token}"},
+    ).status_code == 200
+
+
+def test_change_username_returns_conflict_for_an_existing_login_name(api_client) -> None:
+    client, _ = api_client
+    login = _login(client, "operation", "Operation123!")
+    token = login.cookies.get("access_token")
+    assert token
+
+    response = client.post(
+        "/api/v1/auth/change-username",
+        json={"current_password": "Operation123!", "username": "admin"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "AUTH_USERNAME_EXISTS"
+
+
+def test_sensitive_password_checks_share_internal_lock_state(api_client) -> None:
+    client, factory = api_client
+    login = _login(client, "operation", "Operation123!")
+    assert login.status_code == 200, login.text
+
+    for _ in range(4):
+        response = client.post(
+            "/api/v1/auth/change-password",
+            json={"current_password": "WrongPass123!", "new_password": "Operation456!"},
+        )
+        assert response.status_code == 422
+        assert response.json()["code"] == "AUTH_CURRENT_PASSWORD_INVALID"
+
+    locked = client.post(
+        "/api/v1/auth/change-username",
+        json={"current_password": "WrongPass123!", "username": "operation-locked"},
+    )
+    assert locked.status_code == 429
+    assert locked.json()["code"] == "AUTH_SENSITIVE_ACTION_LOCKED"
+
+    relogin = _login(client, "operation", "Operation123!")
+    assert _failure_contract(relogin) == (401, "AUTH_LOGIN_FAILED", "用户名或密码错误")
+
+    with factory() as db:
+        user = db.scalar(select(User).where(User.username == "operation"))
+        assert user is not None
+        state = db.get(AuthLoginState, user.id)
+        assert state is not None
+        assert state.failed_count == 5
+        assert state.locked_until is not None
+        actions = db.scalars(select(AuditLog.action).where(AuditLog.resource_id == user.id)).all()
+        assert actions.count("AUTH_PASSWORD_CHANGE_FAILED") == 4
+        assert "AUTH_USERNAME_CHANGE_FAILED" in actions
+
+
 def test_unknown_username_keeps_generic_failure_contract(api_client) -> None:
     client, _ = api_client
     response = _login(client, "does-not-exist", "Arbitrary-Wrong-Password!")
