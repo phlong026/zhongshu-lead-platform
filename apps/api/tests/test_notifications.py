@@ -69,6 +69,55 @@ def test_official_account_client_uses_configured_template_field_map(monkeypatch)
     }
 
 
+def test_official_account_client_sends_v12_dispatch_template(monkeypatch) -> None:
+    """新客资派发必须使用已核验的模板 ID 与字段键，避免升级时静默错配。"""
+
+    from apps.api.src.integrations.wechat import WechatOfficialAccountClient
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict[str, int]:
+            return {"errcode": 0, "msgid": 124}
+
+    sent: dict[str, object] = {}
+
+    def fake_post(url: str, *, json: dict[str, object], timeout: int):
+        sent["json"] = json
+        return _Response()
+
+    monkeypatch.setattr(wechat_module.settings, "wechat_dev_mock", False)
+    monkeypatch.setattr(wechat_module.httpx, "post", fake_post)
+    client = WechatOfficialAccountClient()
+    client._access_token = "test-access-token"
+    client._expires_at = (
+        wechat_module.datetime.now(wechat_module.timezone.utc)
+        + wechat_module.timedelta(hours=1)
+    )
+
+    result = client.send_scene_message(
+        openid="o-test-user",
+        scene="V12_ASSIGNMENT_DISPATCHED",
+        title="您有一条新客资待领取",
+        body="上海·浦东｜旧改客资",
+        url="https://zszhj.cn/h5/#/leads",
+        template_id="lY0K9b-7pB0bOnfjOJ6zPvPeL5fm0DjPhjxhRUZt3MU",
+        field_map={"thing1": "title", "const16": "literal:乡墅新客资"},
+    )
+
+    assert result.success is True
+    assert sent["json"] == {
+        "touser": "o-test-user",
+        "template_id": "lY0K9b-7pB0bOnfjOJ6zPvPeL5fm0DjPhjxhRUZt3MU",
+        "url": "https://zszhj.cn/h5/#/leads",
+        "data": {
+            "thing1": {"value": "您有一条新客资待领取"},
+            "const16": {"value": "乡墅新客资"},
+        },
+    }
+
+
 def test_official_account_client_rejects_unknown_template_field_source(monkeypatch) -> None:
     from apps.api.src.integrations.wechat import WechatOfficialAccountClient
 
@@ -142,7 +191,7 @@ def test_create_invite_enqueues_outbox_event_without_raw_token(api_client) -> No
         assert item.status == "PENDING"
         assert item.payload["company_name"] == "通知测试公司"
         assert item.payload["invitee_name"] == "李负责人"
-        assert item.payload["deep_link"] == "/h5/#/login"
+        assert item.payload["deep_link"] == "/h5/invite.html"
         # 安全红线：raw token 不落 Outbox（失败队列/DB 都不暴露邀请原文）。
         assert raw_token not in json.dumps(item.payload, ensure_ascii=False)
 

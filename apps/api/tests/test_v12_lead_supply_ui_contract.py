@@ -42,7 +42,7 @@ def test_unified_operations_lead_ui_distinguishes_platform_and_supplier_flow() -
     js = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
     assert "/v1.2/platform/leads" in js
     assert "/v1.2/admin/supplier-leads" in js
-    assert "/master-data/regions" in js
+    assert "/master-data/region-tree" in js
     assert "READY_DISPATCH" in js
     assert "data-platform-pre-dispatch" in js
     assert "请先补充客户联系电话，再派发电话核验" in js
@@ -62,12 +62,14 @@ def test_platform_lead_district_options_use_dom_nodes_not_html_injection() -> No
     assert ".innerHTML=platformSelectOptions" not in js
 
 
-def test_operations_review_exposes_four_initial_decisions_and_one_step_telesales_assignment() -> None:
+def test_supplier_submission_goes_directly_to_telesales_assignment() -> None:
     source = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
 
-    for decision in ("QUALIFIED", "INFO_INCOMPLETE", "DUPLICATE", "INVALID"):
+    for decision in ("PENDING_TELESALES_VERIFY", "data-pre-assign", "分配电销核实"):
         assert decision in source
-    assert "pre_dispatch_reason" in source
+    assert "/admin/leads/${encodeURIComponent(leadId)}/pre-dispatch-verification" in source
+    assert "pre_dispatch_reason" not in source
+    assert "data-review=" not in source
     assert "信息不全并派发电销" in source
 
 

@@ -14,6 +14,7 @@ from ..core.v12_enums import LeadSourceKind
 from ..schemas.v12_lead_supply import (
     CapabilityRequestBody,
     CapabilityReviewBody,
+    CompanyCapabilityConfigureBody,
     CompanyProfileBulkApproveBody,
     DedupOverrideBody,
     LeadDraftBody,
@@ -27,13 +28,16 @@ from ..services.company_profile_v12 import (
     list_capabilities,
     list_service_areas,
     approve_pending_profile,
+    configure_capability,
     replace_service_areas,
     request_capability,
     require_active_company,
     review_capability,
     review_service_area,
 )
+from ..services.company_service import company_to_dict
 from ..services.dedup_v12 import override_duplicate
+from ..services.china_regions import region_by_code
 from ..services.lead_supply_v12 import (
     create_draft,
     discard_draft,
@@ -103,10 +107,17 @@ def _area_dict(
     company_name: str | None = None,
     company_code: str | None = None,
 ) -> dict:
+    region = region_by_code(item.region_code)
+    region_name = None
+    if region is not None:
+        region_name = " · ".join(
+            part for part in (region["city_name"], region["district_name"]) if part
+        )
     result = {
         "id": item.id,
         "company_id": item.company_id,
         "region_code": item.region_code,
+        "region_name": region_name,
         "region_level": item.region_level,
         "is_primary_city": item.is_primary_city,
         "active": item.active,
@@ -414,15 +425,16 @@ def admin_review_supplier_lead(
         body.decision,
         body.decision,
     )
+    requires_telesales = review_decision in {"QUALIFIED", "INFO_INCOMPLETE"}
     result = review_supplier_lead(
         db,
         lead=lead,
         reviewer=principal,
-        decision=review_decision,
+        decision="INFO_INCOMPLETE" if requires_telesales else review_decision,
         note=body.note,
     )
     task = None
-    if review_decision == "INFO_INCOMPLETE":
+    if requires_telesales:
         assignment = assign_pre_dispatch_task(
             db,
             lead_id=lead.id,
@@ -466,7 +478,7 @@ def admin_review_supplier_lead(
             "dedup": _dedup_dict(result),
             "task": _pre_dispatch_task_dict(task) if task else None,
         },
-        "资料初审已完成",
+        "已派发电销核实" if task is not None else "资料初审已完成",
     )
 
 
@@ -641,6 +653,78 @@ def admin_review_capability(
         _capability_dict(item, company_name=company.name, company_code=company.code),
         "公司能力审核已完成",
     )
+
+
+@router.get("/admin/companies/{company_id}/profile")
+def admin_company_profile(
+    company_id: str,
+    request: Request,
+    principal=Depends(require_permissions("company.profile.review")),
+    db: Session = Depends(get_db),
+):
+    company = db.get(Company, company_id)
+    if company is None:
+        raise AppError("COMPANY_NOT_FOUND", "公司不存在", 404)
+    company_data = company_to_dict(company)
+    return ok(
+        request,
+        {
+            "company": {
+                "id": company.id,
+                "name": company.name,
+                "code": company.code,
+                "status": company.status,
+                "owner_name": company.owner_name,
+                "contact_phone_masked": company_data["contact_phone_masked"],
+                "primary_user_id": company.primary_user_id,
+                "wechat_bound": bool(company.primary_user_id),
+            },
+            "capabilities": [
+                _capability_dict(item, company_name=company.name, company_code=company.code)
+                for item in list_capabilities(db, company_id)
+            ],
+            "service_areas": [
+                _area_dict(item, company_name=company.name, company_code=company.code)
+                for item in list_service_areas(db, company_id)
+            ],
+        },
+    )
+
+
+@router.put("/admin/companies/{company_id}/capabilities/{capability_code}")
+def admin_configure_capability(
+    company_id: str,
+    capability_code: str,
+    body: CompanyCapabilityConfigureBody,
+    request: Request,
+    principal=Depends(require_permissions("company.profile.review")),
+    db: Session = Depends(get_db),
+):
+    company = db.get(Company, company_id)
+    if company is None:
+        raise AppError("COMPANY_NOT_FOUND", "公司不存在", 404)
+    item = configure_capability(
+        db,
+        company_id=company_id,
+        capability_code=capability_code,
+        active=body.active,
+        reviewed_by=principal.user_id,
+        note=body.note,
+    )
+    payload = _capability_dict(item, company_name=company.name, company_code=company.code)
+    write_audit(
+        db,
+        principal=principal,
+        action="V12_COMPANY_CAPABILITY_CONFIGURE",
+        resource_type="company_lead_capability",
+        resource_id=item.id,
+        company_id=company_id,
+        after=payload,
+        reason=body.note or ("平台启用" if body.active else "平台停用"),
+        request_id=request.state.request_id,
+    )
+    db.commit()
+    return ok(request, payload, "公司客资能力已更新")
 
 
 @router.post("/admin/companies/{company_id}/profile/approve-pending")

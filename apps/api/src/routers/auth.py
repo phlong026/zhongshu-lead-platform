@@ -14,16 +14,30 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..core.auth import CurrentPrincipal, require_permissions
+from ..core.auth import CurrentPrincipal, load_current_principal, require_permissions
 from ..core.config import get_settings
 from ..core.database import get_db
 from ..core.errors import AppError
 from ..core.models import Company, InviteToken, User
 from ..core.responses import ok
-from ..core.security import create_signed_state, decode_signed_state
+from ..core.security import (
+    create_access_token,
+    create_signed_state,
+    decode_signed_state,
+    hash_password,
+    validate_internal_password,
+    verify_password,
+)
 from ..core.time import as_utc
 from ..integrations.wechat import WechatOAuthClient
-from ..schemas.auth import InviteConfirmStartBody, InviteCreateBody, LoginBody, WechatMockCallbackBody
+from ..schemas.auth import (
+    ChangeOwnPasswordBody,
+    ChangeOwnUsernameBody,
+    InviteConfirmStartBody,
+    InviteCreateBody,
+    LoginBody,
+    WechatMockCallbackBody,
+)
 from ..services.audit import write_audit
 from ..services.auth_service import (
     InternalAuthError,
@@ -305,9 +319,10 @@ def login(body: LoginBody, request: Request, response: Response, db: Annotated[S
     user = result.user
     if result.lock_released:
         _audit_unlock(db, user_id=user.id, request=request)
+    principal = load_current_principal(db, user.id, user.session_version)
     write_audit(
         db,
-        principal=None,
+        principal=principal,
         action="AUTH_LOGIN",
         resource_type="user",
         resource_id=user.id,
@@ -346,14 +361,123 @@ def logout(request: Request, response: Response, principal: CurrentPrincipal, db
     return ok(request, message="已退出")
 
 
+@router.post("/change-password")
+def change_own_password(
+    body: ChangeOwnPasswordBody,
+    request: Request,
+    response: Response,
+    principal: CurrentPrincipal,
+    db: Annotated[Session, Depends(get_db)],
+):
+    user = db.get(User, principal.user_id)
+    if user is None or not verify_password(body.current_password, user.password_hash):
+        write_audit(
+            db,
+            principal=principal,
+            action="AUTH_PASSWORD_CHANGE_FAILED",
+            resource_type="user",
+            resource_id=principal.user_id,
+            metadata={"reason_code": "CURRENT_PASSWORD_INVALID"},
+            request_id=request.state.request_id,
+            ip_address=_request_ip(request),
+            user_agent=request.headers.get("user-agent"),
+        )
+        db.commit()
+        raise AppError("AUTH_CURRENT_PASSWORD_INVALID", "当前密码不正确", 422)
+    try:
+        validate_internal_password(body.new_password)
+    except ValueError as exc:
+        raise AppError("AUTH_PASSWORD_INVALID", str(exc), 422) from exc
+
+    previous_session_version = user.session_version
+    user.password_hash = hash_password(body.new_password)
+    user.session_version += 1
+    write_audit(
+        db,
+        principal=principal,
+        action="AUTH_PASSWORD_CHANGE",
+        resource_type="user",
+        resource_id=user.id,
+        before={"session_version": previous_session_version},
+        after={"session_version": user.session_version},
+        request_id=request.state.request_id,
+        ip_address=_request_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    db.commit()
+    _set_session_cookie(
+        response,
+        create_access_token(
+            user.id,
+            user.session_version,
+            sorted(principal.role_codes),
+            user.company_id,
+        ),
+    )
+    return ok(request, message="密码已更新，其他登录会话已失效")
+
+
+@router.post("/change-username")
+def change_own_username(
+    body: ChangeOwnUsernameBody,
+    request: Request,
+    principal: CurrentPrincipal,
+    db: Annotated[Session, Depends(get_db)],
+):
+    user = db.get(User, principal.user_id)
+    if user is None or not verify_password(body.current_password, user.password_hash):
+        write_audit(
+            db,
+            principal=principal,
+            action="AUTH_USERNAME_CHANGE_FAILED",
+            resource_type="user",
+            resource_id=principal.user_id,
+            metadata={"reason_code": "CURRENT_PASSWORD_INVALID"},
+            request_id=request.state.request_id,
+            ip_address=_request_ip(request),
+            user_agent=request.headers.get("user-agent"),
+        )
+        db.commit()
+        raise AppError("AUTH_CURRENT_PASSWORD_INVALID", "当前密码不正确", 422)
+    if user.username == body.username:
+        return ok(request, {"username": user.username}, "登录账号未变化")
+    if db.scalar(select(User.id).where(User.username == body.username, User.id != user.id)):
+        raise AppError("AUTH_USERNAME_EXISTS", "该登录账号已被使用", 409)
+
+    previous_username = user.username
+    user.username = body.username
+    write_audit(
+        db,
+        principal=principal,
+        action="AUTH_USERNAME_CHANGE",
+        resource_type="user",
+        resource_id=user.id,
+        before={"username": previous_username},
+        after={"username": user.username},
+        request_id=request.state.request_id,
+        ip_address=_request_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise AppError("AUTH_USERNAME_EXISTS", "该登录账号已被使用", 409) from exc
+    return ok(request, {"username": user.username}, "登录账号已更新")
+
+
 @router.get("/me")
-def me(request: Request, principal: CurrentPrincipal):
+def me(request: Request, principal: CurrentPrincipal, db: Annotated[Session, Depends(get_db)]):
+    user = db.get(User, principal.user_id)
+    company = db.get(Company, principal.company_id) if principal.company_id else None
     return ok(
         request,
         {
             "id": principal.user_id,
             "display_name": principal.display_name,
+            "username": user.username if user else None,
             "company_id": principal.company_id,
+            "company_name": company.name if company else "合家美宅平台",
             "roles": sorted(principal.role_codes),
             "permissions": sorted(principal.permission_codes),
         },
@@ -365,7 +489,7 @@ def create_invite(
     company_id: str,
     body: InviteCreateBody,
     request: Request,
-    principal=Depends(require_permissions("*")),
+    principal=Depends(require_permissions("company.account.manage")),
     db: Session = Depends(get_db),
 ):
     invite, raw, superseded_ids = create_company_invite(db, company_id, principal.user_id, body.expires_hours)
@@ -395,13 +519,13 @@ def create_invite(
             "company_name": invite.company_name_snapshot,
             "invitee_name": invite.invitee_name_snapshot,
             "expires_at": invite.expires_at.isoformat(),
-            "deep_link": "/h5/#/login",
+            "deep_link": "/h5/invite.html",
         },
     )
     db.commit()
     company = db.get(Company, company_id)
     assert company is not None
-    url = f"{settings.app_base_url}/h5/#/login?invite={raw}"
+    url = f"{settings.app_base_url.rstrip('/')}/h5/invite.html?invite={raw}"
     expires_at = invite.expires_at.isoformat()
     return ok(
         request,
@@ -503,7 +627,7 @@ def invite_confirm_start(
 def list_company_invites_endpoint(
     company_id: str,
     request: Request,
-    principal=Depends(require_permissions("*")),
+    principal=Depends(require_permissions("company.account.manage")),
     db: Session = Depends(get_db),
 ):
     """P1-01/P1-02：公司邀请记录与使用追溯（只读，绝不返回 token 原文或哈希）。"""
@@ -515,7 +639,7 @@ def list_company_invites_endpoint(
 def revoke_invite(
     invite_id: str,
     request: Request,
-    principal=Depends(require_permissions("*")),
+    principal=Depends(require_permissions("company.account.manage")),
     db: Session = Depends(get_db),
 ):
     """N4：撤销业务全部下沉 auth_service.revoke_company_invite——router

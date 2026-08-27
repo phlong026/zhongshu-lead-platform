@@ -42,6 +42,7 @@ LEAD_TRANSITIONS: Mapping[LeadV12Status, Set[LeadV12Status]] = {
     LeadV12Status.PENDING_OPERATION_DISPOSITION: {
         LeadV12Status.READY_DISPATCH,
         LeadV12Status.DRAFT,
+        LeadV12Status.INVALID,
         LeadV12Status.DUPLICATE,
         LeadV12Status.CLOSED,
     },

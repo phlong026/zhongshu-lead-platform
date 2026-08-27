@@ -111,12 +111,25 @@ class WechatOfficialAccountClient:
             "keyword2": "body",
             "remark": "remark",
         }
-        if not resolved_field_map or any(
-            not isinstance(field_name, str)
-            or not field_name
-            or source not in values
-            for field_name, source in resolved_field_map.items()
-        ):
+        payload_data: dict[str, dict[str, str]] = {}
+        for field_name, source in resolved_field_map.items():
+            if not isinstance(field_name, str) or not field_name or not isinstance(source, str):
+                return WechatSendResult(
+                    success=False,
+                    error_code="TEMPLATE_CONFIG_INVALID",
+                    error_message="消息模板字段映射无效",
+                )
+            value = values.get(source)
+            if value is None and source.startswith("literal:"):
+                value = source.removeprefix("literal:")
+            if not value:
+                return WechatSendResult(
+                    success=False,
+                    error_code="TEMPLATE_CONFIG_INVALID",
+                    error_message="消息模板字段映射无效",
+                )
+            payload_data[field_name] = {"value": value}
+        if not payload_data:
             return WechatSendResult(
                 success=False,
                 error_code="TEMPLATE_CONFIG_INVALID",
@@ -127,10 +140,7 @@ class WechatOfficialAccountClient:
             "touser": openid,
             "template_id": template_id,
             "url": url,
-            "data": {
-                field_name: {"value": values[source]}
-                for field_name, source in resolved_field_map.items()
-            },
+            "data": payload_data,
         }
         response = httpx.post(f"https://api.weixin.qq.com/cgi-bin/message/template/send?access_token={token}", json=payload, timeout=15)
         response.raise_for_status()

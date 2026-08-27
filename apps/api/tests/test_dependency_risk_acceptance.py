@@ -26,3 +26,10 @@ def test_application_does_not_use_affected_pkcs7_decrypt_api() -> None:
             if FORBIDDEN_API in text:
                 hits.append(path.as_posix())
     assert not hits, f"dependency waiver invalid: affected PKCS#7 decrypt API introduced in {hits}"
+
+
+def test_sqlite_high_risk_findings_are_removed_instead_of_waived() -> None:
+    waivers = Path("security/waivers.json").read_text(encoding="utf-8")
+
+    assert "CVE-2026-11822" not in waivers
+    assert "CVE-2026-11824" not in waivers

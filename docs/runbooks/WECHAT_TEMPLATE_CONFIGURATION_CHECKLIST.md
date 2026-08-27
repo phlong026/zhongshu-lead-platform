@@ -36,19 +36,17 @@
   "domain": "wechat_template",
   "key": "V12_ASSIGNMENT_DISPATCHED",
   "value": {
-    "template_id": "在公众号后台复制的真实模板ID",
+    "template_id": "lY0K9b-7pB0bOnfjOJ6zPvPeL5fm0DjPhjxhRUZt3MU",
     "field_map": {
-      "first": "title",
-      "keyword1": "scene",
-      "keyword2": "body",
-      "remark": "remark"
+      "thing1": "title",
+      "const16": "literal:乡墅新客资"
     }
   },
   "publish_immediately": true
 }
 ```
 
-`field_map` 的左侧是公众号「我的模板」里显示的字段名；右侧只能使用以下业务值：
+`field_map` 的左侧是公众号「我的模板 → 详情 → 详细内容」中的原始字段键（例如 `thing1`、`const16`），不是页面展示的中文标签；右侧只能使用以下业务值：
 
 | 右侧值 | 平台写入的内容 |
 | --- | --- |
@@ -56,6 +54,7 @@
 | `scene` | 平台事件 key，用于审计与排障 |
 | `body` | 该笔业务的地点、时限、原因或结果摘要 |
 | `remark` | 固定的“点击查看详情”提示 |
+| `literal:固定文案` | 为类目模板的常量关键词写入固定文字，例如 `literal:乡墅新客资` |
 
 旧配置只有 `template_id` 时，系统继续按 `first`、`keyword1`、`keyword2`、`remark` 的默认映射发送；新模板应始终显式填写 `field_map`，避免换模板后字段错配。
 

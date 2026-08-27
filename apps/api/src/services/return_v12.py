@@ -25,7 +25,7 @@ from ..core.models import (
 )
 from ..core.models_v12 import SupplierLeadReward
 from ..core.security import decrypt_text, mask_phone
-from ..core.state_machine_v12 import assert_return_transition
+from ..core.state_machine_v12 import assert_lead_transition, assert_return_transition
 from ..core.time import as_utc, utcnow
 from ..core.v12_enums import (
     LeadV12Status,
@@ -573,6 +573,17 @@ def final_review_return(
         raise AppError("RETURN_FINAL_DECISION_INVALID", "终审决定无效", 422)
 
     task = _current_verification_task(db, request)
+    required_conclusion = {
+        "APPROVE": "SUPPORT_RETURN",
+        "REJECT": "DOES_NOT_SUPPORT_RETURN",
+    }.get(normalized_decision)
+    if required_conclusion and task.verification_conclusion != required_conclusion:
+        raise AppError(
+            "RETURN_FINAL_DECISION_CONFLICT",
+            "终审决定必须与电销核实结论一致；客资可用时仍由原领取人继续跟进",
+            409,
+            {"decision": normalized_decision, "verification_conclusion": task.verification_conclusion},
+        )
     assignment = _get_assignment(db, request.assignment_id, lock=True)
     lead = _get_lead(db, request.lead_id, lock=True)
     reward = db.scalar(
@@ -656,10 +667,16 @@ def final_review_return(
     assignment.released_at = now
     assignment.release_reason = "V12_RETURN_APPROVED"
     lead.current_assignment_id = None
-    lead.status = LeadV12Status.READY_DISPATCH.value
-    lead.pending_reason = "V12_RETURN_APPROVED"
+    # 终审支持退回意味着该客资被确认无效，不再回到派发池。
+    assert_lead_transition(lead.status, LeadV12Status.CLOSED)
+    lead.status = LeadV12Status.CLOSED.value
+    lead.pending_reason = "RETURN_VERIFIED_INVALID"
     lead.current_follow_status = None
-    if reward and reward.status in {RewardStatus.FROZEN.value, RewardStatus.OBSERVING.value}:
+    if reward and reward.status in {
+        RewardStatus.WAITING_CLAIM.value,
+        RewardStatus.FROZEN.value,
+        RewardStatus.OBSERVING.value,
+    }:
         reward.status = RewardStatus.CANCELLED.value
         reward.cancelled_at = now
     db.add(

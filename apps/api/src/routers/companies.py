@@ -11,9 +11,17 @@ from ..core.database import get_db
 from ..core.errors import AppError
 from ..core.models import Assignment, Company
 from ..core.responses import ok, page
-from ..schemas.company import CompanyCreateBody, CompanySimpleCreateBody, CompanyUpdateBody
+from ..schemas.company import CompanyCreateBody, CompanyDeleteBody, CompanySimpleCreateBody, CompanyUpdateBody
 from ..services.audit import write_audit
-from ..services.company_service import company_to_dict, create_company, create_simple_company, update_company
+from ..services.company_service import (
+    company_delete_blockers,
+    company_to_dict,
+    create_company,
+    create_simple_company,
+    delete_empty_company,
+    set_company_status,
+    update_company,
+)
 
 router = APIRouter(prefix="/companies", tags=["companies"])
 
@@ -58,9 +66,11 @@ def list_companies(
             summary["total"] = int(summary["total"]) + int(count)
             summary["by_status"][str(assignment_status)] = int(count)
 
+    deletion_blockers = company_delete_blockers(db, [company.id for company in items])
     payload = []
     for company in items:
         item = company_to_dict(company, include_finance=include_finance)
+        item["can_delete"] = company.id not in deletion_blockers
         if include_assignment_summary:
             item["assignment_summary"] = summaries.get(
                 company.id,
@@ -74,7 +84,7 @@ def list_companies(
 def create_company_endpoint(
     body: CompanyCreateBody,
     request: Request,
-    principal=Depends(require_permissions("*")),
+    principal=Depends(require_permissions("company.profile.review")),
     db: Session = Depends(get_db),
 ):
     company = create_company(db, body)
@@ -88,10 +98,10 @@ def create_company_endpoint(
 def create_simple_company_endpoint(
     body: CompanySimpleCreateBody,
     request: Request,
-    principal=Depends(require_permissions("*")),
+    principal=Depends(require_permissions("company.profile.review")),
     db: Session = Depends(get_db),
 ):
-    company, readiness = create_simple_company(db, body)
+    company, readiness = create_simple_company(db, body, approved_by=principal.user_id)
     write_audit(
         db,
         principal=principal,
@@ -118,19 +128,129 @@ def create_simple_company_endpoint(
     )
 
 
+def _load_company_for_lifecycle(db: Session, company_id: str) -> Company:
+    company = db.scalar(
+        select(Company)
+        .options(selectinload(Company.members))
+        .where(Company.id == company_id)
+    )
+    if not company:
+        raise AppError("COMPANY_NOT_FOUND", "加盟商公司不存在", 404)
+    return company
+
+
+def _change_company_status(
+    company_id: str,
+    status: str,
+    request: Request,
+    principal: CurrentPrincipal,
+    db: Session,
+):
+    company = _load_company_for_lifecycle(db, company_id)
+    previous_status, changed = set_company_status(company, status)
+    if changed:
+        write_audit(
+            db,
+            principal=principal,
+            action="COMPANY_ENABLE" if status == "ACTIVE" else "COMPANY_DISABLE",
+            resource_type="company",
+            resource_id=company.id,
+            company_id=company.id,
+            before={"status": previous_status},
+            after={"status": company.status},
+            request_id=request.state.request_id,
+        )
+    db.commit()
+    return ok(request, {"id": company.id, "status": company.status}, "状态已更新")
+
+
+@router.post("/{company_id}/disable")
+def disable_company_endpoint(
+    company_id: str,
+    request: Request,
+    principal=Depends(require_permissions("company.profile.review")),
+    db: Session = Depends(get_db),
+):
+    return _change_company_status(company_id, "DISABLED", request, principal, db)
+
+
+@router.post("/{company_id}/enable")
+def enable_company_endpoint(
+    company_id: str,
+    request: Request,
+    principal=Depends(require_permissions("company.profile.review")),
+    db: Session = Depends(get_db),
+):
+    return _change_company_status(company_id, "ACTIVE", request, principal, db)
+
+
+@router.delete("/{company_id}")
+def delete_company_endpoint(
+    company_id: str,
+    body: CompanyDeleteBody,
+    request: Request,
+    principal=Depends(require_permissions("company.profile.review")),
+    db: Session = Depends(get_db),
+):
+    company = _load_company_for_lifecycle(db, company_id)
+    if body.confirmation_code.strip() != company.code:
+        raise AppError(
+            "COMPANY_DELETE_CONFIRMATION_INVALID",
+            "确认编码不正确，未执行删除",
+            400,
+        )
+    before = {"code": company.code, "name": company.name, "status": company.status}
+    delete_empty_company(db, company)
+    write_audit(
+        db,
+        principal=principal,
+        action="COMPANY_DELETE",
+        resource_type="company",
+        resource_id=company_id,
+        company_id=company_id,
+        before=before,
+        after={"deleted": True},
+        request_id=request.state.request_id,
+    )
+    db.commit()
+    return ok(request, {"id": company_id}, "测试加盟商已删除")
+
+
 @router.patch("/{company_id}")
 def update_company_endpoint(
     company_id: str,
     body: CompanyUpdateBody,
     request: Request,
-    principal=Depends(require_permissions("*")),
+    principal=Depends(require_permissions("company.profile.review")),
     db: Session = Depends(get_db),
 ):
     company = db.scalar(select(Company).options(selectinload(Company.members), selectinload(Company.service_regions), selectinload(Company.capabilities)).where(Company.id == company_id))
     if not company:
         raise AppError("COMPANY_NOT_FOUND", "加盟商公司不存在", 404)
-    before = {"name": company.name, "status": company.status, "level_code": company.level_code}
+    before = {
+        "name": company.name,
+        "owner_name": company.owner_name,
+        "status": company.status,
+        "level_code": company.level_code,
+        "notes": company.notes,
+    }
     update_company(db, company, body)
-    write_audit(db, principal=principal, action="COMPANY_UPDATE", resource_type="company", resource_id=company.id, company_id=company.id, before=before, after={"name": company.name, "status": company.status, "level_code": company.level_code}, request_id=request.state.request_id)
+    write_audit(
+        db,
+        principal=principal,
+        action="COMPANY_UPDATE",
+        resource_type="company",
+        resource_id=company.id,
+        company_id=company.id,
+        before=before,
+        after={
+            "name": company.name,
+            "owner_name": company.owner_name,
+            "status": company.status,
+            "level_code": company.level_code,
+            "notes": company.notes,
+        },
+        request_id=request.state.request_id,
+    )
     db.commit()
     return ok(request, {"id": company.id}, "更新成功")

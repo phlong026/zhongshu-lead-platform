@@ -12,6 +12,7 @@ from ..core.errors import AppError
 from ..core.models import Assignment, AssignmentEvent, FollowUp, Lead, Notification
 from .company_assignment_v12 import require_company_assignment_access
 from .notification_service import create_station_message, enqueue_outbox
+from .supplier_reward_v12 import activate_supplier_reward_after_effective_confirmation
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -34,7 +35,8 @@ def add_followup(
     require_company_assignment_access(principal, assignment)
     if assignment.status not in {AssignmentStatus.CLAIMED, AssignmentStatus.FOLLOWING}:
         raise AppError("FOLLOWUP_NOT_ALLOWED", "订单当前不可跟进", 409)
-    if status.strip().upper() == FollowStatus.INVALID.value:
+    normalized_status = status.strip().upper()
+    if normalized_status == FollowStatus.INVALID.value:
         raise AppError(
             "FOLLOWUP_INVALID_REQUIRES_RETURN",
             "无效客资必须发起正式退回申诉，由运营完成后续处置",
@@ -44,17 +46,17 @@ def add_followup(
     followup = FollowUp(
         assignment_id=assignment.id,
         company_id=assignment.company_id,
-        status=status,
+        status=normalized_status,
         note=note.strip() if note else None,
         next_followup_at=next_followup_at,
         created_by=principal.user_id,
     )
     db.add(followup)
-    assignment.status = AssignmentStatus.COMPLETED if status == FollowStatus.DEAL else AssignmentStatus.FOLLOWING
+    assignment.status = AssignmentStatus.COMPLETED if normalized_status == FollowStatus.DEAL else AssignmentStatus.FOLLOWING
     lead = db.get(Lead, assignment.lead_id)
     if lead:
-        lead.current_follow_status = status
-        if status == FollowStatus.DEAL:
+        lead.current_follow_status = normalized_status
+        if normalized_status == FollowStatus.DEAL:
             lead.status = LeadStatus.CLOSED
         else:
             lead.status = LeadStatus.FOLLOWING
@@ -63,7 +65,7 @@ def add_followup(
             assignment_id=assignment.id,
             event_type="FOLLOWUP_ADDED",
             actor_user_id=principal.user_id,
-            payload={"status": status, "next_followup_at": next_followup_at.isoformat() if next_followup_at else None},
+            payload={"status": normalized_status, "next_followup_at": next_followup_at.isoformat() if next_followup_at else None},
         )
     )
     enqueue_outbox(
@@ -72,8 +74,10 @@ def add_followup(
         event_type="FOLLOWUP_ADDED",
         aggregate_type="assignment",
         aggregate_id=assignment.id,
-        payload={"company_id": assignment.company_id, "status": status},
+        payload={"company_id": assignment.company_id, "status": normalized_status},
     )
+    if normalized_status == FollowStatus.DEAL.value:
+        activate_supplier_reward_after_effective_confirmation(db, assignment_id=assignment.id)
     db.flush()
     return followup
 

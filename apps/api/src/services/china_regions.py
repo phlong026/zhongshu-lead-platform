@@ -405,6 +405,35 @@ def city_by_code(code: str) -> dict[str, Any] | None:
     return city_index().get(code)
 
 
+@lru_cache(maxsize=1)
+def region_index() -> dict[str, dict[str, str | None]]:
+    """Return the city context for one nationwide city or district code."""
+
+    items: dict[str, dict[str, str | None]] = {}
+    for province in region_tree()["provinces"]:
+        for city in province["cities"]:
+            items[city["code"]] = {
+                "city_code": city["code"],
+                "city_name": city["name"],
+                "district_code": None,
+                "district_name": None,
+            }
+            for district in city["districts"]:
+                items[district["code"]] = {
+                    "city_code": city["code"],
+                    "city_name": city["name"],
+                    "district_code": district["code"],
+                    "district_name": district["name"],
+                }
+    return items
+
+
+def region_by_code(code: str) -> dict[str, str | None] | None:
+    """Resolve a nationwide component code to canonical city and district names."""
+
+    return region_index().get(code)
+
+
 def district_by_code(city: dict[str, Any], code: str) -> dict[str, str] | None:
     return next(
         (district for district in city["districts"] if district["code"] == code),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from sqlalchemy import delete, select
@@ -7,14 +8,23 @@ from sqlalchemy.orm import Session
 
 from ..core.errors import AppError
 from ..core.models import (
+    Assignment,
     Company,
+    CompanyAccountRequest,
     CompanyCapability,
     CompanyServiceRegion,
     DictionaryItem,
+    FollowUp,
+    InviteToken,
+    Lead,
+    Notification,
+    PointsLedger,
     PointsAccount,
     Region,
+    ReturnRequest,
+    User,
 )
-from ..core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12
+from ..core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12, SupplierLeadReward
 from ..core.security import decrypt_text, encrypt_text, hash_phone, mask_phone
 from ..core.v12_enums import CompanyLeadCapabilityCode
 from ..schemas.company import CompanyCreateBody, CompanySimpleCreateBody, CompanyUpdateBody
@@ -162,6 +172,8 @@ def _materialize_selected_regions(db: Session, body: CompanySimpleCreateBody) ->
 def create_simple_company(
     db: Session,
     body: CompanySimpleCreateBody,
+    *,
+    approved_by: str | None = None,
 ) -> tuple[Company, dict[str, str]]:
     regions = _simple_region_codes(db, body)
     company = Company(
@@ -178,15 +190,16 @@ def create_simple_company(
     db.add(PointsAccount(company_id=company.id, balance=0, version=1))
 
     region_codes = sorted(regions)
+    approved_at = datetime.now(timezone.utc)
     db.add(
         CompanyLeadCapability(
             company_id=company.id,
             capability_code=CompanyLeadCapabilityCode.LEAD_RECEIVER.value,
-            active=False,
-            review_status="PENDING",
-            reviewed_by=None,
-            reviewed_at=None,
-            review_note="后台创建加盟商后待审核接单资格",
+            active=True,
+            review_status="APPROVED",
+            reviewed_by=approved_by,
+            reviewed_at=approved_at,
+            review_note="后台创建加盟商时自动开通接单资格",
         )
     )
     for code in region_codes:
@@ -197,18 +210,18 @@ def create_simple_company(
                 region_code=code,
                 region_level=region.level,
                 is_primary_city=code == body.primary_city_code,
-                active=False,
-                review_status="PENDING",
-                reviewed_by=None,
-                reviewed_at=None,
-                review_note="后台创建加盟商后待审核服务地区",
+                active=True,
+                review_status="APPROVED",
+                reviewed_by=approved_by,
+                reviewed_at=approved_at,
+                review_note="后台创建加盟商时自动开通服务地区",
             )
         )
     db.flush()
     return company, {
         "points_account": "READY",
-        "receiver_capability": "PENDING_REVIEW",
-        "service_areas": "PENDING_REVIEW",
+        "receiver_capability": "READY",
+        "service_areas": "READY",
     }
 
 
@@ -249,6 +262,65 @@ def update_company(db: Session, company: Company, body: CompanyUpdateBody) -> Co
         for user in company.members:
             user.session_version += 1
     return company
+
+
+_COMPANY_DELETE_BLOCKER_QUERIES = (
+    ("已绑定人员账号", User.company_id),
+    ("负责人绑定邀请", InviteToken.company_id),
+    ("人员开通申请", CompanyAccountRequest.company_id),
+    ("供资客资", Lead.supplier_company_id),
+    ("派发客资", Assignment.company_id),
+    ("派发供资关联", Assignment.supplier_company_id),
+    ("派发接收方关联", Assignment.receiver_company_id),
+    ("积分流水", PointsLedger.company_id),
+    ("客户跟进", FollowUp.company_id),
+    ("退回申诉", ReturnRequest.company_id),
+    ("供资奖励", SupplierLeadReward.supplier_company_id),
+    ("接收方奖励", SupplierLeadReward.receiver_company_id),
+    ("业务消息", Notification.company_id),
+)
+
+
+def company_delete_blockers(db: Session, company_ids: list[str]) -> dict[str, list[str]]:
+    """Return irreversible business links that forbid hard deletion."""
+
+    ids = list(dict.fromkeys(company_id for company_id in company_ids if company_id))
+    if not ids:
+        return {}
+    blockers = {company_id: [] for company_id in ids}
+    for label, column in _COMPANY_DELETE_BLOCKER_QUERIES:
+        matched_company_ids = set(
+            db.scalars(select(column).where(column.in_(ids)).distinct()).all()
+        )
+        for company_id in matched_company_ids:
+            if company_id in blockers:
+                blockers[company_id].append(label)
+    return {company_id: reasons for company_id, reasons in blockers.items() if reasons}
+
+
+def set_company_status(company: Company, status: str) -> tuple[str, bool]:
+    if status not in {"ACTIVE", "DISABLED"}:
+        raise ValueError(f"unsupported company status: {status}")
+    previous_status = company.status
+    if previous_status == status:
+        return previous_status, False
+    company.status = status
+    if status == "DISABLED":
+        for user in company.members:
+            user.session_version += 1
+    return previous_status, True
+
+
+def delete_empty_company(db: Session, company: Company) -> None:
+    blockers = company_delete_blockers(db, [company.id]).get(company.id, [])
+    if blockers:
+        raise AppError(
+            "COMPANY_DELETE_BLOCKED",
+            "该加盟商已关联账号或业务记录，只能停用，不能删除",
+            409,
+            {"blockers": blockers},
+        )
+    db.delete(company)
 
 
 def replace_company_scope(db: Session, company: Company, region_codes: list[str], capabilities: list[dict]) -> None:

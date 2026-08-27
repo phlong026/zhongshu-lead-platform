@@ -2,8 +2,8 @@
 
 ## Source of truth
 
-- Status: Draft — awaiting product confirmation before implementation.
-- Last refreshed: 2026-08-25.
+- Status: Active.
+- Last refreshed: 2026-08-26.
 - Primary product surfaces: platform operations desktop (`/admin/`), platform mobile workbench (`/h5/admin/`), franchise workbench (`/h5/`), and telesales console (`/h5/call/`).
 - Evidence reviewed:
   - `apps/admin/public/v12-operations.js` and `v12-operations.css`
@@ -18,6 +18,7 @@
 - Personality: professional, dependable, calm, operationally clear.
 - Trust signals: masked personal data by default, explicit status and owner, visible deadlines, irreversible-operation confirmations, traceability link on every business detail.
 - Avoid: role-mixed dashboards, unexplained technical status codes, hidden state changes, finance actions in operational workspaces, and links that open the legacy shell.
+- Every workbench header uses one fixed two-line signature: `合家美宅` followed by the smaller `客资管理平台`. Do not use “统一工作台” or “平台管理” as a user-facing product name.
 
 ## Product goals
 
@@ -34,6 +35,8 @@
   - Each role completes its primary daily flow without leaving its workbench.
   - No V1.2 navigation link points to `index.html#/...` or another legacy page.
   - Every blocked item exposes its next owner, reason, deadline, and direct next action.
+  - A franchise-supplied lead never enters the dispatch pool before the required telesales verification and an operations disposition.
+  - Provider rewards become eligible only after a later recipient completes an effective customer confirmation; the system never pays merely because a lead was claimed.
 
 ## Personas and jobs
 
@@ -55,23 +58,26 @@
 - `/h5/`: franchise owner and franchise employee responsive company workbench. Mobile is primary; it remains usable in a desktop browser without a second franchise administration shell.
 - `/call/` is retained only as a compatibility redirect to `/h5/call/`; `/m/` is not introduced.
 - An account has exactly one business role. Super administrators and operations administrators remain separate accounts; a super administrator may directly create, enable, disable, or bind franchise accounts when necessary, and every such operation requires a reason and high-risk audit record.
+- Franchise onboarding is company first, then one-time owner invitation. The platform creates a company with approved service districts and lead-receiving ability; it generates a single expiring link for the intended owner to confirm in WeChat. The owner’s confirmation atomically becomes the company’s primary account.
 
 ### Shared shell rules
 
-- Desktop left sidebar: role-relevant navigation, then a fixed bottom account card with avatar, name, account, role, company where applicable, and personal actions.
-- Desktop top bar: page title and breadcrumb on the left; refresh, settings where permitted, and sign-out on the right. No account identity in the top bar.
+- Desktop left sidebar: role-relevant navigation followed by one fixed identity card. The card has exactly two text rows: login name and a Chinese identity (`系统管理员` / `运营人员` / `电销人员` / `加盟商` / `加盟商员工`). It is the only entry to personal account operations; do not display “平台超级管理员”, “平台管理员”, company name, or a duplicate account heading there.
+- Desktop business pages have no persistent top title/action bar. Each page owns its primary heading and actions inside the content area so there is no duplicated page title. Sign-out lives behind the identity card.
+- The identity card opens one concise account center. Security actions, user name changes, exceptions, logs, and platform settings live in that page; platform settings must not open a second standalone settings page.
+- `异常` and `日志` are secondary governance surfaces reached from the identity-card workspace, not permanent business-navigation items.
+- The identity card or compact header message bell shows a red dot/count only for actionable unread items. The message center is reached from that affordance; generic “平台治理提示” never occupies the business overview.
 - Each list item exposes: current status, current owner, source, latest action, deadline, and a `查看全流程` entry.
 - Every detail page uses one chronological timeline. The timeline combines business actions, audit actions, points events, verification conclusions, and notification delivery state.
 - “Settings” is not a generic link. It is a named, permission-scoped navigation group.
 
 ### Super-admin information architecture
 
-1. 系统总览
-2. 账号与组织
-3. 加盟商治理
-4. 积分与资金
-5. 业务规则
-6. 审计与通知
+1. 首页（经营总览）
+2. 客资总览
+3. 加盟商
+4. 资金
+5. 身份卡片入口（安全、平台设置、异常与日志）
 
 ### Operations-admin information architecture
 
@@ -80,8 +86,7 @@
 3. 电销核验协同
 4. 派发中心
 5. 加盟商审核
-6. 异常与退回
-7. 业务追溯
+6. 身份卡片入口（安全、异常与日志）
 
 ### Telesales information architecture
 
@@ -117,12 +122,12 @@
 |---|---|---|---|
 | 系统总览 | 高风险审计、异常通知、账户/公司停用、资金异常、积压告警 | Drill into risk, assign governance follow-up | Normal lead review queues |
 | 账号与组织 | Internal accounts, franchise account lifecycle, role/status history | Create, invite, enable, disable, bind company accounts; record reasoned franchise-account actions | Customer details |
-| 加盟商治理 | Company status, capability/area approval state, owner binding state | View, emergency suspend, audit | Daily dispatch actions |
-| 积分与资金 | Recharge, balance exception, price rules, rewards, immutable ledger | Recharge, adjustment, reversal, publish rule | Operations-owned review controls |
+| 加盟商治理 | Company status, service districts, receive/supply switches, owner binding state | View details, configure switches, create/revoke owner invitation, emergency suspend | Daily dispatch actions |
+| 积分与资金 | Prominent recharge entry, remaining points, recharge records, balance exception, price rules, rewards, immutable ledger | Recharge, adjustment, reversal, publish rule | Operations-owned review controls |
 | 业务规则 | Workday calendar, notification templates/configuration, master data | Configure and publish | Individual task queues |
 | 审计与通知 | Unified audit search, failed notification delivery | Retry notification, export audit | Mutable business actions |
 
-Home metrics: high-risk operations, failed notifications, frozen rewards, unreconciled points, pending account requests, disabled-company impact.
+Home metrics: new leads, pending verification, ready dispatch, claimed, effective completion rate, returned exceptions, and pending reward settlement. The first screen adds: lead-volume/effective-rate trend, `录入 → 核实 → 派送 → 领取 → 确认完成` funnel, source/region/provider performance distribution, and only actionable exception queues.
 
 ### Operations admin
 
@@ -132,7 +137,7 @@ Home metrics: high-risk operations, failed notifications, frozen rewards, unreco
 | 客资中心 | Unified source-aware lead list with queue tabs | Initial review, dedup decision, send to telesales, return to supplier, close invalid, approve to pool | Lead enters verification, pool, rework, duplicate, or closed state |
 | 电销核验协同 | Pre-dispatch verification and return verification are distinct tabs | Assign/reassign, view conclusion, send back for clarification | Operations decision queue or return final review |
 | 派发中心 | Ready-dispatch pool, candidate eligibility, claimed/unclaimed status | Manual dispatch, release expired assignment | Assignment created or lead remains actionable |
-| 加盟商审核 | Company applications; capability and service-area changes together | One-click profile approval or reject/request changes | Company receives usable status and notification |
+| 加盟商 | Company list and company detail | Create company, configure service/receive/supply switches, create owner invitation | Franchise-side applications or duplicated approval queues |
 | 异常与退回 | Return cases, evidence, telesales conclusion, deadline | Approve, reject, require more evidence | Refund/repool, restore follow-up, or evidence rework |
 | 业务追溯 | Search by lead/company/assignment/task ID | View timeline, export business record | Read-only evidence |
 
@@ -157,10 +162,18 @@ Home metrics: due today, overdue, in progress, awaiting clarification, submitted
 | 领取与分配 | Pending claims, claimed leads, employee assignment status | Claim lead, assign/reassign employee | Claim is the only company-side action that spends points |
 | 供资管理 | New supply, drafts, review feedback, rework queue | Create/submit supply, assign supplier-entry work | Cannot self-approve or put leads in pool |
 | 跟进与退回 | Company lead progress, return drafts, evidence and outcomes | Review follow-up, submit return, supplement evidence | Return outcome is platform-owned |
-| 公司与人员申请 | Company profile/area/capability status, employee roster and requests | Submit profile update and employee add/disable request | Cannot grant roles or see passwords |
+| 我的 | Identity, company association, login account/password, read-only operating areas, and account exit | Change own login account/password, view current service areas, and exit the account | Cannot view, request, or change receive/supply permissions from H5 |
 | 积分与奖励 | Balance, reservations, ledger, reward status | Read-only and contact platform for recharge | Cannot recharge, adjust, or reverse |
 
-Home metrics: available points, waiting to claim, active follow-up, supplier rework required, return pending, employee requests pending.
+Franchise-supplied leads always follow: submit → telesales verification → operations disposition → ready dispatch. An invalid verification records its reason, returns the lead to the supplying franchise for revision, and never enters the dispatch pool. Franchise H5 only displays current service areas and cannot apply for or change service-area or receive/supply configuration.
+
+Reward rules are intentionally separate from return decisions:
+
+- Provider reward belongs only to the supplying franchise and becomes eligible after a recipient completes an effective customer confirmation.
+- A return appeal records whether the return itself is supported, while lead quality records whether the customer remains usable. If telesales confirms the customer remains usable, the original recipient continues follow-up; a confirmed-invalid lead is closed with no provider reward.
+- A separate service/processing reward is out of scope until the recipient, trigger, and compensation policy have been explicitly approved.
+
+Home hierarchy: available points is the single primary card; waiting claims, supplier rework, active follow-up and pending returns belong to the actionable company-todo list rather than repeated metric cards.
 
 ### Franchise employee
 
@@ -188,11 +201,12 @@ The bottom navigation is a role-specific task switcher, not a sitemap. It has at
 H5 navigation interaction rules:
 
 - The first tab is always `首页`. Its first module is `待办`, and it becomes the default focus when a user has overdue or assigned work.
-- `我的` contains identity, messages, password/help, and role-appropriate secondary settings; it is not a catch-all business menu.
+- `我的` contains identity, company association, login account/password, read-only operating areas, and the separated sign-out action; it is not a catch-all business menu. Receive/supply capability configuration, repeated messages, and placeholder help entries are not repeated here.
 - The home/queue has no more than four KPI cards. Every card must lead to a filtered actionable list.
 - Return, evidence rework, company review, and telesales conclusion are deep-linked task states, not always-visible tabs.
 - A user never sees another role's workflow as an empty tab. For example, franchise staff never see points, and telesales never see dispatch.
 - H5 deep links must stay in the V1.2 role workbench and must never open legacy `/h5/index.html` or `/admin/index.html#/...` routes.
+- H5 has no standalone avatar ring. It uses the shared two-line brand at top left and a compact message bell with an unread badge at top right. The header has no manual refresh or sign-out action; identity, account, and a deliberately separated sign-out action remain under `我的`.
 
 ### Internal mobile page contracts
 
@@ -202,7 +216,7 @@ H5 navigation interaction rules:
 |---|---|---|---|
 | 超级管理员 · 首页 | 待办、资金异常、失败通知、高风险操作、待处理账号/公司事项 | Open and resolve a single urgent item | Batch search, long audit exports, broad rule editing |
 | 超级管理员 · 治理 | 账号/公司申请、停用风险、关键规则变更记录 | Approve or reject a single request, emergency disable | Bulk account management and role migration |
-| 超级管理员 · 资金 | 待处理充值、异常余额、冻结奖励、最近资金流水 | Recharge, adjustment, reversal, publish one reviewed rule | Batch reconciliation and large ledger analysis |
+| 超级管理员 · 资金 | 充值入口、当前剩余积分、累计/周期充值汇总、最近充值记录 | Recharge, adjustment, reversal, publish one reviewed rule | Batch reconciliation, rewards and large ledger analysis |
 | 超级管理员 · 我的 | Identity, actionable messages, help, sign-out | Read personal messages | System configuration |
 | 运营管理员 · 首页 | 待初审、待电销结论、待运营处置、待派发、待终审 | Open the highest-priority item | Historical reports and batch actions |
 | 运营管理员 · 客资 | Source-aware queues with one clear filter at a time | Review, send to telesales, return for correction, close, approve to pool | Bulk import/export and complex dedup investigation |
@@ -243,7 +257,17 @@ Tradeoffs:
 
 - Existing components to reuse: V1.2 sidebar shell, KPI cards, table rows, status badges, modal/sheet, toast, safe HTML helpers, SVG icons.
 - New or changed components:
-  - Role identity card at the bottom of desktop navigation.
+- Role identity card at the bottom of desktop navigation.
+- Identity-card workspace: concise account identity, login security, and only the required governance tools (system settings, exceptions, audit) in one page.
+- Management overview: seven decision KPIs, trend chart, flow funnel, distribution chart, and a small actionable exception queue.
+- Funds overview: a prominent franchise recharge entry, current remaining points, period and cumulative recharge totals, and recent recharge records. Reward settlement, pricing rules, adjustment and the full immutable ledger are visible as secondary drill-down content.
+- Franchise H5 home: one available-points priority card, followed by the company todo list. Do not repeat rework counts as KPI cards; `待补资料` is a todo that opens the supply rework queue.
+- Franchise H5 account: one compact identity card, then account security and operating areas. Reuse the existing self-service username/password APIs; do not invent profile settings, support contacts, or capability switches without a working backend action.
+- Franchise H5 supply: an action-first title row, one progress filter, and the lead list. Do not place the telesales/dispatch process explanation in the page header; when supply is unavailable, display one compact unavailable state only.
+- Compact message bell with an actionable unread-count badge.
+- Cascading service-area picker: one control containing province and city dropdowns plus multi-select district/county checkboxes; it submits only canonical region codes.
+  - Franchise detail: a compact, single-screen identity card with service-area chips, receive/supply switches and owner-binding state; invitation history remains available only on demand.
+  - Owner-binding invitation: one expiring link, copyable message, lifecycle record and a dedicated H5 confirmation page; no raw token is stored after the creation response.
   - `我的待办` priority queue card with SLA and next-owner metadata.
   - Source-aware lead status chip: source + state + next owner.
   - Decision panel with required reason/evidence fields and result preview.
@@ -284,7 +308,7 @@ Tradeoffs:
   - Use “事实核验结论”, not “审核通过/驳回” for telesales.
   - Use “退回加盟商补正” for source-data rework and “退回申请” for a receiver’s post-claim appeal.
   - Use “待派发池”, “待领取”, “跟进中”, “待补证”, and “已关闭”.
-- Microcopy rules: each irreversible button names its result; require an explanatory reason when rejecting, returning, closing, adjusting points, or changing access.
+- Microcopy rules: each irreversible button names its result; require an explanatory reason when rejecting, returning, closing, adjusting points, or changing access. Page headers do not repeat background permissions, review flows, or data-scope explanations; retain only one concise unavailable/error state and legally required consent or evidence guidance.
 
 ## Implementation constraints
 
@@ -295,6 +319,8 @@ Tradeoffs:
 - Test/screenshot expectations: role-based browser tests must cover menu visibility, next-action CTA, blocked action explanation, no legacy routes, keyboard modal behavior, and mobile franchise workbench.
 
 ## Open questions
+
+- [ ] Whether a future service/processing reward compensates the recipient after a supported return; define recipient, trigger, amount, and reversal policy before implementation.
 
 - No unresolved role, terminal, or finance-approval decision remains in this design scope.
 - Franchise employees may submit supply leads directly, while franchise owners may submit as well.

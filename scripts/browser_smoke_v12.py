@@ -94,9 +94,12 @@ def _admin_smoke(browser: Browser, base_url: str, output: Path, errors: list[str
         page.wait_for_selector(".ops-shell", timeout=15000)
         _attach_errors(page, errors)
         _assert_no_visible_error(page, (".ops-error",))
-        for view in ("overview", "leads", "telesales", "dispatch", "companies", "returns", "finance", "audit"):
+        for view in ("overview", "leads", "companies", "finance"):
             if page.locator(f'.ops-menu [data-view="{view}"]').count() != 1:
-                raise AssertionError(f"super admin is missing {view} navigation")
+                raise AssertionError(f"super admin is missing permitted {view} navigation")
+        for view in ("telesales", "dispatch", "returns", "audit"):
+            if page.locator(f'.ops-menu [data-view="{view}"]').count():
+                raise AssertionError(f"super admin can see restricted {view} navigation")
         overview_screenshot = output / "v12-admin-overview.png"
         page.screenshot(path=str(overview_screenshot), full_page=True)
         created = page.evaluate(
@@ -134,7 +137,10 @@ def _admin_smoke(browser: Browser, base_url: str, output: Path, errors: list[str
         page.screenshot(path=str(trace_screenshot), full_page=True)
         page.locator('.ops-menu [data-view="companies"]').click()
         page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=companies")
-        page.wait_for_selector(".company-review", timeout=15000)
+        # New franchisees become active immediately.  The former review queue
+        # was removed from the business flow, so this verifies the current
+        # company-management entry instead of a retired approval card.
+        page.wait_for_selector("#new-franchise-company", timeout=15000)
         account_button = page.locator("[data-company-accounts]").first
         if account_button.count():
             account_button.click()
@@ -148,30 +154,26 @@ def _admin_smoke(browser: Browser, base_url: str, output: Path, errors: list[str
         page.locator('.ops-menu [data-view="finance"]').click()
         page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=finance")
         page.wait_for_selector(".ops-card", timeout=15000)
-        page.locator('.ops-menu [data-view="audit"]').click()
+        page.locator(".ops-account-card").click()
+        page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=account")
+        page.locator('[data-account-tool="audit"]').click()
         page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=audit")
         page.get_by_text("通知发送异常", exact=True).wait_for(timeout=15000)
-        page.locator('.ops-top-actions [data-view="settings"]').click()
-        page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=settings")
-        page.get_by_role("heading", name="系统设置").wait_for(timeout=15000)
-        page.locator('[data-view="users"]').click()
-        page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=users")
-        page.get_by_role("heading", name="内部账号").wait_for(timeout=15000)
-        page.locator('.ops-content [data-view="settings"]').click()
-        page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=settings")
-        page.locator('[data-view="calendar"]').click()
-        page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=calendar")
-        page.get_by_text("工作日历", exact=False).first.wait_for(timeout=15000)
-        page.get_by_role("heading", name="单日例外").wait_for(timeout=15000)
-        settings_screenshot = output / "v12-admin-settings.png"
-        page.screenshot(path=str(settings_screenshot), full_page=True)
+        page.locator(".ops-account-card").click()
+        page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=account")
+        page.locator("#account-username").wait_for(timeout=15000)
+        page.get_by_role("heading", name="安全与登录").wait_for(timeout=15000)
+        page.get_by_role("heading", name="平台设置").wait_for(timeout=15000)
+        page.locator('[data-view="users"]').wait_for(timeout=15000)
+        account_screenshot = output / "v12-admin-account.png"
+        page.screenshot(path=str(account_screenshot), full_page=True)
         return {
             "valid": True,
             "title": page.title(),
             "navigation_count": page.locator(".ops-menu [data-view]").count(),
             "overview_screenshot": str(overview_screenshot),
             "trace_screenshot": str(trace_screenshot),
-            "settings_screenshot": str(settings_screenshot),
+            "account_screenshot": str(account_screenshot),
             "browser_history_valid": True,
         }
     finally:

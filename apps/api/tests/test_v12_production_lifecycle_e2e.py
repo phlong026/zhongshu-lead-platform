@@ -4,15 +4,16 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
-import subprocess
-import sys
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import create_engine, func, inspect, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
 
+from apps.api.src.core.config import get_settings
 from apps.api.src.core.database import get_db
 from apps.api.src.core.models import (
     Assignment,
@@ -29,45 +30,33 @@ from apps.api.src.core.models import (
 from apps.api.src.core.models_v12 import SupplierLeadReward
 from apps.api.src.services.bootstrap import seed_reference_data
 from apps.api.src.services.superadmin_bootstrap import bootstrap_superadmin
+from apps.api.src.services.verification_service import publish_template
 
 
 ROOT = Path(__file__).resolve().parents[3]
 ROOT_PASSWORD = "E2E-Root-Only9!"
-SAFE_SUBPROCESS_ENVIRONMENT_KEYS = (
-    "CI",
-    "LANG",
-    "LC_ALL",
-    "PATH",
-    "PYTHONPATH",
-    "PYTHONPYCACHEPREFIX",
-    "SYSTEMROOT",
-    "TMP",
-    "TMPDIR",
-    "TEMP",
-    "UV_CACHE_DIR",
-    "VIRTUAL_ENV",
-)
 
 
 def _upgrade_to_head(database_url: str) -> None:
-    env = {
-        key: os.environ[key]
-        for key in SAFE_SUBPROCESS_ENVIRONMENT_KEYS
-        if os.environ.get(key)
-    }
-    env["APP_ENV"] = "test"
-    env["DATABASE_URL"] = database_url
-    result = subprocess.run(
-        [sys.executable, "-m", "alembic", "-c", "alembic.ini", "upgrade", "head"],
-        cwd=ROOT,
-        env=env,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        details = (result.stderr or result.stdout or "").strip()
-        raise AssertionError(f"Alembic upgrade head failed:\n{details}")
+    previous_database_url = os.environ.get("DATABASE_URL")
+    previous_app_env = os.environ.get("APP_ENV")
+    try:
+        os.environ["APP_ENV"] = "test"
+        os.environ["DATABASE_URL"] = database_url
+        get_settings.cache_clear()
+        config = Config()
+        config.set_main_option("script_location", str(ROOT / "migrations"))
+        command.upgrade(config, "head")
+    finally:
+        if previous_database_url is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = previous_database_url
+        if previous_app_env is None:
+            os.environ.pop("APP_ENV", None)
+        else:
+            os.environ["APP_ENV"] = previous_app_env
+        get_settings.cache_clear()
 
 
 def _database_url(tmp_path: Path) -> str:
@@ -324,6 +313,8 @@ def _submit_supplier_lead(
     client,
     supplier: dict[str, str],
     operation: dict[str, str],
+    telesales: dict[str, str],
+    telesales_user_id: str,
     *,
     phone: str,
     label: str,
@@ -354,15 +345,45 @@ def _submit_supplier_lead(
             headers=supplier,
         )
     )
-    assert submitted["lead"]["status"] == "PENDING_REVIEW"
-    reviewed = _data(
+    assert submitted["lead"]["status"] == "PENDING_TELESALES_VERIFY"
+    assigned = _data(
         client.post(
-            f"/api/v1/v1.2/admin/supplier-leads/{lead_id}/review",
+            f"/api/v1/v1.2/admin/leads/{lead_id}/pre-dispatch-verification",
             headers=operation,
-            json={"decision": "APPROVE", "note": "E2E 供应客资初审通过"},
+            json={
+                "assignee_user_id": telesales_user_id,
+                "reason": "E2E 确认客户意向、预算和可联系时间",
+            },
         )
     )
-    assert reviewed["lead"]["status"] == "READY_DISPATCH"
+    task_id = assigned["id"]
+    assert assigned["status"] == "ASSIGNED"
+    _data(
+        client.post(
+            f"/api/v1/v1.2/pre-dispatch-verifications/tasks/{task_id}/start",
+            headers=telesales,
+        )
+    )
+    submitted = _data(
+        client.post(
+            f"/api/v1/v1.2/pre-dispatch-verifications/tasks/{task_id}/submit",
+            headers=telesales,
+            json={
+                "contact_result": "CONNECTED",
+                "conclusion": "QUALIFIED",
+                "note": "E2E 客户确认存在装修需求且可继续跟进",
+            },
+        )
+    )
+    assert submitted["result"] == "QUALIFIED"
+    disposed = _data(
+        client.post(
+            f"/api/v1/v1.2/admin/leads/{lead_id}/pre-dispatch-disposition",
+            headers=operation,
+            json={"decision": "APPROVE_POOL", "note": "E2E 电销核实合格，进入派发池"},
+        )
+    )
+    assert disposed["status"] == "READY_DISPATCH"
     return lead_id
 
 
@@ -417,7 +438,7 @@ def _dispatch_and_claim(
     assert len(unlocked_phone) == 11
     assert "*" not in unlocked_phone
     assert claimed["idempotent"] is False
-    assert claimed["reward"]["status"] == "OBSERVING"
+    assert claimed["reward"]["status"] == "WAITING_CLAIM"
     replay_claim = _data(
         client.post(
             f"/api/v1/v1.2/assignments/{assignment['id']}/claim",
@@ -554,6 +575,9 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
     telesales = _login(client, "e2e_telesales", "E2E-Telesales9!")
     internal_users = _data(client.get("/api/v1/users", headers=admin))
     telesales_user_id = next(item["id"] for item in internal_users if item["username"] == "e2e_telesales")
+    with factory() as db:
+        publish_template(db, code="PRE_DISPATCH", name="E2E 前置事实核验", schema={"fields": []})
+        db.commit()
 
     supplier_company_id = _create_company(client, admin, "E2E-SUPPLIER", "E2E 供应商")
     receiver_company_id = _create_company(client, admin, "E2E-RECEIVER", "E2E 接收商")
@@ -630,6 +654,8 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
         client,
         supplier,
         operation,
+        telesales,
+        telesales_user_id,
         phone="13900001001",
         label="奖励结算",
     )
@@ -688,6 +714,14 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
         )
     )
     assert followup["status"] == "CONTACTED"
+    effective_confirmation = _data(
+        client.post(
+            f"/api/v1/followups/assignments/{assignment_one}",
+            headers=receiver,
+            json={"status": "DEAL", "note": "E2E 电话确认客资有效"},
+        )
+    )
+    assert effective_confirmation["status"] == "DEAL"
     _make_reward_due(factory, reward_one)
     missing_settlement_note = client.post(
         f"/api/v1/v1.2/admin/supplier-rewards/{reward_one}/settle",
@@ -721,6 +755,8 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
         client,
         supplier,
         operation,
+        telesales,
+        telesales_user_id,
         phone="13900001002",
         label="退回通过",
     )
@@ -747,6 +783,8 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
         client,
         supplier,
         operation,
+        telesales,
+        telesales_user_id,
         phone="13900001003",
         label="退回驳回",
     )
@@ -768,6 +806,14 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
         assignment_id=assignment_three,
         decision="REJECT",
     )
+    resumed_confirmation = _data(
+        client.post(
+            f"/api/v1/followups/assignments/{assignment_three}",
+            headers=receiver,
+            json={"status": "DEAL", "note": "E2E 退回复核可用后电话确认有效"},
+        )
+    )
+    assert resumed_confirmation["status"] == "DEAL"
     _make_reward_due(factory, reward_three)
     rejected_reward_settlement = _data(
         client.post(
@@ -782,6 +828,8 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
         client,
         supplier,
         operation,
+        telesales,
+        telesales_user_id,
         phone="13900001004",
         label="超期申诉",
     )
@@ -847,8 +895,8 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
         assert db.get(ReturnRequest, return_approved).status == "APPROVED"
         assert db.get(ReturnRequest, return_rejected).status == "REJECTED"
         assert db.get(Assignment, assignment_two).status == "RETURNED"
-        assert db.get(Lead, lead_two).status == "READY_DISPATCH"
-        assert db.get(Assignment, assignment_three).status == "CLAIMED"
+        assert db.get(Lead, lead_two).status == "CLOSED"
+        assert db.get(Assignment, assignment_three).status == "COMPLETED"
         _assert_account_reconciles(db, supplier_company_id)
         _assert_account_reconciles(db, receiver_company_id)
         reward_ledgers = db.scalars(
@@ -859,7 +907,17 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
         assert {item.business_id for item in reward_ledgers} == {reward_one, reward_three}
         assert db.scalar(select(func.count(NotificationOutbox.id))) >= 1
         assert db.scalar(select(func.count(AuditLog.id))) >= 30
-        assert db.scalar(select(func.count(VerificationTask.id))) == 2
+        assert db.scalar(select(func.count(VerificationTask.id))) == 6
+        assert db.scalar(
+            select(func.count(VerificationTask.id)).where(
+                VerificationTask.task_type == "PRE_DISPATCH_VERIFY"
+            )
+        ) == 4
+        assert db.scalar(
+            select(func.count(VerificationTask.id)).where(
+                VerificationTask.task_type == "RETURN_VERIFY"
+            )
+        ) == 2
         assert db.scalar(select(func.count(User.id))) == 6
         expected_negative_paths = {
             "cross_company_isolation",

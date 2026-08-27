@@ -76,12 +76,12 @@ class SupplierReviewBody(BaseModel):
         return value.strip()
 
     @model_validator(mode="after")
-    def require_telesales_assignment_for_incomplete_information(self) -> "SupplierReviewBody":
-        if self.decision == "INFO_INCOMPLETE":
+    def require_telesales_assignment_before_supplier_dispatch(self) -> "SupplierReviewBody":
+        if self.decision in {"QUALIFIED", "APPROVE", "INFO_INCOMPLETE"}:
             if not self.note:
-                raise ValueError("资料不全时必须填写初审说明")
+                raise ValueError("派发电销核实前必须填写初审说明")
             if not self.assignee_user_id or not self.pre_dispatch_reason:
-                raise ValueError("资料不全时必须指定电销人员和核验重点")
+                raise ValueError("加盟商客资派送前必须指定电销人员和核验重点")
         elif self.decision in {"DUPLICATE", "INVALID", "REJECT"} and not self.note:
             raise ValueError("重复或无效结论必须填写初审说明")
         return self
@@ -159,6 +159,18 @@ class CapabilityReviewBody(BaseModel):
         if self.decision == "REJECT" and not (self.note and self.note.strip()):
             raise ValueError("驳回公司能力申请时必须填写原因")
         return self
+
+
+class CompanyCapabilityConfigureBody(BaseModel):
+    """Platform-side capability switch; companies do not apply for it themselves."""
+
+    active: bool
+    note: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("note")
+    @classmethod
+    def normalize_note(cls, value: str | None) -> str | None:
+        return value.strip() if value and value.strip() else None
 
 
 class CompanyProfileBulkApproveBody(BaseModel):

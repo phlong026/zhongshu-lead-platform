@@ -35,8 +35,12 @@ def test_browser_smoke_covers_only_the_formal_role_workbenches() -> None:
     assert "franchise owner H5 bottom navigation must stay on one row" in script
     assert "telesales H5 bottom navigation must stay on one row" in script
     assert "telesales primary action must keep contrast" in script
-    assert 'data-view="settings"' in script
-    assert 'data-view="users"' in script
-    assert 'data-view="calendar"' in script
-    assert "内部账号" in script
-    assert "工作日历" in script
+    assert 'for view in ("overview", "leads", "companies", "finance"):' in script
+    assert "super admin is missing permitted {view} navigation" in script
+    assert "super admin can see restricted {view} navigation" in script
+    assert 'page.locator(".ops-account-card").click()' in script
+    assert 'page.locator("#account-username")' in script
+    assert 'page.locator(".ops-account-card").click()' in script
+    assert 'page.wait_for_selector("#new-franchise-company"' in script
+    assert 'page.get_by_role("heading", name="平台设置")' in script
+    assert "data-account-tool=\"settings\"" not in script

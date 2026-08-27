@@ -17,7 +17,7 @@ def test_calendar_page_uses_backend_effective_days_and_china_timezone() -> None:
     source = ADMIN_APP.read_text(encoding="utf-8")
     calendar = _calendar_source()
 
-    assert "settings:['设置','settings',['*'],true]" in source
+    assert "settings:['平台设置','settings',['*'],true]" in source
     assert "Asia/Shanghai" in source
     assert "/admin/v1.2/calendar-days?start=" in calendar
     assert "item.is_override" in calendar

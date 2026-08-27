@@ -134,16 +134,6 @@
     {
       "scanner": "semgrep",
       "id": "dangerous-subprocess-use-audit",
-      "scope": "apps/api/tests/test_v12_production_lifecycle_e2e.py",
-      "occurrence": "L60:C14-L67:C6",
-      "reason": "The lifecycle e2e invokes the current Python interpreter with a fixed Alembic argv prefix and a whitelisted environment (SAFE_SUBPROCESS_ENVIRONMENT_KEYS) against the disposable e2e database; no shell is enabled.",
-      "owner": "platform-security",
-      "created_on": "2026-08-23",
-      "expires_on": "2026-09-22"
-    },
-    {
-      "scanner": "semgrep",
-      "id": "dangerous-subprocess-use-audit",
       "scope": "scripts/run_v12_e2e.py",
       "occurrence": "L108:C12-L108:C66",
       "reason": "The e2e orchestrator's generic runner receives only argv lists assembled in the same script from fixed docker and pytest entrypoints; shell execution is disabled and failures surface as RuntimeError with captured detail.",

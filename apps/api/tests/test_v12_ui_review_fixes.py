@@ -73,7 +73,8 @@ def test_unified_operations_workspace_keeps_source_specific_lead_actions() -> No
     assert "PLATFORM_MANUAL" in js
     assert "SUPPLIER_H5" in js
     assert "data-platform-pre-dispatch" in js
-    assert "data-review-info" in js
+    assert "data-pre-assign" in js
+    assert "data-review-info" not in js
     assert "平台补充资料后再处理" in js
 
 
@@ -86,3 +87,20 @@ def test_supplier_h5_has_real_pagination_controls() -> None:
     assert "supply-next" in js
     assert "第 ${S.page} / ${totalPages} 页" in js
     assert "page_size:100" not in compact
+
+
+def test_operation_workbench_uses_customer_location_and_business_readable_audit_details() -> None:
+    js = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
+
+    assert "全国城市" in js
+    assert "所在地" in js
+    assert "['服务地区'," not in js
+    assert "预算下限（万元）" in js
+    assert "budgetToWan" in js
+    assert "budgetFromWan" in js
+    assert "按所在地优先" in js
+    assert "搜索其他加盟商" in js
+    assert "data-audit-detail" in js
+    assert "操作详情" in js
+    assert "操作人" in js
+    assert "操作结果" in js

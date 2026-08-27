@@ -14,16 +14,22 @@ def test_unified_desktop_assets_load_the_single_formal_operations_shell() -> Non
     assert not (ADMIN / "index.html").exists()
 
 
-def test_unified_desktop_shell_places_identity_and_actions_in_their_role_areas() -> None:
+def test_unified_desktop_shell_keeps_one_compact_account_entry() -> None:
     script = (ADMIN / "v12-operations.js").read_text(encoding="utf-8")
     css = (ADMIN / "v12-operations.css").read_text(encoding="utf-8")
 
-    assert "ops-side-foot" in script
-    assert "ops-top-actions" in script
-    assert "刷新" in script
-    assert "设置" in script
-    assert "退出" in script
-    assert "ops-side-foot" in css
+    assert "ops-account-zone" in script
+    assert "data-account-center" in script
+    assert "data-account-settings" not in script
+    assert "ops-account-tools" in script
+    assert "S.me?.username||'当前账号'" in script
+    assert "ops-top-actions" not in script
+    assert "ops-personal-menu" not in script
+    assert "ops-account-workspace" not in script
+    assert "刷新账号状态" not in script
+    assert "退出当前账号" in script
+    assert "ops-account-zone" in css
+    assert "ops-account-settings" not in css
     assert "ops-role-hero" in css
     assert "ops-trace-layout" in css
 
@@ -32,7 +38,7 @@ def test_unified_desktop_uses_svg_icons_without_legacy_v10_assets() -> None:
     script = (ADMIN / "v12-operations.js").read_text(encoding="utf-8")
 
     assert "window.ZSIconSystem?.svg" in script
-    for icon_name in ("layout-dashboard", "phone", "user-check", "hand-claim", "building", "coins", "calendar"):
+    for icon_name in ("layout-dashboard", "phone", "user-check", "hand-claim", "building", "wallet", "calendar"):
         assert f"'{icon_name}'" in script
     assert not (ADMIN / "admin-design-system-v10.js").exists()
     assert not (ADMIN / "admin-extended-pages-v10.js").exists()

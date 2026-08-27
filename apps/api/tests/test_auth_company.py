@@ -67,6 +67,17 @@ def _admin_headers(client) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _operation_headers(client) -> dict[str, str]:
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"username": "operation", "password": "Operation123!"},
+    )
+    assert response.status_code == 200, response.text
+    token = response.cookies.get("access_token")
+    assert token
+    return {"Authorization": f"Bearer {token}"}
+
+
 def test_company_invite_and_wechat_binding(db) -> None:
     company = create_company(db, _company_body("SH001"))
     db.commit()
@@ -84,7 +95,7 @@ def test_company_invite_and_wechat_binding(db) -> None:
 def test_invite_copy_text_carries_recipient_and_company(db) -> None:
     company = create_company(db, _company_body("SH-COPY", owner_name="李负责人"))
     invite, raw, _ = create_company_invite(db, company.id, None, 24)
-    url = f"http://localhost:8000/h5/#/login?invite={raw}"
+    url = f"http://localhost:8000/h5/invite.html?invite={raw}"
     text = build_invite_copy_text(company.owner_name, company.name, url, invite.expires_at.isoformat())
     assert text.startswith("李负责人，您好：这是【上海测试加盟商】的微信绑定邀请，请在微信内打开：")
     assert url in text
@@ -94,7 +105,7 @@ def test_invite_copy_text_carries_recipient_and_company(db) -> None:
 def test_invite_copy_text_falls_back_without_owner_name(db) -> None:
     company = create_company(db, _company_body("SH-NOOWNER", owner_name=None))
     invite, raw, _ = create_company_invite(db, company.id, None, 24)
-    text = build_invite_copy_text(company.owner_name, company.name, f"http://localhost:8000/h5/#/login?invite={raw}", invite.expires_at.isoformat())
+    text = build_invite_copy_text(company.owner_name, company.name, f"http://localhost:8000/h5/invite.html?invite={raw}", invite.expires_at.isoformat())
     assert text.startswith("您好：这是【上海测试加盟商】的微信绑定邀请，请在微信内打开：")
 
 
@@ -123,6 +134,31 @@ def test_invite_http_response_carries_safe_recipient_info(api_client) -> None:
     assert "上海测试加盟商" not in data["url"]
     assert "contact_phone" not in data
     assert "phone" not in data["copy_text"]
+
+
+def test_operation_can_create_and_track_company_invite(api_client) -> None:
+    client, factory = api_client
+    headers = _operation_headers(client)
+    with factory() as db:
+        company = create_company(db, _company_body("SH-OP-INVITE", owner_name="运营负责人"))
+        db.commit()
+        company_id = company.id
+
+    created = client.post(
+        f"/api/v1/auth/companies/{company_id}/invites",
+        headers=headers,
+        json={"expires_hours": 72},
+    )
+    assert created.status_code == 200, created.text
+    invitation = created.json()["data"]
+    assert "/h5/invite.html?invite=" in invitation["url"]
+
+    listed = client.get(
+        f"/api/v1/auth/companies/{company_id}/invites",
+        headers=headers,
+    )
+    assert listed.status_code == 200, listed.text
+    assert [item["id"] for item in listed.json()["data"]["items"]] == [invitation["invite_id"]]
 
 
 def test_invite_http_response_omits_missing_owner_as_null(api_client) -> None:

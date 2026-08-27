@@ -20,7 +20,6 @@ from ..core.models import (
     ReturnRequest,
 )
 from .notification_service import create_station_message, enqueue_outbox
-from .deeplink import create_assignment_link_token
 from .points_service import points_available_for_dispatch, resolve_price
 
 settings = get_settings()
@@ -142,8 +141,7 @@ def dispatch_lead(
             payload={"reason": reason, "points_price": assignment.points_price},
         )
     )
-    link_token = create_assignment_link_token(assignment.id, company.id)
-    deep_link = f"/h5/#/link/{link_token}"
+    deep_link = f"/h5/v12-workbench.html?view=assignments&id={assignment.id}"
     create_station_message(
         db,
         user_id=company.primary_user_id,

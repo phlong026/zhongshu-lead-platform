@@ -450,7 +450,15 @@ def list_candidates(db: Session, *, lead: Lead) -> list[CandidateResult]:
                 duplicate_to_receiver=duplicate_to_receiver,
             )
         )
-    return results
+    return sorted(
+        results,
+        key=lambda item: (
+            not item.region_match,
+            not item.eligible,
+            item.company_name.casefold(),
+            item.company_id,
+        ),
+    )
 
 
 def list_dispatch_pool(
@@ -644,7 +652,6 @@ def _reward_for_claim(
     lead: Lead,
     assignment: Assignment,
     now: datetime,
-    deadline: datetime,
 ) -> SupplierLeadReward | None:
     if not lead.supplier_company_id or lead.supplier_company_id == assignment.company_id:
         return None
@@ -660,7 +667,7 @@ def _reward_for_claim(
     rule = resolve_supplier_reward_rule(db, as_of=now)
     reward_points = calculate_reward_points(int(assignment.points_price), rule) if eligible else 0
     reward_status = (
-        RewardStatus.OBSERVING.value
+        RewardStatus.WAITING_CLAIM.value
         if eligible and reward_points > 0
         else RewardStatus.NOT_ELIGIBLE.value
     )
@@ -675,12 +682,13 @@ def _reward_for_claim(
         reward_points=reward_points,
         rule_version=rule.version,
         rule_snapshot_json=rule.snapshot(),
-        observed_at=now if reward_status == RewardStatus.OBSERVING.value else None,
-        appeal_deadline_at=deadline,
-        reward_due_at=deadline,
+        # 领取只代表接收方取得了客资；供资奖励要等有效确认后才开始结算。
+        observed_at=None,
+        appeal_deadline_at=None,
+        reward_due_at=None,
         exception_reason=(
             None
-            if reward_status == RewardStatus.OBSERVING.value
+            if reward_status == RewardStatus.WAITING_CLAIM.value
             else "REWARD_DUPLICATE" if not eligible else "ZERO_REWARD_POINTS"
         ),
     )
@@ -795,7 +803,7 @@ def claim_assignment(
     assignment.first_followup_due_at = now + timedelta(hours=settings.first_followup_hours)
     lead.status = LeadV12Status.CLAIMED.value
     lead.current_follow_status = "UNCONTACTED"
-    reward = _reward_for_claim(db, lead=lead, assignment=assignment, now=now, deadline=deadline)
+    reward = _reward_for_claim(db, lead=lead, assignment=assignment, now=now)
     db.add(
         AssignmentEvent(
             assignment_id=assignment.id,

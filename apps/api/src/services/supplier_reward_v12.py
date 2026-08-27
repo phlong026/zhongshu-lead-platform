@@ -15,6 +15,7 @@ from ..core.state_machine_v12 import assert_reward_transition
 from ..core.time import as_utc
 from ..core.v12_enums import ReturnV12Status, RewardStatus
 from .points_service import change_points, get_or_create_account
+from .workday_calendar import WorkdayCalendarService
 
 VALID_REVERSAL_REASONS = {"FRAUD", "SYSTEM_ERROR", "ADMIN_ERROR"}
 ACTIVE_APPEAL_STATUSES = {
@@ -65,6 +66,32 @@ def _active_appeal_exists(db: Session, assignment_id: str) -> bool:
         )
         .limit(1)
     ) is not None
+
+
+def activate_supplier_reward_after_effective_confirmation(
+    db: Session,
+    *,
+    assignment_id: str,
+    confirmed_at: datetime | None = None,
+) -> SupplierLeadReward | None:
+    """Open the supplier-reward settlement window after the receiver confirms the lead is valid."""
+
+    reward = db.scalar(
+        select(SupplierLeadReward)
+        .where(SupplierLeadReward.assignment_id == assignment_id)
+        .with_for_update()
+    )
+    if reward is None or reward.status != RewardStatus.WAITING_CLAIM.value:
+        return reward
+    now = _now(confirmed_at)
+    assert_reward_transition(RewardStatus.WAITING_CLAIM, RewardStatus.OBSERVING)
+    reward.status = RewardStatus.OBSERVING.value
+    reward.observed_at = now
+    reward.appeal_deadline_at = WorkdayCalendarService(db).add_workdays(now, 3)
+    reward.reward_due_at = reward.appeal_deadline_at
+    reward.exception_reason = None
+    db.flush()
+    return reward
 
 
 def settle_supplier_reward(

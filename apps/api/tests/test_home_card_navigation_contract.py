@@ -32,10 +32,11 @@ def test_franchise_home_metrics_open_existing_business_details() -> None:
 def test_franchise_secondary_metrics_scroll_or_filter_to_existing_details() -> None:
     workbench = read(H5 / "v12-workbench.js")
 
-    assert "scroll:'company-capabilities'" in workbench
-    assert "scroll:'service-areas'" in workbench
-    assert 'id="company-capabilities"' in workbench
+    assert "scroll:'company-capabilities'" not in workbench
+    assert "scroll:'service-areas'" not in workbench
+    assert 'id="company-capabilities"' not in workbench
     assert 'id="service-areas"' in workbench
+    assert "经营区域" in workbench
     assert "REWARD_FILTERS" in workbench
     for status in ("SETTLED", "OBSERVING", "FROZEN"):
         assert f"id:'{status}'" in workbench
@@ -63,7 +64,8 @@ def test_supplier_submodule_navigation_uses_progress_and_upload_semantics() -> N
     source = read(H5 / "v12-workbench.js")
 
     assert "leads:['供资','plus']" in source
-    assert "录入客户资料，查看审核与处理进度" in source
+    assert "供资暂未开通" in source
+    assert "提交后默认由电销核实" not in source
     assert "上传第一条客资" in source
     assert "我的客资" not in source
 
@@ -72,17 +74,18 @@ def test_admin_dashboard_and_role_kpis_link_to_existing_detail_pages() -> None:
     operations = read(ADMIN / "v12-operations.js")
 
     for destination in (
-        "?view=leads",
-        "?view=telesales",
-        "?view=dispatch",
-        "?view=returns",
-        "?view=companies",
-        "?view=finance",
-        "?view=audit",
+        "leads",
+        "telesales",
+        "dispatch",
+        "returns",
+        "companies",
+        "finance",
+        "audit",
     ):
-        assert destination in operations
+        assert f"{destination}:[" in operations
 
     assert "data-overview-view" in operations
+    assert "go(button.dataset.overviewView)" in operations
     assert "index.html" not in operations
     for mapping in (
         "FOLLOWING:'跟进中'",
@@ -95,18 +98,22 @@ def test_admin_dashboard_and_role_kpis_link_to_existing_detail_pages() -> None:
         assert mapping in operations
 
 
-def test_formal_admin_home_explains_the_five_role_boundaries() -> None:
+def test_formal_admin_home_distinguishes_platform_and_operation_boundaries() -> None:
     source = read(ADMIN / "v12-operations.js")
+    overview = source[source.index("async function overview"):source.index("async function review")]
 
-    for copy in ("运营待办", "运营派发", "不具备自主领取", "不查看加盟商内部员工的客资分配明细"):
-        assert copy in source
+    for copy in ("/v1.2/reports/management-dashboard", "客资新增与有效率趋势", "流转漏斗", "当前没有需要处理的异常待办"):
+        assert copy in overview
+    assert "经营风险" not in overview
+    assert "statusSummary(" not in overview
+    assert "ops-summary-columns" not in overview
 
 
 def test_formal_lead_page_uses_the_unified_operation_view() -> None:
     source = read(ADMIN / "v12-operations.js")
 
     assert "async function review" in source
-    assert "派发电销核验" in source
+    assert "分配电销核实" in source
     assert "history.pushState" in source
     assert "window.addEventListener('popstate'" in source
 
