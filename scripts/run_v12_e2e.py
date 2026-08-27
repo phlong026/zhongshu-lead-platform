@@ -54,11 +54,10 @@ class DisposablePostgres:
         )
 
     def start(self) -> None:
-        _run_checked(["docker", "--version"])
-        _run_checked(["docker", "info"])
-        _run_checked(
+        _run_docker_checked(["--version"])
+        _run_docker_checked(["info"])
+        _run_docker_checked(
             [
-                "docker",
                 "run",
                 "-d",
                 "--rm",
@@ -79,14 +78,13 @@ class DisposablePostgres:
         self._wait_until_ready()
 
     def stop(self) -> None:
-        _run(["docker", "stop", self.name], check=False, capture_output=True)
+        _run_docker(["stop", self.name], check=False, capture_output=True)
 
     def _wait_until_ready(self) -> None:
         last_error = ""
         for _attempt in range(60):
-            result = _run(
+            result = _run_docker(
                 [
-                    "docker",
                     "exec",
                     self.name,
                     "pg_isready",
@@ -105,23 +103,23 @@ class DisposablePostgres:
         raise RuntimeError(f"临时 PostgreSQL 未就绪: {last_error}")
 
 
-def _run(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, cwd=ROOT, text=True, **kwargs)
+def _run_docker(args: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["docker", *args], cwd=ROOT, text=True, **kwargs)
 
 
-def _run_checked(command: list[str]) -> subprocess.CompletedProcess[str]:
+def _run_docker_checked(args: list[str]) -> subprocess.CompletedProcess[str]:
     try:
-        return _run(command, capture_output=True, check=True)
+        return _run_docker(args, capture_output=True, check=True)
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or exc.stdout or "").strip()
-        message = f"命令失败: {' '.join(command)}"
+        message = f"命令失败: docker {' '.join(args)}"
         if detail:
             message = f"{message}\n{detail}"
         raise RuntimeError(message) from exc
 
 
 def _read_container_port(container_name: str) -> str:
-    result = _run_checked(["docker", "port", container_name, "5432/tcp"])
+    result = _run_docker_checked(["port", container_name, "5432/tcp"])
     endpoint = result.stdout.strip().splitlines()[0]
     return endpoint.rsplit(":", 1)[-1]
 
@@ -183,16 +181,10 @@ def _run_lifecycle(database_url: str, evidence_path: str, junit_xml: str) -> int
             "V12_E2E_EVIDENCE_PATH": str(evidence),
         }
     )
-    result = _run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "-q",
-            *TARGET_TESTS,
-            "--junitxml",
-            str(junit),
-        ],
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", *TARGET_TESTS, "--junitxml", str(junit)],
+        cwd=ROOT,
+        text=True,
         env=env,
     )
     return result.returncode
