@@ -4,15 +4,16 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
-import subprocess
-import sys
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import create_engine, func, inspect, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
 
+from apps.api.src.core.config import get_settings
 from apps.api.src.core.database import get_db
 from apps.api.src.core.models import (
     Assignment,
@@ -34,41 +35,28 @@ from apps.api.src.services.verification_service import publish_template
 
 ROOT = Path(__file__).resolve().parents[3]
 ROOT_PASSWORD = "E2E-Root-Only9!"
-SAFE_SUBPROCESS_ENVIRONMENT_KEYS = (
-    "CI",
-    "LANG",
-    "LC_ALL",
-    "PATH",
-    "PYTHONPATH",
-    "PYTHONPYCACHEPREFIX",
-    "SYSTEMROOT",
-    "TMP",
-    "TMPDIR",
-    "TEMP",
-    "UV_CACHE_DIR",
-    "VIRTUAL_ENV",
-)
 
 
 def _upgrade_to_head(database_url: str) -> None:
-    env = {
-        key: os.environ[key]
-        for key in SAFE_SUBPROCESS_ENVIRONMENT_KEYS
-        if os.environ.get(key)
-    }
-    env["APP_ENV"] = "test"
-    env["DATABASE_URL"] = database_url
-    result = subprocess.run(
-        [sys.executable, "-m", "alembic", "-c", "alembic.ini", "upgrade", "head"],
-        cwd=ROOT,
-        env=env,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        details = (result.stderr or result.stdout or "").strip()
-        raise AssertionError(f"Alembic upgrade head failed:\n{details}")
+    previous_database_url = os.environ.get("DATABASE_URL")
+    previous_app_env = os.environ.get("APP_ENV")
+    try:
+        os.environ["APP_ENV"] = "test"
+        os.environ["DATABASE_URL"] = database_url
+        get_settings.cache_clear()
+        config = Config()
+        config.set_main_option("script_location", str(ROOT / "migrations"))
+        command.upgrade(config, "head")
+    finally:
+        if previous_database_url is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = previous_database_url
+        if previous_app_env is None:
+            os.environ.pop("APP_ENV", None)
+        else:
+            os.environ["APP_ENV"] = previous_app_env
+        get_settings.cache_clear()
 
 
 def _database_url(tmp_path: Path) -> str:

@@ -41,6 +41,17 @@ def test_production_compose_requires_reviewed_image_and_disables_implicit_migrat
     assert "POSTGRES_PASSWORD:" in base_compose
     assert "quote(os.environ" in prepare_env
     assert "ARG APP_VERSION=1.2.1" in dockerfile
+    assert "apt-get purge -y libsqlite3-0" in dockerfile
+
+
+def test_production_lifecycle_migration_uses_alembic_api_without_subprocess() -> None:
+    source = Path("apps/api/tests/test_v12_production_lifecycle_e2e.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "from alembic import command" in source
+    assert "command.upgrade(" in source
+    assert "subprocess.run(" not in source
 
 
 def test_preflight_redacts_injected_secrets_from_subprocess_output() -> None:
