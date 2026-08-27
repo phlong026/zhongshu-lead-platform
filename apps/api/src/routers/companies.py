@@ -298,7 +298,10 @@ def delete_test_company_endpoint(
         company_id=str(snapshot["id"]),
         before=snapshot,
         after={"deleted": True},
-        metadata={"detached_user_ids": snapshot["detached_user_ids"]},
+        metadata={
+            "detached_user_ids": snapshot["detached_user_ids"],
+            "purged": snapshot["purged"],
+        },
         reason=body.reason,
         request_id=request.state.request_id,
     )
@@ -309,10 +312,15 @@ def delete_test_company_endpoint(
             "company_id": snapshot["id"],
             "actor_user_id": principal.user_id,
             "detached_user_count": len(snapshot["detached_user_ids"]),
+            "purged": snapshot["purged"],
         },
     )
     return ok(
         request,
-        {"id": snapshot["id"], "detached_user_count": len(snapshot["detached_user_ids"])},
+        {
+            "id": snapshot["id"],
+            "detached_user_count": len(snapshot["detached_user_ids"]),
+            "purged": snapshot["purged"],
+        },
         "测试加盟商已删除",
     )
