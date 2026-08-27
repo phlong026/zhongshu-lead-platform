@@ -188,7 +188,7 @@ def test_company_with_assignment_history_can_only_be_disabled(api_client) -> Non
         json={"confirm_name": company["name"], "reason": "尝试清理有业务主体"},
     )
     assert rejected.status_code == 409
-    assert rejected.json()["code"] == "COMPANY_DELETE_BLOCKED"
+    assert rejected.json()["code"] == "COMPANY_TEST_DATA_CROSS_BUSINESS_BLOCKED"
 
     enabled = client.patch(
         f"/api/v1/companies/{company['id']}",

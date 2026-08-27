@@ -15,6 +15,7 @@ TARGET_TESTS = (
     "apps/api/tests/test_v12_production_lifecycle_e2e.py",
     "apps/api/tests/test_internal_user_postgres_concurrency_e2e.py",
     "apps/api/tests/test_invite_binding_postgres_concurrency_e2e.py",
+    "apps/api/tests/test_company_purge_postgres_e2e.py",
 )
 SAFE_DATABASE_MARKERS = ("e2e", "test", "ci")
 SAFE_ENVIRONMENT_KEYS = (

@@ -61,7 +61,7 @@ def test_v12_operations_exposes_company_detail_and_platform_configuration() -> N
     assert "data-company-mark-test" in js
     assert "data-company-enable" in js
     assert "/wechat-binding/unbind" in js
-    assert "v12-operations.js?v=20260827-responsive-lifecycle" in html
+    assert "v12-operations.js?v=20260827-test-company-purge" in html
     assert "加盟商能力与服务区域审核申请" not in js
 
 
@@ -78,9 +78,12 @@ def test_v12_operations_exposes_safe_company_lifecycle_actions() -> None:
     assert "停用只负责业务隔离" in js
     assert "解绑负责人微信" in js
     assert "删除测试数据" in js
+    assert "积分账户、充值与积分流水" in js
+    assert "原成员账号会停用" in js
+    assert "确认永久删除" in js
     delete_flow = js[js.index("function deleteTestCompany") : js.index("function configureCompanyCapability")]
     assert delete_flow.count("method:'DELETE'") == 1
-    assert "v12-operations.js?v=20260827-responsive-lifecycle" in html
+    assert "v12-operations.js?v=20260827-test-company-purge" in html
 
 
 def test_company_invitation_has_a_dedicated_h5_confirmation_page() -> None:
