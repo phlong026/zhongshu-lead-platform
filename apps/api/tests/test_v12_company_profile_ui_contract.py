@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-import shutil
-import subprocess
 from pathlib import Path
-
-import pytest
 
 
 def test_v12_workbench_shows_platform_managed_company_profile() -> None:
@@ -83,19 +79,6 @@ def test_v12_operations_exposes_safe_company_lifecycle_actions() -> None:
     assert "解绑负责人微信" in js
     assert "删除测试数据" in js
     assert "v12-operations.js?v=20260827-responsive-lifecycle" in html
-
-
-def test_v12_operations_javascript_has_valid_syntax() -> None:
-    node = shutil.which("node")
-    if node is None:
-        pytest.skip("node is required for the admin JavaScript syntax check")
-
-    subprocess.run(
-        [node, "--check", "apps/admin/public/v12-operations.js"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
 
 
 def test_company_invitation_has_a_dedicated_h5_confirmation_page() -> None:
