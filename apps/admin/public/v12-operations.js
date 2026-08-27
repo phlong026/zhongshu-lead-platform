@@ -565,6 +565,26 @@ function revokeCompanyInvite(inviteId,company){
     await companyDetail(company);
   });
 }
+function renderDistrictOptions(container,districts,emptyMessage='该城市暂无可选区县'){
+  container.replaceChildren();
+  if(!districts.length){
+    const message=document.createElement('span');
+    message.className='ops-muted';
+    message.textContent=emptyMessage;
+    container.append(message);
+    return;
+  }
+  districts.forEach(district=>{
+    const label=document.createElement('label');
+    const input=document.createElement('input');
+    input.type='checkbox';
+    input.name='new-franchise-district';
+    input.value=String(district.code||'');
+    input.dataset.name=String(district.name||'');
+    label.append(input,document.createTextNode(` ${district.name||''}`));
+    container.append(label);
+  });
+}
 async function openNewFranchiseCompany(){
   const cities=await platformCities();
   const provinces=[...new Map(cities.map(city=>[city.province_code,{code:city.province_code,name:city.province_name}])).values()];
@@ -575,8 +595,8 @@ async function openNewFranchiseCompany(){
     const selectedDistrictCodes=()=>[...document.querySelectorAll('input[name="new-franchise-district"]:checked')].map(input=>input.value);
     const updateSummary=()=>{const province=provinces.find(item=>item.code===provinceSelect.value),city=cities.find(item=>item.code===citySelect.value),districtNames=[...document.querySelectorAll('input[name="new-franchise-district"]:checked')].map(input=>input.dataset.name);picker.textContent=province&&city&&districtNames.length?`${province.name} / ${city.name} / ${districtNames.join('、')}`:'请选择省、市和区/县'};
     picker.onclick=()=>{const opening=panel.hidden;panel.hidden=!opening;picker.setAttribute('aria-expanded',String(opening))};
-    provinceSelect.onchange=()=>{const provinceCities=cities.filter(city=>city.province_code===provinceSelect.value);replacePlatformSelectOptions(citySelect,provinceCities,'','','请选择城市');citySelect.disabled=!provinceSelect.value;districtOptions.innerHTML='<span class="ops-muted">请先选择城市</span>';updateSummary()};
-    citySelect.onchange=async()=>{const districts=await platformDistricts(citySelect.value);districtOptions.innerHTML=districts.length?districts.map(district=>`<label><input type="checkbox" name="new-franchise-district" value="${esc(district.code)}" data-name="${esc(district.name)}"> ${esc(district.name)}</label>`).join(''):'<span class="ops-muted">该城市暂无可选区县</span>';districtOptions.querySelectorAll('input').forEach(input=>input.onchange=updateSummary);updateSummary()};
+    provinceSelect.onchange=()=>{const provinceCities=cities.filter(city=>city.province_code===provinceSelect.value);replacePlatformSelectOptions(citySelect,provinceCities,'','','请选择城市');citySelect.disabled=!provinceSelect.value;renderDistrictOptions(districtOptions,[],'请先选择城市');updateSummary()};
+    citySelect.onchange=async()=>{const districts=await platformDistricts(citySelect.value);renderDistrictOptions(districtOptions,districts);districtOptions.querySelectorAll('input').forEach(input=>input.onchange=updateSummary);updateSummary()};
     form.onsubmit=async event=>{event.preventDefault();const name=document.querySelector('#new-franchise-name').value.trim(),primary_city_code=citySelect.value,district_codes=selectedDistrictCodes();if(name.length<2||!provinceSelect.value||!primary_city_code||!district_codes.length){toast('请填写加盟商名称并在服务范围中选择省、市及至少一个区/县',true);return}submit.disabled=true;try{const company=await api('/companies/simple',{method:'POST',body:JSON.stringify({name,owner_name:document.querySelector('#new-franchise-owner').value.trim()||null,contact_phone:document.querySelector('#new-franchise-phone').value.trim()||null,primary_city_code,district_codes,serve_all_districts:false,notes:document.querySelector('#new-franchise-notes').value.trim()||null})});closeModal();toast(`${company.name} 已创建，所选区域与接收客资已开通；请发起负责人绑定`);await companies();await companyDetail(company)}catch(error){submit.disabled=false;toast(error.message,true)}};
   });
 }

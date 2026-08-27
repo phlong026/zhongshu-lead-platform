@@ -50,6 +50,8 @@ def test_v12_operations_exposes_company_detail_and_platform_configuration() -> N
     assert "new-franchise-region-picker" in js
     assert "new-franchise-region-panel" in js
     assert "new-franchise-district-options" in js
+    assert "function renderDistrictOptions" in js
+    assert "districtOptions.innerHTML=districts.length" not in js
     assert "province_code:province.code" in js
     assert "district_codes" in js
     assert "serve_all_districts:false" in js
