@@ -3,11 +3,13 @@ from __future__ import annotations
 import secrets
 import string
 
-from sqlalchemy import select, text
+from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.orm import Session, selectinload
 
+from ..core.auth_models import AuthLoginState
+from ..core.database import Base
 from ..core.errors import AppError
-from ..core.models import Role, User
+from ..core.models import Notification, Role, User
 from ..core.security import hash_password, validate_internal_password
 from .auth_service import create_internal_user
 from .rbac import assign_role
@@ -21,6 +23,16 @@ INTERNAL_ROLE_CODES = frozenset(
     }
 )
 _SUPERADMIN_LOCK_KEY = "zhongshu.internal-user.superadmin-roster"
+_NON_BUSINESS_USER_TABLES = frozenset(
+    {
+        "users",
+        "user_roles",
+        "auth_login_state",
+        "wechat_identities",
+        "notifications",
+        "audit_logs",
+    }
+)
 
 
 def normalize_internal_roles(role_codes: list[str]) -> list[str]:
@@ -173,6 +185,7 @@ def create_managed_internal_user(
     display_name: str,
     role_codes: list[str],
     company_id: str | None,
+    is_test: bool = False,
 ) -> User:
     if company_id is not None:
         raise AppError(
@@ -195,9 +208,118 @@ def create_managed_internal_user(
         display_name=normalized_display_name,
         role_code=roles[0],
     )
+    user.is_test = is_test
     db.flush()
     db.refresh(user, attribute_names=["roles"])
     return user
+
+
+def _internal_user_business_counts(db: Session, user_id: str) -> dict[str, int]:
+    """Count every non-technical row that still references the account."""
+
+    counts: dict[str, int] = {}
+    for table in Base.metadata.sorted_tables:
+        if table.name in _NON_BUSINESS_USER_TABLES:
+            continue
+        user_columns = [
+            column
+            for column in table.columns
+            if any(
+                foreign_key.column.table.name == "users"
+                and foreign_key.column.name == "id"
+                for foreign_key in column.foreign_keys
+            )
+        ]
+        if not user_columns:
+            continue
+        row_count = db.scalar(
+            select(func.count()).select_from(table).where(
+                or_(*(column == user_id for column in user_columns))
+            )
+        )
+        if row_count:
+            counts[table.name] = int(row_count)
+    return counts
+
+
+def _require_disabled_internal_user(user: User) -> None:
+    if user.status != "DISABLED":
+        raise AppError(
+            "INTERNAL_USER_MUST_BE_DISABLED",
+            "请先停用该内部账号，再执行测试数据清理",
+            409,
+        )
+
+
+def _require_exact_username(user: User, confirm_username: str) -> None:
+    if confirm_username != user.username:
+        raise AppError(
+            "INTERNAL_USER_CONFIRMATION_MISMATCH",
+            "输入的完整登录账号不匹配",
+            409,
+        )
+
+
+def mark_internal_user_as_test(
+    db: Session,
+    *,
+    user_id: str,
+    confirm_username: str,
+) -> tuple[User, dict[str, int], bool]:
+    user = _load_internal_user(db, user_id)
+    _require_disabled_internal_user(user)
+    _require_exact_username(user, confirm_username)
+    if user.is_test:
+        return user, {}, False
+    counts = _internal_user_business_counts(db, user.id)
+    if counts:
+        raise AppError(
+            "INTERNAL_USER_TEST_MARK_BLOCKED",
+            "该账号已有业务数据，不能标记为测试账号",
+            409,
+            {"blocking_tables": sorted(counts), "counts": counts},
+        )
+    user.is_test = True
+    db.flush()
+    return user, counts, True
+
+
+def delete_test_internal_user(
+    db: Session,
+    *,
+    user_id: str,
+    confirm_username: str,
+) -> dict[str, object]:
+    user = _load_internal_user(db, user_id)
+    _require_disabled_internal_user(user)
+    if not user.is_test:
+        raise AppError(
+            "INTERNAL_USER_DELETE_TEST_ONLY",
+            "只允许删除已标记的测试账号",
+            409,
+        )
+    _require_exact_username(user, confirm_username)
+    counts = _internal_user_business_counts(db, user.id)
+    if counts:
+        raise AppError(
+            "INTERNAL_USER_DELETE_BLOCKED",
+            "该账号已有业务数据，只能保持停用，不能删除",
+            409,
+            {"blocking_tables": sorted(counts), "counts": counts},
+        )
+    snapshot: dict[str, object] = {
+        "id": user.id,
+        "username": user.username,
+        "display_name": user.display_name,
+        "status": user.status,
+        "is_test": user.is_test,
+        "roles": sorted(role.code for role in user.roles),
+    }
+    db.execute(delete(AuthLoginState).where(AuthLoginState.user_id == user.id))
+    db.execute(delete(Notification).where(Notification.user_id == user.id))
+    db.delete(user)
+    db.flush()
+    return snapshot
 
 
 def update_internal_roles(

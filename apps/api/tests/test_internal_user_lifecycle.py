@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from sqlalchemy import select
 
-from apps.api.src.core.models import AuditLog, User
+from apps.api.src.core.models import Assignment, AuditLog, User
 from apps.api.src.core.security import verify_password
 
 
@@ -39,6 +41,7 @@ def _create_user(
     username: str,
     password: str = STRONG_PASSWORD,
     role_codes: list[str] | None = None,
+    is_test: bool = False,
 ):
     return client.post(
         "/api/v1/users",
@@ -48,6 +51,7 @@ def _create_user(
             "password": password,
             "display_name": f"{username} 测试账号",
             "role_codes": role_codes or ["OPERATION"],
+            "is_test": is_test,
         },
     )
 
@@ -406,6 +410,149 @@ def test_disable_and_enable_are_idempotent_and_invalidate_sessions(api_client) -
     assert actions.count("USER_ENABLE") == 1
 
 
+def test_disabled_internal_test_account_can_be_marked_and_deleted(api_client) -> None:
+    client, factory = api_client
+    admin_token = _login(client, "admin", "Admin123!")
+    created = _data(
+        _create_user(
+            client,
+            admin_token,
+            username="obsolete_internal_test",
+        )
+    )
+    user_id = created["id"]
+    assert created["is_test"] is False
+    _data(client.post(f"/api/v1/users/{user_id}/disable", headers=_bearer(admin_token)))
+
+    marked = _data(
+        client.post(
+            f"/api/v1/users/{user_id}/mark-test",
+            headers=_bearer(admin_token),
+            json={
+                "confirm_username": "obsolete_internal_test",
+                "reason": "清理历史联测账号",
+            },
+        )
+    )
+    assert marked["is_test"] is True
+    marked_again = _data(
+        client.post(
+            f"/api/v1/users/{user_id}/mark-test",
+            headers=_bearer(admin_token),
+            json={
+                "confirm_username": "obsolete_internal_test",
+                "reason": "重复标记应保持幂等",
+            },
+        )
+    )
+    assert marked_again["is_test"] is True
+
+    deleted = _data(
+        client.request(
+            "DELETE",
+            f"/api/v1/users/{user_id}",
+            headers=_bearer(admin_token),
+            json={
+                "confirm_username": "obsolete_internal_test",
+                "reason": "确认无业务数据",
+            },
+        )
+    )
+    assert deleted == {"id": user_id, "deleted": True}
+    with factory() as db:
+        assert db.get(User, user_id) is None
+    actions, _ = _audit_text(factory, user_id)
+    assert actions.count("USER_TEST_MARK") == 1
+    assert "USER_TEST_DELETE" in actions
+
+
+def test_internal_account_delete_requires_disabled_test_marker_and_exact_username(api_client) -> None:
+    client, factory = api_client
+    admin_token = _login(client, "admin", "Admin123!")
+    created = _data(
+        _create_user(
+            client,
+            admin_token,
+            username="protected_internal",
+            is_test=True,
+        )
+    )
+    user_id = created["id"]
+    assert created["is_test"] is True
+
+    active = client.request(
+        "DELETE",
+        f"/api/v1/users/{user_id}",
+        headers=_bearer(admin_token),
+        json={"confirm_username": "protected_internal", "reason": "联测清理"},
+    )
+    assert active.status_code == 409
+    assert active.json()["code"] == "INTERNAL_USER_MUST_BE_DISABLED"
+
+    _data(client.post(f"/api/v1/users/{user_id}/disable", headers=_bearer(admin_token)))
+    mismatch = client.request(
+        "DELETE",
+        f"/api/v1/users/{user_id}",
+        headers=_bearer(admin_token),
+        json={"confirm_username": "wrong-name", "reason": "联测清理"},
+    )
+    assert mismatch.status_code == 409
+    assert mismatch.json()["code"] == "INTERNAL_USER_CONFIRMATION_MISMATCH"
+
+    normal = _data(
+        _create_user(
+            client,
+            admin_token,
+            username="normal_internal",
+        )
+    )
+    _data(client.post(f"/api/v1/users/{normal['id']}/disable", headers=_bearer(admin_token)))
+    rejected = client.request(
+        "DELETE",
+        f"/api/v1/users/{normal['id']}",
+        headers=_bearer(admin_token),
+        json={"confirm_username": "normal_internal", "reason": "误操作验证"},
+    )
+    assert rejected.status_code == 409
+    assert rejected.json()["code"] == "INTERNAL_USER_DELETE_TEST_ONLY"
+    with factory() as db:
+        assert db.get(User, user_id) is not None
+        assert db.get(User, normal["id"]) is not None
+
+
+def test_internal_test_account_with_business_data_cannot_be_deleted(api_client) -> None:
+    client, factory = api_client
+    admin_token = _login(client, "admin", "Admin123!")
+    created = _data(
+        _create_user(
+            client,
+            admin_token,
+            username="used_internal_test",
+            is_test=True,
+        )
+    )
+    user_id = created["id"]
+    _data(client.post(f"/api/v1/users/{user_id}/disable", headers=_bearer(admin_token)))
+    with factory() as db:
+        assignment = db.scalar(select(Assignment).limit(1))
+        assert assignment is not None
+        assignment.assigned_by = user_id
+        db.commit()
+
+    response = client.request(
+        "DELETE",
+        f"/api/v1/users/{user_id}",
+        headers=_bearer(admin_token),
+        json={"confirm_username": "used_internal_test", "reason": "验证业务阻断"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "INTERNAL_USER_DELETE_BLOCKED"
+    assert "assignments" in response.json()["details"]["blocking_tables"]
+    with factory() as db:
+        assert db.get(User, user_id) is not None
+
+
 def test_last_active_superadmin_cannot_be_disabled_or_demoted(api_client) -> None:
     client, factory = api_client
     admin_token = _login(client, "admin", "Admin123!")
@@ -482,3 +629,13 @@ def test_franchise_and_missing_users_cannot_enter_internal_management(api_client
     )
     assert missing.status_code == 404
     assert missing.json()["code"] == "USER_NOT_FOUND"
+
+
+def test_internal_user_test_flag_migration_is_reversible() -> None:
+    migration = Path("migrations/versions/0013_internal_user_test_flag.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'op.add_column("users"' in migration
+    assert 'op.create_index("ix_users_is_test"' in migration
+    assert 'op.drop_column("users", "is_test")' in migration

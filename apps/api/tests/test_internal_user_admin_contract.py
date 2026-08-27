@@ -32,6 +32,8 @@ def test_unified_desktop_settings_call_internal_lifecycle_apis() -> None:
         "`/users/${encodeURIComponent(user.id)}/roles`",
         "`/users/${encodeURIComponent(user.id)}/${enabling?'enable':'disable'}`",
         "`/users/${encodeURIComponent(user.id)}/reset-password`",
+        "`/users/${encodeURIComponent(user.id)}/mark-test`",
+        "method:'DELETE'",
         "role_codes:[role]",
         "new_password",
     ):
@@ -70,3 +72,13 @@ def test_internal_user_actions_provide_busy_state_and_length_only_reset_policy()
     assert "密码需为 8-128 位" in reset
     assert "minLength:8" in reset
     assert "至少12位" not in source
+
+
+def test_internal_user_delete_requires_a_second_confirmation() -> None:
+    source = _source()
+    section = source[source.index("function internalUserLifecycleConfirmation") : source.index("async function internalUsers")]
+
+    assert "输入完整登录账号" in section
+    assert "confirm_username" in section
+    assert "操作原因" in section
+    assert "只允许删除已停用、无业务数据的测试账号" in section

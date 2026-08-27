@@ -34,7 +34,7 @@ const icon=name=>window.ZSIconSystem?.svg?.(name)||'';
 const badge=v=>`<span class="ops-status ${['APPROVED','SETTLED','CLAIMED'].includes(v)?'ok':['REJECTED','CANCELLED','REVERSED'].includes(v)?'bad':'warn'}">${esc(label(v))}</span>`;
 const verificationTaskBadge=task=>`<span class="ops-status warn">${esc(verificationTaskLabel(task))}</span>`;
 const qs=o=>{const p=new URLSearchParams;Object.entries(o).forEach(([k,v])=>v!==''&&v!=null&&p.set(k,v));return p.toString()?`?${p}`:''};
-async function api(path,opt={}){const h={...(opt.headers||{})};if(opt.body&&!(opt.body instanceof FormData))h['Content-Type']='application/json';const r=await fetch(API+path,{...opt,headers:h,credentials:'include'});let j={};try{j=await r.json()}catch{}if(!r.ok||j.code!=='OK')throw new Error(j.message||'请求失败');return j.data}
+async function api(path,opt={}){const h={...(opt.headers||{})};if(opt.body&&!(opt.body instanceof FormData))h['Content-Type']='application/json';const r=await fetch(API+path,{...opt,headers:h,credentials:'include'});let j={};try{j=await r.json()}catch{}if(!r.ok||j.code!=='OK'){const error=new Error(j.message||'请求失败');error.code=j.code;error.status=r.status;throw error}return j.data}
 function toast(m,e=false){toastEl.textContent=m;toastEl.className=`ops-toast show ${e?'error':''}`;clearTimeout(toast.t);toast.t=setTimeout(()=>toastEl.className='ops-toast',2400)}
 function closeModal(){modalRoot.innerHTML=''}
 function modal(title,body,bind){zsSetSafeHtml(modalRoot, `<div class="ops-overlay"><section class="ops-modal"><div class="ops-modal-head"><h2>${esc(title)}</h2><button class="ops-btn" id="modal-close">关闭</button></div>${body}</section></div>`);document.querySelector('#modal-close').onclick=closeModal;bind?.()}
@@ -247,7 +247,7 @@ async function platformDetail(id){const x=await api(`/v1.2/platform/leads/${enco
 async function openLeadDetail(id){
   if(S.leadSource==='PLATFORM_MANUAL'){await platformDetail(id);return}
   if(S.leadSource==='SUPPLIER_H5'){await reviewDetail(id);return}
-  try{await platformDetail(id)}catch{await reviewDetail(id)}
+  try{await platformDetail(id)}catch(error){if(error.status===404)await reviewDetail(id);else throw error}
 }
 async function platformCities(){if(!S.platformCities){const tree=await api('/master-data/region-tree');S.platformCities=(tree.provinces||[]).flatMap(province=>(province.cities||[]).map(city=>({...city,province_code:province.code,province_name:province.name,option_name:`${province.name} · ${city.name}`})));}return S.platformCities}
 async function platformDistricts(cityCode){const cities=await platformCities();S.platformDistricts=cities.find(city=>city.code===cityCode)?.districts||[];return S.platformDistricts}
@@ -419,10 +419,10 @@ function showInternalUserCredentials(user,onClose){
   return true;
 }
 function internalUserModal(){
-  modal('新建内部账号',`<form class="ops-form" id="internal-user-form"><div class="ops-field"><label for="internal-user-name">姓名 *</label><input class="ops-input" id="internal-user-name" maxlength="64" autocomplete="name"></div><div class="ops-field"><label for="internal-user-username">登录账号 *</label><input class="ops-input" id="internal-user-username" maxlength="64" autocomplete="username"></div><div class="ops-notice">无需填写密码，系统会自动生成可复制的 8 位以上初始密码。</div><div class="ops-field"><label>角色 *</label><div class="ops-choice-list">${internalRoleOptions('internal-role')}</div><small class="ops-muted">单选，仅限平台内部角色。</small></div><div class="ops-actions"><button type="button" class="ops-btn" id="internal-user-cancel">取消</button><button class="ops-btn primary" id="internal-user-submit">创建</button></div></form>`,()=>{
+  modal('新建内部账号',`<form class="ops-form" id="internal-user-form"><div class="ops-field"><label for="internal-user-name">姓名 *</label><input class="ops-input" id="internal-user-name" maxlength="64" autocomplete="name"></div><div class="ops-field"><label for="internal-user-username">登录账号 *</label><input class="ops-input" id="internal-user-username" maxlength="64" autocomplete="username"></div><div class="ops-notice">无需填写密码，系统会自动生成可复制的 8 位以上初始密码。</div><label class="ops-check"><input type="checkbox" id="internal-user-is-test"> 测试账号</label><small class="ops-muted">仅用于联测；停用且无业务数据时才允许删除。</small><div class="ops-field"><label>角色 *</label><div class="ops-choice-list">${internalRoleOptions('internal-role')}</div><small class="ops-muted">单选，仅限平台内部角色。</small></div><div class="ops-actions"><button type="button" class="ops-btn" id="internal-user-cancel">取消</button><button class="ops-btn primary" id="internal-user-submit">创建</button></div></form>`,()=>{
     const form=document.querySelector('#internal-user-form'),submit=document.querySelector('#internal-user-submit');
     document.querySelector('#internal-user-cancel').onclick=closeModal;
-    form.onsubmit=async event=>{event.preventDefault();const display_name=document.querySelector('#internal-user-name').value.trim(),username=document.querySelector('#internal-user-username').value.trim(),role=selectedInternalRole('internal-role');if(!display_name){toast('请输入姓名',true);return}if(username.length<2){toast('登录账号至少输入 2 个字符',true);return}if(!role){toast('请选择一个角色',true);return}submit.disabled=true;try{const created=await api('/users',{method:'POST',body:JSON.stringify({display_name,username,role_codes:[role]})});const passwordReady=showInternalUserCredentials(created);toast(passwordReady?'账号已创建，请复制初始密码':'账号已创建，但需要立即重置密码',!passwordReady);try{await internalUsers()}catch(refreshError){toast(`账号已创建，但账号列表刷新失败：${refreshError.message}`,true)}}catch(error){submit.disabled=false;toast(error.message,true)}};
+    form.onsubmit=async event=>{event.preventDefault();const display_name=document.querySelector('#internal-user-name').value.trim(),username=document.querySelector('#internal-user-username').value.trim(),role=selectedInternalRole('internal-role'),is_test=document.querySelector('#internal-user-is-test').checked;if(!display_name){toast('请输入姓名',true);return}if(username.length<2){toast('登录账号至少输入 2 个字符',true);return}if(!role){toast('请选择一个角色',true);return}submit.disabled=true;try{const created=await api('/users',{method:'POST',body:JSON.stringify({display_name,username,role_codes:[role],is_test})});const passwordReady=showInternalUserCredentials(created);toast(passwordReady?'账号已创建，请复制初始密码':'账号已创建，但需要立即重置密码',!passwordReady);try{await internalUsers()}catch(refreshError){toast(`账号已创建，但账号列表刷新失败：${refreshError.message}`,true)}}catch(error){submit.disabled=false;toast(error.message,true)}};
   });
 }
 function internalRoleModal(user){
@@ -435,17 +435,32 @@ function internalRoleModal(user){
 function resetInternalUserPassword(user){
   actionForm({title:'重置内部账号密码',message:'保存后该账号现有会话立即失效。',labelText:'新密码',required:true,minLength:8,submitLabel:'重置密码',danger:true,validate:value=>value.length>128?'密码需为 8-128 位':null},async new_password=>{if(new_password.length<8)throw new Error('密码需为 8-128 位');await api(`/users/${encodeURIComponent(user.id)}/reset-password`,{method:'POST',body:JSON.stringify({new_password})});toast('密码已重置');await internalUsers()});
 }
+function internalUserLifecycleConfirmation(user,{title,message,submitLabel},onSubmit){
+  modal(title,`<form class="ops-form" id="internal-user-lifecycle-form"><div class="ops-notice">${esc(message)}。只允许删除已停用、无业务数据的测试账号。</div><div class="ops-field"><label for="internal-user-confirm-username">输入完整登录账号 *</label><input class="ops-input" id="internal-user-confirm-username" autocomplete="off" placeholder="${esc(user.username||'')}"></div><div class="ops-field"><label for="internal-user-lifecycle-reason">操作原因 *</label><textarea class="ops-textarea" id="internal-user-lifecycle-reason" maxlength="500"></textarea></div><label class="ops-check"><input type="checkbox" id="internal-user-second-confirm"> 我已二次确认操作对象和数据范围</label><div class="ops-actions"><button type="button" class="ops-btn" id="internal-user-lifecycle-cancel">取消</button><button class="ops-btn danger" id="internal-user-lifecycle-submit">${esc(submitLabel)}</button></div></form>`,()=>{
+    const form=document.querySelector('#internal-user-lifecycle-form'),submit=document.querySelector('#internal-user-lifecycle-submit'),usernameInput=document.querySelector('#internal-user-confirm-username'),reasonInput=document.querySelector('#internal-user-lifecycle-reason');
+    document.querySelector('#internal-user-lifecycle-cancel').onclick=closeModal;
+    form.onsubmit=async event=>{event.preventDefault();const confirm_username=usernameInput.value.trim(),reason=reasonInput.value.trim();if(confirm_username!==user.username){toast('登录账号不一致，不能执行',true);usernameInput.focus();return}if(reason.length<2){toast('请填写至少 2 个字的操作原因',true);reasonInput.focus();return}if(!document.querySelector('#internal-user-second-confirm').checked){toast('请完成二次确认',true);return}submit.disabled=true;try{await onSubmit({confirm_username,reason});closeModal();await internalUsers()}catch(error){submit.disabled=false;toast(error.message,true)}};
+  });
+}
+function markInternalUserAsTest(user){
+  internalUserLifecycleConfirmation(user,{title:'标记为测试账号',message:'系统会先检查该账号是否已停用且没有业务记录',submitLabel:'确认标记'},async payload=>{await api(`/users/${encodeURIComponent(user.id)}/mark-test`,{method:'POST',body:JSON.stringify(payload)});toast('已标记为测试账号')});
+}
+function deleteInternalTestUser(user){
+  internalUserLifecycleConfirmation(user,{title:'删除内部测试账号',message:'删除后账号本身不可恢复，审计记录仍保留',submitLabel:'确认删除'},async payload=>{await api(`/users/${encodeURIComponent(user.id)}`,{method:'DELETE',body:JSON.stringify(payload)});toast('测试账号已删除')});
+}
 async function internalUsers(){
   const data=await api('/users'),users=data.filter(user=>!user.company_id&&internalUserRoles(user).length);
-  const rows=users.map(user=>{const active=user.status==='ACTIVE';return `<tr><td><b>${esc(user.display_name)}</b></td><td>${esc(user.username||'--')}</td><td>${esc(INTERNAL_ROLE_LABEL[internalUserRoles(user)[0]]||'--')}</td><td>${badge(user.status)}</td><td><button class="ops-btn" data-internal-role="${esc(user.id)}">编辑角色</button> <button class="ops-btn" data-internal-reset="${esc(user.id)}">重置密码</button> <button class="ops-btn ${active?'danger':'primary'}" data-internal-status="${esc(user.id)}:${active?'disable':'enable'}">${active?'停用':'启用'}</button></td></tr>`});
-  shell(`<div class="ops-page-actions"><button class="ops-btn" data-view="settings">返回设置</button><button class="ops-btn primary" id="new-internal-user">新建内部账号</button></div><section class="ops-card"><div class="ops-card-head"><div><h2>内部账号</h2><p>只管理平台内部账号；创建、改角色、启停和重置密码都会使相关会话失效。</p></div></div>${table(['姓名','登录账号','角色','状态','操作'],rows)}</section>`);
+  const rows=users.map(user=>{const active=user.status==='ACTIVE',cleanup=!active?(user.is_test?` <button class="ops-btn danger" data-internal-delete="${esc(user.id)}">删除测试数据</button>`:` <button class="ops-btn" data-internal-mark-test="${esc(user.id)}">标记测试账号</button>`):'';return `<tr><td><b>${esc(user.display_name)}</b></td><td>${esc(user.username||'--')}${user.is_test?'<br><small>测试账号</small>':''}</td><td>${esc(INTERNAL_ROLE_LABEL[internalUserRoles(user)[0]]||'--')}</td><td>${badge(user.status)}</td><td><button class="ops-btn" data-internal-role="${esc(user.id)}">编辑角色</button> <button class="ops-btn" data-internal-reset="${esc(user.id)}">重置密码</button> <button class="ops-btn ${active?'danger':'primary'}" data-internal-status="${esc(user.id)}:${active?'disable':'enable'}">${active?'停用':'启用'}</button>${cleanup}</td></tr>`});
+  shell(`<div class="ops-page-actions"><button class="ops-btn" data-view="settings">返回设置</button><button class="ops-btn primary" id="new-internal-user">新建内部账号</button></div><section class="ops-card"><div class="ops-card-head"><div><h2>内部账号</h2><p>停用用于业务隔离；只有已停用、已标记且无业务数据的测试账号才能删除。</p></div></div>${table(['姓名','登录账号','角色','状态','操作'],rows)}</section>`);
   const byId=Object.fromEntries(users.map(user=>[user.id,user]));
   document.querySelector('#new-internal-user').onclick=internalUserModal;
   document.querySelectorAll('[data-internal-role]').forEach(button=>button.onclick=()=>internalRoleModal(byId[button.dataset.internalRole]));
   document.querySelectorAll('[data-internal-reset]').forEach(button=>button.onclick=()=>resetInternalUserPassword(byId[button.dataset.internalReset]));
+  document.querySelectorAll('[data-internal-mark-test]').forEach(button=>button.onclick=()=>markInternalUserAsTest(byId[button.dataset.internalMarkTest]));
+  document.querySelectorAll('[data-internal-delete]').forEach(button=>button.onclick=()=>deleteInternalTestUser(byId[button.dataset.internalDelete]));
   document.querySelectorAll('[data-internal-status]').forEach(button=>button.onclick=()=>{const [userId,action]=button.dataset.internalStatus.split(':');const user=byId[userId],enabling=action==='enable';actionForm({title:enabling?'启用内部账号':'停用内部账号',message:enabling?'启用后该账号可重新登录。':'停用后该账号的全部会话会立即失效。',submitLabel:enabling?'确认启用':'确认停用',danger:!enabling},async()=>{await api(`/users/${encodeURIComponent(user.id)}/${enabling?'enable':'disable'}`,{method:'POST'});toast(enabling?'账号已启用':'账号已停用');await internalUsers()})});
 }
-function platformSettingsContent(){return `<div class="ops-settings-grid"><button class="ops-setting-card" data-view="users"><i>${icon('users')}</i><b>内部账号</b><span>开通、角色调整、启停和密码重置</span></button><button class="ops-setting-card" data-view="calendar"><i>${icon('calendar')}</i><b>工作日历</b><span>维护法定节假日与调休单日例外</span></button><button class="ops-setting-card" data-view="companies"><i>${icon('building')}</i><b>加盟商治理</b><span>维护主体、服务区域与客资功能</span></button></div>`}
+function platformSettingsContent(){return `<div class="ops-settings-grid"><button class="ops-setting-card" data-view="users"><i>${icon('users')}</i><b>内部账号</b><span>开通、角色调整、启停与测试数据清理</span></button><button class="ops-setting-card" data-view="calendar"><i>${icon('calendar')}</i><b>工作日历</b><span>维护法定节假日与调休单日例外</span></button><button class="ops-setting-card" data-view="companies"><i>${icon('building')}</i><b>加盟商治理</b><span>维护主体、服务区域与客资功能</span></button></div>`}
 async function settings(){
   shell(`<section class="ops-card"><div class="ops-card-head"><div><h2>系统设置</h2><p>内部账号、工作日历和加盟商治理均在账号入口集中维护，不展示底层参数或旧版入口。</p></div></div>${platformSettingsContent()}</section>`);
 }
@@ -460,9 +475,9 @@ async function account(){
   shell(`<section class="ops-account-page"><section class="ops-card ops-account-summary"><div class="ops-account-avatar">${icon('user')}</div><div><h2>${esc(accountName)}</h2><p>${esc(identity)} · ${esc(S.me?.company_name||'合家美宅平台')}</p></div></section><section class="ops-card"><div class="ops-card-head"><div><h3>安全与登录</h3><p>只保留账号维护所需的操作。</p></div></div><div class="ops-account-security-list"><button class="ops-security-action" id="account-username" type="button"><i>${icon('user')}</i><span><b>修改登录账号</b><small>修改后使用新账号登录</small></span><em>${icon('chevron-right')}</em></button><button class="ops-security-action" id="account-password" type="button"><i>${icon('key-round')}</i><span><b>修改登录密码</b><small>保存后其他设备自动退出</small></span><em>${icon('chevron-right')}</em></button></div><button class="ops-btn danger ops-account-logout" id="account-logout" type="button">${icon('log-out')}退出当前账号</button></section>${isSuperAdmin()?`<section class="ops-card"><div class="ops-card-head"><div><h3>平台设置</h3><p>设置直接在此进入，不再跳转到另一套设置页面。</p></div></div>${platformSettingsContent()}</section>`:''}${messages?`<section class="ops-card ops-account-tools"><div class="ops-card-head"><div><h3>消息提醒</h3><p>仅显示需要当前账号关注的最新消息。</p></div></div><div class="ops-account-tool-grid">${messages}</div></section>`:''}${tools.length?`<section class="ops-card ops-account-tools"><div class="ops-card-head"><div><h3>业务记录</h3><p>异常和日志集中在账号入口，避免干扰日常业务导航。</p></div></div><div class="ops-account-tool-grid">${tools.join('')}</div></section>`:''}</section>`);
   document.querySelector('#account-username').onclick=changeOwnUsername;
   document.querySelector('#account-password').onclick=changeOwnPassword;
-  document.querySelector('#account-logout').onclick=async()=>{await api('/auth/logout',{method:'POST'}).catch(()=>{});location.replace('/admin/')};
+  document.querySelector('#account-logout').onclick=async()=>{try{await api('/auth/logout',{method:'POST'});location.replace('/admin/')}catch(error){toast(`退出失败：${error.message}`,true)}};
   document.querySelectorAll('[data-account-tool]').forEach(button=>button.onclick=()=>go(button.dataset.accountTool));
-  document.querySelectorAll('[data-account-message]').forEach(button=>button.onclick=()=>{const item=(S.accountNotifications||[]).find(message=>message.id===button.dataset.accountMessage);if(!item)return;const wasUnread=!item.read_at;api(`/notifications/${encodeURIComponent(item.id)}/read`,{method:'POST'}).catch(()=>{});if(wasUnread)S.unreadNotifications=Math.max(0,S.unreadNotifications-1);const deepLink=String(item.deep_link||'');if(deepLink.startsWith('/admin/'))location.href=deepLink;else render()});
+  document.querySelectorAll('[data-account-message]').forEach(button=>button.onclick=async()=>{const item=(S.accountNotifications||[]).find(message=>message.id===button.dataset.accountMessage);if(!item)return;const wasUnread=!item.read_at;try{await api(`/notifications/${encodeURIComponent(item.id)}/read`,{method:'POST'})}catch(error){toast(`消息状态更新失败：${error.message}`,true);return}if(wasUnread)S.unreadNotifications=Math.max(0,S.unreadNotifications-1);const deepLink=String(item.deep_link||'');if(deepLink.startsWith('/admin/'))location.href=deepLink;else render()});
 }
 function changeOwnUsername(){
   const current=S.me?.username||'';
@@ -988,10 +1003,12 @@ function renderLogin(){
   };
 }
 function renderNoAccess(){zsSetSafeHtml(app, `<div class="ops-standalone"><section class="ops-card"><h1>当前账号无管理后台权限</h1><p class="ops-muted">请使用与当前身份匹配的工作台，或联系超级管理员核对角色。</p><a class="ops-btn" href="/admin/">返回登录页</a></section></div>`)}
+function renderLoadError(message='页面加载失败'){zsSetSafeHtml(app, `<div class="ops-standalone"><section class="ops-card"><h1>暂时无法加载</h1><p class="ops-muted">${esc(message)}</p><button class="ops-btn primary" id="retry-boot">重试</button></section></div>`);document.querySelector('#retry-boot').onclick=boot}
 async function boot(){
   try{
     S.me=await api('/auth/me');
-    const notifications=await api('/notifications?unread_only=true&page=1&page_size=5').catch(()=>({items:[],total:0,unread_total:0}));
+    let notificationLoadError='';
+    const notifications=await api('/notifications?unread_only=true&page=1&page_size=5').catch(error=>{notificationLoadError=error.message||'请求失败';return {items:[],total:0,unread_total:0}});
     S.accountNotifications=notifications.items||[];
     S.unreadNotifications=Number(notifications.unread_total ?? notifications.total ?? 0);
     if(!syncRouteFromUrl({canonicalize:true})){
@@ -999,7 +1016,8 @@ async function boot(){
       return;
     }
     render();
-  }catch{renderLogin()}
+    if(notificationLoadError)toast(`消息提醒暂未加载：${notificationLoadError}`,true);
+  }catch(error){if(['AUTH_REQUIRED','AUTH_INVALID'].includes(error.code))renderLogin();else renderLoadError(error.message)}
 }
 window.addEventListener('popstate',()=>{if(syncRouteFromUrl())render()});
 boot();

@@ -27,7 +27,7 @@ def test_v12_workbench_shows_platform_managed_company_profile() -> None:
     assert "data-capability-request" not in js
     assert "service-area-edit" not in js
     assert "申请/更新服务区域" not in js
-    assert "v12-workbench.js?v=20260827-review-fixes" in html
+    assert "v12-workbench.js?v=20260827-route-isolation" in html
 
 
 def test_v12_operations_exposes_company_detail_and_platform_configuration() -> None:
@@ -78,6 +78,8 @@ def test_v12_operations_exposes_safe_company_lifecycle_actions() -> None:
     assert "停用只负责业务隔离" in js
     assert "解绑负责人微信" in js
     assert "删除测试数据" in js
+    delete_flow = js[js.index("function deleteTestCompany") : js.index("function configureCompanyCapability")]
+    assert delete_flow.count("method:'DELETE'") == 1
     assert "v12-operations.js?v=20260827-responsive-lifecycle" in html
 
 

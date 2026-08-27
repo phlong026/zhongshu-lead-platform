@@ -7,7 +7,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 from apps.api.src.core.auth_models import AuthLoginState
-from apps.api.src.core.models import AuditLog, User
+from apps.api.src.core.models import AuditLog, Company, User
 from apps.api.src.services.auth_service import InternalAuthError, authenticate_internal
 
 
@@ -166,6 +166,22 @@ def test_disabled_user_invalidates_existing_cookie_and_cannot_relogin(api_client
     unknown = _login(client, "does-not-exist", "Arbitrary-Wrong-Password!")
     assert _failure_contract(relogin) == _failure_contract(unknown)
     assert _failure_contract(relogin) == (401, "AUTH_LOGIN_FAILED", "用户名或密码错误")
+
+
+def test_disabled_company_account_is_rejected_before_a_cookie_is_issued(api_client) -> None:
+    client, factory = api_client
+    with factory() as db:
+        user = db.scalar(select(User).where(User.username == "franchise_demo"))
+        assert user is not None and user.company_id
+        company = db.get(Company, user.company_id)
+        assert company is not None
+        company.status = "DISABLED"
+        db.commit()
+
+    response = _login(client, "franchise_demo", "Franchise123!")
+
+    assert _failure_contract(response) == (403, "AUTH_COMPANY_DISABLED", "加盟商已停用，暂时无法登录")
+    assert response.cookies.get("access_token") is None
 
 
 def test_disabled_user_consumes_expired_lock_only_once(api_client) -> None:

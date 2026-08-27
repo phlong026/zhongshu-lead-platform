@@ -68,6 +68,10 @@ uvicorn apps.api.src.main:app --host 0.0.0.0 --port 8000 --reload
 | `POST` | `/api/v1/companies/{company_id}/enable` | 重新启用加盟商主体 |
 | `DELETE` | `/api/v1/companies/{company_id}` | 删除空白测试主体，Body 必须包含 `confirmation_code` |
 
+## 内部账号停用与测试数据清理
+
+内部账号停用后会立即失去登录和业务处理能力，但账号与历史数据保留。仅已停用、已标记为测试、且全库没有客资、派发、核验、退回、积分或其他业务引用的内部账号可以删除。标记与删除都必须填写完整登录账号、操作原因并二次确认；审计记录始终保留。
+
 ## 自动质量门禁
 
 面向 `release/v1.2.1` 的 PR 和发布分支执行：

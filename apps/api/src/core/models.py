@@ -46,6 +46,7 @@ class User(Base, TimestampMixin):
     phone_encrypted: Mapped[str | None] = mapped_column(Text)
     phone_hash: Mapped[str | None] = mapped_column(String(64), index=True)
     status: Mapped[str] = mapped_column(String(32), default="ACTIVE", nullable=False, index=True)
+    is_test: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id", ondelete="SET NULL"), index=True)
     session_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

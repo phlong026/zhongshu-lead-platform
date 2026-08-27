@@ -474,7 +474,7 @@ def test_oauth_state_redirect_invite_replay_and_cross_company_binding_are_reject
     )
     # P1-04：浏览器回调的绑定/授权失败统一 302 到 H5 状态页，不再返回裸 JSON。
     assert tampered.status_code == 302
-    assert "/h5/#/auth-error?code=AUTH_OAUTH_STATE_INVALID" in tampered.headers["location"]
+    assert "/h5/auth-error.html?code=AUTH_OAUTH_STATE_INVALID" in tampered.headers["location"]
 
     expired_state = create_signed_state(
         {"invite": None, "return_url": "/h5/#/home"},
@@ -487,7 +487,7 @@ def test_oauth_state_redirect_invite_replay_and_cross_company_binding_are_reject
         follow_redirects=False,
     )
     assert expired.status_code == 302
-    assert "/h5/#/auth-error?code=AUTH_OAUTH_STATE_INVALID" in expired.headers["location"]
+    assert "/h5/auth-error.html?code=AUTH_OAUTH_STATE_INVALID" in expired.headers["location"]
 
     with factory() as db:
         # 本用例聚焦邀请链路：目标公司须处于未绑定主账号状态
@@ -524,6 +524,7 @@ def test_oauth_state_redirect_invite_replay_and_cross_company_binding_are_reject
     assert first.status_code == 200, first.text
 
     # 已消费的邀请不能再发起绑定确认
+    client.cookies.clear()
     replay_confirm = client.post(
         "/api/v1/auth/invites/confirm-start",
         json={"invite": target_raw},

@@ -49,7 +49,13 @@ def test_franchise_h5_keeps_role_specific_two_character_navigation() -> None:
 def test_employee_deep_links_canonicalize_to_the_allowed_followup_page() -> None:
     source = Path("apps/h5/public/v12-workbench.js").read_text(encoding="utf-8")
 
-    assert "if(!isFranchiseOwner()&&S.view==='assignments'){S.view='followups';u.searchParams.set('view','followups');history.replaceState(null,'',u)}" in source
+    for marker in (
+        "if(!isFranchiseOwner()&&S.view==='assignments')",
+        "S.view='followups';",
+        "u.searchParams.set('view','followups');",
+        "history.replaceState(null,'',u);",
+    ):
+        assert marker in source
 
 
 def test_franchise_owner_home_prioritizes_company_todos_and_internal_collaboration() -> None:
