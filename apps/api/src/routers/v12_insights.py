@@ -4,8 +4,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy.orm import Session, aliased
 
 from ..core import models_v12 as _models_v12  # noqa: F401
 from ..core import reward_models_v12 as _reward_models_v12  # noqa: F401
@@ -29,11 +29,15 @@ from ..core.models import (
 from ..core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12, SupplierLeadReward
 from ..core.responses import ok, page
 from ..core.security import decrypt_text, mask_phone
-from ..core.time import as_utc
 from ..services.return_v12 import return_request_to_dict
 from ..services.storage import create_file_access_token
 
 router = APIRouter(prefix="/v1.2", tags=["v1.2-reports-audit"])
+
+VERIFICATION_PENDING_LEAD_STATUSES = (
+    "PENDING_REVIEW",
+    "PENDING_TELESALES_VERIFY",
+)
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -56,8 +60,8 @@ def _summary(db: Session, model, filters: list[Any]) -> dict[str, Any]:
     }
 
 
-def _count(db: Session, model, *filters: Any) -> int:
-    return int(db.scalar(select(func.count(model.id)).where(*filters)) or 0)
+def _count_subquery(model, *filters: Any):
+    return select(func.count(model.id)).where(*filters).scalar_subquery()
 
 
 def _management_overview(db: Session, principal: CurrentPrincipal) -> dict[str, Any]:
@@ -67,45 +71,80 @@ def _management_overview(db: Session, principal: CurrentPrincipal) -> dict[str, 
     verification_open = ("PENDING", "ASSIGNED", "IN_PROGRESS")
     problem_lead_statuses = (
         "DRAFT",
-        "PENDING_TELESALES_VERIFY",
+        *VERIFICATION_PENDING_LEAD_STATUSES,
         "PENDING_OPERATION_DISPOSITION",
         "DUPLICATE",
         "INVALID",
     )
+    metrics = [
+        _count_subquery(Lead, Lead.source_kind.is_not(None)).label("lead_total"),
+        _count_subquery(Lead, Lead.status == "READY_DISPATCH").label("lead_unassigned"),
+        _count_subquery(Assignment, Assignment.status == "PENDING_CLAIM").label("lead_dispatching"),
+        _count_subquery(Lead, Lead.status.in_(problem_lead_statuses)).label("lead_problem"),
+        _count_subquery(
+            VerificationTask,
+            VerificationTask.status.in_(("PENDING", "ASSIGNED")),
+        ).label("verification_pending"),
+        _count_subquery(
+            VerificationTask,
+            VerificationTask.status == "IN_PROGRESS",
+        ).label("verification_in_progress"),
+        _count_subquery(
+            VerificationTask,
+            VerificationTask.status == "SUBMITTED",
+        ).label("verification_awaiting_operation"),
+        _count_subquery(
+            VerificationTask,
+            VerificationTask.status.in_(verification_open),
+            VerificationTask.due_at.is_not(None),
+            VerificationTask.due_at < now,
+        ).label("verification_overdue"),
+        _count_subquery(ReturnRequest, ReturnRequest.status == "REVIEWING").label("return_final_review"),
+        _count_subquery(
+            CompanyLeadCapability,
+            CompanyLeadCapability.review_status == "PENDING",
+        ).label("company_capability_review"),
+        _count_subquery(
+            CompanyServiceAreaV12,
+            CompanyServiceAreaV12.review_status == "PENDING",
+        ).label("company_area_review"),
+        _count_subquery(
+            NotificationOutbox,
+            NotificationOutbox.status.in_(("FAILED", "DEAD", "MANUAL_ACTION_REQUIRED")),
+        ).label("failed_notification"),
+        _count_subquery(Company, Company.status == "DISABLED").label("disabled_company"),
+    ]
+    if principal.can("points.read") or principal.can("*"):
+        metrics.append(
+            _count_subquery(
+                SupplierLeadReward,
+                SupplierLeadReward.status == "FROZEN",
+            ).label("frozen_reward")
+        )
+    totals = db.execute(select(*metrics)).one()
     result = {
         "lead_pool": {
-            "total": _count(db, Lead, Lead.source_kind.is_not(None)),
-            "unassigned": _count(db, Lead, Lead.status == "READY_DISPATCH"),
-            "dispatching": _count(db, Assignment, Assignment.status == "PENDING_CLAIM"),
-            "problem": _count(db, Lead, Lead.status.in_(problem_lead_statuses)),
+            "total": int(totals.lead_total),
+            "unassigned": int(totals.lead_unassigned),
+            "dispatching": int(totals.lead_dispatching),
+            "problem": int(totals.lead_problem),
         },
         "verification": {
-            "pending": _count(db, VerificationTask, VerificationTask.status.in_(("PENDING", "ASSIGNED"))),
-            "in_progress": _count(db, VerificationTask, VerificationTask.status == "IN_PROGRESS"),
-            "awaiting_operation": _count(db, VerificationTask, VerificationTask.status == "SUBMITTED"),
-            "overdue": _count(
-                db,
-                VerificationTask,
-                VerificationTask.status.in_(verification_open),
-                VerificationTask.due_at.is_not(None),
-                VerificationTask.due_at < now,
-            ),
+            "pending": int(totals.verification_pending),
+            "in_progress": int(totals.verification_in_progress),
+            "awaiting_operation": int(totals.verification_awaiting_operation),
+            "overdue": int(totals.verification_overdue),
         },
         "exceptions": {
-            "return_final_review": _count(db, ReturnRequest, ReturnRequest.status == "REVIEWING"),
-            "company_review": _count(db, CompanyLeadCapability, CompanyLeadCapability.review_status == "PENDING")
-            + _count(db, CompanyServiceAreaV12, CompanyServiceAreaV12.review_status == "PENDING"),
-            "failed_notification": _count(
-                db,
-                NotificationOutbox,
-                NotificationOutbox.status.in_(("FAILED", "DEAD", "MANUAL_ACTION_REQUIRED")),
-            ),
-            "disabled_company": _count(db, Company, Company.status == "DISABLED"),
+            "return_final_review": int(totals.return_final_review),
+            "company_review": int(totals.company_capability_review) + int(totals.company_area_review),
+            "failed_notification": int(totals.failed_notification),
+            "disabled_company": int(totals.disabled_company),
         },
     }
     if principal.can("points.read") or principal.can("*"):
         result["funds"] = {
-            "frozen_reward": _count(db, SupplierLeadReward, SupplierLeadReward.status == "FROZEN"),
+            "frozen_reward": int(totals.frozen_reward),
         }
     return result
 
@@ -148,19 +187,6 @@ def overview(
     return ok(request, data)
 
 
-def _dashboard_date(value: datetime | None) -> str | None:
-    if value is None:
-        return None
-    return (value.astimezone(timezone.utc) if value.tzinfo else value).date().isoformat()
-
-
-def _dashboard_amount(rows: list[SupplierLeadReward]) -> dict[str, int]:
-    return {
-        "count": len(rows),
-        "points": int(sum(int(item.reward_points or 0) for item in rows)),
-    }
-
-
 @router.get("/reports/management-dashboard")
 def management_dashboard(
     request: Request,
@@ -172,36 +198,52 @@ def management_dashboard(
 
     now = datetime.now(timezone.utc)
     start = now - timedelta(days=days - 1)
-    leads = list(
-        db.scalars(
-            select(Lead)
-            .where(Lead.source_kind.is_not(None))
-            .order_by(Lead.created_at.asc())
-        ).all()
+    v12_lead = Lead.source_kind.is_not(None)
+    claimed_statuses = ("CLAIMED", "FOLLOWING", "RETURN_PENDING", "COMPLETED")
+    active_return_statuses = ("VERIFYING", "REVIEWING", "NEED_MORE_EVIDENCE")
+    verified_lead_statuses = ("DRAFT", *VERIFICATION_PENDING_LEAD_STATUSES)
+    pending_reward_points = (
+        select(func.coalesce(func.sum(SupplierLeadReward.reward_points), 0))
+        .where(SupplierLeadReward.status == "OBSERVING")
+        .scalar_subquery()
     )
-    period_leads = [item for item in leads if item.created_at >= start]
-    assignments = list(db.scalars(select(Assignment)).all())
-    returns = list(
-        db.scalars(
-            select(ReturnRequest).where(
-                ReturnRequest.status.in_(("VERIFYING", "REVIEWING", "NEED_MORE_EVIDENCE"))
-            )
-        ).all()
+    totals = db.execute(
+        select(
+            _count_subquery(Lead, v12_lead, Lead.created_at >= start).label("new_leads"),
+            _count_subquery(
+                Lead,
+                v12_lead,
+                Lead.status.in_(VERIFICATION_PENDING_LEAD_STATUSES),
+            ).label("pending_verification"),
+            _count_subquery(Lead, v12_lead, Lead.status == "READY_DISPATCH").label("ready_dispatch"),
+            _count_subquery(Lead, v12_lead).label("submitted"),
+            _count_subquery(
+                Lead,
+                v12_lead,
+                Lead.status.not_in(verified_lead_statuses),
+            ).label("verified"),
+            _count_subquery(Lead, v12_lead, Lead.status == "PENDING_OPERATION_DISPOSITION").label(
+                "awaiting_operation"
+            ),
+            _count_subquery(Assignment).label("dispatched"),
+            _count_subquery(Assignment, Assignment.status.in_(claimed_statuses)).label("claimed"),
+            _count_subquery(Assignment, Assignment.status == "COMPLETED").label("completed"),
+            _count_subquery(ReturnRequest, ReturnRequest.status.in_(active_return_statuses)).label(
+                "return_exceptions"
+            ),
+            _count_subquery(SupplierLeadReward, SupplierLeadReward.status == "OBSERVING").label(
+                "pending_reward_count"
+            ),
+            pending_reward_points.label("pending_reward_points"),
+        )
+    ).one()
+
+    completed_leads = (
+        select(Assignment.lead_id.label("lead_id"))
+        .where(Assignment.status == "COMPLETED")
+        .distinct()
+        .subquery()
     )
-    rewards = list(db.scalars(select(SupplierLeadReward)).all())
-    followups = list(
-        db.scalars(
-            select(FollowUp).where(FollowUp.status == "DEAL", FollowUp.created_at >= start)
-        ).all()
-    )
-    completed_lead_ids = {
-        item.lead_id for item in assignments if item.status == "COMPLETED"
-    }
-    claimed_statuses = {"CLAIMED", "FOLLOWING", "RETURN_PENDING", "COMPLETED"}
-    claimed = sum(1 for item in assignments if item.status in claimed_statuses)
-    completed = sum(1 for item in assignments if item.status == "COMPLETED")
-    pending_rewards = [item for item in rewards if item.status == "OBSERVING"]
-    return_exceptions = len(returns)
 
     trend_rows = {
         (start + timedelta(days=offset)).date().isoformat(): {
@@ -211,14 +253,22 @@ def management_dashboard(
         }
         for offset in range(days)
     }
-    for lead in period_leads:
-        key = _dashboard_date(lead.created_at)
+    daily_rows = db.execute(
+        select(
+            func.date(Lead.created_at).label("day"),
+            func.count(Lead.id).label("new_leads"),
+            func.count(completed_leads.c.lead_id).label("effective_completed"),
+        )
+        .select_from(Lead)
+        .outerjoin(completed_leads, completed_leads.c.lead_id == Lead.id)
+        .where(v12_lead, Lead.created_at >= start)
+        .group_by(func.date(Lead.created_at))
+    ).all()
+    for row in daily_rows:
+        key = row.day.isoformat() if hasattr(row.day, "isoformat") else str(row.day)
         if key in trend_rows:
-            trend_rows[key]["new_leads"] += 1
-    for followup in followups:
-        key = _dashboard_date(followup.created_at)
-        if key in trend_rows:
-            trend_rows[key]["effective_completed"] += 1
+            trend_rows[key]["new_leads"] = int(row.new_leads)
+            trend_rows[key]["effective_completed"] = int(row.effective_completed)
     trend = [
         {
             **item,
@@ -232,68 +282,86 @@ def management_dashboard(
     ]
 
     source_names = {"PLATFORM_MANUAL": "平台录入", "SUPPLIER_H5": "加盟商提供"}
-    source_totals: dict[str, dict[str, int | str]] = {}
-    region_totals: dict[str, dict[str, int | str]] = {}
-    provider_totals: dict[str, dict[str, int | str]] = {}
-    company_ids = {lead.supplier_company_id for lead in period_leads if lead.supplier_company_id}
-    company_names = {
-        item.id: item.name
-        for item in db.scalars(select(Company).where(Company.id.in_(company_ids))).all()
-    } if company_ids else {}
-    for lead in period_leads:
-        for key, label, bucket in (
-            (lead.source_kind or "UNKNOWN", source_names.get(lead.source_kind or "", "其他来源"), source_totals),
-            (lead.city or "未填写地区", lead.city or "未填写地区", region_totals),
-            (
-                lead.supplier_company_id or "PLATFORM",
-                company_names.get(lead.supplier_company_id or "", "平台运营"),
-                provider_totals,
-            ),
-        ):
-            item = bucket.setdefault(key, {"key": key, "label": label, "leads": 0, "completed": 0})
-            item["leads"] = int(item["leads"]) + 1
-            item["completed"] = int(item["completed"]) + int(lead.id in completed_lead_ids)
-    def distribution(bucket: dict[str, dict[str, int | str]]) -> list[dict[str, int | str | float]]:
-        rows = []
-        for item in bucket.values():
-            leads_count = int(item["leads"])
-            completed_count = int(item["completed"])
-            rows.append({
-                **item,
-                "effective_rate": round(completed_count / leads_count * 100, 1) if leads_count else 0,
-            })
-        return sorted(rows, key=lambda item: (-int(item["leads"]), str(item["label"])))[:8]
+
+    def grouped_distribution(key_expression) -> list[Any]:
+        lead_count = func.count(Lead.id)
+        return db.execute(
+            select(
+                key_expression.label("key"),
+                lead_count.label("leads"),
+                func.count(completed_leads.c.lead_id).label("completed"),
+            )
+            .select_from(Lead)
+            .outerjoin(completed_leads, completed_leads.c.lead_id == Lead.id)
+            .where(v12_lead, Lead.created_at >= start)
+            .group_by(key_expression)
+            .order_by(lead_count.desc(), key_expression.asc())
+            .limit(8)
+        ).all()
+
+    source_rows = grouped_distribution(func.coalesce(Lead.source_kind, "UNKNOWN"))
+    region_rows = grouped_distribution(func.coalesce(Lead.city, "未填写地区"))
+    provider_rows = grouped_distribution(func.coalesce(Lead.supplier_company_id, "PLATFORM"))
+    provider_ids = [str(row.key) for row in provider_rows if row.key != "PLATFORM"]
+    company_names = dict(
+        db.execute(select(Company.id, Company.name).where(Company.id.in_(provider_ids))).all()
+    ) if provider_ids else {}
+
+    def distribution(rows: list[Any], labels: dict[str, str] | None = None) -> list[dict[str, Any]]:
+        items = []
+        for row in rows:
+            key = str(row.key)
+            leads_count = int(row.leads)
+            completed_count = int(row.completed)
+            label = labels.get(key, "其他来源") if labels is not None else key
+            items.append(
+                {
+                    "key": key,
+                    "label": label,
+                    "leads": leads_count,
+                    "completed": completed_count,
+                    "effective_rate": round(completed_count / leads_count * 100, 1)
+                    if leads_count
+                    else 0,
+                }
+            )
+        return items
+
+    provider_labels = {"PLATFORM": "平台运营", **company_names}
+    claimed = int(totals.claimed)
+    completed = int(totals.completed)
+    return_exceptions = int(totals.return_exceptions)
 
     data = {
         "period": {"days": days, "from": start.date().isoformat(), "to": now.date().isoformat()},
         "kpis": {
-            "new_leads": len(period_leads),
-            "pending_verification": sum(
-                1 for item in leads
-                if item.status in {"PENDING_TELESALES_VERIFY", "PENDING_OPERATION_DISPOSITION"}
-            ),
-            "ready_dispatch": sum(1 for item in leads if item.status == "READY_DISPATCH"),
+            "new_leads": int(totals.new_leads),
+            "pending_verification": int(totals.pending_verification),
+            "ready_dispatch": int(totals.ready_dispatch),
             "claimed": claimed,
             "effective_completed": completed,
             "effective_completion_rate": round(completed / claimed * 100, 1) if claimed else 0,
             "returned_exceptions": return_exceptions,
-            "pending_reward_settlement": _dashboard_amount(pending_rewards),
+            "pending_reward_settlement": {
+                "count": int(totals.pending_reward_count),
+                "points": int(totals.pending_reward_points),
+            },
         },
         "trend": trend,
         "funnel": [
-            {"key": "submitted", "label": "录入", "value": len(leads)},
-            {"key": "verified", "label": "核实", "value": sum(1 for item in leads if item.status not in {"DRAFT", "PENDING_REVIEW"})},
-            {"key": "dispatched", "label": "派送", "value": len(assignments)},
+            {"key": "submitted", "label": "录入", "value": int(totals.submitted)},
+            {"key": "verified", "label": "核实", "value": int(totals.verified)},
+            {"key": "dispatched", "label": "派送", "value": int(totals.dispatched)},
             {"key": "claimed", "label": "领取", "value": claimed},
             {"key": "completed", "label": "确认完成", "value": completed},
         ],
-        "source_distribution": distribution(source_totals),
-        "region_distribution": distribution(region_totals),
-        "provider_distribution": distribution(provider_totals),
+        "source_distribution": distribution(source_rows, source_names),
+        "region_distribution": distribution(region_rows),
+        "provider_distribution": distribution(provider_rows, provider_labels),
         "exceptions": [
             {"label": "待退回终审", "count": return_exceptions, "view": "returns"},
-            {"label": "待运营处置", "count": sum(1 for item in leads if item.status == "PENDING_OPERATION_DISPOSITION"), "view": "telesales"},
-            {"label": "待派发", "count": sum(1 for item in leads if item.status == "READY_DISPATCH"), "view": "dispatch"},
+            {"label": "待运营处置", "count": int(totals.awaiting_operation), "view": "telesales"},
+            {"label": "待派发", "count": int(totals.ready_dispatch), "view": "dispatch"},
         ],
     }
     return ok(request, data)
@@ -314,68 +382,224 @@ def finance_dashboard(
         raise AppError("FORBIDDEN", "无权查看资金经营看板", 403)
     now = datetime.now(timezone.utc)
     start = now - timedelta(days=days - 1)
-    rows = list(
-        db.execute(
-            select(SupplierLeadReward, Lead)
-            .join(Lead, Lead.id == SupplierLeadReward.lead_id)
-            .where(SupplierLeadReward.created_at >= start)
-            .order_by(SupplierLeadReward.created_at.desc())
-        ).all()
-    )
     normalized_status = status.strip().upper() if status else None
     normalized_source = source.strip().upper() if source else None
-    rows = [
-        (reward, lead) for reward, lead in rows
-        if (not normalized_status or reward.status == normalized_status)
-        and (not normalized_source or lead.source_kind == normalized_source)
-    ]
-    reward_rows = [reward for reward, _lead in rows]
+    reward_filters: list[Any] = [SupplierLeadReward.created_at >= start]
+    if normalized_status:
+        reward_filters.append(SupplierLeadReward.status == normalized_status)
+    if normalized_source:
+        reward_filters.append(Lead.source_kind == normalized_source)
+
+    reward_status_rows = db.execute(
+        select(
+            SupplierLeadReward.status,
+            func.count(SupplierLeadReward.id).label("count"),
+            func.coalesce(func.sum(SupplierLeadReward.reward_points), 0).label("points"),
+        )
+        .select_from(SupplierLeadReward)
+        .join(Lead, Lead.id == SupplierLeadReward.lead_id)
+        .where(*reward_filters)
+        .group_by(SupplierLeadReward.status)
+    ).all()
     by_status = {
-        item: _dashboard_amount([reward for reward in reward_rows if reward.status == item])
+        item: {"count": 0, "points": 0}
         for item in ("OBSERVING", "SETTLED", "FROZEN", "CANCELLED", "REVERSED")
     }
-    trend_map: dict[str, dict[str, int | str]] = {}
-    for reward, _lead in rows:
-        date_key = _dashboard_date(reward.created_at) or now.date().isoformat()
-        item = trend_map.setdefault(date_key, {"date": date_key, "pending_points": 0, "settled_points": 0})
-        if reward.status == "SETTLED":
-            item["settled_points"] = int(item["settled_points"]) + int(reward.reward_points or 0)
-        elif reward.status == "OBSERVING":
-            item["pending_points"] = int(item["pending_points"]) + int(reward.reward_points or 0)
-    company_ids = {reward.supplier_company_id for reward in reward_rows}
-    company_names = {
-        company.id: company.name
-        for company in db.scalars(select(Company).where(Company.id.in_(company_ids))).all()
-    } if company_ids else {}
-    ranking: dict[str, dict[str, int | str]] = {}
-    for reward in reward_rows:
-        item = ranking.setdefault(
-            reward.supplier_company_id,
-            {"company_id": reward.supplier_company_id, "label": company_names.get(reward.supplier_company_id, "加盟商"), "rewards": 0, "points": 0, "settled_points": 0},
+    for row in reward_status_rows:
+        if row.status in by_status:
+            by_status[row.status] = {"count": int(row.count), "points": int(row.points)}
+
+    reward_trend_rows = db.execute(
+        select(
+            func.date(SupplierLeadReward.created_at).label("day"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (SupplierLeadReward.status == "OBSERVING", SupplierLeadReward.reward_points),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("pending_points"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (SupplierLeadReward.status == "SETTLED", SupplierLeadReward.reward_points),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("settled_points"),
         )
-        item["rewards"] = int(item["rewards"]) + 1
-        item["points"] = int(item["points"]) + int(reward.reward_points or 0)
-        if reward.status == "SETTLED":
-            item["settled_points"] = int(item["settled_points"]) + int(reward.reward_points or 0)
-    recharge_rows = list(
-        db.scalars(
-            select(PointsLedger)
-            .where(PointsLedger.ledger_type == "RECHARGE")
-            .order_by(PointsLedger.created_at.desc())
-        ).all()
+        .select_from(SupplierLeadReward)
+        .join(Lead, Lead.id == SupplierLeadReward.lead_id)
+        .where(*reward_filters)
+        .group_by(func.date(SupplierLeadReward.created_at))
+        .order_by(func.date(SupplierLeadReward.created_at))
+    ).all()
+    reward_trend = [
+        {
+            "date": row.day.isoformat() if hasattr(row.day, "isoformat") else str(row.day),
+            "pending_points": int(row.pending_points),
+            "settled_points": int(row.settled_points),
+        }
+        for row in reward_trend_rows
+    ]
+
+    ranking_points = func.coalesce(func.sum(SupplierLeadReward.reward_points), 0)
+    ranking_rows = db.execute(
+        select(
+            SupplierLeadReward.supplier_company_id.label("company_id"),
+            func.coalesce(Company.name, "加盟商").label("label"),
+            func.count(SupplierLeadReward.id).label("rewards"),
+            ranking_points.label("points"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (SupplierLeadReward.status == "SETTLED", SupplierLeadReward.reward_points),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("settled_points"),
+        )
+        .select_from(SupplierLeadReward)
+        .join(Lead, Lead.id == SupplierLeadReward.lead_id)
+        .outerjoin(Company, Company.id == SupplierLeadReward.supplier_company_id)
+        .where(*reward_filters)
+        .group_by(SupplierLeadReward.supplier_company_id, Company.name)
+        .order_by(ranking_points.desc(), func.coalesce(Company.name, "加盟商").asc())
+        .limit(10)
+    ).all()
+    source_ranking = [
+        {
+            "company_id": row.company_id,
+            "label": row.label,
+            "rewards": int(row.rewards),
+            "points": int(row.points),
+            "settled_points": int(row.settled_points),
+        }
+        for row in ranking_rows
+    ]
+
+    reward_detail_rows = db.execute(
+        select(
+            SupplierLeadReward.id,
+            SupplierLeadReward.status,
+            SupplierLeadReward.reward_points,
+            SupplierLeadReward.created_at,
+            Lead.source_kind.label("source"),
+            func.coalesce(Company.name, "加盟商").label("provider"),
+        )
+        .select_from(SupplierLeadReward)
+        .join(Lead, Lead.id == SupplierLeadReward.lead_id)
+        .outerjoin(Company, Company.id == SupplierLeadReward.supplier_company_id)
+        .where(*reward_filters)
+        .order_by(SupplierLeadReward.created_at.desc())
+        .limit(20)
+    ).all()
+
+    recharge = aliased(PointsLedger, name="recharge")
+    reversal_totals = (
+        select(
+            PointsLedger.related_ledger_id.label("original_id"),
+            func.coalesce(func.sum(PointsLedger.delta), 0).label("reversal_delta"),
+            func.count(PointsLedger.id).label("reversal_count"),
+            func.max(PointsLedger.id).label("reversal_ledger_id"),
+            func.max(PointsLedger.created_at).label("reversed_at"),
+        )
+        .where(
+            PointsLedger.ledger_type == "REVERSAL",
+            PointsLedger.related_ledger_id.is_not(None),
+        )
+        .group_by(PointsLedger.related_ledger_id)
+        .subquery()
     )
-    period_recharges = [item for item in recharge_rows if (as_utc(item.created_at) or item.created_at) >= start]
-    recharge_company_ids = {item.company_id for item in recharge_rows}
-    recharge_company_names = {
-        company.id: company.name
-        for company in db.scalars(select(Company).where(Company.id.in_(recharge_company_ids))).all()
-    } if recharge_company_ids else {}
-    recharge_trend: dict[str, dict[str, int | str]] = {}
-    for item in period_recharges:
-        date_key = _dashboard_date(item.created_at) or now.date().isoformat()
-        bucket = recharge_trend.setdefault(date_key, {"date": date_key, "points": 0, "count": 0})
-        bucket["points"] = int(bucket["points"]) + int(item.delta)
-        bucket["count"] = int(bucket["count"]) + 1
+    reversal_delta = func.coalesce(reversal_totals.c.reversal_delta, 0)
+    net_recharge_points = recharge.delta + reversal_delta
+    is_active_recharge = reversal_totals.c.original_id.is_(None)
+    in_period = recharge.created_at >= start
+    recharge_summary = db.execute(
+        select(
+            func.coalesce(func.sum(case((in_period, recharge.delta), else_=0)), 0).label(
+                "period_gross_points"
+            ),
+            func.coalesce(func.sum(case((in_period, -reversal_delta), else_=0)), 0).label(
+                "period_reversed_points"
+            ),
+            func.coalesce(func.sum(case((in_period, net_recharge_points), else_=0)), 0).label(
+                "period_net_points"
+            ),
+            func.coalesce(func.sum(case((in_period, 1), else_=0)), 0).label("period_gross_count"),
+            func.coalesce(
+                func.sum(case((and_(in_period, is_active_recharge), 1), else_=0)),
+                0,
+            ).label("period_active_count"),
+            func.coalesce(
+                func.sum(case((and_(in_period, ~is_active_recharge), 1), else_=0)),
+                0,
+            ).label("period_reversal_count"),
+            func.coalesce(func.sum(recharge.delta), 0).label("total_gross_points"),
+            func.coalesce(func.sum(-reversal_delta), 0).label("total_reversed_points"),
+            func.coalesce(func.sum(net_recharge_points), 0).label("total_net_points"),
+            func.count(recharge.id).label("total_gross_count"),
+            func.coalesce(func.sum(case((is_active_recharge, 1), else_=0)), 0).label(
+                "total_active_count"
+            ),
+            func.coalesce(func.sum(case((~is_active_recharge, 1), else_=0)), 0).label(
+                "total_reversal_count"
+            ),
+        )
+        .select_from(recharge)
+        .outerjoin(reversal_totals, reversal_totals.c.original_id == recharge.id)
+        .where(recharge.ledger_type == "RECHARGE")
+    ).one()
+
+    recharge_trend_rows = db.execute(
+        select(
+            func.date(recharge.created_at).label("day"),
+            func.coalesce(func.sum(net_recharge_points), 0).label("points"),
+            func.coalesce(func.sum(case((is_active_recharge, 1), else_=0)), 0).label("count"),
+            func.coalesce(func.sum(recharge.delta), 0).label("gross_points"),
+            func.coalesce(func.sum(-reversal_delta), 0).label("reversed_points"),
+        )
+        .select_from(recharge)
+        .outerjoin(reversal_totals, reversal_totals.c.original_id == recharge.id)
+        .where(recharge.ledger_type == "RECHARGE", in_period)
+        .group_by(func.date(recharge.created_at))
+        .order_by(func.date(recharge.created_at))
+    ).all()
+    recharge_trend = [
+        {
+            "date": row.day.isoformat() if hasattr(row.day, "isoformat") else str(row.day),
+            "points": int(row.points),
+            "count": int(row.count),
+            "gross_points": int(row.gross_points),
+            "reversed_points": int(row.reversed_points),
+        }
+        for row in recharge_trend_rows
+    ]
+
+    recent_recharges = db.execute(
+        select(
+            recharge.id,
+            recharge.company_id,
+            func.coalesce(Company.name, "加盟商").label("company_name"),
+            recharge.delta.label("original_points"),
+            net_recharge_points.label("points"),
+            recharge.balance_after,
+            recharge.external_reference,
+            recharge.created_at,
+            reversal_totals.c.reversal_ledger_id,
+            reversal_totals.c.reversed_at,
+        )
+        .select_from(recharge)
+        .outerjoin(reversal_totals, reversal_totals.c.original_id == recharge.id)
+        .outerjoin(Company, Company.id == recharge.company_id)
+        .where(recharge.ledger_type == "RECHARGE")
+        .order_by(recharge.created_at.desc())
+        .limit(20)
+    ).all()
     remaining_points = int(db.scalar(select(func.coalesce(func.sum(PointsAccount.balance), 0))) or 0)
     return ok(request, {
         "period": {"days": days, "from": start.date().isoformat(), "to": now.date().isoformat()},
@@ -389,40 +613,54 @@ def finance_dashboard(
                 "points": by_status["CANCELLED"]["points"] + by_status["REVERSED"]["points"],
             },
         },
-        "trend": [trend_map[key] for key in sorted(trend_map)],
-        "source_ranking": sorted(ranking.values(), key=lambda item: (-int(item["points"]), str(item["label"])))[:10],
+        "trend": reward_trend,
+        "source_ranking": source_ranking,
         "recharge_summary": {
-            "period_recharged_points": int(sum(item.delta for item in period_recharges)),
-            "period_recharge_count": len(period_recharges),
-            "total_recharged_points": int(sum(item.delta for item in recharge_rows)),
-            "total_recharge_count": len(recharge_rows),
+            "period_recharged_points": int(recharge_summary.period_net_points),
+            "period_recharge_count": int(recharge_summary.period_active_count),
+            "period_gross_recharged_points": int(recharge_summary.period_gross_points),
+            "period_reversed_recharge_points": int(recharge_summary.period_reversed_points),
+            "period_net_recharged_points": int(recharge_summary.period_net_points),
+            "period_gross_recharge_count": int(recharge_summary.period_gross_count),
+            "period_reversal_count": int(recharge_summary.period_reversal_count),
+            "total_recharged_points": int(recharge_summary.total_net_points),
+            "total_recharge_count": int(recharge_summary.total_active_count),
+            "total_gross_recharged_points": int(recharge_summary.total_gross_points),
+            "total_reversed_recharge_points": int(recharge_summary.total_reversed_points),
+            "total_net_recharged_points": int(recharge_summary.total_net_points),
+            "total_gross_recharge_count": int(recharge_summary.total_gross_count),
+            "total_reversal_count": int(recharge_summary.total_reversal_count),
             "remaining_points": remaining_points,
         },
         "recharge": {
-            "trend": [recharge_trend[key] for key in sorted(recharge_trend)],
+            "trend": recharge_trend,
             "recent_records": [
                 {
                     "id": item.id,
                     "company_id": item.company_id,
-                    "company_name": recharge_company_names.get(item.company_id, "加盟商"),
-                    "points": int(item.delta),
+                    "company_name": item.company_name,
+                    "original_points": int(item.original_points),
+                    "points": int(item.points),
                     "balance_after": int(item.balance_after),
                     "external_reference": item.external_reference,
                     "created_at": _iso(item.created_at),
+                    "reversed": item.reversed_at is not None,
+                    "reversal_ledger_id": item.reversal_ledger_id,
+                    "reversed_at": _iso(item.reversed_at),
                 }
-                for item in recharge_rows[:20]
+                for item in recent_recharges
             ],
         },
         "details": [
             {
-                "id": reward.id,
-                "status": reward.status,
-                "points": int(reward.reward_points or 0),
-                "source": lead.source_kind,
-                "provider": company_names.get(reward.supplier_company_id, "加盟商"),
-                "created_at": _iso(reward.created_at),
+                "id": row.id,
+                "status": row.status,
+                "points": int(row.reward_points or 0),
+                "source": row.source,
+                "provider": row.provider,
+                "created_at": _iso(row.created_at),
             }
-            for reward, lead in rows[:20]
+            for row in reward_detail_rows
         ],
     })
 

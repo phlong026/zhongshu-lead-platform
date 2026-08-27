@@ -18,6 +18,29 @@ from ..services.audit import write_audit
 
 router = APIRouter(tags=["admin"])
 
+_WECHAT_TEMPLATE_SOURCES = {"title", "scene", "body", "remark"}
+
+
+def _validate_wechat_template_config(domain: str, value: dict) -> None:
+    if domain != "wechat_template":
+        return
+    template_id = value.get("template_id")
+    field_map = value.get("field_map")
+    if not isinstance(template_id, str) or not template_id.strip():
+        raise AppError("WECHAT_TEMPLATE_CONFIG_INVALID", "微信模板配置缺少 template_id", 422)
+    if not isinstance(field_map, dict) or not field_map:
+        raise AppError("WECHAT_TEMPLATE_CONFIG_INVALID", "微信模板配置缺少 field_map", 422)
+    for field_name, source in field_map.items():
+        if not isinstance(field_name, str) or not field_name.strip():
+            raise AppError("WECHAT_TEMPLATE_CONFIG_INVALID", "微信模板字段名不能为空", 422)
+        if not isinstance(source, str) or not source.strip():
+            raise AppError("WECHAT_TEMPLATE_CONFIG_INVALID", "微信模板字段来源不能为空", 422)
+        if source in _WECHAT_TEMPLATE_SOURCES:
+            continue
+        if source.startswith("literal:") and source.removeprefix("literal:").strip():
+            continue
+        raise AppError("WECHAT_TEMPLATE_CONFIG_INVALID", "微信模板字段来源只支持 title、scene、body、remark 或 literal:文本", 422)
+
 
 @router.get("/dashboard/summary")
 def summary(request: Request, principal: CurrentPrincipal, db: Session = Depends(get_db)):
@@ -123,6 +146,8 @@ def create_config(
         db.scalar(select(func.coalesce(func.max(SystemConfig.version), 0)).where(SystemConfig.domain == body.domain, SystemConfig.key == body.key))
         or 0
     )
+    if body.publish_immediately:
+        _validate_wechat_template_config(body.domain, body.value)
     item = SystemConfig(
         domain=body.domain,
         key=body.key,
@@ -170,6 +195,7 @@ def publish_config(
         raise AppError("CONFIG_NOT_FOUND", "配置不存在", 404)
     if item.status == ConfigStatus.PUBLISHED:
         return ok(request, {"id": item.id, "status": item.status}, "配置已发布")
+    _validate_wechat_template_config(item.domain, item.value_json)
     prior = db.scalars(
         select(SystemConfig).where(
             SystemConfig.domain == item.domain,

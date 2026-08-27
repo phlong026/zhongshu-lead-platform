@@ -64,9 +64,17 @@ def test_platform_lead_district_options_use_dom_nodes_not_html_injection() -> No
 
 def test_supplier_submission_goes_directly_to_telesales_assignment() -> None:
     source = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
+    supplier_queue = source[
+        source.index("const supplierRows") : source.index("const sourceOptions")
+    ]
 
-    for decision in ("PENDING_TELESALES_VERIFY", "data-pre-assign", "分配电销核实"):
-        assert decision in source
+    for decision in (
+        "PENDING_REVIEW",
+        "PENDING_TELESALES_VERIFY",
+        "data-supplier-pre-dispatch",
+        "分配电销核实",
+    ):
+        assert decision in supplier_queue
     assert "/admin/leads/${encodeURIComponent(leadId)}/pre-dispatch-verification" in source
     assert "pre_dispatch_reason" not in source
     assert "data-review=" not in source
@@ -100,6 +108,19 @@ def test_supplier_h5_validates_before_creating_a_submission_draft() -> None:
     assert "data-supply-field" in js
     assert "aria-invalid" in js
     assert "normalizeSupplyPhone" in js
+
+
+def test_admin_and_h5_share_the_same_budget_unit_conversion() -> None:
+    shared = Path("apps/h5/public/business-units.js").read_text(encoding="utf-8")
+    admin = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
+    h5 = Path("apps/h5/public/v12-workbench.js").read_text(encoding="utf-8")
+
+    assert "export function amountToWan" in shared
+    assert "export function wanToAmount" in shared
+    for source in (admin, h5):
+        assert "from '/h5/business-units.js'" in source
+        assert "amount/10000" not in source
+        assert "amount*10000" not in source
 
 
 def test_supplier_h5_exposes_draft_cleanup_and_rejected_lead_revision() -> None:

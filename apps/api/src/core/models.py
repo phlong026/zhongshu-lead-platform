@@ -101,6 +101,7 @@ class Company(Base, TimestampMixin):
     code: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="ACTIVE", nullable=False, index=True)
+    is_test: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     owner_name: Mapped[str | None] = mapped_column(String(64))
     contact_phone_encrypted: Mapped[str | None] = mapped_column(Text)
     contact_phone_hash: Mapped[str | None] = mapped_column(String(64), index=True)

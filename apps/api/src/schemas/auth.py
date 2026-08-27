@@ -36,6 +36,10 @@ class InviteConfirmStartBody(BaseModel):
     return_url: str = Field(default="/h5/#/home", max_length=512)
 
 
+class InvitePreviewBody(BaseModel):
+    invite: str = Field(min_length=16, max_length=128)
+
+
 class WechatMockCallbackBody(BaseModel):
     state: str = Field(min_length=20, max_length=4096)
     openid: str = Field(default="dev-openid-001", min_length=4, max_length=128)

@@ -5,11 +5,20 @@ import re
 
 from fastapi.testclient import TestClient
 
-from apps.api.src.main import app
+from apps.api.src.main import app, settings
 
 
-def test_health_contracts():
-    with TestClient(app) as client:
+def test_health_contracts(monkeypatch, tmp_path):
+    # Health checks exercise the local test app and must not inherit an
+    # operator's private production .env validation requirements.
+    monkeypatch.setattr(settings, "app_env", "test")
+    monkeypatch.setattr(settings, "object_storage_backend", "local")
+    monkeypatch.setattr(settings, "object_storage_dir", str(tmp_path / "storage"))
+    allowed_host = next(
+        (host for host in settings.trusted_host_list if host and "*" not in host),
+        "localhost",
+    )
+    with TestClient(app, base_url=f"http://{allowed_host}") as client:
         assert client.get('/health').status_code == 200
         assert client.get('/health/live').json()['status'] == 'alive'
         assert client.get('/health/ready').json()['database'] == 'ok'

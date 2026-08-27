@@ -21,9 +21,17 @@ def test_admin_dashboard_uses_the_decision_and_finance_dashboard_endpoints() -> 
 
     assert "/v1.2/reports/management-dashboard" in source
     assert "/v1.2/reports/finance-dashboard" in source
-    for marker in ("新增客资", "有效完成率", "待结算奖励", "客资新增与有效率趋势", "流转漏斗"):
+    for marker in ("新增客资", "有效完成率", "待结算奖励", "客资新增趋势", "流转漏斗"):
         assert marker in source
-    for marker in ("加盟商积分充值", "发起充值", "当前剩余积分", "充值记录"):
+    for marker in (
+        "加盟商积分充值",
+        "发起充值",
+        "当前剩余积分",
+        "近 ${S.financeDays} 天净充值",
+        "累计净充值",
+        "已冲正",
+        "充值记录",
+    ):
         assert marker in source
-    for marker in ("ops-company-detail-compact", "ops-company-summary-grid", "查看绑定记录"):
+    for marker in ("ops-company-detail-compact", "ops-company-summary-grid", "最多显示 4 条"):
         assert marker in source

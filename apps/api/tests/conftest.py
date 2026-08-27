@@ -76,6 +76,7 @@ def api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     # HTTP OAuth security tests need the authorization URL to be constructible,
     # but must never depend on a real WeChat credential or outbound exchange.
     monkeypatch.setattr(wechat_module.settings, "wechat_app_id", "wx-test-only")
+    monkeypatch.setattr(wechat_module.settings, "wechat_dev_mock", True)
     monkeypatch.setattr(
         wechat_module.settings,
         "wechat_oauth_redirect_uri",

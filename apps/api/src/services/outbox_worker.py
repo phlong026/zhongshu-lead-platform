@@ -7,8 +7,16 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ..core.config import get_settings
-from ..core.models import Company, Notification, NotificationOutbox, SystemConfig, WechatIdentity
+from ..core.models import (
+    Company,
+    InviteToken,
+    Notification,
+    NotificationOutbox,
+    SystemConfig,
+    WechatIdentity,
+)
 from ..core.security import scrub_credentials
+from ..core.time import as_utc
 from ..integrations.wechat import WechatOfficialAccountClient
 
 settings = get_settings()
@@ -37,7 +45,7 @@ def process_outbox(db: Session, limit: int = 100) -> dict[str, int]:
         or_(NotificationOutbox.next_attempt_at.is_(None), NotificationOutbox.next_attempt_at <= now),
     ).order_by(NotificationOutbox.created_at).limit(limit)).all()
     client = WechatOfficialAccountClient()
-    sent = failed = dead = manual = 0
+    sent = failed = dead = manual = cancelled = 0
     for item in rows:
         item.status = "PROCESSING"
         item.attempts += 1
@@ -46,6 +54,11 @@ def process_outbox(db: Session, limit: int = 100) -> dict[str, int]:
             if result["success"]:
                 item.status, item.sent_at, item.last_error = "SENT", now, None
                 sent += 1
+            elif result.get("cancelled"):
+                item.status = "CANCELLED"
+                item.next_attempt_at = None
+                item.last_error = scrub_credentials(str(result.get("error_message") or "通知已取消"))
+                cancelled += 1
             elif result.get("error_code") in _MANUAL_ACTION_ERROR_CODES:
                 item.last_error = scrub_credentials(f"{result.get('error_code')}: {result.get('error_message')}")
                 item.status = "MANUAL_ACTION_REQUIRED"
@@ -71,7 +84,14 @@ def process_outbox(db: Session, limit: int = 100) -> dict[str, int]:
                 item.status = "FAILED"
                 item.next_attempt_at = now + timedelta(minutes=min(60, 2**item.attempts))
                 failed += 1
-    return {"processed": len(rows), "sent": sent, "failed": failed, "dead": dead, "manual": manual}
+    return {
+        "processed": len(rows),
+        "sent": sent,
+        "failed": failed,
+        "dead": dead,
+        "manual": manual,
+        "cancelled": cancelled,
+    }
 
 
 def _send(db: Session, client: WechatOfficialAccountClient, outbox: NotificationOutbox) -> dict[str, Any]:
@@ -131,6 +151,24 @@ def _send_invite_created(db: Session, client: WechatOfficialAccountClient, outbo
     The outbox payload never carries the raw invite token.
     """
 
+    invite = db.get(InviteToken, outbox.aggregate_id)
+    company = db.get(Company, invite.company_id) if invite else None
+    if (
+        invite is None
+        or company is None
+        or company.status != "ACTIVE"
+        or invite.used_at is not None
+        or invite.revoked_at is not None
+        or (as_utc(invite.expires_at) or datetime.min.replace(tzinfo=timezone.utc))
+        <= datetime.now(timezone.utc)
+    ):
+        return {
+            "success": False,
+            "cancelled": True,
+            "error_code": "INVITE_INACTIVE",
+            "error_message": "邀请已失效或所属加盟商已停用",
+        }
+
     payload = outbox.payload
     invitee = str(payload.get("invitee_name") or "负责人")
     company_name = str(payload.get("company_name") or "加盟商")
@@ -174,12 +212,4 @@ def _default_title(event_type: str) -> str:
         "ASSIGNMENT_CLAIMED": "领取成功", "FOLLOWUP_OVERDUE": "跟进提醒",
         "RETURN_APPROVED": "退回审核通过", "RETURN_REJECTED": "退回审核未通过",
         "POINTS_LOW_BALANCE": "积分余额不足提醒", "POINTS_RECHARGED": "积分充值到账",
-        "V12_SUPPLIER_LEAD_SUBMITTED": "客资已进入电销核实", "V12_SUPPLIER_LEAD_APPROVED": "客资已通过资料处理",
-        "V12_SUPPLIER_LEAD_REJECTED": "客资资料需要补充", "V12_ASSIGNMENT_DISPATCHED": "新客资已派发",
-        "V12_ASSIGNMENT_CLAIMED": "客资领取成功", "V12_RETURN_SUBMITTED": "退回申诉已提交",
-        "V12_RETURN_APPROVED": "退回申诉终审通过", "V12_RETURN_REJECTED": "退回申诉终审未通过",
-        "V12_RETURN_NEED_MORE": "退回申诉需要补证",
-        "V12_SUPPLIER_REWARD_OBSERVING": "客资奖励进入观察期", "V12_SUPPLIER_REWARD_FROZEN": "客资奖励已冻结",
-        "V12_SUPPLIER_REWARD_SETTLED": "客资奖励已到账", "V12_SUPPLIER_REWARD_CANCELLED": "客资奖励已取消",
-        "V12_SUPPLIER_REWARD_REVERSED": "客资奖励已冲正",
     }.get(event_type, "业务通知")

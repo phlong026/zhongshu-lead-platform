@@ -82,6 +82,25 @@ server {
         proxy_read_timeout 30s;
     }
 
+    # The current client sends the invite in a POST body. Access logging stays
+    # disabled so deprecated GET clients cannot persist the one-time token.
+    location = /api/v1/auth/invites/preview {
+        limit_req zone=auth_login_limit burst=5 nodelay;
+        limit_req_status 429;
+        access_log off;
+        proxy_pass http://zhongshu_api;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Request-ID $request_id;
+        proxy_connect_timeout 10s;
+        proxy_send_timeout 30s;
+        proxy_read_timeout 30s;
+    }
+
     location /api/ {
         limit_req zone=api_limit burst=40 nodelay;
         proxy_pass http://zhongshu_api;

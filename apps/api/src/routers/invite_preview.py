@@ -10,16 +10,12 @@ from ..core.models import Company, InviteToken
 from ..core.responses import ok
 from ..core.security import hash_token
 from ..core.time import as_utc, utcnow
+from ..schemas.auth import InvitePreviewBody
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-@router.get("/invites/preview")
-def invite_preview(
-    request: Request,
-    invite: str = Query(min_length=16),
-    db: Session = Depends(get_db),
-):
+def _preview_invite(request: Request, invite: str, db: Session):
     invite_row = db.scalar(select(InviteToken).where(InviteToken.token_hash == hash_token(invite)))
     now = utcnow()
     expires_at = as_utc(invite_row.expires_at) if invite_row else None
@@ -39,3 +35,21 @@ def invite_preview(
             "expires_at": expires_at.isoformat(),
         },
     )
+
+
+@router.post("/invites/preview")
+def invite_preview_post(
+    body: InvitePreviewBody,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    return _preview_invite(request, body.invite, db)
+
+
+@router.get("/invites/preview", deprecated=True)
+def invite_preview(
+    request: Request,
+    invite: str = Query(min_length=16),
+    db: Session = Depends(get_db),
+):
+    return _preview_invite(request, invite, db)

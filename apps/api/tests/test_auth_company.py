@@ -95,7 +95,7 @@ def test_company_invite_and_wechat_binding(db) -> None:
 def test_invite_copy_text_carries_recipient_and_company(db) -> None:
     company = create_company(db, _company_body("SH-COPY", owner_name="李负责人"))
     invite, raw, _ = create_company_invite(db, company.id, None, 24)
-    url = f"http://localhost:8000/h5/invite.html?invite={raw}"
+    url = f"http://localhost:8000/h5/invite.html#invite={raw}"
     text = build_invite_copy_text(company.owner_name, company.name, url, invite.expires_at.isoformat())
     assert text.startswith("李负责人，您好：这是【上海测试加盟商】的微信绑定邀请，请在微信内打开：")
     assert url in text
@@ -105,7 +105,7 @@ def test_invite_copy_text_carries_recipient_and_company(db) -> None:
 def test_invite_copy_text_falls_back_without_owner_name(db) -> None:
     company = create_company(db, _company_body("SH-NOOWNER", owner_name=None))
     invite, raw, _ = create_company_invite(db, company.id, None, 24)
-    text = build_invite_copy_text(company.owner_name, company.name, f"http://localhost:8000/h5/invite.html?invite={raw}", invite.expires_at.isoformat())
+    text = build_invite_copy_text(company.owner_name, company.name, f"http://localhost:8000/h5/invite.html#invite={raw}", invite.expires_at.isoformat())
     assert text.startswith("您好：这是【上海测试加盟商】的微信绑定邀请，请在微信内打开：")
 
 
@@ -129,7 +129,7 @@ def test_invite_http_response_carries_safe_recipient_info(api_client) -> None:
     assert data["url"] in data["copy_text"]
     assert data["expires_at"] in data["copy_text"]
     # URL 只携带 token，不拼入姓名或公司明文
-    assert "invite=" in data["url"]
+    assert "#invite=" in data["url"]
     assert "王老板" not in data["url"]
     assert "上海测试加盟商" not in data["url"]
     assert "contact_phone" not in data
@@ -151,7 +151,7 @@ def test_operation_can_create_and_track_company_invite(api_client) -> None:
     )
     assert created.status_code == 200, created.text
     invitation = created.json()["data"]
-    assert "/h5/invite.html?invite=" in invitation["url"]
+    assert "/h5/invite.html#invite=" in invitation["url"]
 
     listed = client.get(
         f"/api/v1/auth/companies/{company_id}/invites",

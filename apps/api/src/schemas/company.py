@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class CompanyCreateBody(BaseModel):
@@ -9,6 +9,7 @@ class CompanyCreateBody(BaseModel):
     owner_name: str | None = Field(default=None, max_length=64)
     contact_phone: str | None = Field(default=None, max_length=32)
     level_code: str = Field(default="V1", max_length=32)
+    is_test: bool = False
     region_codes: list[str] = Field(default_factory=list)
     capabilities: list[dict[str, str | None]] = Field(default_factory=list)
     notes: str | None = Field(default=None, max_length=500)
@@ -22,6 +23,7 @@ class CompanySimpleCreateBody(BaseModel):
     primary_city_code: str = Field(min_length=1, max_length=32)
     district_codes: list[str] = Field(default_factory=list)
     serve_all_districts: bool = True
+    is_test: bool = False
     notes: str | None = Field(default=None, max_length=500)
 
     @field_validator("primary_city_code")
@@ -34,7 +36,10 @@ class CompanySimpleCreateBody(BaseModel):
     def clean_district_codes(cls, value: list[str]) -> list[str]:
         return list(dict.fromkeys(code.strip() for code in value if code.strip()))
 
+
 class CompanyUpdateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = Field(default=None, min_length=2, max_length=128)
     owner_name: str | None = Field(default=None, max_length=64)
     contact_phone: str | None = Field(default=None, max_length=32)
@@ -43,10 +48,54 @@ class CompanyUpdateBody(BaseModel):
     region_codes: list[str] | None = None
     capabilities: list[dict[str, str | None]] | None = None
     notes: str | None = Field(default=None, max_length=500)
+    reason: str | None = Field(default=None, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def clean_reason(cls, value: str | None) -> str | None:
+        return value.strip() if value else None
+
+    @model_validator(mode="after")
+    def require_status_change_reason(self) -> "CompanyUpdateBody":
+        if self.status is not None and not self.reason:
+            raise ValueError("更改加盟商状态必须填写操作原因")
+        return self
+
+
+class CompanyOwnerWechatUnbindBody(BaseModel):
+    confirm_name: str = Field(min_length=2, max_length=128)
+    reason: str = Field(min_length=2, max_length=500)
+
+    @field_validator("confirm_name", "reason")
+    @classmethod
+    def reject_surrounding_whitespace(cls, value: str) -> str:
+        if value != value.strip():
+            raise ValueError("加盟商名称和操作理由首尾不能有空格")
+        return value
 
 
 class CompanyDeleteBody(BaseModel):
-    confirmation_code: str = Field(min_length=2, max_length=32)
+    confirm_name: str = Field(min_length=2, max_length=128)
+    reason: str = Field(min_length=2, max_length=500)
+
+    @field_validator("confirm_name", "reason")
+    @classmethod
+    def reject_surrounding_whitespace(cls, value: str) -> str:
+        if value != value.strip():
+            raise ValueError("加盟商名称和操作理由首尾不能有空格")
+        return value
+
+
+class CompanyMarkTestBody(BaseModel):
+    confirm_name: str = Field(min_length=2, max_length=128)
+    reason: str = Field(min_length=2, max_length=500)
+
+    @field_validator("confirm_name", "reason")
+    @classmethod
+    def reject_surrounding_whitespace(cls, value: str) -> str:
+        if value != value.strip():
+            raise ValueError("加盟商名称和操作理由首尾不能有空格")
+        return value
 
 
 class DictionaryItemBody(BaseModel):

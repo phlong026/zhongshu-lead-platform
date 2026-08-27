@@ -40,7 +40,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         response.headers["referrer-policy"] = "strict-origin-when-cross-origin"
         response.headers["permissions-policy"] = "camera=(self), microphone=(), geolocation=()"
         response.headers["content-security-policy"] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
-        if request.url.path.startswith("/api/"):
+        if request.url.path.startswith("/api/") and request.url.path != "/api/v1/master-data/region-tree":
             response.headers["cache-control"] = "no-store"
         if settings.app_env.lower() == "production":
             response.headers["strict-transport-security"] = "max-age=31536000; includeSubDomains"

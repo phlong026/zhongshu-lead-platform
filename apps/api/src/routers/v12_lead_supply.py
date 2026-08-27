@@ -527,7 +527,7 @@ def own_capabilities(
     return ok(request, [_capability_dict(item) for item in list_capabilities(db, company.id)])
 
 
-@router.post("/company/capabilities")
+@router.post("/company/capabilities", deprecated=True)
 def request_own_capability(
     body: CapabilityRequestBody,
     request: Request,
@@ -560,7 +560,7 @@ def own_service_areas(
     return ok(request, [_area_dict(item) for item in list_service_areas(db, company.id)])
 
 
-@router.put("/company/service-areas")
+@router.put("/company/service-areas", deprecated=True)
 def replace_own_service_areas(
     body: ServiceAreaReplaceBody,
     request: Request,
@@ -588,7 +588,7 @@ def replace_own_service_areas(
     return ok(request, [_area_dict(item) for item in items], "服务区域已提交审核")
 
 
-@router.get("/admin/company-capabilities")
+@router.get("/admin/company-capabilities", deprecated=True)
 def admin_capability_list(
     request: Request,
     principal=Depends(require_permissions("company.profile.review")),
@@ -616,7 +616,10 @@ def admin_capability_list(
     return ok(request, page(items, int(total), page_no, page_size))
 
 
-@router.post("/admin/companies/{company_id}/capabilities/{capability_code}/review")
+@router.post(
+    "/admin/companies/{company_id}/capabilities/{capability_code}/review",
+    deprecated=True,
+)
 def admin_review_capability(
     company_id: str,
     capability_code: str,
@@ -674,6 +677,7 @@ def admin_company_profile(
                 "name": company.name,
                 "code": company.code,
                 "status": company.status,
+                "is_test": company.is_test,
                 "owner_name": company.owner_name,
                 "contact_phone_masked": company_data["contact_phone_masked"],
                 "primary_user_id": company.primary_user_id,
@@ -800,7 +804,7 @@ def admin_approve_pending_company_profile(
     )
 
 
-@router.get("/admin/service-areas")
+@router.get("/admin/service-areas", deprecated=True)
 def admin_service_area_list(
     request: Request,
     principal=Depends(require_permissions("company.profile.review")),
@@ -828,7 +832,7 @@ def admin_service_area_list(
     return ok(request, page(items, int(total), page_no, page_size))
 
 
-@router.post("/admin/service-areas/{area_id}/review")
+@router.post("/admin/service-areas/{area_id}/review", deprecated=True)
 def admin_review_area(
     area_id: str,
     body: ServiceAreaReviewBody,

@@ -44,3 +44,17 @@ def test_region_tree_only_exposes_component_fields(api_client) -> None:
         for city in province["cities"]:
             assert set(city) == {"code", "name", "districts"}
             assert len({item["code"] for item in city["districts"]}) == len(city["districts"])
+
+
+def test_region_tree_is_cacheable_and_compressed_for_static_master_data(api_client) -> None:
+    client, _ = api_client
+
+    response = client.get(
+        "/api/v1/master-data/region-tree",
+        headers={"Accept-Encoding": "gzip"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert "public" in response.headers["cache-control"]
+    assert "max-age=" in response.headers["cache-control"]
+    assert response.headers["content-encoding"] == "gzip"

@@ -488,3 +488,28 @@ def test_company_profile_endpoints_enforce_role_and_company_boundaries(api_clien
     with factory() as db:
         assert db.scalar(select(func.count(CompanyLeadCapability.id))) == 2
         assert db.scalar(select(func.count(CompanyServiceAreaV12.id))) == 2
+
+def test_legacy_company_capability_and_area_review_routes_are_deprecated(api_client) -> None:
+    client, _factory = api_client
+    paths = client.get("/openapi.json").json()["paths"]
+
+    legacy_operations = (
+        ("/api/v1/v1.2/company/capabilities", "post"),
+        ("/api/v1/v1.2/company/service-areas", "put"),
+        ("/api/v1/v1.2/admin/company-capabilities", "get"),
+        (
+            "/api/v1/v1.2/admin/companies/{company_id}/capabilities/{capability_code}/review",
+            "post",
+        ),
+        ("/api/v1/v1.2/admin/service-areas", "get"),
+        ("/api/v1/v1.2/admin/service-areas/{area_id}/review", "post"),
+    )
+    for path, method in legacy_operations:
+        assert paths[path][method]["deprecated"] is True
+
+    assert "deprecated" not in paths["/api/v1/v1.2/company/capabilities"]["get"]
+    assert "deprecated" not in paths["/api/v1/v1.2/company/service-areas"]["get"]
+    current = paths[
+        "/api/v1/v1.2/admin/companies/{company_id}/capabilities/{capability_code}"
+    ]["put"]
+    assert "deprecated" not in current

@@ -27,7 +27,7 @@ def test_v12_workbench_shows_platform_managed_company_profile() -> None:
     assert "data-capability-request" not in js
     assert "service-area-edit" not in js
     assert "申请/更新服务区域" not in js
-    assert "v12-workbench.js?v=20260826-message-route" in html
+    assert "v12-workbench.js?v=20260827-review-fixes" in html
 
 
 def test_v12_operations_exposes_company_detail_and_platform_configuration() -> None:
@@ -41,8 +41,8 @@ def test_v12_operations_exposes_company_detail_and_platform_configuration() -> N
     assert "data-company-detail" in js
     assert "data-company-lifecycle" in js
     assert "删除测试主体" in js
-    assert "请准确输入加盟商编码" in js
-    assert "confirmation_code" in js
+    assert "confirmation_code" not in js
+    assert "status:enabling?'ACTIVE':'DISABLED',reason" in js
     assert "负责人绑定" in js
     assert "接收客资" in js
     assert "提供客资" in js
@@ -55,8 +55,30 @@ def test_v12_operations_exposes_company_detail_and_platform_configuration() -> N
     assert "province_code:province.code" in js
     assert "district_codes" in js
     assert "serve_all_districts:false" in js
-    assert "v12-operations.js?v=20260826-company-lifecycle" in html
+    assert "测试主体" in js
+    assert "data-company-wechat-unbind" in js
+    assert "data-company-test-delete" in js
+    assert "data-company-mark-test" in js
+    assert "data-company-enable" in js
+    assert "/wechat-binding/unbind" in js
+    assert "v12-operations.js?v=20260827-responsive-lifecycle" in html
     assert "加盟商能力与服务区域审核申请" not in js
+
+
+def test_v12_operations_exposes_safe_company_lifecycle_actions() -> None:
+    html = Path("apps/admin/public/v12-operations.html").read_text(encoding="utf-8")
+    js = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
+
+    assert "/wechat-binding/unbind" in js
+    assert "deleteTestCompany" in js
+    assert "companyLifecycleConfirmation" in js
+    assert "/mark-test" in js
+    assert "confirm_name" in js
+    assert "输入加盟商完整名称" in js
+    assert "停用只负责业务隔离" in js
+    assert "解绑负责人微信" in js
+    assert "删除测试数据" in js
+    assert "v12-operations.js?v=20260827-responsive-lifecycle" in html
 
 
 def test_company_invitation_has_a_dedicated_h5_confirmation_page() -> None:
@@ -64,7 +86,7 @@ def test_company_invitation_has_a_dedicated_h5_confirmation_page() -> None:
     html = Path("apps/h5/public/invite.html").read_text(encoding="utf-8")
     js = Path("apps/h5/public/invite.js").read_text(encoding="utf-8")
 
-    assert "/h5/invite.html?invite={raw}" in auth
+    assert "/h5/invite.html#invite={raw}" in auth
     assert "/auth/invites/preview" in js
     assert "/auth/invites/confirm-start" in js
     assert "authorization_url" in js

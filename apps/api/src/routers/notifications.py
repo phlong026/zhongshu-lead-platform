@@ -35,12 +35,21 @@ def list_notifications(
 ):
     stmt = select(Notification).where((Notification.user_id == principal.user_id) | ((Notification.user_id.is_(None)) & (Notification.company_id == principal.company_id)))
     count_stmt = select(func.count(Notification.id)).where((Notification.user_id == principal.user_id) | ((Notification.user_id.is_(None)) & (Notification.company_id == principal.company_id)))
+    unread_total = db.scalar(
+        select(func.count(Notification.id)).where(
+            (Notification.user_id == principal.user_id)
+            | ((Notification.user_id.is_(None)) & (Notification.company_id == principal.company_id)),
+            Notification.read_at.is_(None),
+        )
+    ) or 0
     if unread_only:
         stmt = stmt.where(Notification.read_at.is_(None))
         count_stmt = count_stmt.where(Notification.read_at.is_(None))
     total = db.scalar(count_stmt) or 0
     items = db.scalars(stmt.order_by(Notification.created_at.desc()).offset((page_no - 1) * page_size).limit(page_size)).all()
-    return ok(request, page([{"id": x.id, "scene": x.scene, "title": x.title, "body": x.body, "deep_link": x.deep_link, "status": x.status, "read_at": x.read_at.isoformat() if x.read_at else None, "created_at": x.created_at.isoformat()} for x in items], total, page_no, page_size))
+    data = page([{"id": x.id, "scene": x.scene, "title": x.title, "body": x.body, "deep_link": x.deep_link, "status": x.status, "read_at": x.read_at.isoformat() if x.read_at else None, "created_at": x.created_at.isoformat()} for x in items], total, page_no, page_size)
+    data["unread_total"] = int(unread_total)
+    return ok(request, data)
 
 
 @router.post("/{notification_id}/read")
@@ -48,7 +57,8 @@ def mark_read(notification_id: str, request: Request, principal: CurrentPrincipa
     item = db.get(Notification, notification_id)
     if not item or (item.user_id not in {None, principal.user_id}) or (item.company_id and item.company_id != principal.company_id):
         raise AppError("NOTIFICATION_NOT_FOUND", "消息不存在", 404)
-    item.read_at = datetime.now(timezone.utc)
+    if item.read_at is None:
+        item.read_at = datetime.now(timezone.utc)
     db.commit()
     return ok(request)
 

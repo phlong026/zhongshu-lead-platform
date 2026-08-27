@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -27,7 +27,8 @@ def regions(request: Request, db: Session = Depends(get_db), parent_code: str | 
 
 
 @router.get("/region-tree")
-def nationwide_region_tree(request: Request):
+def nationwide_region_tree(request: Request, response: Response):
+    response.headers["cache-control"] = "public, max-age=86400"
     return ok(request, region_tree())
 
 
