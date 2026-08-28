@@ -14,6 +14,7 @@ from apps.api.src.core.models import (
     Lead,
     NotificationOutbox,
     PointsAccount,
+    PointsLedger,
     User,
 )
 from apps.api.src.core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12
@@ -313,3 +314,68 @@ def test_unclaimed_released_assignment_does_not_unlock_phone(api_client) -> None
     assert data["status"] == AssignmentStatus.RELEASED.value
     assert data["phone"] is None
     assert data["phone_masked"] == "139****9202"
+
+
+def test_owner_can_refuse_pending_claim_without_consuming_points(api_client) -> None:
+    client, factory = api_client
+    lead_id, company_id = _prepare_dispatch_lead(factory, phone="13900139221")
+    _login(client, "operation", "Operation123!")
+    dispatched = client.post(
+        f"/api/v1/v1.2/dispatch-pool/{lead_id}/dispatch",
+        json={
+            "company_id": company_id,
+            "idempotency_key": "refuse-pending-claim-dispatch",
+        },
+    )
+    assert dispatched.status_code == 200, dispatched.text
+    assignment_id = dispatched.json()["data"]["id"]
+    client.post("/api/v1/auth/logout")
+
+    with factory() as db:
+        before_balance = db.scalar(select(PointsAccount.balance).where(PointsAccount.company_id == company_id))
+
+    _login(client, "franchise_employee_demo", "Employee123!")
+    employee = client.post(
+        f"/api/v1/v1.2/assignments/{assignment_id}/refuse",
+        json={"reason": "负责人外出，员工不能代表公司拒领"},
+    )
+    assert employee.status_code == 403
+    client.post("/api/v1/auth/logout")
+
+    _login(client, "franchise_demo", "Franchise123!")
+    blank_reason = client.post(
+        f"/api/v1/v1.2/assignments/{assignment_id}/refuse",
+        json={"reason": "   "},
+    )
+    assert blank_reason.status_code == 422
+
+    refused = client.post(
+        f"/api/v1/v1.2/assignments/{assignment_id}/refuse",
+        json={"reason": "服务范围临时不可承接"},
+    )
+    assert refused.status_code == 200, refused.text
+    data = refused.json()["data"]
+    assert data["status"] == AssignmentStatus.RELEASED.value
+    assert data["lead_status"] == LeadV12Status.READY_DISPATCH.value
+    assert data["release_reason"] == "REFUSED_CLAIM"
+
+    with factory() as db:
+        assignment = db.get(Assignment, assignment_id)
+        lead = db.get(Lead, lead_id)
+        assert assignment is not None and lead is not None
+        assert assignment.status == AssignmentStatus.RELEASED.value
+        assert assignment.claimed_at is None
+        assert lead.current_assignment_id is None
+        assert lead.status == LeadV12Status.READY_DISPATCH.value
+        assert db.scalar(select(PointsAccount.balance).where(PointsAccount.company_id == company_id)) == before_balance
+        assert db.scalar(
+            select(func.count(PointsLedger.id)).where(PointsLedger.business_id == assignment_id)
+        ) == 0
+        event = db.scalar(
+            select(AssignmentEvent).where(
+                AssignmentEvent.assignment_id == assignment_id,
+                AssignmentEvent.event_type == "V12_ASSIGNMENT_REFUSED",
+            )
+        )
+        assert event is not None
+        assert event.payload["reason"] == "服务范围临时不可承接"

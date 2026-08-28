@@ -62,7 +62,7 @@ def test_platform_lead_district_options_use_dom_nodes_not_html_injection() -> No
     assert ".innerHTML=platformSelectOptions" not in js
 
 
-def test_supplier_submission_goes_directly_to_telesales_assignment() -> None:
+def test_supplier_submission_routes_only_missing_location_to_telesales() -> None:
     source = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
     supplier_queue = source[
         source.index("const supplierRows") : source.index("const sourceOptions")
@@ -79,6 +79,8 @@ def test_supplier_submission_goes_directly_to_telesales_assignment() -> None:
     assert "pre_dispatch_reason" not in source
     assert "data-review=" not in source
     assert "信息不全并派发电销" in source
+    assert "资料完整的加盟商客资直接进入待派发池" in source
+    assert "加盟商来源会直接进入待电销核实" not in source
 
 
 def test_supplier_h5_supports_capability_upload_list_and_detail() -> None:
@@ -108,6 +110,15 @@ def test_supplier_h5_validates_before_creating_a_submission_draft() -> None:
     assert "data-supply-field" in js
     assert "aria-invalid" in js
     assert "normalizeSupplyPhone" in js
+    validation = js.split("function validateSupplySubmission", 1)[1].split(
+        "function showSupplyErrors", 1
+    )[0]
+    assert "errors.phone" in validation
+    assert "errors.consent_confirmed" in validation
+    assert "errors.customer_name" not in validation
+    assert "errors.city" not in validation
+    assert "errors.need_summary" not in validation
+    assert "暂不确定，提交后由电销补充" in js
 
 
 def test_admin_and_h5_share_the_same_budget_unit_conversion() -> None:
@@ -140,6 +151,78 @@ def test_supplier_h5_explains_operation_requested_rework_before_resubmission() -
     assert "根据运营说明补正" in source
     assert "PENDING_TELESALES_VERIFY" in source
     assert "PENDING_OPERATION_DISPOSITION" in source
+
+
+def test_platform_lead_ui_shows_creator_and_uses_controlled_correction_without_delete() -> None:
+    admin = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
+    router = Path("apps/api/src/routers/v12_lead_supply.py").read_text(encoding="utf-8")
+
+    assert "submitter_name" in admin
+    assert "data-platform-correction" in admin
+    assert "/correction" in admin
+    assert '@router.post("/platform/leads/{lead_id}/correction")' in router
+    assert "data-platform-delete" not in admin
+    assert 'id="platform-lead-township"' in admin
+    assert "platformTownships" in admin
+    assert "region_code:township?.code||district?.code||city?.code||null" in admin
+
+
+def test_platform_and_supplier_lead_forms_can_select_township_master_data() -> None:
+    admin = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
+    h5 = Path("apps/h5/public/v12-workbench.js").read_text(encoding="utf-8")
+
+    for source in (admin, h5):
+        assert "/master-data/regions?parent_code=" in source
+        assert "TOWNSHIP" in source
+    assert 'id="supply-township"' in h5
+    assert "loadSupplyTownships" in h5
+    assert "region_code:townshipCode||districtCode||cityCode" in h5
+
+
+def test_candidate_company_picker_uses_actionable_cards_instead_of_a_wide_table() -> None:
+    admin = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
+    css = Path("apps/admin/public/v12-operations.css").read_text(encoding="utf-8")
+    candidate_block = admin[admin.index("async function candidates") : admin.index("function dispatchOne")]
+
+    assert "ops-candidate-grid" in candidate_block
+    assert "ops-candidate-card" in candidate_block
+    assert "data-dispatch" in candidate_block
+    assert "table(['接收公司'" not in candidate_block
+    assert ".ops-candidate-grid" in css
+    assert ".ops-candidate-card" in css
+
+
+def test_operations_review_exposes_bounded_lead_csv_export() -> None:
+    admin = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
+
+    assert "/v1.2/reports/leads/export.csv?period=month&limit=2000" in admin
+    assert "source_kind=${encodeURIComponent(source)}" in admin
+    assert "导出近 30 天客资" in admin
+
+
+def test_operations_workbench_exposes_backup_password_and_return_record_fields() -> None:
+    source = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
+    returns_block = source[source.index("async function returns") : source.index("async function returnDetail")]
+
+    assert "设置备用登录密码" in source
+    assert "公众号登录之外的备用方式" in source
+    assert "AUTH_BACKUP_PASSWORD_SET" in source
+    assert "退回记录" in returns_block
+    assert "assignment_code" in returns_block
+    assert "customer_name" in returns_block
+    assert "phone_masked" in returns_block
+    assert "作废金额" not in source
+    assert "消费金额" not in source
+
+
+def test_franchise_has_standalone_return_record_and_business_report_entries() -> None:
+    source = Path("apps/h5/public/v12-workbench.js").read_text(encoding="utf-8")
+
+    assert "退回记录" in source
+    assert 'data-go="returns"' in source
+    assert "经营报表" in source
+    assert 'data-go="reports"' in source
+    assert "消耗积分" in source
 
 
 def test_supplier_workbench_uses_user_facing_reward_copy() -> None:

@@ -14,6 +14,7 @@ from ..core.time import as_utc
 from .notification_service import create_station_message, enqueue_outbox
 
 settings = get_settings()
+POINTS_WORKBENCH_DEEP_LINK = "/h5/v12-workbench.html?view=points"
 
 
 def get_or_create_account(db: Session, company_id: str) -> PointsAccount:
@@ -318,7 +319,7 @@ def run_low_points_warnings(
             scene="LOW_POINTS",
             title="积分余额不足提醒",
             body=f"当前积分为{int(account.balance)}，已低于预警值{resolved_threshold}，请联系平台完成线下充值。",
-            deep_link="/h5/#/points",
+            deep_link=POINTS_WORKBENCH_DEEP_LINK,
         )
         enqueue_outbox(
             db,
@@ -331,7 +332,7 @@ def run_low_points_warnings(
                 "user_id": company.primary_user_id,
                 "balance": int(account.balance),
                 "threshold": resolved_threshold,
-                "deep_link": "/h5/#/points",
+                "deep_link": POINTS_WORKBENCH_DEEP_LINK,
             },
         )
         warned += 1

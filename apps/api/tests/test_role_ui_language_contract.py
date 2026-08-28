@@ -99,7 +99,8 @@ def test_dispatch_messages_use_the_v12_assignment_detail_route() -> None:
 def test_unified_lead_review_explains_outcomes_without_security_or_process_jargon() -> None:
     source = _read(ADMIN, "v12-operations.js")
     assert "HMAC" not in source
-    assert "加盟商来源会直接进入待电销核实" in source
+    assert "资料完整的加盟商客资直接进入待派发池" in source
+    assert "缺少可派发地区时再分配电销核实" in source
     assert "运营处置电销结论" in source
 
 

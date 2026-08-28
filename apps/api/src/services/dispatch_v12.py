@@ -8,7 +8,7 @@ from threading import Lock
 from typing import Any
 
 from sqlalchemy import Index, and_, func, literal, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from ..core.config import get_settings
 from ..core.enums import ACTIVE_ASSIGNMENT_STATUSES, AssignmentStatus, PointsLedgerType
@@ -137,10 +137,16 @@ def _region_matches(db: Session, company_id: str, lead: Lead) -> bool:
 
 
 def _service_area_region_clause(lead_region_code: str):
-    parent_code = select(Region.parent_code).where(Region.code == lead_region_code).scalar_subquery()
+    parent = aliased(Region)
+    grandparent = aliased(Region)
+    parent_code = select(parent.parent_code).where(parent.code == lead_region_code).scalar_subquery()
+    grandparent_code = (
+        select(grandparent.parent_code).where(grandparent.code == parent_code).scalar_subquery()
+    )
     return or_(
         CompanyServiceAreaV12.region_code == lead_region_code,
         CompanyServiceAreaV12.region_code == parent_code,
+        CompanyServiceAreaV12.region_code == grandparent_code,
     )
 
 
@@ -828,6 +834,54 @@ def claim_assignment(
         phone=decrypt_text(lead.phone_encrypted),
         idempotent=False,
     )
+
+
+def refuse_pending_assignment(
+    db: Session,
+    *,
+    assignment_id: str,
+    company_id: str,
+    refused_by: str,
+    reason: str,
+) -> tuple[Assignment, Lead]:
+    assignment = db.scalar(
+        select(Assignment).where(Assignment.id == assignment_id).with_for_update()
+    )
+    if assignment is None:
+        raise AppError("ASSIGNMENT_NOT_FOUND", "派发单不存在", 404)
+    if assignment.company_id != company_id:
+        raise AppError("ASSIGNMENT_FORBIDDEN", "无权拒绝其他公司的派发单", 403)
+    if assignment.status != AssignmentStatus.PENDING_CLAIM.value:
+        raise AppError(
+            "ASSIGNMENT_NOT_REFUSABLE",
+            "仅待领取派发单可拒绝领取",
+            409,
+            {"status": assignment.status},
+        )
+    lead = get_dispatch_lead(db, assignment.lead_id, lock=True)
+    if lead.current_assignment_id != assignment.id or lead.status != LeadV12Status.DISPATCHED.value:
+        raise AppError("LEAD_ASSIGNMENT_CONFLICT", "客资与派发单状态不一致", 409)
+
+    now = datetime.now(timezone.utc)
+    assignment.status = AssignmentStatus.RELEASED.value
+    assignment.released_at = now
+    assignment.release_reason = "REFUSED_CLAIM"
+    lead.status = LeadV12Status.READY_DISPATCH.value
+    lead.current_assignment_id = None
+    db.add(
+        AssignmentEvent(
+            assignment_id=assignment.id,
+            event_type="V12_ASSIGNMENT_REFUSED",
+            actor_user_id=refused_by,
+            payload={
+                "lead_id": lead.id,
+                "company_id": company_id,
+                "reason": reason,
+            },
+        )
+    )
+    db.flush()
+    return assignment, lead
 
 
 def lead_pool_item(lead: Lead) -> dict[str, Any]:

@@ -436,15 +436,19 @@ def change_own_password(
     db: Annotated[Session, Depends(get_db)],
 ):
     user = db.scalar(select(User).where(User.id == principal.user_id).with_for_update())
-    _verify_current_password_or_audit(
-        db,
-        user=user,
-        password=body.current_password,
-        principal=principal,
-        action="AUTH_PASSWORD_CHANGE_FAILED",
-        request=request,
-    )
     assert user is not None
+    first_backup_password = not bool(user.password_hash)
+    if not first_backup_password:
+        if not body.current_password:
+            raise AppError("AUTH_CURRENT_PASSWORD_REQUIRED", "当前密码必填", 422)
+        _verify_current_password_or_audit(
+            db,
+            user=user,
+            password=body.current_password,
+            principal=principal,
+            action="AUTH_PASSWORD_CHANGE_FAILED",
+            request=request,
+        )
     try:
         validate_internal_password(body.new_password)
     except ValueError as exc:
@@ -456,11 +460,11 @@ def change_own_password(
     write_audit(
         db,
         principal=principal,
-        action="AUTH_PASSWORD_CHANGE",
+        action="AUTH_BACKUP_PASSWORD_SET" if first_backup_password else "AUTH_PASSWORD_CHANGE",
         resource_type="user",
         resource_id=user.id,
         before={"session_version": previous_session_version},
-        after={"session_version": user.session_version},
+        after={"session_version": user.session_version, "first_backup_password": first_backup_password},
         request_id=request.state.request_id,
         ip_address=_request_ip(request),
         user_agent=request.headers.get("user-agent"),
@@ -475,7 +479,7 @@ def change_own_password(
             user.company_id,
         ),
     )
-    return ok(request, message="密码已更新，其他登录会话已失效")
+    return ok(request, message="备用登录密码已设置" if first_backup_password else "密码已更新，其他登录会话已失效")
 
 
 @router.post("/change-username")
@@ -532,6 +536,7 @@ def me(request: Request, principal: CurrentPrincipal, db: Annotated[Session, Dep
             "id": principal.user_id,
             "display_name": principal.display_name,
             "username": user.username if user else None,
+            "has_password": bool(user and user.password_hash),
             "company_id": principal.company_id,
             "company_name": company.name if company else "合家美宅平台",
             "roles": sorted(principal.role_codes),

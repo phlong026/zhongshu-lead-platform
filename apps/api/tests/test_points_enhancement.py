@@ -73,8 +73,19 @@ def test_low_points_warning_is_deduplicated_per_company_per_day(db, monkeypatch)
     db.commit()
     assert first["warned"] == 1
     assert repeated_same_day["warned"] == 0
-    assert db.scalar(select(Notification).where(Notification.company_id == company.id, Notification.scene == "LOW_POINTS"))
-    assert db.scalar(select(NotificationOutbox).where(NotificationOutbox.aggregate_type == "points_account"))
+    notification = db.scalar(
+        select(Notification).where(
+            Notification.company_id == company.id,
+            Notification.scene == "LOW_POINTS",
+        )
+    )
+    outbox = db.scalar(
+        select(NotificationOutbox).where(NotificationOutbox.aggregate_type == "points_account")
+    )
+    assert notification is not None
+    assert notification.deep_link == "/h5/v12-workbench.html?view=points"
+    assert outbox is not None
+    assert outbox.payload["deep_link"] == "/h5/v12-workbench.html?view=points"
 
     change_points(
         db,
@@ -165,6 +176,8 @@ def test_manual_recharge_requires_explicit_confirmation_and_enqueues_notice(api_
         outbox = db.scalars(select(NotificationOutbox).where(NotificationOutbox.event_type == "POINTS_RECHARGED")).all()
         assert len(notifications) == 1
         assert len(outbox) == 1
+        assert notifications[0].deep_link == "/h5/v12-workbench.html?view=points"
+        assert outbox[0].payload["deep_link"] == "/h5/v12-workbench.html?view=points"
 
 
 def test_financial_writes_require_voucher_and_preserve_business_ledger_semantics(api_client):

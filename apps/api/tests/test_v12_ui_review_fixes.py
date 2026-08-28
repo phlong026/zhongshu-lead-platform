@@ -89,6 +89,19 @@ def test_supplier_h5_has_real_pagination_controls() -> None:
     assert "page_size:100" not in compact
 
 
+def test_dispatch_candidates_render_as_company_cards_not_table_rows() -> None:
+    js = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
+    css = Path("apps/admin/public/v12-operations.css").read_text(encoding="utf-8")
+    candidate_section = js[js.index("async function candidates") : js.index("function dispatchOne")]
+
+    assert "ops-candidate-card" in candidate_section
+    assert "ops-candidate-grid" in candidate_section
+    assert "candidateCard=x=>" in candidate_section
+    assert "table(['接收公司','是否可派','所需积分','可用积分','判断说明','操作']" not in candidate_section
+    assert ".ops-candidate-grid" in css
+    assert ".ops-candidate-card" in css
+
+
 def test_operation_workbench_uses_customer_location_and_business_readable_audit_details() -> None:
     js = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
 
