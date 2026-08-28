@@ -17,6 +17,7 @@ from ..schemas.points import ManualAdjustmentBody, PointsPackageBody, PriceRuleB
 from ..services.audit import write_audit
 from ..services.notification_service import create_station_message, enqueue_outbox
 from ..services.points_service import (
+    POINTS_WORKBENCH_DEEP_LINK,
     account_summary,
     change_points,
     ledger_to_dict,
@@ -206,7 +207,7 @@ def recharge(body: RechargeBody, request: Request, principal=Depends(require_per
             scene="POINTS_RECHARGED",
             title="积分充值到账",
             body=f"本次到账{ledger.delta}积分，当前余额{ledger.balance_after}积分。",
-            deep_link="/h5/#/points",
+            deep_link=POINTS_WORKBENCH_DEEP_LINK,
         )
         enqueue_outbox(
             db,
@@ -214,7 +215,7 @@ def recharge(body: RechargeBody, request: Request, principal=Depends(require_per
             event_type="POINTS_RECHARGED",
             aggregate_type="points_ledger",
             aggregate_id=ledger.id,
-            payload={"company_id": body.company_id, "user_id": company.primary_user_id if company else None, "deep_link": "/h5/#/points"},
+            payload={"company_id": body.company_id, "user_id": company.primary_user_id if company else None, "deep_link": POINTS_WORKBENCH_DEEP_LINK},
         )
         write_audit(db, principal=principal, action="POINTS_RECHARGE", resource_type="points_ledger", resource_id=ledger.id, company_id=body.company_id, after=ledger_to_dict(ledger), request_id=request.state.request_id)
     db.commit()

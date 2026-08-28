@@ -40,49 +40,53 @@ def test_v12_operations_exposes_company_detail_and_platform_configuration() -> N
     assert "company.profile.review" in js
     assert "data-company-detail" in js
     assert "data-company-lifecycle" in js
-    assert "删除测试主体" in js
+    assert "删除测试主体" not in js
     assert "confirmation_code" not in js
     assert "status:enabling?'ACTIVE':'DISABLED',reason" in js
     assert "负责人绑定" in js
     assert "接收客资" in js
     assert "提供客资" in js
     assert "新建加盟商主体" in js
-    assert "new-franchise-region-picker" in js
-    assert "new-franchise-region-panel" in js
-    assert "new-franchise-district-options" in js
-    assert "function renderDistrictOptions" in js
-    assert "districtOptions.innerHTML=districts.length" not in js
+    assert "function bindServiceRegionBuilder" in js
+    assert "${prefix}-selected-regions" in js
+    assert "bindServiceRegionBuilder('new-franchise',cities)" in js
+    assert "bindServiceRegionBuilder('company-service-area',cities,activeAreas)" in js
+    assert "添加整市" in js
+    assert "添加区县" in js
+    assert "添加乡镇" in js
+    assert "/master-data/regions?parent_code=" in js
     assert "province_code:province.code" in js
     assert "district_codes" in js
+    assert "region_codes" in js
     assert "serve_all_districts:false" in js
+    assert "/v1.2/admin/companies/${encodeURIComponent(company.id)}/service-areas" in js
+    assert "data-company-service-areas" in js
+    assert "const companyRecord={...company,...detail}" in js
+    assert "editCompany(companyRecord)" in js
+    assert "拒绝领取" in js
+    assert "发起退回" in js
+    assert "确认无效" in js
     assert "测试主体" in js
     assert "data-company-wechat-unbind" in js
-    assert "data-company-test-delete" in js
-    assert "data-company-mark-test" in js
+    assert "data-company-test-delete" not in js
+    assert "data-company-mark-test" not in js
     assert "data-company-enable" in js
     assert "/wechat-binding/unbind" in js
     assert "v12-operations.js?v=20260827-test-company-purge" in html
     assert "加盟商能力与服务区域审核申请" not in js
 
 
-def test_v12_operations_exposes_safe_company_lifecycle_actions() -> None:
+def test_v12_operations_exposes_non_destructive_company_lifecycle_actions() -> None:
     html = Path("apps/admin/public/v12-operations.html").read_text(encoding="utf-8")
     js = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
 
     assert "/wechat-binding/unbind" in js
-    assert "deleteTestCompany" in js
-    assert "companyLifecycleConfirmation" in js
-    assert "/mark-test" in js
-    assert "confirm_name" in js
-    assert "输入加盟商完整名称" in js
+    assert "deleteTestCompany" not in js
+    assert "data-company-delete" not in js
+    assert "api(`/companies/${encodeURIComponent(company.id)}`,{method:'DELETE'" not in js
     assert "停用只负责业务隔离" in js
     assert "解绑负责人微信" in js
-    assert "删除测试数据" in js
-    assert "积分账户、充值与积分流水" in js
-    assert "原成员账号会停用" in js
-    assert "确认永久删除" in js
-    delete_flow = js[js.index("function deleteTestCompany") : js.index("function configureCompanyCapability")]
-    assert delete_flow.count("method:'DELETE'") == 1
+    assert "已流转客资和业务历史会永久保留" in js
     assert "v12-operations.js?v=20260827-test-company-purge" in html
 
 

@@ -47,6 +47,7 @@ def build_v12_deep_link(target: str, business_id: str, *, admin: bool = False) -
         normalized = "notification"
     if normalized == "call":
         return "/h5/call/#/verify"
+    normalized = {"return": "returns", "reward": "rewards"}.get(normalized, normalized)
     root = "/admin/v12-operations.html" if admin else "/h5/v12-workbench.html"
     if admin:
         normalized = {"lead": "leads", "review": "leads"}.get(normalized, normalized)
@@ -267,28 +268,46 @@ def project_v12_notifications(
         lead = db.get(Lead, resource_id)
         if lead and lead.supplier_company_id:
             event_round = _lead_event_round(after, lead, timestamp_field="submitted_at")
+            needs_telesales = str(lead.status).upper() == "PENDING_TELESALES_VERIFY"
             emit_business_notification(
                 db,
                 event_key=f"v12:lead:{lead.id}:submitted:{event_round}",
                 event_type="V12_SUPPLIER_LEAD_SUBMITTED",
                 company_id=lead.supplier_company_id,
-                title="客资已进入电销核实",
-                body="平台已收到客资资料，电销核实与运营处置结果会通过消息通知。",
+                title="客资已进入电销核实" if needs_telesales else "客资已进入待派发池",
+                body=(
+                    "平台已收到客资资料，电销核实与运营处置结果会通过消息通知。"
+                    if needs_telesales
+                    else "手机号和授权已通过基础校验，平台会匹配候选接收公司。"
+                ),
                 target="lead",
                 business_id=lead.id,
                 business_ids={"lead_id": lead.id},
             )
-            emit_platform_role_notifications(
-                db,
-                event_key=f"v12:lead:{lead.id}:submitted:{event_round}:platform",
-                event_type="V12_SUPPLIER_LEAD_REVIEW_REQUIRED",
-                role_codes={"OPERATION", "SUPER_ADMIN"},
-                title="有新的加盟商客资待分配电销核实",
-                body="请分配电销人员核对客户意向、资料完整性和去重结果。",
-                target="telesales",
-                business_id=lead.id,
-                business_ids={"lead_id": lead.id},
-            )
+            if needs_telesales:
+                emit_platform_role_notifications(
+                    db,
+                    event_key=f"v12:lead:{lead.id}:submitted:{event_round}:platform",
+                    event_type="V12_SUPPLIER_LEAD_REVIEW_REQUIRED",
+                    role_codes={"OPERATION", "SUPER_ADMIN"},
+                    title="有新的加盟商客资待分配电销核实",
+                    body="请分配电销人员核对客户意向、资料完整性和服务所在地。",
+                    target="telesales",
+                    business_id=lead.id,
+                    business_ids={"lead_id": lead.id},
+                )
+            else:
+                emit_platform_role_notifications(
+                    db,
+                    event_key=f"v12:lead:{lead.id}:ready-dispatch:{event_round}:platform",
+                    event_type="V12_LEAD_DISPATCH_REQUIRED",
+                    role_codes={"OPERATION", "SUPER_ADMIN"},
+                    title="有新的加盟商客资待人工派发",
+                    body="请进入待派发池选择符合区域、能力、去重和积分条件的接收公司。",
+                    target="dispatch",
+                    business_id=lead.id,
+                    business_ids={"lead_id": lead.id},
+                )
         return
 
     if action == "V12_SUPPLIER_LEAD_REVIEW":

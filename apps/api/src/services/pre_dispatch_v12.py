@@ -347,5 +347,7 @@ def decide_pre_dispatch_disposition(
     lead.status = target.value
     lead.review_note = normalized_note
     lead.reviewed_at = _now()
+    task.status = VerificationTaskStatus.RELEASED.value
+    task.lock_version += 1
     db.flush()
     return lead

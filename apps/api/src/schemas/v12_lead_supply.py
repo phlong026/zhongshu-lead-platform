@@ -77,7 +77,7 @@ class SupplierReviewBody(BaseModel):
 
     @model_validator(mode="after")
     def require_telesales_assignment_before_supplier_dispatch(self) -> "SupplierReviewBody":
-        if self.decision in {"QUALIFIED", "APPROVE", "INFO_INCOMPLETE"}:
+        if self.decision == "INFO_INCOMPLETE":
             if not self.note:
                 raise ValueError("派发电销核实前必须填写初审说明")
             if not self.assignee_user_id or not self.pre_dispatch_reason:

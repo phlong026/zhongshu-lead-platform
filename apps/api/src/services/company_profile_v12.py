@@ -9,7 +9,7 @@ from ..core.errors import AppError
 from ..core.models import Company, CompanyCapability, CompanyServiceRegion, Region
 from ..core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12
 from ..core.v12_enums import CompanyLeadCapabilityCode
-from .company_service import default_receiver_categories
+from .company_service import default_receiver_categories, materialize_nationwide_regions
 
 
 VALID_CAPABILITIES = {item.value for item in CompanyLeadCapabilityCode}
@@ -269,20 +269,39 @@ def list_service_areas(db: Session, company_id: str) -> list[CompanyServiceAreaV
     )
 
 
-def _validate_region_hierarchy(regions: dict[str, Region], primary_city_code: str) -> None:
+def _validate_region_hierarchy(db: Session, regions: dict[str, Region], primary_city_code: str) -> None:
     primary = regions[primary_city_code]
     if primary.level != "CITY":
         raise AppError("PRIMARY_CITY_LEVEL_INVALID", "主要城市必须选择城市级地区", 422)
     invalid_codes: list[str] = []
     for code, region in regions.items():
-        if code == primary_city_code:
+        if region.level == "CITY":
             continue
-        if region.level != "DISTRICT" or region.parent_code != primary_city_code:
+        parent = regions.get(region.parent_code or "") or db.get(Region, region.parent_code)
+        if region.level == "DISTRICT" and parent and parent.active and parent.level == "CITY":
+            continue
+        if region.level == "TOWNSHIP":
+            grandparent = (
+                regions.get(parent.parent_code or "") or db.get(Region, parent.parent_code)
+                if parent and parent.parent_code
+                else None
+            )
+            if (
+                parent
+                and parent.active
+                and parent.level == "DISTRICT"
+                and grandparent
+                and grandparent.active
+                and grandparent.level == "CITY"
+            ):
+                continue
             invalid_codes.append(code)
+            continue
+        invalid_codes.append(code)
     if invalid_codes:
         raise AppError(
             "SERVICE_AREA_HIERARCHY_INVALID",
-            "服务区县必须隶属于所选主要城市",
+            "服务区域必须是有效的城市、区县或乡镇",
             422,
             {"region_codes": sorted(invalid_codes), "primary_city_code": primary_city_code},
         )
@@ -311,6 +330,8 @@ def replace_service_areas(
         raise AppError("PRIMARY_CITY_REQUIRED", "必须配置一个主要城市", 422)
     if primary_city_code not in cleaned:
         raise AppError("PRIMARY_CITY_INVALID", "主要城市必须包含在服务区域中", 422)
+    materialize_nationwide_regions(db, cleaned)
+    db.flush()
     regions = {
         region.code: region
         for region in db.scalars(select(Region).where(Region.code.in_(cleaned), Region.active.is_(True))).all()
@@ -318,7 +339,7 @@ def replace_service_areas(
     missing = sorted(set(cleaned) - set(regions))
     if missing:
         raise AppError("REGION_NOT_FOUND", "存在无效或停用的地区编码", 422, {"region_codes": missing})
-    _validate_region_hierarchy(regions, primary_city_code)
+    _validate_region_hierarchy(db, regions, primary_city_code)
 
     existing_items = list(
         db.scalars(
@@ -372,7 +393,12 @@ def replace_service_areas(
         elif removal_pending and item.active:
             result.append(item)
         else:
-            db.delete(item)
+            if item.review_status == "PENDING" and not item.active:
+                item.review_status = "REJECTED"
+                item.review_note = "公司已撤回该服务区域申请"
+                item.reviewed_by = None
+                item.reviewed_at = datetime.now(timezone.utc)
+            result.append(item)
 
     db.flush()
     return sorted(result, key=lambda item: (not item.is_primary_city, item.region_code))

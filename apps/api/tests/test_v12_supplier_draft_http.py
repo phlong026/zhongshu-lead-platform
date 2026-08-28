@@ -2,7 +2,16 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
-from apps.api.src.core.models import AuditLog, Company, Lead, Notification, NotificationOutbox, User
+from apps.api.src.core.models import (
+    AuditLog,
+    Company,
+    Lead,
+    Notification,
+    NotificationOutbox,
+    Region,
+    User,
+    VerificationTask,
+)
 from apps.api.src.core.models_v12 import CompanyLeadCapability
 from apps.api.src.core.security import encrypt_text, hash_phone
 from apps.api.src.core.v12_enums import LeadSourceKind, LeadV12Status, VerificationTaskType
@@ -60,6 +69,87 @@ def _valid_lead_body(phone: str) -> dict:
         "need_summary": "计划建设两层自住房，近期确认设计方案",
         "consent_confirmed": True,
     }
+
+
+def test_platform_lead_exposes_creator_and_supports_controlled_pre_dispatch_correction(api_client) -> None:
+    client, _factory = api_client
+    operation = _login(client, "operation", "Operation123!")
+    me = _data(client.get("/api/v1/auth/me", headers=operation))
+    created = _data(
+        client.post(
+            "/api/v1/v1.2/platform/leads",
+            headers=operation,
+            json=_valid_lead_body("13900139039"),
+        )
+    )
+    submitted = _data(
+        client.post(
+            f"/api/v1/v1.2/platform/leads/{created['id']}/submit",
+            headers=operation,
+        )
+    )
+    assert submitted["lead"]["status"] == LeadV12Status.READY_DISPATCH.value
+
+    queue = _data(
+        client.get(
+            "/api/v1/v1.2/platform/leads?page=1&page_size=100",
+            headers=operation,
+        )
+    )
+    item = next(row for row in queue["items"] if row["id"] == created["id"])
+    assert item["submitter_user_id"] == me["id"]
+    assert item["submitter_name"] == me["display_name"]
+
+    correction = _data(
+        client.post(
+            f"/api/v1/v1.2/platform/leads/{created['id']}/correction",
+            headers=operation,
+        )
+    )
+    assert correction["status"] == LeadV12Status.DRAFT.value
+    assert correction["submitter_name"] == me["display_name"]
+
+
+def test_platform_lead_can_submit_a_township_region_and_keeps_its_hierarchy(api_client) -> None:
+    client, factory = api_client
+    with factory() as db:
+        db.add(
+            Region(
+                code="310115001",
+                name="花木街道",
+                level="TOWNSHIP",
+                parent_code="310115",
+                aliases=["花木街道"],
+                active=True,
+            )
+        )
+        db.commit()
+
+    operation = _login(client, "operation", "Operation123!")
+    body = _valid_lead_body("13900139040")
+    body.update(
+        {
+            "city": "不应信任的城市文案",
+            "district": "不应信任的区县文案",
+            "region_code": "310115001",
+        }
+    )
+    created = _data(
+        client.post("/api/v1/v1.2/platform/leads", headers=operation, json=body)
+    )
+    submitted = _data(
+        client.post(
+            f"/api/v1/v1.2/platform/leads/{created['id']}/submit",
+            headers=operation,
+        )
+    )["lead"]
+
+    assert submitted["status"] == LeadV12Status.READY_DISPATCH.value
+    assert submitted["city"] == "上海市"
+    assert submitted["district"] == "浦东新区"
+    assert submitted["region_code"] == "310115001"
+    assert submitted["region_level"] == "TOWNSHIP"
+    assert submitted["region_name"] == "花木街道"
 
 
 def _lead(
@@ -315,7 +405,12 @@ def test_rejected_supplier_lead_can_revise_and_resubmit_over_http(api_client) ->
         client.post(
             "/api/v1/v1.2/supplier/leads",
             headers=supplier,
-            json=_valid_lead_body("+86 139-0013-9031"),
+            json={
+                "customer_name": "接口验收客户",
+                "phone": "+86 139-0013-9031",
+                "need_summary": "计划建设两层自住房，待补充具体地区",
+                "consent_confirmed": True,
+            },
         )
     )
     submitted = _data(
@@ -342,7 +437,11 @@ def test_rejected_supplier_lead_can_revise_and_resubmit_over_http(api_client) ->
         client.patch(
             f"/api/v1/v1.2/supplier/leads/{lead['id']}",
             headers=supplier,
-            json={"need_summary": "已补充施工时间、地点和预算安排"},
+            json={
+                "city": "上海市",
+                "region_code": "310000",
+                "need_summary": "已补充施工时间、地点和预算安排",
+            },
         )
     )
     resubmitted = _data(
@@ -351,8 +450,8 @@ def test_rejected_supplier_lead_can_revise_and_resubmit_over_http(api_client) ->
             headers=supplier,
         )
     )
-    assert resubmitted["lead"]["status"] == "PENDING_TELESALES_VERIFY"
-    assert resubmitted["lead"]["review_status"] == "PENDING"
+    assert resubmitted["lead"]["status"] == "READY_DISPATCH"
+    assert resubmitted["lead"]["review_status"] == "APPROVED"
     assert resubmitted["lead"]["review_note"] is None
 
     blocked = client.post(
@@ -361,9 +460,6 @@ def test_rejected_supplier_lead_can_revise_and_resubmit_over_http(api_client) ->
     )
     assert blocked.status_code == 409
     assert blocked.json()["code"] == "LEAD_REVISION_NOT_ALLOWED"
-
-    rejected_again = close_after_telesales_verification("补正后仍缺少可核验的客户意向说明")
-    assert rejected_again["status"] == "INVALID"
 
     with factory() as db:
         audit = db.scalar(
@@ -383,7 +479,10 @@ def test_rejected_supplier_lead_can_revise_and_resubmit_over_http(api_client) ->
             .order_by(AuditLog.created_at.asc())
         ).all()
         assert len(submissions) == 2
-        assert submissions[0].after_json["submission_snapshot"]["need_summary"] == _valid_lead_body("0")["need_summary"]
+        assert (
+            submissions[0].after_json["submission_snapshot"]["need_summary"]
+            == "计划建设两层自住房，待补充具体地区"
+        )
         assert submissions[1].after_json["submission_snapshot"]["need_summary"] == "已补充施工时间、地点和预算安排"
         submitted_notifications = db.scalars(
             select(Notification).where(
@@ -404,7 +503,7 @@ def test_rejected_supplier_lead_can_revise_and_resubmit_over_http(api_client) ->
             )
         ).all()
         assert len(submitted_notifications) == 2
-        assert len(rejected_notifications) == 2
+        assert len(rejected_notifications) == 1
         assert len(submission_outboxes) == 2
         assert len({item.event_key for item in submission_outboxes}) == 2
 
@@ -427,6 +526,9 @@ def test_supplier_initial_review_can_require_assigned_telesales_verification(api
     supplier = _login(client, "franchise_demo", "Franchise123!")
     operation = _login(client, "operation", "Operation123!")
     initial_body = _valid_lead_body("13900139032")
+    initial_body.pop("city", None)
+    initial_body.pop("district", None)
+    initial_body.pop("region_code", None)
     lead = _data(
         client.post(
             "/api/v1/v1.2/supplier/leads",
@@ -467,7 +569,7 @@ def test_supplier_initial_review_can_require_assigned_telesales_verification(api
         assert task_audit is not None
 
 
-def test_supplier_qualified_submission_still_requires_telesales_before_dispatch(api_client) -> None:
+def test_supplier_submission_missing_dispatch_region_requires_telesales_before_dispatch(api_client) -> None:
     client, factory = api_client
     _approve_supplier_capability(factory)
     with factory() as db:
@@ -483,7 +585,12 @@ def test_supplier_qualified_submission_still_requires_telesales_before_dispatch(
         client.post(
             "/api/v1/v1.2/supplier/leads",
             headers=supplier,
-            json=_valid_lead_body("13900139038"),
+            json={
+                **_valid_lead_body("13900139038"),
+                "city": None,
+                "district": None,
+                "region_code": None,
+            },
         )
     )
     submitted = _data(client.post(f"/api/v1/v1.2/supplier/leads/{lead['id']}/submit", headers=supplier))
@@ -511,6 +618,48 @@ def test_supplier_qualified_submission_still_requires_telesales_before_dispatch(
     assert assigned["assignee_user_id"] == telesales_id
 
 
+def test_legacy_pending_supplier_lead_can_be_qualified_without_telesales_assignment(api_client) -> None:
+    client, factory = api_client
+    _approve_supplier_capability(factory)
+    supplier = _login(client, "franchise_demo", "Franchise123!")
+    operation = _login(client, "operation", "Operation123!")
+    lead = _data(
+        client.post(
+            "/api/v1/v1.2/supplier/leads",
+            headers=supplier,
+            json=_valid_lead_body("13900139040"),
+        )
+    )
+    _data(
+        client.post(
+            f"/api/v1/v1.2/supplier/leads/{lead['id']}/submit",
+            headers=supplier,
+        )
+    )
+    with factory() as db:
+        stored = db.get(Lead, lead["id"])
+        assert stored is not None
+        stored.status = LeadV12Status.PENDING_REVIEW.value
+        stored.review_status = "PENDING"
+        db.commit()
+
+    reviewed = _data(
+        client.post(
+            f"/api/v1/v1.2/admin/supplier-leads/{lead['id']}/review",
+            headers=operation,
+            json={"decision": "QUALIFIED"},
+        )
+    )
+
+    assert reviewed["lead"]["status"] == LeadV12Status.READY_DISPATCH.value
+    assert reviewed["lead"]["review_status"] == "APPROVED"
+    assert reviewed["task"] is None
+    with factory() as db:
+        assert db.scalar(
+            select(VerificationTask).where(VerificationTask.lead_id == lead["id"])
+        ) is None
+
+
 def test_supplier_approval_notification_keys_fit_outbox_limit(api_client) -> None:
     client, factory = api_client
     _approve_supplier_capability(factory)
@@ -526,7 +675,12 @@ def test_supplier_approval_notification_keys_fit_outbox_limit(api_client) -> Non
         client.post(
             "/api/v1/v1.2/supplier/leads",
             headers=supplier,
-            json=_valid_lead_body("13900139033"),
+            json={
+                **_valid_lead_body("13900139033"),
+                "city": None,
+                "district": None,
+                "region_code": None,
+            },
         )
     )
     _data(
@@ -625,6 +779,19 @@ def test_platform_draft_can_enter_telesales_then_return_to_operation_rework(api_
         )
     )
     assert disposition["status"] == LeadV12Status.DRAFT.value
+
+    with factory() as db:
+        completed_task = db.get(VerificationTask, assigned["id"])
+        assert completed_task is not None
+        assert completed_task.status == "RELEASED"
+
+    open_tasks = _data(
+        client.get(
+            "/api/v1/v1.2/pre-dispatch-verifications/tasks?page=1&page_size=100",
+            headers=operation,
+        )
+    )
+    assert assigned["id"] not in {item["id"] for item in open_tasks["items"]}
 
     reworked = _data(
         client.patch(

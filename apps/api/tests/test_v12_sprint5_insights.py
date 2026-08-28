@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+from io import StringIO
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import event, func, select
@@ -427,6 +429,269 @@ def test_franchise_has_company_report_but_not_platform_overview(api_client):
 
     overview = client.get("/api/v1/v1.2/reports/overview")
     assert overview.status_code == 403
+
+
+def test_own_report_owner_aggregates_company_while_employee_only_sees_self(api_client):
+    client, factory = api_client
+    now = datetime.now(timezone.utc)
+    with factory() as db:
+        company = db.scalar(select(Company).where(Company.code == "SH-DEMO"))
+        operation = db.scalar(select(User).where(User.username == "operation"))
+        owner = db.scalar(select(User).where(User.username == "franchise_demo"))
+        employee = db.scalar(select(User).where(User.username == "franchise_employee_demo"))
+        assert company is not None and operation is not None and owner is not None and employee is not None
+        account = db.scalar(select(PointsAccount).where(PointsAccount.company_id == company.id))
+        assert account is not None
+        owner_lead = _dashboard_lead(name="负责人录入", created_at=now)
+        owner_lead.supplier_company_id = company.id
+        owner_lead.submitter_user_id = owner.id
+        employee_lead = _dashboard_lead(name="员工录入", created_at=now)
+        employee_lead.supplier_company_id = company.id
+        employee_lead.submitter_user_id = employee.id
+        outsider_lead = _dashboard_lead(name="外部提供", created_at=now)
+        refused_lead = _dashboard_lead(name="拒绝领取", created_at=now)
+        expired_lead = _dashboard_lead(name="逾期未领取", created_at=now)
+        returned_lead = _dashboard_lead(name="退回无效", created_at=now)
+        db.add_all([owner_lead, employee_lead, outsider_lead, refused_lead, expired_lead, returned_lead])
+        db.flush()
+        employee_assignment = Assignment(
+            lead_id=outsider_lead.id,
+            company_id=company.id,
+            receiver_company_id=company.id,
+            status="CLAIMED",
+            points_price=100,
+            claim_points=100,
+            assigned_by=operation.id,
+            claimed_at=now,
+            internal_assignee_user_id=employee.id,
+        )
+        owner_assignment = Assignment(
+            lead_id=owner_lead.id,
+            company_id=company.id,
+            receiver_company_id=company.id,
+            status="CLAIMED",
+            points_price=200,
+            claim_points=200,
+            assigned_by=operation.id,
+            claimed_at=now,
+        )
+        refused_assignment = Assignment(
+            lead_id=refused_lead.id,
+            company_id=company.id,
+            receiver_company_id=company.id,
+            status="RELEASED",
+            points_price=100,
+            claim_points=100,
+            assigned_by=operation.id,
+            released_at=now,
+            release_reason="REFUSED_CLAIM",
+        )
+        expired_assignment = Assignment(
+            lead_id=expired_lead.id,
+            company_id=company.id,
+            receiver_company_id=company.id,
+            status="EXPIRED",
+            points_price=100,
+            claim_points=100,
+            assigned_by=operation.id,
+            released_at=now,
+            release_reason="CLAIM_TIMEOUT",
+        )
+        returned_assignment = Assignment(
+            lead_id=returned_lead.id,
+            company_id=company.id,
+            receiver_company_id=company.id,
+            status="RETURNED",
+            points_price=100,
+            claim_points=100,
+            assigned_by=operation.id,
+            claimed_at=now,
+        )
+        db.add_all(
+            [employee_assignment, owner_assignment, refused_assignment, expired_assignment, returned_assignment]
+        )
+        db.flush()
+        db.add(
+            ReturnRequest(
+                assignment_id=returned_assignment.id,
+                lead_id=returned_lead.id,
+                company_id=company.id,
+                reason_code="INVALID_PHONE",
+                description="确认无效",
+                status="APPROVED",
+                submitted_by=owner.id,
+                submitted_at=now,
+                reviewed_at=now,
+            )
+        )
+        db.add_all(
+            [
+                PointsLedger(
+                    account_id=account.id,
+                    company_id=company.id,
+                    ledger_type="CLAIM",
+                    delta=-100,
+                    balance_after=900,
+                    business_type="ASSIGNMENT",
+                    business_id=employee_assignment.id,
+                    idempotency_key="own-report-employee-claim",
+                    created_by=owner.id,
+                    created_at=now,
+                ),
+                PointsLedger(
+                    account_id=account.id,
+                    company_id=company.id,
+                    ledger_type="CLAIM",
+                    delta=-200,
+                    balance_after=700,
+                    business_type="ASSIGNMENT",
+                    business_id=owner_assignment.id,
+                    idempotency_key="own-report-owner-claim",
+                    created_by=owner.id,
+                    created_at=now,
+                ),
+            ]
+        )
+        db.commit()
+
+    login(client, "franchise_demo", "Franchise123!")
+    owner_report = client.get("/api/v1/v1.2/reports/own?period=month")
+    assert owner_report.status_code == 200, owner_report.text
+    owner_data = owner_report.json()["data"]
+    assert owner_data["scope"] == "company"
+    assert owner_data["supplier_leads"]["total"] >= 2
+    assert owner_data["received_assignments"]["total"] >= 5
+    assert owner_data["exception_breakdown"]["refused_claim"] == 1
+    assert owner_data["exception_breakdown"]["return_requested"] >= 1
+    assert owner_data["exception_breakdown"]["confirmed_invalid"] >= 1
+    assert owner_data["points"]["consumed_points"] >= 300
+    client.post("/api/v1/auth/logout")
+
+    login(client, "franchise_employee_demo", "Employee123!")
+    employee_report = client.get("/api/v1/v1.2/reports/own?period=month")
+    assert employee_report.status_code == 200, employee_report.text
+    employee_data = employee_report.json()["data"]
+    assert employee_data["scope"] == "employee"
+    assert employee_data["supplier_leads"]["by_status"].get("READY_DISPATCH") == 1
+    assert employee_data["received_assignments"]["by_status"].get("CLAIMED") == 1
+    assert employee_data["exception_breakdown"]["refused_claim"] == 0
+    assert employee_data["exception_breakdown"]["confirmed_invalid"] == 0
+    assert employee_data["points"]["consumed_points"] == 100
+    client.post("/api/v1/auth/logout")
+
+    login(client, "operation", "Operation123!")
+    companies = client.get("/api/v1/companies?page=1&page_size=20")
+    assert companies.status_code == 200, companies.text
+    company_row = next(item for item in companies.json()["data"]["items"] if item["id"] == company.id)
+    assert {"provided", "received", "exception_breakdown"} <= set(company_row)
+    assert company_row["provided"]["total"] >= 2
+    assert company_row["received"]["total"] >= 5
+    assert company_row["exception_breakdown"]["refused_claim"] == 1
+    assert company_row["exception_breakdown"]["return_requested"] >= 1
+    assert company_row["exception_breakdown"]["confirmed_invalid"] >= 1
+
+
+def test_operation_can_export_bounded_lead_csv_with_refusal_and_return_columns(api_client):
+    client, factory = api_client
+    now = datetime.now(timezone.utc)
+    dangerous_name = '=HYPERLINK("https://example.test","CSV导出客户")'
+    with factory() as db:
+        company = db.scalar(select(Company).where(Company.code == "SH-DEMO"))
+        operation = db.scalar(select(User).where(User.username == "operation"))
+        owner = db.scalar(select(User).where(User.username == "franchise_demo"))
+        assert company is not None and operation is not None and owner is not None
+        lead = _dashboard_lead(name=dangerous_name, created_at=now)
+        lead.source_kind = "PLATFORM_MANUAL"
+        lead.source_channel = "\t+运营手工"
+        lead.submitter_user_id = operation.id
+        lead.review_status = "APPROVED"
+        lead.current_follow_status = "RETURN_PENDING"
+        db.add(lead)
+        db.flush()
+        lead_id = lead.id
+        assignment = Assignment(
+            lead_id=lead.id,
+            company_id=company.id,
+            receiver_company_id=company.id,
+            status="RELEASED",
+            points_price=100,
+            claim_points=100,
+            assigned_by=operation.id,
+            released_at=now,
+            release_reason="REFUSED_CLAIM",
+        )
+        db.add(assignment)
+        db.flush()
+        return_request = ReturnRequest(
+            assignment_id=assignment.id,
+            lead_id=lead.id,
+            company_id=company.id,
+            reason_code="INVALID_PHONE",
+            description="号码无效",
+            status="SUBMITTED",
+            submitted_by=owner.id,
+            submitted_at=now,
+        )
+        db.add(return_request)
+        db.flush()
+        assignment_id = assignment.id
+        return_id = return_request.id
+        company_id = company.id
+        db.commit()
+
+    login(client, "operation", "Operation123!")
+    response = client.get(
+        "/api/v1/v1.2/reports/leads/export.csv",
+        params={
+            "period": "month",
+            "limit": 200,
+            "source_kind": "PLATFORM_MANUAL",
+            "receiver_company_id": company_id,
+            "assignment_status": "RELEASED",
+            "return_status": "SUBMITTED",
+            "lead_status": "READY_DISPATCH",
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("text/csv")
+    rows = list(csv.DictReader(StringIO(response.text)))
+    row = next(item for item in rows if item["lead_id"] == lead_id)
+    assert {
+        "lead_source",
+        "source_kind",
+        "creator_name",
+        "supplier_company",
+        "receiver_company",
+        "receiver_company_id",
+        "assignment_id",
+        "assignment_status",
+        "assigned_at",
+        "refusal_reason",
+        "return_id",
+        "return_status",
+        "return_submitted_at",
+        "review_status",
+        "current_follow_status",
+        "processing_outcome",
+        "last_handled_at",
+    } <= set(row)
+    assert row["customer_name"] == f"'{dangerous_name}"
+    assert row["lead_source"] == "'\t+运营手工"
+    assert row["source_kind"] == "PLATFORM_MANUAL"
+    assert row["creator_name"] == "运营管理员"
+    assert row["receiver_company"] == "上海合家美宅加盟服务中心"
+    assert row["receiver_company_id"] == company_id
+    assert row["assignment_id"] == assignment_id
+    assert row["assignment_status"] == "RELEASED"
+    assert row["refusal_reason"] == "REFUSED_CLAIM"
+    assert row["return_id"] == return_id
+    assert row["return_status"] == "SUBMITTED"
+    assert row["review_status"] == "APPROVED"
+    assert row["current_follow_status"] == "RETURN_PENDING"
+    assert row["processing_outcome"] == "RETURN_PENDING"
+    assert row["assigned_at"]
+    assert row["return_submitted_at"]
+    assert row["last_handled_at"]
 
 
 def test_trace_returns_not_found_for_unknown_business_id(api_client):

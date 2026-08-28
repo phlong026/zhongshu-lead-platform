@@ -218,7 +218,7 @@ def test_unbind_releases_wechat_and_allows_new_company_binding(api_client) -> No
         assert audit.metadata_json["reason"] == "负责人改签新公司"
 
 
-def test_delete_removes_disabled_test_company_and_invite_delivery(api_client) -> None:
+def test_delete_endpoint_does_not_remove_disabled_test_company_or_binding(api_client) -> None:
     client, factory = api_client
     operation = _login(client, "operation", "Operation123!")
     company_id = _create_company(
@@ -242,35 +242,23 @@ def test_delete_removes_disabled_test_company_and_invite_delivery(api_client) ->
         headers=operation,
         json={"confirm_name": "可删除测试主体", "reason": "清理历史联测数据"},
     )
-    assert response.status_code == 200, response.text
+    assert response.status_code == 405, response.text
 
     with factory() as db:
-        assert db.get(Company, company_id) is None
+        assert db.get(Company, company_id) is not None
         assert db.scalar(
             select(WechatIdentity).where(WechatIdentity.openid == "openid-delete-test")
-        ) is None
+        ) is not None
         owner = db.get(User, owner_user_id)
         assert owner is not None
-        assert owner.status == "DISABLED"
-        assert owner.company_id is None
+        assert owner.company_id == company_id
         audit = db.scalar(
             select(AuditLog).where(
                 AuditLog.action == "COMPANY_TEST_DELETE",
                 AuditLog.resource_id == company_id,
             )
         )
-        assert audit is not None
-        assert audit.before_json["name"] == "可删除测试主体"
-        assert audit.metadata_json["reason"] == "清理历史联测数据"
-        invite_outboxes = list(
-            db.scalars(
-                select(NotificationOutbox).where(
-                    NotificationOutbox.aggregate_type == "invite",
-                    NotificationOutbox.payload["company_id"].as_string() == company_id,
-                )
-            ).all()
-        )
-        assert invite_outboxes == []
+        assert audit is None
 
 
 def test_existing_zero_business_company_requires_superadmin_to_mark_as_test(api_client) -> None:
@@ -312,7 +300,7 @@ def test_existing_zero_business_company_requires_superadmin_to_mark_as_test(api_
         assert audit.metadata_json["reason"] == "清理历史联测数据"
 
 
-def test_superadmin_can_mark_and_delete_historical_test_company_with_points(api_client) -> None:
+def test_superadmin_can_mark_but_cannot_delete_historical_test_company_with_points(api_client) -> None:
     client, factory = api_client
     admin = _login(client, "admin", "Admin123!")
     company_id = _create_company(
@@ -353,10 +341,10 @@ def test_superadmin_can_mark_and_delete_historical_test_company_with_points(api_
         headers=admin,
         json={"confirm_name": "历史有积分联测主体", "reason": "清理历史联测数据"},
     )
-    assert deleted.status_code == 200, deleted.text
+    assert deleted.status_code == 405, deleted.text
     with factory() as db:
-        assert db.get(Company, company_id) is None
-        assert db.scalar(select(PointsLedger).where(PointsLedger.company_id == company_id)) is None
+        assert db.get(Company, company_id) is not None
+        assert db.scalar(select(PointsLedger).where(PointsLedger.company_id == company_id)) is not None
 
 
 def test_historical_company_with_platform_assignment_cannot_be_marked_as_test(api_client) -> None:
@@ -453,8 +441,7 @@ def test_test_supplier_with_lead_dispatched_to_another_company_cannot_be_deleted
         headers=admin,
         json={"confirm_name": "跨主体供资测试方", "reason": "验证跨主体保护"},
     )
-    assert response.status_code == 409, response.text
-    assert response.json()["code"] == "COMPANY_TEST_DATA_CROSS_BUSINESS_BLOCKED"
+    assert response.status_code == 405, response.text
 
 
 def test_test_company_with_return_or_followup_on_external_assignment_cannot_be_deleted(
@@ -527,8 +514,7 @@ def test_test_company_with_return_or_followup_on_external_assignment_cannot_be_d
         headers=admin,
         json={"confirm_name": "跨主体退回测试方", "reason": "验证跨主体保护"},
     )
-    assert response.status_code == 409, response.text
-    assert response.json()["code"] == "COMPANY_TEST_DATA_CROSS_BUSINESS_BLOCKED"
+    assert response.status_code == 405, response.text
 
 
 def test_test_marker_cannot_be_changed_through_general_company_update(api_client) -> None:
@@ -584,40 +570,9 @@ def test_company_status_change_requires_an_auditable_reason(api_client) -> None:
     assert enabled_without_reason.status_code == 422, enabled_without_reason.text
 
 
-def test_delete_rejects_normal_company_but_purges_test_company_points_history(api_client) -> None:
+def test_company_delete_endpoint_is_not_exposed_and_points_history_is_preserved(api_client) -> None:
     client, factory = api_client
     admin = _login(client, "admin", "Admin123!")
-    active_test_id = _create_company(
-        client,
-        admin,
-        name="未停用测试主体",
-        is_test=True,
-    )
-    active_response = client.request(
-        "DELETE",
-        f"/api/v1/companies/{active_test_id}",
-        headers=admin,
-        json={"confirm_name": "未停用测试主体", "reason": "尝试跳过停用"},
-    )
-    assert active_response.status_code == 409, active_response.text
-    assert active_response.json()["code"] == "COMPANY_MUST_BE_DISABLED"
-
-    normal_id = _create_company(
-        client,
-        admin,
-        name="正常加盟商不可删",
-        is_test=False,
-    )
-    _disable_company(client, admin, normal_id)
-    normal_response = client.request(
-        "DELETE",
-        f"/api/v1/companies/{normal_id}",
-        headers=admin,
-        json={"confirm_name": "正常加盟商不可删", "reason": "尝试清理正常主体"},
-    )
-    assert normal_response.status_code == 409, normal_response.text
-    assert normal_response.json()["code"] == "COMPANY_DELETE_TEST_ONLY"
-
     test_id = _create_company(
         client,
         admin,
@@ -651,25 +606,15 @@ def test_delete_rejects_normal_company_but_purges_test_company_points_history(ap
         headers=admin,
         json={"confirm_name": "有积分流水测试主体", "reason": "尝试清理有业务数据"},
     )
-    assert deleted_response.status_code == 200, deleted_response.text
-
-    finance = client.get(
-        "/api/v1/v1.2/reports/finance-dashboard?days=30",
-        headers=admin,
-    )
-    assert finance.status_code == 200, finance.text
-    assert all(
-        item["company_id"] != test_id
-        for item in finance.json()["data"]["recharge"]["recent_records"]
-    )
+    assert deleted_response.status_code == 405, deleted_response.text
 
     with factory() as db:
-        assert db.get(Company, test_id) is None
-        assert db.scalar(select(PointsAccount).where(PointsAccount.company_id == test_id)) is None
-        assert db.scalar(select(PointsLedger).where(PointsLedger.company_id == test_id)) is None
+        assert db.get(Company, test_id) is not None
+        assert db.scalar(select(PointsAccount).where(PointsAccount.company_id == test_id)) is not None
+        assert db.scalar(select(PointsLedger).where(PointsLedger.company_id == test_id)) is not None
 
 
-def test_delete_purges_self_contained_test_company_business_history(api_client) -> None:
+def test_delete_preserves_self_contained_test_company_business_history(api_client) -> None:
     client, factory = api_client
     admin = _login(client, "admin", "Admin123!")
     company_id = _create_company(
@@ -809,30 +754,30 @@ def test_delete_purges_self_contained_test_company_business_history(api_client) 
         headers=admin,
         json={"confirm_name": "全量清理测试主体", "reason": "清理完整联测数据"},
     )
-    assert response.status_code == 200, response.text
+    assert response.status_code == 405, response.text
 
     with factory() as db:
-        assert db.get(Company, company_id) is None
-        assert db.scalar(select(Lead).where(Lead.supplier_company_id == company_id)) is None
-        assert db.scalar(select(Assignment).where(Assignment.company_id == company_id)) is None
-        assert db.scalar(select(FollowUp).where(FollowUp.company_id == company_id)) is None
-        assert db.scalar(select(ReturnRequest).where(ReturnRequest.company_id == company_id)) is None
+        assert db.get(Company, company_id) is not None
+        assert db.scalar(select(Lead).where(Lead.supplier_company_id == company_id)) is not None
+        assert db.scalar(select(Assignment).where(Assignment.company_id == company_id)) is not None
+        assert db.scalar(select(FollowUp).where(FollowUp.company_id == company_id)) is not None
+        assert db.scalar(select(ReturnRequest).where(ReturnRequest.company_id == company_id)) is not None
         assert db.scalar(
             select(SupplierLeadReward).where(
                 SupplierLeadReward.supplier_company_id == company_id
             )
-        ) is None
-        assert db.scalar(select(PointsLedger).where(PointsLedger.company_id == company_id)) is None
-        assert db.scalar(select(PointsAccount).where(PointsAccount.company_id == company_id)) is None
-        assert db.get(Notification, platform_notification_id) is None
+        ) is not None
+        assert db.scalar(select(PointsLedger).where(PointsLedger.company_id == company_id)) is not None
+        assert db.scalar(select(PointsAccount).where(PointsAccount.company_id == company_id)) is not None
+        assert db.get(Notification, platform_notification_id) is not None
         assert db.scalar(
             select(NotificationOutbox).where(
                 NotificationOutbox.aggregate_id == company_id
             )
-        ) is None
+        ) is not None
 
 
-def test_delete_purges_test_company_account_application_history(api_client) -> None:
+def test_company_delete_endpoint_preserves_account_application_history(api_client) -> None:
     client, factory = api_client
     admin = _login(client, "admin", "Admin123!")
     company_id = _create_company(
@@ -865,14 +810,14 @@ def test_delete_purges_test_company_account_application_history(api_client) -> N
         headers=admin,
         json={"confirm_name": "有账号申请的测试主体", "reason": "尝试清理申请历史"},
     )
-    assert response.status_code == 200, response.text
+    assert response.status_code == 405, response.text
     with factory() as db:
-        assert db.get(Company, company_id) is None
+        assert db.get(Company, company_id) is not None
         assert db.scalar(
             select(CompanyAccountRequest).where(
                 CompanyAccountRequest.company_id == company_id
             )
-        ) is None
+        ) is not None
 
 
 def test_company_lifecycle_mutations_require_platform_permission(api_client) -> None:

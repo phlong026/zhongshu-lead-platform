@@ -59,7 +59,7 @@ def test_primary_service_area_must_be_city(db) -> None:
     assert exc_info.value.code == "PRIMARY_CITY_LEVEL_INVALID"
 
 
-def test_service_district_must_belong_to_primary_city(db) -> None:
+def test_service_areas_can_span_multiple_cities(db) -> None:
     db.add_all(
         [
             Region(code="420100", name="武汉市", level="CITY", aliases=[], active=True),
@@ -68,11 +68,95 @@ def test_service_district_must_belong_to_primary_city(db) -> None:
         ]
     )
     company, _ = _identity(db, "AREA004")
-    with pytest.raises(AppError) as exc_info:
-        replace_service_areas(
-            db,
-            company_id=company.id,
-            region_codes=["420100", "430102"],
-            primary_city_code="420100",
-        )
-    assert exc_info.value.code == "SERVICE_AREA_HIERARCHY_INVALID"
+    items = replace_service_areas(
+        db,
+        company_id=company.id,
+        region_codes=["420100", "430102"],
+        primary_city_code="420100",
+    )
+
+    assert {item.region_code for item in items} == {"420100", "430102"}
+    assert next(item for item in items if item.region_code == "420100").is_primary_city
+
+
+def test_service_area_accepts_township_under_primary_city(db) -> None:
+    db.add_all(
+        [
+            Region(code="420100", name="武汉市", level="CITY", aliases=[], active=True),
+            Region(code="420106", name="武昌区", level="DISTRICT", parent_code="420100", aliases=[], active=True),
+            Region(code="420106001", name="粮道街道", level="TOWNSHIP", parent_code="420106", aliases=[], active=True),
+        ]
+    )
+    company, _ = _identity(db, "AREA-TOWN")
+
+    items = replace_service_areas(
+        db,
+        company_id=company.id,
+        region_codes=["420100", "420106001"],
+        primary_city_code="420100",
+    )
+
+    township = next(item for item in items if item.region_code == "420106001")
+    assert township.region_level == "TOWNSHIP"
+    assert township.review_status == "PENDING"
+
+
+def test_service_area_accepts_township_in_another_city(db) -> None:
+    db.add_all(
+        [
+            Region(code="420100", name="武汉市", level="CITY", aliases=[], active=True),
+            Region(code="430100", name="长沙市", level="CITY", aliases=[], active=True),
+            Region(code="430102", name="芙蓉区", level="DISTRICT", parent_code="430100", aliases=[], active=True),
+            Region(code="430102001", name="定王台街道", level="TOWNSHIP", parent_code="430102", aliases=[], active=True),
+        ]
+    )
+    company, _ = _identity(db, "AREA-CROSS-TOWN")
+
+    items = replace_service_areas(
+        db,
+        company_id=company.id,
+        region_codes=["420100", "430102001"],
+        primary_city_code="420100",
+    )
+
+    township = next(item for item in items if item.region_code == "430102001")
+    assert township.region_level == "TOWNSHIP"
+
+
+def test_withdrawn_service_area_request_keeps_its_review_history(db) -> None:
+    db.add_all(
+        [
+            Region(code="420100", name="武汉市", level="CITY", aliases=[], active=True),
+            Region(
+                code="420106",
+                name="武昌区",
+                level="DISTRICT",
+                parent_code="420100",
+                aliases=[],
+                active=True,
+            ),
+        ]
+    )
+    company, _ = _identity(db, "AREA-HISTORY")
+    initial = replace_service_areas(
+        db,
+        company_id=company.id,
+        region_codes=["420100", "420106"],
+        primary_city_code="420100",
+    )
+    district = next(item for item in initial if item.region_code == "420106")
+    district_id = district.id
+
+    replace_service_areas(
+        db,
+        company_id=company.id,
+        region_codes=["420100"],
+        primary_city_code="420100",
+    )
+    db.flush()
+
+    withdrawn = db.get(type(district), district_id)
+    assert withdrawn is not None
+    assert withdrawn.active is False
+    assert withdrawn.review_status == "REJECTED"
+    assert "撤回" in withdrawn.review_note

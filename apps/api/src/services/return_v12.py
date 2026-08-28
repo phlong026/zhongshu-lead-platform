@@ -699,12 +699,50 @@ def final_review_return(
     return ReturnFinalReviewResult(request=request, refund_ledger=refund_ledger)
 
 
-def return_request_to_dict(db: Session, item: ReturnRequest, *, include_evidence: bool = False) -> dict[str, Any]:
+def return_request_to_dict(
+    db: Session,
+    item: ReturnRequest,
+    *,
+    include_evidence: bool = False,
+    leads_by_id: dict[str, Lead] | None = None,
+    assignments_by_id: dict[str, Assignment] | None = None,
+    users_by_id: dict[str, User] | None = None,
+    tasks_by_id: dict[str, VerificationTask] | None = None,
+    rewards_by_assignment_id: dict[str, SupplierLeadReward] | None = None,
+) -> dict[str, Any]:
+    lead = (
+        leads_by_id.get(item.lead_id)
+        if leads_by_id is not None
+        else db.get(Lead, item.lead_id)
+    )
+    assignment = (
+        assignments_by_id.get(item.assignment_id)
+        if assignments_by_id is not None
+        else db.get(Assignment, item.assignment_id)
+    )
+    submitter = (
+        users_by_id.get(item.submitted_by)
+        if users_by_id is not None and item.submitted_by
+        else db.get(User, item.submitted_by)
+        if item.submitted_by
+        else None
+    )
+    snapshot = assignment.lead_snapshot if assignment and assignment.lead_snapshot else {}
+    phone_masked = snapshot.get("phone_masked")
+    if not phone_masked and lead:
+        phone_masked = mask_phone(decrypt_text(lead.phone_encrypted))
     data: dict[str, Any] = {
         "id": item.id,
         "assignment_id": item.assignment_id,
         "lead_id": item.lead_id,
         "company_id": item.company_id,
+        "assignment_code": f"PF-{item.assignment_id[:8].upper()}",
+        "customer_name": snapshot.get("customer_name") or (lead.customer_name if lead else None),
+        "phone_masked": phone_masked,
+        "city": snapshot.get("city") or (lead.city if lead else None),
+        "district": snapshot.get("district") or (lead.district if lead else None),
+        "region_code": snapshot.get("region_code") or (lead.region_code if lead else None),
+        "submitted_by_name": submitter.display_name if submitter else None,
         "reason_code": item.reason_code,
         "description": item.description,
         "status": item.status,
@@ -741,7 +779,13 @@ def return_request_to_dict(db: Session, item: ReturnRequest, *, include_evidence
             for evidence in evidences
         ]
         data["evidence_summary"] = _evidence_summary(db, item.id)
-    task = db.get(VerificationTask, item.verification_task_id) if item.verification_task_id else None
+    task = (
+        tasks_by_id.get(item.verification_task_id)
+        if tasks_by_id is not None and item.verification_task_id
+        else db.get(VerificationTask, item.verification_task_id)
+        if item.verification_task_id
+        else None
+    )
     if task:
         data["verification"] = {
             "task_id": task.id,
@@ -753,8 +797,14 @@ def return_request_to_dict(db: Session, item: ReturnRequest, *, include_evidence
             "due_at": task.due_at.isoformat() if task.due_at else None,
             "is_overdue": _return_task_is_overdue(task),
         }
-    reward = db.scalar(
-        select(SupplierLeadReward).where(SupplierLeadReward.assignment_id == item.assignment_id)
+    reward = (
+        rewards_by_assignment_id.get(item.assignment_id)
+        if rewards_by_assignment_id is not None
+        else db.scalar(
+            select(SupplierLeadReward).where(
+                SupplierLeadReward.assignment_id == item.assignment_id
+            )
+        )
     )
     if reward:
         data["reward"] = {
@@ -764,6 +814,63 @@ def return_request_to_dict(db: Session, item: ReturnRequest, *, include_evidence
             "reward_due_at": reward.reward_due_at.isoformat() if reward.reward_due_at else None,
         }
     return data
+
+
+def return_request_list_to_dict(
+    db: Session,
+    items: list[ReturnRequest],
+) -> list[dict[str, Any]]:
+    """Serialize one return-request page with a fixed number of relation queries."""
+    if not items:
+        return []
+    lead_ids = {item.lead_id for item in items}
+    assignment_ids = {item.assignment_id for item in items}
+    user_ids = {item.submitted_by for item in items if item.submitted_by}
+    task_ids = {item.verification_task_id for item in items if item.verification_task_id}
+    leads_by_id = {
+        lead.id: lead
+        for lead in db.scalars(select(Lead).where(Lead.id.in_(lead_ids))).all()
+    }
+    assignments_by_id = {
+        assignment.id: assignment
+        for assignment in db.scalars(
+            select(Assignment).where(Assignment.id.in_(assignment_ids))
+        ).all()
+    }
+    users_by_id = {
+        user.id: user
+        for user in db.scalars(select(User).where(User.id.in_(user_ids))).all()
+    }
+    tasks_by_id = (
+        {
+            task.id: task
+            for task in db.scalars(
+                select(VerificationTask).where(VerificationTask.id.in_(task_ids))
+            ).all()
+        }
+        if task_ids
+        else {}
+    )
+    rewards_by_assignment_id = {
+        reward.assignment_id: reward
+        for reward in db.scalars(
+            select(SupplierLeadReward).where(
+                SupplierLeadReward.assignment_id.in_(assignment_ids)
+            )
+        ).all()
+    }
+    return [
+        return_request_to_dict(
+            db,
+            item,
+            leads_by_id=leads_by_id,
+            assignments_by_id=assignments_by_id,
+            users_by_id=users_by_id,
+            tasks_by_id=tasks_by_id,
+            rewards_by_assignment_id=rewards_by_assignment_id,
+        )
+        for item in items
+    ]
 
 
 def return_verification_task_list_to_dict(

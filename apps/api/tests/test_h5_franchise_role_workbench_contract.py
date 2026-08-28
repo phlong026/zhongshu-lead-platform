@@ -5,7 +5,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 from apps.api.src.core.enums import AssignmentStatus
-from apps.api.src.core.models import Assignment, Company, Lead, User
+from apps.api.src.core.models import Assignment, Company, Lead, PointsAccount, PointsLedger, ReturnRequest, User
 from apps.api.src.core.models_v12 import SupplierLeadReward
 from apps.api.src.core.security import encrypt_text, hash_phone
 from apps.api.src.core.v12_enums import LeadSourceKind
@@ -44,6 +44,16 @@ def test_franchise_h5_keeps_role_specific_two_character_navigation() -> None:
     assert '"assignment.employee.read"' in insights_source
     assert "followups" in source
     assert "grid-template-columns:repeat(${tabs.length},minmax(0,1fr))" in source
+
+
+def test_franchise_business_report_uses_backend_statistics_contract() -> None:
+    source = Path("apps/h5/public/v12-workbench.js").read_text(encoding="utf-8")
+
+    assert "d.statistics?.claimed" in source
+    assert "拒绝领取" in source
+    assert "发起退回" in source
+    assert "确认无效" in source
+    assert "消耗积分" in source
 
 
 def test_employee_deep_links_canonicalize_to_the_allowed_followup_page() -> None:
@@ -129,6 +139,36 @@ def test_employee_own_report_hides_company_peers_and_rewards(api_client) -> None
         )
         db.add_all([employee_assignment, owner_assignment])
         db.flush()
+        account = db.scalar(select(PointsAccount).where(PointsAccount.company_id == company.id))
+        if account is None:
+            account = PointsAccount(company_id=company.id, balance=1000)
+            db.add(account)
+            db.flush()
+        db.add(
+            PointsLedger(
+                account_id=account.id,
+                company_id=company.id,
+                ledger_type="CLAIM",
+                delta=-100,
+                balance_after=900,
+                business_type="V12_ASSIGNMENT_CLAIM",
+                business_id=employee_assignment.id,
+                idempotency_key="h5-employee-scope-claim",
+                created_by=employee.id,
+            )
+        )
+        db.add(
+            ReturnRequest(
+                assignment_id=employee_assignment.id,
+                lead_id=employee_lead.id,
+                company_id=company.id,
+                submitted_by=employee.id,
+                reason_code="EMPTY_NUMBER",
+                reason_version=1,
+                description="员工本人发起退回",
+                status="APPROVED",
+            )
+        )
         reward = SupplierLeadReward(
             lead_id=owner_lead.id,
             assignment_id=owner_assignment.id,
@@ -147,7 +187,20 @@ def test_employee_own_report_hides_company_peers_and_rewards(api_client) -> None
 
     assert report["supplier_leads"]["total"] == 1
     assert report["received_assignments"]["total"] == 1
+    assert report["exception_breakdown"] == {
+        "refused_claim": 0,
+        "return_requested": 1,
+        "confirmed_invalid": 1,
+    }
+    assert report["finance"]["consumed_points"] == 100
     assert report["supplier_rewards"] == {"total": 0, "by_status": {}, "points": 0}
     assert client.get("/api/v1/v1.2/supplier-rewards", headers=employee).status_code == 403
     assert client.get(f"/api/v1/v1.2/supplier-rewards/{reward_id}", headers=employee).status_code == 403
     assert client.get(f"/api/v1/points/accounts/{company.id}", headers=employee).status_code == 403
+
+    owner = _login(client, "franchise_demo", "Franchise123!")
+    owner_report = _data(client.get("/api/v1/v1.2/reports/own", headers=owner))
+    assert owner_report["supplier_leads"]["total"] >= 2
+    assert owner_report["received_assignments"]["total"] >= 2
+    assert owner_report["exception_breakdown"]["return_requested"] >= 1
+    assert owner_report["finance"]["consumed_points"] >= 100
