@@ -223,6 +223,8 @@ def h5_call_entry(
 def legacy_call_entry(legacy_path: str = "") -> RedirectResponse:
     """Keep historical bookmarks working without retaining a second call shell."""
 
+    if legacy_path:
+        return RedirectResponse(url="/h5/call/index.html#/invalid-link", status_code=302)
     return RedirectResponse(url="/h5/call/", status_code=302)
 
 

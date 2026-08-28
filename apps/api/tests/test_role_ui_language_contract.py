@@ -62,6 +62,22 @@ def test_company_workbench_uses_user_language_and_real_unread_count() -> None:
     assert "未读" in source
     assert "function safeDeepLink" in source
     assert "url.origin!==location.origin" in source
+    assert "!url.pathname.startsWith('/h5/')" in source
+    assert "url.pathname.startsWith('/admin/')" not in source
+    assert "redirectWrongWorkbenchRole" in source
+
+
+def test_wechat_oauth_failures_use_a_session_independent_page() -> None:
+    router = Path("apps/api/src/routers/auth.py").read_text(encoding="utf-8")
+    html = _read(H5, "auth-error.html")
+    script = _read(H5, "auth-error.js")
+
+    assert "/h5/#/auth-error" not in router
+    assert "/h5/auth-error.html?code=" in router
+    assert "AUTH_BINDING_REQUIRES_CLEAN_SESSION" in script
+    assert "当前浏览器已登录平台账号" in script
+    assert "/auth/me" not in script
+    assert "auth-error.js" in html
 
 
 def test_company_workbench_opens_existing_legacy_assignment_message_links() -> None:
@@ -83,7 +99,8 @@ def test_dispatch_messages_use_the_v12_assignment_detail_route() -> None:
 def test_unified_lead_review_explains_outcomes_without_security_or_process_jargon() -> None:
     source = _read(ADMIN, "v12-operations.js")
     assert "HMAC" not in source
-    assert "加盟商来源会直接进入待电销核实" in source
+    assert "资料完整的加盟商客资直接进入待派发池" in source
+    assert "缺少可派发地区时再分配电销核实" in source
     assert "运营处置电销结论" in source
 
 
@@ -95,3 +112,38 @@ def test_call_workbench_shows_chinese_role_and_plain_task_language() -> None:
     assert "自主领取" in source
     assert "电销人员" in source
     assert "工作范围" in source
+
+
+def test_role_clients_do_not_disguise_runtime_or_logout_failures_as_login_success() -> None:
+    desktop = _read(ADMIN, "v12-operations.js")
+    admin_h5 = _read(ADMIN / "h5", "app.js")
+    company_h5 = _read(H5, "v12-workbench.js")
+    call_h5 = _read(CALL_H5, "app.js")
+
+    for source in (desktop, admin_h5, company_h5, call_h5):
+        assert "/auth/logout', { method: 'POST' }).catch(() => {})" not in source
+        assert "/auth/logout',{method:'POST'}).catch(()=>{})" not in source
+    assert "function renderLoadError" in desktop
+    assert "function renderLoadError" in admin_h5
+    assert "function renderLoadError" in company_h5
+    assert "function renderLoadError" in call_h5
+    assert "error.status===404" in desktop
+    assert ".catch(()=>({items:[],total:0,unread_total:0}))" not in desktop
+    assert "api(`/notifications/${encodeURIComponent(item.id)}/read`,{method:'POST'}).catch(()=>{})" not in desktop
+
+
+def test_role_clients_do_not_silently_fall_back_to_login_or_home_for_wrong_routes() -> None:
+    admin_h5 = _read(ADMIN / "h5", "app.js")
+    company_h5 = _read(H5, "v12-workbench.js")
+    call_h5 = _read(CALL_H5, "app.js")
+
+    assert "if (!S.me) return renderLogin();" in admin_h5
+    assert "if (!roleMeta()) return renderAccessDenied();" in admin_h5
+    assert "function renderInvalidLink" in admin_h5
+    assert "function redirectWrongWorkbenchRole" in call_h5
+    assert "location.replace('/h5/admin/')" in call_h5
+    assert "location.replace('/h5/')" in call_h5
+    assert "function renderInvalidLink" in call_h5
+    assert "return renderInvalidLink();" in call_h5
+    assert "function renderInvalidLink" in company_h5
+    assert "if(!VIEWS[S.view])return renderInvalidLink" in company_h5

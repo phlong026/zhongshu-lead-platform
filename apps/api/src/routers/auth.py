@@ -23,6 +23,7 @@ from ..core.responses import ok
 from ..core.security import (
     create_access_token,
     create_signed_state,
+    decode_access_token,
     decode_signed_state,
     hash_password,
     validate_internal_password,
@@ -300,8 +301,34 @@ _H5_AUTH_ERROR_CODES = frozenset(
         "AUTH_COMPANY_ALREADY_BOUND",
         "AUTH_INVITE_INVALID",
         "AUTH_ACCOUNT_DISABLED",
+        "AUTH_BINDING_REQUIRES_CLEAN_SESSION",
+        "AUTH_WECHAT_IDENTITY_CONFLICT",
     }
 ) | _WECHAT_CHANNEL_FAILURE_CODES
+
+
+def _request_session_principal(request: Request, db: Session) -> CurrentPrincipal | None:
+    token = request.cookies.get("access_token")
+    if not token:
+        return None
+    try:
+        payload = decode_access_token(token)
+    except InvalidTokenError:
+        return None
+    return load_current_principal(db, payload.get("sub"), payload.get("sv"))
+
+
+def _require_clean_binding_session(request: Request, db: Session) -> None:
+    if _request_session_principal(request, db) is not None:
+        raise AppError(
+            "AUTH_BINDING_REQUIRES_CLEAN_SESSION",
+            "当前浏览器已登录账号，请先退出后再用负责人本人微信打开邀请",
+            409,
+        )
+
+
+def _h5_auth_error_url(error_code: str) -> str:
+    return f"/h5/auth-error.html?code={error_code}"
 
 
 def _sanitize_return_url(value: str) -> str:
@@ -318,6 +345,15 @@ def _sanitize_return_url(value: str) -> str:
     if any(ord(ch) <= 0x1F or ord(ch) == 0x7F or ch == "\\" for ch in value):
         return "/h5/#/home"
     return value
+
+
+def _sanitize_binding_return_url(value: str) -> str:
+    """Keep franchise-owner binding away from other role workbenches."""
+
+    safe_value = _sanitize_return_url(value)
+    if safe_value in {"/h5/#/home", "/h5/v12-workbench.html"}:
+        return safe_value
+    return "/h5/#/home"
 
 
 @router.post("/login")
@@ -400,15 +436,19 @@ def change_own_password(
     db: Annotated[Session, Depends(get_db)],
 ):
     user = db.scalar(select(User).where(User.id == principal.user_id).with_for_update())
-    _verify_current_password_or_audit(
-        db,
-        user=user,
-        password=body.current_password,
-        principal=principal,
-        action="AUTH_PASSWORD_CHANGE_FAILED",
-        request=request,
-    )
     assert user is not None
+    first_backup_password = not bool(user.password_hash)
+    if not first_backup_password:
+        if not body.current_password:
+            raise AppError("AUTH_CURRENT_PASSWORD_REQUIRED", "当前密码必填", 422)
+        _verify_current_password_or_audit(
+            db,
+            user=user,
+            password=body.current_password,
+            principal=principal,
+            action="AUTH_PASSWORD_CHANGE_FAILED",
+            request=request,
+        )
     try:
         validate_internal_password(body.new_password)
     except ValueError as exc:
@@ -420,11 +460,11 @@ def change_own_password(
     write_audit(
         db,
         principal=principal,
-        action="AUTH_PASSWORD_CHANGE",
+        action="AUTH_BACKUP_PASSWORD_SET" if first_backup_password else "AUTH_PASSWORD_CHANGE",
         resource_type="user",
         resource_id=user.id,
         before={"session_version": previous_session_version},
-        after={"session_version": user.session_version},
+        after={"session_version": user.session_version, "first_backup_password": first_backup_password},
         request_id=request.state.request_id,
         ip_address=_request_ip(request),
         user_agent=request.headers.get("user-agent"),
@@ -439,7 +479,7 @@ def change_own_password(
             user.company_id,
         ),
     )
-    return ok(request, message="密码已更新，其他登录会话已失效")
+    return ok(request, message="备用登录密码已设置" if first_backup_password else "密码已更新，其他登录会话已失效")
 
 
 @router.post("/change-username")
@@ -496,6 +536,7 @@ def me(request: Request, principal: CurrentPrincipal, db: Annotated[Session, Dep
             "id": principal.user_id,
             "display_name": principal.display_name,
             "username": user.username if user else None,
+            "has_password": bool(user and user.password_hash),
             "company_id": principal.company_id,
             "company_name": company.name if company else "合家美宅平台",
             "roles": sorted(principal.role_codes),
@@ -570,12 +611,14 @@ def invite_confirm_start(
 ):
     """Exchange a confirmed invite for a short-lived binding OAuth intent (P0-04)."""
 
+    _require_clean_binding_session(request, db)
+
     # I15：限流在邀请校验之前——无效邀请的探测请求同样计数，防枚举刷。
     if _confirm_start_rate_limited(body.invite, _request_ip(request)):
         raise AppError("AUTH_RATE_LIMITED", "操作过于频繁，请稍后再试", 429)
 
     invite = validate_invite(db, raw_token=body.invite)
-    return_url = _sanitize_return_url(body.return_url)
+    return_url = _sanitize_binding_return_url(body.return_url)
     # I12：绑定预授权 state 显式收紧 TTL，不依赖 create_signed_state 的通用默认值。
     state = create_signed_state(
         {
@@ -676,6 +719,8 @@ def wechat_mock_callback(body: WechatMockCallbackBody, request: Request, respons
         raise AppError("AUTH_MOCK_DISABLED", "开发模拟登录已关闭", 403)
     # mock 通道与生产回调同一合同：绑定必须携带确认后的 signed state（P0-07）
     invite_id, expected_company_id, _ = _resolve_binding_intent(body.state)
+    if invite_id:
+        _require_clean_binding_session(request, db)
     user, token = login_or_bind_wechat(
         db,
         openid=body.openid,
@@ -781,7 +826,7 @@ def _redirect_callback_failure(
         db.rollback()
         if _callback_audit_throttled(_request_ip(request), exc.code, exc, stage=stage):
             # N11：同 IP+同 reason 的重复失败不重复落库，warning 日志已留痕。
-            return RedirectResponse(url=f"/h5/#/auth-error?code={error_code}", status_code=302)
+            return RedirectResponse(url=_h5_auth_error_url(error_code), status_code=302)
         write_audit(
             db,
             principal=None,
@@ -819,7 +864,7 @@ def _redirect_callback_failure(
                 "failure_class": failure_class,
             },
         )
-    return RedirectResponse(url=f"/h5/#/auth-error?code={error_code}", status_code=302)
+    return RedirectResponse(url=_h5_auth_error_url(error_code), status_code=302)
 
 
 @router.get("/wechat/callback")
@@ -844,6 +889,8 @@ def wechat_callback(
         if not code:
             raise AppError("AUTH_FAILED", "微信授权码缺失，请重新发起授权", 400)
         invite_id, expected_company_id, return_url = _resolve_binding_intent(state)
+        if invite_id:
+            _require_clean_binding_session(request, db)
         identity = WechatOAuthClient().exchange_code(code)
         user, token = login_or_bind_wechat(
             db,

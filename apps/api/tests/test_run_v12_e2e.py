@@ -126,3 +126,12 @@ def test_docker_start_failure_still_stops_container(monkeypatch: pytest.MonkeyPa
         run_v12_e2e.main([])
 
     assert any(command[:2] == ["docker", "stop"] for command in commands)
+
+
+def test_runner_uses_fixed_subprocess_executables() -> None:
+    source = Path(run_v12_e2e.__file__).read_text(encoding="utf-8")
+
+    assert "subprocess.run(command" not in source
+    assert 'subprocess.run(["docker", *args]' in source
+    assert '["python", "-m", "pytest", "-q", *TARGET_TESTS' in source
+    assert "executable=sys.executable" in source

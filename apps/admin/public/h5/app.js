@@ -68,8 +68,7 @@ function openSheet(title, body, bind) {
 function routeName() {
   const requested = location.hash.replace(/^#\/?/, '').split('?')[0] || 'home';
   if (roleMeta()?.tabs.some(([name]) => name === requested)) return requested;
-  if (location.hash !== '#/home') history.replaceState(null, '', `${location.pathname}${location.search}#/home`);
-  return 'home';
+  return '';
 }
 
 function go(view) {
@@ -308,10 +307,14 @@ async function profile() {
 }
 
 async function logout() {
-  await api('/auth/logout', { method: 'POST' }).catch(() => {});
-  S.me = null;
-  location.hash = '#/home';
-  renderLogin();
+  try {
+    await api('/auth/logout', { method: 'POST' });
+    S.me = null;
+    location.hash = '#/home';
+    renderLogin();
+  } catch (error) {
+    toast(`退出失败：${error.message}`, true);
+  }
 }
 
 function renderLogin(message = '') {
@@ -334,9 +337,21 @@ function renderAccessDenied() {
   document.querySelector('#return-role-home').onclick = () => { location.href = target; };
 }
 
+function renderLoadError(message = '页面加载失败') {
+  zsSetSafeHtml(app, `<section class="login"><div class="login-card"><img src="/admin/logo.png" alt="合家美宅"><h1>暂时无法加载</h1><p>${esc(message)}</p><button class="btn primary" id="retry-initialize">重试</button></div></section>`);
+  document.querySelector('#retry-initialize').onclick = initialize;
+}
+
+function renderInvalidLink() {
+  zsSetSafeHtml(app, `<section class="login"><div class="login-card"><img src="/admin/logo.png" alt="合家美宅"><h1>链接已失效</h1><p>该页面链接已迁移或不完整，请从当前角色首页重新进入。</p><button class="btn primary" id="return-platform-home">返回首页</button></div></section>`);
+  document.querySelector('#return-platform-home').onclick = () => go('home');
+}
+
 async function render() {
-  if (!S.me || !roleMeta()) return renderLogin();
+  if (!S.me) return renderLogin();
+  if (!roleMeta()) return renderAccessDenied();
   S.view = routeName();
+  if (!S.view) return renderInvalidLink();
   shell('<div class="loading">加载中…</div>');
   try {
     const views = { home, governance, funds, leads, dispatch, exceptions, profile };
@@ -352,7 +367,10 @@ async function initialize() {
     S.me = await api('/auth/me');
     if (!roleMeta()) { renderAccessDenied(); return; }
     await render();
-  } catch { renderLogin(); }
+  } catch (error) {
+    if (['AUTH_REQUIRED', 'AUTH_INVALID'].includes(error.code)) renderLogin();
+    else renderLoadError(error.message);
+  }
 }
 
 window.addEventListener('hashchange', render);

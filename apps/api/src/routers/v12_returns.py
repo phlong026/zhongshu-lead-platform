@@ -28,6 +28,7 @@ from ..services.return_v12 import (
     claim_return_verification_task,
     create_or_update_return_draft,
     final_review_return,
+    return_request_list_to_dict,
     return_request_to_dict,
     return_verification_task_list_to_dict,
     return_verification_task_to_dict,
@@ -245,7 +246,7 @@ def list_returns_v12(
     ).all()
     return ok(
         request,
-        page([return_request_to_dict(db, item) for item in items], int(total), page_no, page_size),
+        page(return_request_list_to_dict(db, list(items)), int(total), page_no, page_size),
     )
 
 

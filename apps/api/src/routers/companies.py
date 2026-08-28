@@ -10,11 +10,10 @@ from sqlalchemy.orm import Session, selectinload
 from ..core.auth import CurrentPrincipal, require_permissions
 from ..core.database import get_db
 from ..core.errors import AppError
-from ..core.models import Assignment, Company
+from ..core.models import Assignment, Company, Lead, ReturnRequest
 from ..core.responses import ok, page
 from ..schemas.company import (
     CompanyCreateBody,
-    CompanyDeleteBody,
     CompanyMarkTestBody,
     CompanyOwnerWechatUnbindBody,
     CompanySimpleCreateBody,
@@ -25,7 +24,6 @@ from ..services.company_service import (
     company_to_dict,
     create_company,
     create_simple_company,
-    delete_test_company,
     mark_company_as_test,
     unbind_company_owner_wechat,
     update_company,
@@ -64,25 +62,79 @@ def list_companies(
     include_finance = principal.can("points.read") or principal.can("*")
     include_assignment_summary = principal.can("assignment.read") or principal.can("*")
     summaries: dict[str, dict[str, object]] = {}
+    provided_summaries: dict[str, dict[str, object]] = {}
+    refusal_counts: dict[str, int] = {}
+    return_counts: dict[str, dict[str, int]] = {}
     if include_assignment_summary and items:
+        company_ids = [company.id for company in items]
         counts = db.execute(
             select(Assignment.company_id, Assignment.status, func.count(Assignment.id))
-            .where(Assignment.company_id.in_([company.id for company in items]))
+            .where(Assignment.company_id.in_(company_ids))
             .group_by(Assignment.company_id, Assignment.status)
         ).all()
         for company_id, assignment_status, count in counts:
             summary = summaries.setdefault(company_id, {"total": 0, "by_status": {}})
             summary["total"] = int(summary["total"]) + int(count)
             summary["by_status"][str(assignment_status)] = int(count)
+        provided_counts = db.execute(
+            select(Lead.supplier_company_id, Lead.status, func.count(Lead.id))
+            .where(Lead.supplier_company_id.in_(company_ids))
+            .group_by(Lead.supplier_company_id, Lead.status)
+        ).all()
+        for company_id, lead_status, count in provided_counts:
+            if not company_id:
+                continue
+            summary = provided_summaries.setdefault(company_id, {"total": 0, "by_status": {}})
+            summary["total"] = int(summary["total"]) + int(count)
+            summary["by_status"][str(lead_status)] = int(count)
+        refusal_counts = {
+            str(company_id): int(count)
+            for company_id, count in db.execute(
+                select(Assignment.company_id, func.count(Assignment.id))
+                .where(
+                    Assignment.company_id.in_(company_ids),
+                    Assignment.status == "RELEASED",
+                    Assignment.release_reason == "REFUSED_CLAIM",
+                )
+                .group_by(Assignment.company_id)
+            ).all()
+        }
+        return_rows = db.execute(
+            select(ReturnRequest.company_id, ReturnRequest.status, func.count(ReturnRequest.id))
+            .where(ReturnRequest.company_id.in_(company_ids))
+            .group_by(ReturnRequest.company_id, ReturnRequest.status)
+        ).all()
+        for company_id, status_value, count in return_rows:
+            return_counts.setdefault(company_id, {})[str(status_value)] = int(count)
 
     payload = []
     for company in items:
         item = company_to_dict(company, include_finance=include_finance)
         if include_assignment_summary:
-            item["assignment_summary"] = summaries.get(
+            received = summaries.get(
                 company.id,
                 {"total": 0, "by_status": {}},
             )
+            provided = provided_summaries.get(company.id, {"total": 0, "by_status": {}})
+            returns_by_status = return_counts.get(company.id, {})
+            item["assignment_summary"] = received
+            item["provided"] = provided
+            item["received"] = received
+            item["exception_breakdown"] = {
+                "refused_claim": refusal_counts.get(company.id, 0),
+                "return_requested": sum(
+                    int(returns_by_status.get(status_value, 0))
+                    for status_value in (
+                        "SUBMITTED",
+                        "VERIFYING",
+                        "REVIEWING",
+                        "NEED_MORE_EVIDENCE",
+                        "APPROVED",
+                        "REJECTED",
+                    )
+                ),
+                "confirmed_invalid": int(returns_by_status.get("APPROVED", 0)),
+            }
         payload.append(item)
     return ok(request, page(payload, total, page_no, page_size))
 
@@ -139,6 +191,7 @@ def create_simple_company_endpoint(
             "name": company.name,
             "primary_city_code": body.primary_city_code,
             "district_codes": body.district_codes,
+            "region_codes": body.region_codes,
             "serve_all_districts": body.serve_all_districts,
             "readiness": readiness,
             "is_test": company.is_test,
@@ -274,45 +327,3 @@ def mark_company_as_test_endpoint(
         extra={"company_id": result["company_id"], "actor_user_id": principal.user_id},
     )
     return ok(request, {"id": result["company_id"], "is_test": True}, "已标记为测试主体")
-
-
-@router.delete("/{company_id}")
-def delete_test_company_endpoint(
-    company_id: str,
-    body: CompanyDeleteBody,
-    request: Request,
-    principal=Depends(require_permissions("company.account.manage")),
-    db: Session = Depends(get_db),
-):
-    snapshot = delete_test_company(
-        db,
-        company_id,
-        confirm_name=body.confirm_name,
-    )
-    write_audit(
-        db,
-        principal=principal,
-        action="COMPANY_TEST_DELETE",
-        resource_type="company",
-        resource_id=str(snapshot["id"]),
-        company_id=str(snapshot["id"]),
-        before=snapshot,
-        after={"deleted": True},
-        metadata={"detached_user_ids": snapshot["detached_user_ids"]},
-        reason=body.reason,
-        request_id=request.state.request_id,
-    )
-    db.commit()
-    logger.warning(
-        "test_company_deleted",
-        extra={
-            "company_id": snapshot["id"],
-            "actor_user_id": principal.user_id,
-            "detached_user_count": len(snapshot["detached_user_ids"]),
-        },
-    )
-    return ok(
-        request,
-        {"id": snapshot["id"], "detached_user_count": len(snapshot["detached_user_ids"])},
-        "测试加盟商已删除",
-    )

@@ -280,6 +280,36 @@ def test_simple_company_creation_materializes_selected_nationwide_regions(api_cl
         assert all(item.active and item.review_status == "APPROVED" for item in service_areas)
 
 
+def test_simple_company_creation_accepts_cross_city_region_codes(api_client) -> None:
+    client, factory = api_client
+    admin = _login_admin(client)
+
+    response = client.post(
+        "/api/v1/companies/simple",
+        headers=admin,
+        json={
+            "name": "跨区域测试加盟商",
+            "primary_city_code": "310000",
+            "district_codes": [],
+            "region_codes": ["310000", "440100", "440106"],
+            "serve_all_districts": False,
+        },
+    )
+    assert response.status_code == 200, response.text
+    company_id = response.json()["data"]["id"]
+
+    with factory() as db:
+        service_codes = set(
+            db.scalars(
+                select(CompanyServiceAreaV12.region_code).where(
+                    CompanyServiceAreaV12.company_id == company_id,
+                    CompanyServiceAreaV12.active.is_(True),
+                )
+            ).all()
+        )
+        assert service_codes == {"310000", "440100", "440106"}
+
+
 def test_simple_company_creation_materializes_all_city_districts(api_client) -> None:
     client, factory = api_client
     admin = _login_admin(client)

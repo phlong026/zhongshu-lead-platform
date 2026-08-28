@@ -7,8 +7,10 @@ from pathlib import Path
 from sqlalchemy import select
 
 from apps.api.src.core.auth_models import AuthLoginState
-from apps.api.src.core.models import AuditLog, User
+from apps.api.src.core.models import AuditLog, Company, User
+from apps.api.src.core.security import create_access_token, verify_password
 from apps.api.src.services.auth_service import InternalAuthError, authenticate_internal
+from apps.api.src.services.rbac import assign_role
 
 
 def _login(client, username: str, password: str):
@@ -168,6 +170,22 @@ def test_disabled_user_invalidates_existing_cookie_and_cannot_relogin(api_client
     assert _failure_contract(relogin) == (401, "AUTH_LOGIN_FAILED", "用户名或密码错误")
 
 
+def test_disabled_company_account_is_rejected_before_a_cookie_is_issued(api_client) -> None:
+    client, factory = api_client
+    with factory() as db:
+        user = db.scalar(select(User).where(User.username == "franchise_demo"))
+        assert user is not None and user.company_id
+        company = db.get(Company, user.company_id)
+        assert company is not None
+        company.status = "DISABLED"
+        db.commit()
+
+    response = _login(client, "franchise_demo", "Franchise123!")
+
+    assert _failure_contract(response) == (403, "AUTH_COMPANY_DISABLED", "加盟商已停用，暂时无法登录")
+    assert response.cookies.get("access_token") is None
+
+
 def test_disabled_user_consumes_expired_lock_only_once(api_client) -> None:
     client, factory = api_client
     generic = (401, "AUTH_LOGIN_FAILED", "用户名或密码错误")
@@ -247,6 +265,54 @@ def test_password_change_invalidates_every_older_bearer_token(api_client) -> Non
         "/api/v1/auth/me",
         headers={"Authorization": f"Bearer {current_token}"},
     ).status_code == 200
+
+
+def test_wechat_bound_owner_can_set_first_backup_password_without_current_password(api_client) -> None:
+    client, factory = api_client
+    with factory() as db:
+        company = Company(code="BACKUP-PWD", name="备用密码测试", status="ACTIVE")
+        db.add(company)
+        db.flush()
+        user = User(
+            username="backup_owner",
+            display_name="备用密码负责人",
+            company_id=company.id,
+            status="ACTIVE",
+            password_hash=None,
+        )
+        db.add(user)
+        db.flush()
+        company.primary_user_id = user.id
+        assign_role(db, user, "FRANCHISE_OWNER")
+        token = create_access_token(user.id, user.session_version, ["FRANCHISE_OWNER"], company.id)
+        user_id = user.id
+        db.commit()
+
+    first_set = client.post(
+        "/api/v1/auth/change-password",
+        json={"new_password": "Backup888"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert first_set.status_code == 200, first_set.text
+    assert first_set.json()["message"] == "备用登录密码已设置"
+
+    with factory() as db:
+        user = db.get(User, user_id)
+        assert user is not None
+        assert verify_password("Backup888", user.password_hash or "")
+        actions = db.scalars(select(AuditLog.action).where(AuditLog.resource_id == user_id)).all()
+        assert "AUTH_BACKUP_PASSWORD_SET" in actions
+
+    current_token = first_set.cookies.get("access_token")
+    assert current_token
+    second_set = client.post(
+        "/api/v1/auth/change-password",
+        json={"new_password": "Backup999"},
+        headers={"Authorization": f"Bearer {current_token}"},
+    )
+    assert second_set.status_code == 422
+    assert second_set.json()["code"] == "AUTH_CURRENT_PASSWORD_REQUIRED"
 
 
 def test_change_username_returns_conflict_for_an_existing_login_name(api_client) -> None:

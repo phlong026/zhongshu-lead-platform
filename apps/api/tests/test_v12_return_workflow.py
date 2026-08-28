@@ -12,6 +12,8 @@ from apps.api.src.core.models import (
     Assignment,
     Company,
     Lead,
+    Notification,
+    NotificationOutbox,
     PointsAccount,
     PointsLedger,
     ReturnEvidence,
@@ -29,12 +31,14 @@ from apps.api.src.core.v12_enums import (
     VerificationTaskType,
 )
 from apps.api.src.services.rbac import assign_role
+from apps.api.src.services.audit import write_audit
 from apps.api.src.services.return_v12 import (
     add_return_evidence,
     assign_return_verification_task,
     claim_return_verification_task,
     create_or_update_return_draft,
     final_review_return,
+    return_request_list_to_dict,
     return_verification_task_list_to_dict,
     return_verification_task_to_dict,
     submit_return_request,
@@ -69,9 +73,14 @@ def _evidence(db, request, principal, evidence_type: str) -> ReturnEvidence:
     )
 
 
-def _workflow_setup(db, *, lead_status: str = LeadV12Status.CLAIMED.value):
-    supplier = Company(code="RET-SUP", name="退回测试供应商", status="ACTIVE")
-    receiver = Company(code="RET-REC", name="退回测试接收方", status="ACTIVE")
+def _workflow_setup(
+    db,
+    *,
+    lead_status: str = LeadV12Status.CLAIMED.value,
+    suffix: str = "",
+):
+    supplier = Company(code=f"RET-SUP{suffix}", name=f"退回测试供应商{suffix}", status="ACTIVE")
+    receiver = Company(code=f"RET-REC{suffix}", name=f"退回测试接收方{suffix}", status="ACTIVE")
     db.add_all([supplier, receiver])
     db.flush()
 
@@ -261,6 +270,46 @@ def test_return_verification_task_list_avoids_per_row_queries(db) -> None:
     assert len(statements) <= 4
 
 
+def test_return_request_list_avoids_per_row_queries(db) -> None:
+    requests = []
+    for suffix in ("-LIST-A", "-LIST-B"):
+        setup = _workflow_setup(db, suffix=suffix)
+        owner = _principal(setup["receiver_user"], "return.own.manage")
+        requests.append(
+            create_or_update_return_draft(
+                db,
+                assignment_id=setup["assignment"].id,
+                principal=owner,
+                reason_code="EMPTY_NUMBER",
+                description="退回列表必须批量读取关联信息",
+            )
+        )
+    db.commit()
+    request_ids = [item.id for item in requests]
+    db.expire_all()
+    requests = db.scalars(
+        select(ReturnRequest)
+        .where(ReturnRequest.id.in_(request_ids))
+        .order_by(ReturnRequest.created_at.asc())
+    ).all()
+    statements: list[str] = []
+
+    def record_statement(*args) -> None:
+        if args[2].lstrip().upper().startswith("SELECT"):
+            statements.append(args[2])
+
+    engine = db.get_bind()
+    event.listen(engine, "before_cursor_execute", record_statement)
+    try:
+        rows = return_request_list_to_dict(db, list(requests))
+    finally:
+        event.remove(engine, "before_cursor_execute", record_statement)
+
+    assert [row["id"] for row in rows] == [item.id for item in requests]
+    assert all(row["customer_name"] == "退回测试客户" for row in rows)
+    assert len(statements) <= 5
+
+
 def test_telesales_cannot_start_an_unassigned_return_verification_task(db) -> None:
     setup = _workflow_setup(db)
     owner = _principal(setup["receiver_user"], "return.own.manage")
@@ -402,6 +451,59 @@ def test_screenshot_and_recording_create_post_call_task(db) -> None:
     assert setup["lead"].status == LeadV12Status.CLAIMED.value
     assert setup["reward"].status == RewardStatus.FROZEN.value
     assert request.appeal_deadline_at == setup["assignment"].appeal_deadline_at
+    assert db.scalar(
+        select(Notification).where(Notification.scene == "V12_RETURN_SUBMITTED")
+    ) is None
+    assert db.scalar(
+        select(NotificationOutbox).where(
+            NotificationOutbox.event_type == "V12_RETURN_SUBMITTED"
+        )
+    ) is None
+
+
+def test_return_service_and_audit_projection_emit_one_station_and_wechat_message(db) -> None:
+    setup = _workflow_setup(db)
+    owner = _principal(setup["receiver_user"], "return.own.manage")
+    request = create_or_update_return_draft(
+        db,
+        assignment_id=setup["assignment"].id,
+        principal=owner,
+        reason_code="EMPTY_NUMBER",
+        description="退回通知必须只有一条幂等投影",
+    )
+    _evidence(db, request, owner, EvidenceType.CHAT_SCREENSHOT.value)
+    result = submit_return_request(db, return_id=request.id, principal=owner)
+    write_audit(
+        db,
+        principal=owner,
+        action="V12_RETURN_SUBMIT",
+        resource_type="return_request",
+        resource_id=result.request.id,
+        company_id=result.request.company_id,
+        after={
+            "status": result.request.status,
+            "verification_task_id": result.task.id if result.task else None,
+        },
+        request_id="return-notification-single-projection",
+    )
+    db.flush()
+
+    notifications = db.scalars(
+        select(Notification).where(
+            Notification.company_id == setup["receiver"].id,
+            Notification.scene == "V12_RETURN_SUBMITTED",
+        )
+    ).all()
+    outboxes = db.scalars(
+        select(NotificationOutbox).where(
+            NotificationOutbox.aggregate_id == request.id,
+            NotificationOutbox.event_type == "V12_RETURN_SUBMITTED",
+        )
+    ).all()
+    assert len(notifications) == 1
+    assert len(outboxes) == 1
+    assert notifications[0].deep_link == f"/h5/v12-workbench.html?view=returns&id={request.id}"
+    assert outboxes[0].payload["deep_link"] == notifications[0].deep_link
 
 
 def test_return_submit_rejects_no_evidence_and_invalid_reason(db) -> None:
@@ -501,6 +603,9 @@ def test_final_approve_refunds_once_closes_invalid_lead_and_cancels_reward(db) -
     assert setup["lead"].current_assignment_id is None
     assert setup["reward"].status == RewardStatus.CANCELLED.value
     assert db.get(PointsAccount, setup["account"].id).balance == 1000
+    assert db.scalar(
+        select(Notification).where(Notification.scene == "V12_RETURN_APPROVED")
+    ) is None
 
     repeated = final_review_return(
         db,
@@ -541,6 +646,9 @@ def test_final_reject_restores_following_and_unfreezes_reward(db) -> None:
     assert setup["lead"].status == LeadV12Status.FOLLOWING.value
     assert setup["reward"].status == RewardStatus.OBSERVING.value
     assert db.get(PointsAccount, setup["account"].id).balance == 900
+    assert db.scalar(
+        select(Notification).where(Notification.scene == "V12_RETURN_REJECTED")
+    ) is None
 
 
 def test_final_review_must_match_the_telesales_fact_conclusion(db) -> None:

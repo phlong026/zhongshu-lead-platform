@@ -352,6 +352,86 @@ def test_service_area_approval_and_removal_change_dispatch_eligibility_only_afte
         ) == 4
 
 
+def test_platform_can_configure_cross_city_and_township_service_areas_immediately(
+    api_client,
+) -> None:
+    client, factory = api_client
+    company = _company(factory)
+    with factory() as db:
+        db.add_all(
+            [
+                Region(
+                    code="310115001",
+                    name="花木街道",
+                    level="TOWNSHIP",
+                    parent_code="310115",
+                    aliases=["花木街道"],
+                    active=True,
+                )
+            ]
+        )
+        db.commit()
+
+    admin = _login(client, "admin", "Admin123!")
+    configured = _data(
+        client.put(
+            f"/api/v1/v1.2/admin/companies/{company.id}/service-areas",
+            headers=admin,
+            json={
+                "region_codes": [
+                    "310000",
+                    "310115",
+                    "310115001",
+                    "440100",
+                    "440106",
+                ],
+                "primary_city_code": "310000",
+            },
+        )
+    )
+
+    assert {item["region_code"] for item in configured if item["active"]} == {
+        "310000",
+        "310115",
+        "310115001",
+        "440100",
+        "440106",
+    }
+    assert all(item["review_status"] == "APPROVED" for item in configured)
+    township = next(item for item in configured if item["region_code"] == "310115001")
+    assert township["region_name"] == "上海市 · 浦东新区 · 花木街道"
+
+    profile = _data(
+        client.get(
+            f"/api/v1/v1.2/admin/companies/{company.id}/profile",
+            headers=admin,
+        )
+    )
+    assert {"level_code", "notes"} <= set(profile["company"])
+    assert {item["region_code"] for item in profile["service_areas"] if item["active"]} == {
+        "310000",
+        "310115",
+        "310115001",
+        "440100",
+        "440106",
+    }
+
+    reconfigured = _data(
+        client.put(
+            f"/api/v1/v1.2/admin/companies/{company.id}/service-areas",
+            headers=admin,
+            json={
+                "region_codes": ["440100", "440106"],
+                "primary_city_code": "440100",
+            },
+        )
+    )
+    assert {item["region_code"] for item in reconfigured if item["active"]} == {
+        "440100",
+        "440106",
+    }
+
+
 def test_bulk_profile_approval_activates_pending_opening_items_but_not_removals(
     api_client,
 ) -> None:

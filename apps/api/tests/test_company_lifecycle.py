@@ -72,8 +72,8 @@ def test_operation_can_disable_and_enable_a_franchise_company(api_client) -> Non
         assert stored is not None and stored.status == "ACTIVE"
 
 
-def test_superadmin_can_delete_an_empty_test_company(api_client) -> None:
-    client, _ = api_client
+def test_superadmin_cannot_delete_an_empty_test_company(api_client) -> None:
+    client, factory = api_client
     admin = _login(client, "admin", "Admin123!")
     company = _create_empty_company(client, admin, "管理员可删除测试主体")
     disabled = client.patch(
@@ -89,10 +89,12 @@ def test_superadmin_can_delete_an_empty_test_company(api_client) -> None:
         headers=admin,
         json={"confirm_name": company["name"], "reason": "清理联测主体"},
     )
-    assert deleted.status_code == 200, deleted.text
+    assert deleted.status_code == 405, deleted.text
+    with factory() as db:
+        assert db.get(Company, company["id"]) is not None
 
 
-def test_active_company_cannot_be_deleted(api_client) -> None:
+def test_active_company_delete_endpoint_is_not_exposed(api_client) -> None:
     client, _ = api_client
     operation = _login(client, "operation", "Operation123!")
     company = _create_empty_company(client, operation, "未停用测试加盟商")
@@ -103,11 +105,10 @@ def test_active_company_cannot_be_deleted(api_client) -> None:
         headers=operation,
         json={"confirm_name": company["name"], "reason": "尝试跳过停用"},
     )
-    assert rejected.status_code == 409
-    assert rejected.json()["code"] == "COMPANY_MUST_BE_DISABLED"
+    assert rejected.status_code == 405
 
 
-def test_only_empty_test_company_can_be_deleted_after_name_confirmation(api_client) -> None:
+def test_disabled_test_company_delete_endpoint_is_not_exposed(api_client) -> None:
     client, factory = api_client
     operation = _login(client, "operation", "Operation123!")
     company = _create_empty_company(client, operation, "可删除测试加盟商")
@@ -124,8 +125,7 @@ def test_only_empty_test_company_can_be_deleted_after_name_confirmation(api_clie
         headers=operation,
         json={"confirm_name": "错误名称", "reason": "清理联测主体"},
     )
-    assert wrong_confirmation.status_code == 409
-    assert wrong_confirmation.json()["code"] == "COMPANY_CONFIRMATION_MISMATCH"
+    assert wrong_confirmation.status_code == 405
 
     deleted = client.request(
         "DELETE",
@@ -133,16 +133,16 @@ def test_only_empty_test_company_can_be_deleted_after_name_confirmation(api_clie
         headers=operation,
         json={"confirm_name": company["name"], "reason": "清理联测主体"},
     )
-    assert deleted.status_code == 200, deleted.text
+    assert deleted.status_code == 405, deleted.text
 
     with factory() as db:
-        assert db.get(Company, company["id"]) is None
+        assert db.get(Company, company["id"]) is not None
         assert db.scalar(
             select(AuditLog).where(
                 AuditLog.action == "COMPANY_TEST_DELETE",
                 AuditLog.resource_id == company["id"],
             )
-        )
+        ) is None
 
 
 def test_company_with_assignment_history_can_only_be_disabled(api_client) -> None:
@@ -187,8 +187,7 @@ def test_company_with_assignment_history_can_only_be_disabled(api_client) -> Non
         headers=operation,
         json={"confirm_name": company["name"], "reason": "尝试清理有业务主体"},
     )
-    assert rejected.status_code == 409
-    assert rejected.json()["code"] == "COMPANY_DELETE_BLOCKED"
+    assert rejected.status_code == 405
 
     enabled = client.patch(
         f"/api/v1/companies/{company['id']}",

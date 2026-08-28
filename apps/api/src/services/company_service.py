@@ -3,35 +3,40 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.orm import Session
 
 from ..core.errors import AppError
 from ..core.models import (
     Assignment,
     Company,
-    CompanyAccountRequest,
     CompanyCapability,
     CompanyServiceRegion,
     DictionaryItem,
     FollowUp,
     InviteToken,
     Lead,
-    Notification,
+    LeadDuplicateRelation,
     NotificationOutbox,
     PointsAccount,
     PointsLedger,
     Region,
     ReturnRequest,
     User,
+    VerificationTask,
     WechatIdentity,
 )
-from ..core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12, SupplierLeadReward
+from ..core.models_v12 import (
+    CompanyLeadCapability,
+    CompanyServiceAreaV12,
+    LeadDedupEvent,
+    SupplierLeadReward,
+)
 from ..core.security import decrypt_text, encrypt_text, hash_phone, mask_phone
 from ..core.time import utcnow
 from ..core.v12_enums import CompanyLeadCapabilityCode
 from ..schemas.company import CompanyCreateBody, CompanySimpleCreateBody, CompanyUpdateBody
-from .china_regions import city_by_code, district_by_code
+from .china_regions import city_by_code, region_by_code
 
 DEFAULT_RECEIVER_CATEGORIES = ("OLD_RENOVATION", "SELF_BUILD", "INTERIOR")
 
@@ -92,7 +97,7 @@ def _next_company_code(db: Session) -> str:
 
 def _simple_region_codes(db: Session, body: CompanySimpleCreateBody) -> dict[str, Region]:
     _materialize_selected_regions(db, body)
-    requested = [body.primary_city_code, *body.district_codes]
+    requested = [body.primary_city_code, *body.district_codes, *body.region_codes]
     if body.serve_all_districts:
         district_codes = db.scalars(
             select(Region.code).where(
@@ -117,61 +122,105 @@ def _simple_region_codes(db: Session, body: CompanySimpleCreateBody) -> dict[str
     primary = regions.get(body.primary_city_code)
     if primary is None or primary.level != "CITY":
         raise AppError("PRIMARY_CITY_LEVEL_INVALID", "服务城市必须选择城市级地区", 422)
-    invalid = [
+    invalid_legacy_districts = [
         code
-        for code, region in regions.items()
-        if code != body.primary_city_code
-        and (region.level != "DISTRICT" or region.parent_code != body.primary_city_code)
+        for code in body.district_codes
+        if (region := regions.get(code)) is None
+        or region.level != "DISTRICT"
+        or region.parent_code != body.primary_city_code
     ]
-    if invalid:
+    if invalid_legacy_districts:
         raise AppError(
             "SERVICE_AREA_HIERARCHY_INVALID",
             "服务区县必须隶属于所选服务城市",
             422,
-            {"region_codes": sorted(invalid), "primary_city_code": body.primary_city_code},
+            {
+                "region_codes": sorted(invalid_legacy_districts),
+                "primary_city_code": body.primary_city_code,
+            },
+        )
+    invalid = [code for code, region in regions.items() if not _valid_service_region(db, region)]
+    if invalid:
+        raise AppError(
+            "SERVICE_AREA_HIERARCHY_INVALID",
+            "服务区域必须是有效的城市、区县或乡镇",
+            422,
+            {"region_codes": sorted(invalid)},
         )
     return regions
 
 
+def _valid_service_region(db: Session, region: Region) -> bool:
+    if region.level == "CITY":
+        return True
+    parent = db.get(Region, region.parent_code) if region.parent_code else None
+    if region.level == "DISTRICT":
+        return bool(parent and parent.active and parent.level == "CITY")
+    if region.level == "TOWNSHIP":
+        grandparent = db.get(Region, parent.parent_code) if parent and parent.parent_code else None
+        return bool(
+            parent
+            and parent.active
+            and parent.level == "DISTRICT"
+            and grandparent
+            and grandparent.active
+            and grandparent.level == "CITY"
+        )
+    return False
+
+
 def _materialize_selected_regions(db: Session, body: CompanySimpleCreateBody) -> None:
     """把用户从全国组件选中的地区接入现有派发地区模型。"""
-
-    city = city_by_code(body.primary_city_code)
-    if city is None:
-        return
-
-    if db.get(Region, city["code"]) is None:
-        db.add(
-            Region(
-                code=city["code"],
-                name=city["name"],
-                level="CITY",
-                parent_code=None,
-                aliases=[city["name"]],
-                active=True,
-            )
-        )
-
-    requested_district_codes = (
-        [district["code"] for district in city["districts"]]
-        if body.serve_all_districts
-        else body.district_codes
-    )
-    for code in dict.fromkeys(requested_district_codes):
-        district = district_by_code(city, code)
-        if district is None or db.get(Region, code) is not None:
-            continue
-        db.add(
-            Region(
-                code=district["code"],
-                name=district["name"],
-                level="DISTRICT",
-                parent_code=city["code"],
-                aliases=[district["name"]],
-                active=True,
-            )
-        )
+    selected_codes = [body.primary_city_code, *body.district_codes, *body.region_codes]
+    primary_city = city_by_code(body.primary_city_code)
+    if body.serve_all_districts and primary_city:
+        selected_codes.extend(district["code"] for district in primary_city["districts"])
+    materialize_nationwide_regions(db, selected_codes)
     db.flush()
+
+
+def materialize_nationwide_regions(db: Session, region_codes: list[str]) -> None:
+    """Materialize city/district snapshot entries; township rows come from master data."""
+
+    pending_codes = {
+        item.code for item in db.new if isinstance(item, Region)
+    }
+    for code in dict.fromkeys(region_codes):
+        context = region_by_code(code)
+        if context is None:
+            continue
+        city_code = str(context["city_code"])
+        city_name = str(context["city_name"])
+        if city_code not in pending_codes and db.get(Region, city_code) is None:
+            db.add(
+                Region(
+                    code=city_code,
+                    name=city_name,
+                    level="CITY",
+                    parent_code=None,
+                    aliases=[city_name],
+                    active=True,
+                )
+            )
+            pending_codes.add(city_code)
+        district_code = context.get("district_code")
+        district_name = context.get("district_name")
+        if (
+            district_code
+            and str(district_code) not in pending_codes
+            and db.get(Region, district_code) is None
+        ):
+            db.add(
+                Region(
+                    code=str(district_code),
+                    name=str(district_name),
+                    level="DISTRICT",
+                    parent_code=city_code,
+                    aliases=[str(district_name)],
+                    active=True,
+                )
+            )
+            pending_codes.add(str(district_code))
 
 
 def create_simple_company(
@@ -374,54 +423,213 @@ def unbind_company_owner_wechat(
     }
 
 
-def company_business_blockers(db: Session, company_id: str) -> dict[str, int]:
-    checks = {
-        "account_requests": select(func.count(CompanyAccountRequest.id)).where(
-            CompanyAccountRequest.company_id == company_id
-        ),
-        "leads": select(func.count(Lead.id)).where(Lead.supplier_company_id == company_id),
-        "assignments": select(func.count(Assignment.id)).where(
-            or_(
-                Assignment.company_id == company_id,
-                Assignment.supplier_company_id == company_id,
-                Assignment.receiver_company_id == company_id,
+def _test_company_isolation_scope(db: Session, company_id: str) -> dict[str, list[str]]:
+    lead_ids = list(
+        db.scalars(select(Lead.id).where(Lead.supplier_company_id == company_id)).all()
+    )
+    lead_id_set = set(lead_ids)
+    assignment_rows = list(
+        db.execute(
+            select(
+                Assignment.id,
+                Assignment.lead_id,
+                Assignment.company_id,
+                Assignment.supplier_company_id,
+                Assignment.receiver_company_id,
+            ).where(
+                or_(
+                    Assignment.lead_id.in_(lead_ids),
+                    Assignment.company_id == company_id,
+                    Assignment.supplier_company_id == company_id,
+                    Assignment.receiver_company_id == company_id,
+                )
             )
-        ),
-        "points_ledgers": select(func.count(PointsLedger.id)).where(
-            PointsLedger.company_id == company_id
-        ),
-        "return_requests": select(func.count(ReturnRequest.id)).where(
-            ReturnRequest.company_id == company_id
-        ),
-        "followups": select(func.count(FollowUp.id)).where(FollowUp.company_id == company_id),
-        "supplier_rewards": select(func.count(SupplierLeadReward.id)).where(
-            or_(
-                SupplierLeadReward.supplier_company_id == company_id,
-                SupplierLeadReward.receiver_company_id == company_id,
+        ).all()
+    )
+    assignment_ids = [row.id for row in assignment_rows]
+    assignment_id_set = set(assignment_ids)
+
+    external_assignments = [
+        row.id
+        for row in assignment_rows
+        if row.lead_id not in lead_id_set
+        or any(
+            linked_company_id not in {None, company_id}
+            for linked_company_id in (
+                row.company_id,
+                row.supplier_company_id,
+                row.receiver_company_id,
             )
-        ),
+        )
+    ]
+
+    followup_rows = list(
+        db.execute(
+            select(FollowUp.id, FollowUp.assignment_id, FollowUp.company_id).where(
+                or_(
+                    FollowUp.company_id == company_id,
+                    FollowUp.assignment_id.in_(assignment_ids),
+                )
+            )
+        ).all()
+    )
+    external_followups = [
+        row.id
+        for row in followup_rows
+        if row.company_id != company_id or row.assignment_id not in assignment_id_set
+    ]
+
+    return_rows = list(
+        db.execute(
+            select(
+                ReturnRequest.id,
+                ReturnRequest.assignment_id,
+                ReturnRequest.lead_id,
+                ReturnRequest.company_id,
+            ).where(
+                or_(
+                    ReturnRequest.company_id == company_id,
+                    ReturnRequest.assignment_id.in_(assignment_ids),
+                    ReturnRequest.lead_id.in_(lead_ids),
+                )
+            )
+        ).all()
+    )
+    external_returns = [
+        row.id
+        for row in return_rows
+        if row.company_id != company_id
+        or row.assignment_id not in assignment_id_set
+        or row.lead_id not in lead_id_set
+    ]
+
+    reward_rows = list(
+        db.execute(
+            select(
+                SupplierLeadReward.id,
+                SupplierLeadReward.lead_id,
+                SupplierLeadReward.assignment_id,
+                SupplierLeadReward.supplier_company_id,
+                SupplierLeadReward.receiver_company_id,
+            ).where(
+                or_(
+                    SupplierLeadReward.lead_id.in_(lead_ids),
+                    SupplierLeadReward.assignment_id.in_(assignment_ids),
+                    SupplierLeadReward.supplier_company_id == company_id,
+                    SupplierLeadReward.receiver_company_id == company_id,
+                )
+            )
+        ).all()
+    )
+    external_rewards = [
+        row.id
+        for row in reward_rows
+        if row.lead_id not in lead_id_set
+        or row.assignment_id not in assignment_id_set
+        or row.supplier_company_id != company_id
+        or row.receiver_company_id != company_id
+    ]
+
+    duplicate_rows = list(
+        db.execute(
+            select(
+                LeadDuplicateRelation.id,
+                LeadDuplicateRelation.lead_id,
+                LeadDuplicateRelation.duplicate_lead_id,
+            ).where(
+                or_(
+                    LeadDuplicateRelation.lead_id.in_(lead_ids),
+                    LeadDuplicateRelation.duplicate_lead_id.in_(lead_ids),
+                )
+            )
+        ).all()
+    ) if lead_ids else []
+    external_duplicate_relations = [
+        row.id
+        for row in duplicate_rows
+        if row.lead_id not in lead_id_set or row.duplicate_lead_id not in lead_id_set
+    ]
+
+    dedup_rows = list(
+        db.execute(
+            select(
+                LeadDedupEvent.id,
+                LeadDedupEvent.lead_id,
+                LeadDedupEvent.matched_lead_id,
+                LeadDedupEvent.matched_assignment_id,
+            ).where(
+                or_(
+                    LeadDedupEvent.lead_id.in_(lead_ids),
+                    LeadDedupEvent.matched_lead_id.in_(lead_ids),
+                    LeadDedupEvent.matched_assignment_id.in_(assignment_ids),
+                )
+            )
+        ).all()
+    ) if lead_ids or assignment_ids else []
+    external_dedup_events = [
+        row.id
+        for row in dedup_rows
+        if row.lead_id not in lead_id_set
+        or (row.matched_lead_id is not None and row.matched_lead_id not in lead_id_set)
+        or (
+            row.matched_assignment_id is not None
+            and row.matched_assignment_id not in assignment_id_set
+        )
+    ]
+
+    ledger_ids = list(
+        db.scalars(select(PointsLedger.id).where(PointsLedger.company_id == company_id)).all()
+    )
+    ledger_id_set = set(ledger_ids)
+    related_ledger_rows = list(
+        db.execute(
+            select(PointsLedger.id, PointsLedger.company_id, PointsLedger.related_ledger_id).where(
+                or_(
+                    PointsLedger.id.in_(ledger_ids),
+                    PointsLedger.related_ledger_id.in_(ledger_ids),
+                )
+            )
+        ).all()
+    ) if ledger_ids else []
+    external_ledgers = [
+        row.id
+        for row in related_ledger_rows
+        if row.company_id != company_id
+        or (
+            row.related_ledger_id is not None
+            and row.related_ledger_id not in ledger_id_set
+        )
+    ]
+
+    external = {
+        "assignments": external_assignments,
+        "followups": external_followups,
+        "returns": external_returns,
+        "supplier_rewards": external_rewards,
+        "duplicate_relations": external_duplicate_relations,
+        "dedup_events": external_dedup_events,
+        "points_ledgers": external_ledgers,
     }
-    blockers: dict[str, int] = {}
-    for name, stmt in checks.items():
-        count = int(db.scalar(stmt) or 0)
-        if count > 0:
-            blockers[name] = count
-    account = db.scalar(select(PointsAccount).where(PointsAccount.company_id == company_id))
-    if account and int(account.balance or 0) != 0:
-        blockers["points_balance"] = int(account.balance or 0)
-    return blockers
+    external = {name: ids for name, ids in external.items() if ids}
+    if external:
+        raise AppError(
+            "COMPANY_TEST_DATA_CROSS_BUSINESS_BLOCKED",
+            "该主体与其他主体或平台业务存在关联，不能标记为独立测试数据",
+            409,
+            {
+                "blocking_tables": sorted(external),
+                "counts": {name: len(ids) for name, ids in external.items()},
+            },
+        )
 
-
-_BUSINESS_BLOCKER_LABELS = {
-    "account_requests": "账号申请",
-    "leads": "客资",
-    "assignments": "派发记录",
-    "points_ledgers": "积分流水",
-    "return_requests": "退回记录",
-    "followups": "跟进记录",
-    "supplier_rewards": "供客奖励",
-    "points_balance": "积分余额",
-}
+    return {
+        "lead_ids": lead_ids,
+        "assignment_ids": assignment_ids,
+        "followup_ids": [row.id for row in followup_rows],
+        "return_ids": [row.id for row in return_rows],
+        "reward_ids": [row.id for row in reward_rows],
+        "ledger_ids": ledger_ids,
+    }
 
 
 def _cancel_company_invite_outboxes(db: Session, company_id: str, *, reason: str) -> int:
@@ -459,18 +667,7 @@ def mark_company_as_test(
     if confirm_name != company.name:
         raise AppError("COMPANY_CONFIRMATION_MISMATCH", "输入的加盟商名称不匹配", 409)
 
-    blockers = company_business_blockers(db, company.id)
-    if blockers:
-        raise AppError(
-            "COMPANY_TEST_MARK_BLOCKED",
-            "该加盟商存在业务数据，不能标记为可删除的测试数据",
-            409,
-            {
-                "blocking_tables": sorted(blockers),
-                "blockers": [_BUSINESS_BLOCKER_LABELS.get(name, name) for name in sorted(blockers)],
-                "counts": blockers,
-            },
-        )
+    _test_company_isolation_scope(db, company.id)
 
     company.is_test = True
     db.flush()
@@ -479,66 +676,3 @@ def mark_company_as_test(
         "before": {"status": company.status, "is_test": False},
         "after": {"status": company.status, "is_test": True},
     }
-
-
-def delete_test_company(
-    db: Session,
-    company_id: str,
-    *,
-    confirm_name: str,
-) -> dict[str, object]:
-    company = db.scalar(select(Company).where(Company.id == company_id).with_for_update())
-    if company is None:
-        raise AppError("COMPANY_NOT_FOUND", "加盟商公司不存在", 404)
-    if company.status != "DISABLED":
-        raise AppError("COMPANY_MUST_BE_DISABLED", "请先停用加盟商，再清理测试数据", 409)
-    if not company.is_test:
-        raise AppError("COMPANY_DELETE_TEST_ONLY", "正常加盟商只能停用，不允许删除", 409)
-    if confirm_name != company.name:
-        raise AppError("COMPANY_CONFIRMATION_MISMATCH", "输入的加盟商名称不匹配", 409)
-
-    blockers = company_business_blockers(db, company.id)
-    if blockers:
-        raise AppError(
-            "COMPANY_DELETE_BLOCKED",
-            "该加盟商存在业务数据，只能停用，不允许删除",
-            409,
-            {
-                "blocking_tables": sorted(blockers),
-                "blockers": [_BUSINESS_BLOCKER_LABELS.get(name, name) for name in sorted(blockers)],
-                "counts": blockers,
-            },
-        )
-
-    members = list(db.scalars(select(User).where(User.company_id == company.id)).all())
-    detached_user_ids: list[str] = []
-    for user in members:
-        db.execute(delete(WechatIdentity).where(WechatIdentity.user_id == user.id))
-        user.status = "DISABLED"
-        user.session_version += 1
-        user.company_id = None
-        detached_user_ids.append(user.id)
-
-    _cancel_company_invite_outboxes(db, company.id, reason="邀请所属测试主体已删除")
-
-    snapshot = {
-        "id": company.id,
-        "code": company.code,
-        "name": company.name,
-        "status": company.status,
-        "is_test": company.is_test,
-        "primary_user_id": company.primary_user_id,
-        "member_count": len(members),
-        "detached_user_ids": detached_user_ids,
-    }
-    company.primary_user_id = None
-    db.execute(delete(Notification).where(Notification.company_id == company.id))
-    db.execute(delete(InviteToken).where(InviteToken.company_id == company.id))
-    db.execute(delete(CompanyLeadCapability).where(CompanyLeadCapability.company_id == company.id))
-    db.execute(delete(CompanyServiceAreaV12).where(CompanyServiceAreaV12.company_id == company.id))
-    db.execute(delete(CompanyServiceRegion).where(CompanyServiceRegion.company_id == company.id))
-    db.execute(delete(CompanyCapability).where(CompanyCapability.company_id == company.id))
-    db.execute(delete(PointsAccount).where(PointsAccount.company_id == company.id))
-    db.delete(company)
-    db.flush()
-    return snapshot

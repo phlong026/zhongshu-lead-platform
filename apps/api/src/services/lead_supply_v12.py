@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..core.auth import Principal
 from ..core.errors import AppError
-from ..core.models import Lead, Region
+from ..core.models import Assignment, Lead, Region, User
 from ..core.models_v12 import LeadDedupEvent
 from ..core.security import decrypt_text, encrypt_text, fingerprint_phone, hash_phone, mask_phone, normalize_phone
 from ..core.v12_enums import LeadReviewStatus, LeadSourceKind, LeadV12Status
@@ -169,21 +169,43 @@ def reopen_rejected_supplier_lead(
     return lead
 
 
+def reopen_platform_lead_for_correction(
+    db: Session,
+    *,
+    lead: Lead,
+    principal: Principal,
+) -> Lead:
+    if lead.source_kind != LeadSourceKind.PLATFORM_MANUAL.value:
+        raise AppError("LEAD_SOURCE_INVALID", "仅平台录入客资支持运营纠正", 409)
+    if not (principal.can("*") or principal.can("lead.manual.manage")):
+        raise AppError("FORBIDDEN", "无权纠正平台客资", 403)
+    if lead.status != LeadV12Status.READY_DISPATCH.value:
+        raise AppError("LEAD_CORRECTION_NOT_ALLOWED", "仅尚未派发的待派发客资允许纠正", 409)
+    has_dispatch_history = bool(
+        lead.current_assignment_id
+        or db.scalar(select(Assignment.id).where(Assignment.lead_id == lead.id).limit(1))
+    )
+    if has_dispatch_history:
+        raise AppError("LEAD_CORRECTION_NOT_ALLOWED", "已进入派发流转的客资不允许直接改写", 409)
+    lead.status = LeadV12Status.DRAFT.value
+    lead.review_status = LeadReviewStatus.DRAFT.value
+    lead.submitted_at = None
+    lead.reviewed_at = None
+    lead.duplicate_status = None
+    lead.pending_reason = "PLATFORM_CORRECTION"
+    db.flush()
+    return lead
+
+
 def _validate_submission(db: Session, lead: Lead) -> str:
     phone = normalize_phone(decrypt_text(lead.phone_encrypted) or "")
     errors: dict[str, str] = {}
-    if not lead.customer_name or lead.customer_name == "未填写":
-        errors["customer_name"] = "客户姓名必填"
     if len(phone) != 11 or not phone.startswith("1"):
-        errors["phone"] = "手机号格式错误"
-    if not lead.city:
-        errors["city"] = "城市必填"
-    if not lead.region_code:
-        errors["region_code"] = "标准地区编码必填"
-    elif not db.scalar(select(Region.code).where(Region.code == lead.region_code, Region.active.is_(True))):
+        errors["phone"] = "手机号必填且必须为 11 位有效号码"
+    if lead.region_code and not db.scalar(
+        select(Region.code).where(Region.code == lead.region_code, Region.active.is_(True))
+    ):
         errors["region_code"] = "标准地区编码无效或已停用"
-    if not lead.need_summary:
-        errors["need_summary"] = "客户需求必填"
     if not lead.consent_confirmed:
         errors["consent_confirmed"] = "必须确认已获得客户信息授权"
     if lead.budget_min is not None and lead.budget_max is not None and lead.budget_min > lead.budget_max:
@@ -193,10 +215,58 @@ def _validate_submission(db: Session, lead: Lead) -> str:
     return phone
 
 
+def _has_known_location(db: Session, lead: Lead) -> bool:
+    if not lead.region_code:
+        return False
+    return bool(
+        db.scalar(
+            select(Region.code).where(
+                Region.code == lead.region_code,
+                Region.active.is_(True),
+            )
+        )
+    )
+
+
 def _materialize_nationwide_location(db: Session, lead: Lead) -> None:
     """Persist only the selected nationwide location before it enters business flow."""
 
     if not lead.region_code:
+        return
+    selected = db.get(Region, lead.region_code)
+    if selected is not None:
+        district: Region | None = None
+        city: Region | None = None
+        if selected.level == "TOWNSHIP":
+            district = db.get(Region, selected.parent_code) if selected.parent_code else None
+            city = db.get(Region, district.parent_code) if district and district.parent_code else None
+            valid = bool(
+                selected.active
+                and district
+                and district.active
+                and district.level == "DISTRICT"
+                and city
+                and city.active
+                and city.level == "CITY"
+            )
+        elif selected.level == "DISTRICT":
+            district = selected
+            city = db.get(Region, selected.parent_code) if selected.parent_code else None
+            valid = bool(selected.active and city and city.active and city.level == "CITY")
+        elif selected.level == "CITY":
+            city = selected
+            valid = selected.active
+        else:
+            valid = False
+        if not valid or city is None:
+            raise AppError(
+                "LEAD_SUBMISSION_INVALID",
+                "客资提交校验失败",
+                422,
+                {"fields": {"region_code": "标准地区编码层级无效或已停用"}},
+            )
+        lead.city = city.name
+        lead.district = district.name if district else None
         return
     location = region_by_code(lead.region_code)
     if location is None:
@@ -253,12 +323,19 @@ def submit_draft(
     lead.imported_at = lead.imported_at or now
     result = evaluate_phone(db, lead=lead, normalized_phone=phone, checkpoint=checkpoint, now=now)
     apply_submission_decision(lead, result)
-    if supplier and not result.blocks_dispatch:
-        queue_pre_dispatch_task(
-            db,
-            lead_id=lead.id,
-            reason="SUPPLIER_SUBMISSION_REQUIRES_TELESALES_VERIFY",
-        )
+    if not result.blocks_dispatch:
+        if _has_known_location(db, lead):
+            lead.status = LeadV12Status.READY_DISPATCH.value
+            lead.review_status = LeadReviewStatus.APPROVED.value
+            lead.pending_reason = None
+        else:
+            lead.status = LeadV12Status.PENDING_REVIEW.value
+            lead.review_status = LeadReviewStatus.PENDING.value
+            queue_pre_dispatch_task(
+                db,
+                lead_id=lead.id,
+                reason="LOCATION_REQUIRES_TELESALES_VERIFY",
+            )
     db.flush()
     return result
 
@@ -318,11 +395,16 @@ def review_supplier_lead(
         lead.review_status = LeadReviewStatus.PENDING.value
         lead.status = LeadV12Status.DUPLICATE.value
         lead.pending_reason = result.decision.value
+    elif _has_known_location(db, lead):
+        lead.status = LeadV12Status.READY_DISPATCH.value
+        lead.review_status = LeadReviewStatus.APPROVED.value
+        lead.pending_reason = None
     else:
+        lead.status = LeadV12Status.PENDING_REVIEW.value
         queue_pre_dispatch_task(
             db,
             lead_id=lead.id,
-            reason="SUPPLIER_SUBMISSION_REQUIRES_TELESALES_VERIFY",
+            reason="LOCATION_REQUIRES_TELESALES_VERIFY",
         )
         lead.review_status = LeadReviewStatus.PENDING.value
     db.flush()
@@ -376,7 +458,14 @@ def latest_dedup_event(db: Session, lead_id: str) -> LeadDedupEvent | None:
     )
 
 
-def lead_supply_to_dict(lead: Lead, principal: Principal | None = None) -> dict[str, Any]:
+def lead_supply_to_dict(
+    lead: Lead,
+    principal: Principal | None = None,
+    *,
+    submitter_name: str | None = None,
+    region_name: str | None = None,
+    region_level: str | None = None,
+) -> dict[str, Any]:
     phone = decrypt_text(lead.phone_encrypted)
     can_view_phone = bool(
         principal
@@ -391,6 +480,7 @@ def lead_supply_to_dict(lead: Lead, principal: Principal | None = None) -> dict[
         "id": lead.id,
         "source_kind": lead.source_kind,
         "submitter_user_id": lead.submitter_user_id,
+        "submitter_name": submitter_name,
         "supplier_company_id": lead.supplier_company_id,
         "customer_name": lead.customer_name,
         "phone": phone if can_view_phone else None,
@@ -399,6 +489,8 @@ def lead_supply_to_dict(lead: Lead, principal: Principal | None = None) -> dict[
         "city": lead.city,
         "district": lead.district,
         "region_code": lead.region_code,
+        "region_name": region_name,
+        "region_level": region_level,
         "category_code": lead.category_code,
         "brand_code": lead.brand_code,
         "source_channel": lead.source_channel,
@@ -417,3 +509,31 @@ def lead_supply_to_dict(lead: Lead, principal: Principal | None = None) -> dict[
         "created_at": lead.created_at.isoformat(),
         "updated_at": lead.updated_at.isoformat(),
     }
+
+
+def lead_supply_list_to_dict(
+    db: Session,
+    leads: list[Lead],
+    principal: Principal | None = None,
+) -> list[dict[str, Any]]:
+    submitter_ids = {lead.submitter_user_id for lead in leads if lead.submitter_user_id}
+    submitter_names = dict(
+        db.execute(
+            select(User.id, User.display_name).where(User.id.in_(submitter_ids))
+        ).all()
+    ) if submitter_ids else {}
+    region_codes = {lead.region_code for lead in leads if lead.region_code}
+    regions_by_code = {
+        region.code: region
+        for region in db.scalars(select(Region).where(Region.code.in_(region_codes))).all()
+    } if region_codes else {}
+    return [
+        lead_supply_to_dict(
+            lead,
+            principal,
+            submitter_name=submitter_names.get(lead.submitter_user_id),
+            region_name=(regions_by_code.get(lead.region_code).name if regions_by_code.get(lead.region_code) else None),
+            region_level=(regions_by_code.get(lead.region_code).level if regions_by_code.get(lead.region_code) else None),
+        )
+        for lead in leads
+    ]

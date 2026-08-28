@@ -15,6 +15,7 @@ from apps.api.src.routers.auth import _WECHAT_CHANNEL_FAILURE_CODES
 from apps.api.src.schemas.company import CompanyCreateBody
 from apps.api.src.services.auth_service import create_company_invite, login_or_bind_wechat
 from apps.api.src.services.company_service import create_company
+from apps.api.src.services.rbac import assign_role
 
 
 def _company(db):
@@ -162,6 +163,157 @@ def test_confirm_start_rejects_invalid_invite(api_client) -> None:
     assert response.json()["code"] == "AUTH_INVITE_INVALID"
 
 
+def test_confirm_start_rejects_an_existing_internal_session(api_client) -> None:
+    client, factory = api_client
+    logged_in = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "Admin123!"},
+    )
+    assert logged_in.status_code == 200, logged_in.text
+    with factory() as db:
+        company = _company(db)
+        invite, raw, _ = create_company_invite(db, company.id, None, 24)
+        db.commit()
+        invite_id = invite.id
+
+    response = client.post(
+        "/api/v1/auth/invites/confirm-start",
+        json={"invite": raw, "return_url": "/h5/v12-workbench.html"},
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == "AUTH_BINDING_REQUIRES_CLEAN_SESSION"
+    with factory() as db:
+        invite = db.get(InviteToken, invite_id)
+        assert invite is not None and invite.used_at is None
+
+
+def test_binding_callback_rejects_an_existing_internal_session_before_wechat_exchange(
+    api_client,
+    monkeypatch,
+) -> None:
+    client, factory = api_client
+    logged_in = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "Admin123!"},
+    )
+    assert logged_in.status_code == 200, logged_in.text
+    with factory() as db:
+        company = _company(db)
+        invite, _, _ = create_company_invite(db, company.id, None, 24)
+        db.commit()
+        invite_id = invite.id
+        company_id = company.id
+    exchanged = False
+
+    def _exchange(_self, _code):
+        nonlocal exchanged
+        exchanged = True
+        return WechatOAuthIdentity(openid="must-not-bind", unionid=None, nickname="误绑用户")
+
+    monkeypatch.setattr(WechatOAuthClient, "exchange_code", _exchange)
+    state = create_signed_state(
+        {
+            "invite_id": invite_id,
+            "company_id": company_id,
+            "binding_confirmed": True,
+            "return_url": "/h5/v12-workbench.html",
+        },
+        purpose="wechat-oauth-bind",
+    )
+
+    response = client.get(
+        "/api/v1/auth/wechat/callback",
+        params={"code": "must-not-exchange", "state": state},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302, response.text
+    assert response.headers["location"] == (
+        "/h5/auth-error.html?code=AUTH_BINDING_REQUIRES_CLEAN_SESSION"
+    )
+    assert exchanged is False
+    assert "set-cookie" not in response.headers
+    with factory() as db:
+        invite = db.get(InviteToken, invite_id)
+        company = db.get(Company, company_id)
+        identity = db.scalar(
+            select(WechatIdentity).where(WechatIdentity.openid == "must-not-bind")
+        )
+        assert invite is not None and invite.used_at is None
+        assert company is not None and company.primary_user_id is None
+        assert identity is None
+
+
+def test_mock_binding_callback_obeys_the_same_clean_session_boundary(api_client) -> None:
+    client, factory = api_client
+    logged_in = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "Admin123!"},
+    )
+    assert logged_in.status_code == 200, logged_in.text
+    with factory() as db:
+        company = _company(db)
+        invite, _, _ = create_company_invite(db, company.id, None, 24)
+        db.commit()
+        invite_id = invite.id
+        company_id = company.id
+    state = create_signed_state(
+        {
+            "invite_id": invite_id,
+            "company_id": company_id,
+            "binding_confirmed": True,
+            "return_url": "/h5/v12-workbench.html",
+        },
+        purpose="wechat-oauth-bind",
+    )
+
+    response = client.post(
+        "/api/v1/auth/wechat/mock-callback",
+        json={"state": state, "openid": "mock-must-not-bind", "nickname": "误绑用户"},
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == "AUTH_BINDING_REQUIRES_CLEAN_SESSION"
+    with factory() as db:
+        invite = db.get(InviteToken, invite_id)
+        identity = db.scalar(
+            select(WechatIdentity).where(WechatIdentity.openid == "mock-must-not-bind")
+        )
+        assert invite is not None and invite.used_at is None
+        assert identity is None
+
+
+def test_bound_employee_cannot_consume_a_company_owner_invite(db) -> None:
+    company = _company(db)
+    invite, raw, _ = create_company_invite(db, company.id, None, 24)
+    employee = User(
+        display_name="加盟商员工",
+        company_id=company.id,
+        status="ACTIVE",
+    )
+    db.add(employee)
+    db.flush()
+    assign_role(db, employee, "FRANCHISE_EMPLOYEE")
+    db.add(WechatIdentity(openid="employee-openid", user_id=employee.id))
+    db.commit()
+
+    with pytest.raises(AppError) as exc:
+        login_or_bind_wechat(
+            db,
+            openid="employee-openid",
+            invite_token=raw,
+            expected_company_id=company.id,
+        )
+
+    assert exc.value.code == "AUTH_WECHAT_IDENTITY_CONFLICT"
+    db.rollback()
+    db.refresh(invite)
+    db.refresh(company)
+    assert invite.used_at is None
+    assert company.primary_user_id is None
+
+
 def test_oauth_callback_binds_new_wechat_only_with_confirmed_intent(api_client, monkeypatch) -> None:
     client, factory = api_client
     with factory() as db:
@@ -201,7 +353,7 @@ def test_oauth_callback_binds_new_wechat_only_with_confirmed_intent(api_client, 
     )
     # P1-04：绑定类失败在浏览器上下文统一 302 到 H5 状态页，不再返回裸 JSON。
     assert rejected.status_code == 302
-    assert "/h5/#/auth-error?code=AUTH_WECHAT_NOT_BOUND" in rejected.headers["location"]
+    assert "/h5/auth-error.html?code=AUTH_WECHAT_NOT_BOUND" in rejected.headers["location"]
 
     # 伪造的 bind purpose（缺少 binding_confirmed）同样拒绝
     forged = create_signed_state(
@@ -214,7 +366,7 @@ def test_oauth_callback_binds_new_wechat_only_with_confirmed_intent(api_client, 
         follow_redirects=False,
     )
     assert unconfirmed.status_code == 302
-    assert "/h5/#/auth-error?code=AUTH_BINDING_CONFIRM_REQUIRED" in unconfirmed.headers["location"]
+    assert "/h5/auth-error.html?code=AUTH_BINDING_CONFIRM_REQUIRED" in unconfirmed.headers["location"]
 
 
 def test_wechat_start_rejects_legacy_invite_entry_and_keeps_plain_login(api_client) -> None:
@@ -254,7 +406,7 @@ def test_oauth_callback_redirects_binding_errors_to_h5_status_page(api_client) -
         follow_redirects=False,
     )
     assert invalid_state.status_code == 302, invalid_state.text
-    assert invalid_state.headers["location"] == "/h5/#/auth-error?code=AUTH_OAUTH_STATE_INVALID"
+    assert invalid_state.headers["location"] == "/h5/auth-error.html?code=AUTH_OAUTH_STATE_INVALID"
 
     forged = create_signed_state(
         {"invite_id": "i-x", "company_id": "c-x", "return_url": "/h5/#/home"},
@@ -266,7 +418,7 @@ def test_oauth_callback_redirects_binding_errors_to_h5_status_page(api_client) -
         follow_redirects=False,
     )
     assert unconfirmed.status_code == 302
-    assert unconfirmed.headers["location"] == "/h5/#/auth-error?code=AUTH_BINDING_CONFIRM_REQUIRED"
+    assert unconfirmed.headers["location"] == "/h5/auth-error.html?code=AUTH_BINDING_CONFIRM_REQUIRED"
 
 def test_confirm_start_neutralizes_control_char_return_urls(api_client) -> None:
     """C1 整改：WHATWG URL 解析前会剥离 tab/LF/CR，"/\t/evil.com" 在浏览器等价
@@ -341,6 +493,27 @@ def test_confirm_start_keeps_legitimate_h5_return_url(api_client) -> None:
     )
     assert payload["return_url"] == "/h5/#/home"
 
+
+def test_confirm_start_rejects_a_different_role_workbench_return_url(api_client) -> None:
+    client, factory = api_client
+    with factory() as db:
+        company = _company(db)
+        db.commit()
+        _, raw_invite, _ = create_company_invite(db, company.id, None, 24)
+        db.commit()
+
+    for requested in ("/h5/call/index.html", "/h5/admin/", "/h5/unknown.html"):
+        response = client.post(
+            "/api/v1/auth/invites/confirm-start",
+            json={"invite": raw_invite, "return_url": requested},
+        )
+        assert response.status_code == 200, response.text
+        payload = decode_signed_state(
+            _state_from_authorization_url(response.json()["data"]["authorization_url"]),
+            purpose="wechat-oauth-bind",
+        )
+        assert payload["return_url"] == "/h5/#/home"
+
 def test_bound_user_can_relogin_without_invite_via_legacy_start(api_client, monkeypatch) -> None:
     """C2 整改守护：已绑定负责人无邀请也能从 H5 普通登录，且未绑定新微信被引导
     到状态页（而不是前端拒绝服务）。后端 legacy 路径必须保持可用。"""
@@ -406,7 +579,7 @@ def test_bound_user_can_relogin_without_invite_via_legacy_start(api_client, monk
         follow_redirects=False,
     )
     assert fresh.status_code == 302, fresh.text
-    assert "/h5/#/auth-error?code=AUTH_WECHAT_NOT_BOUND" in fresh.headers["location"]
+    assert "/h5/auth-error.html?code=AUTH_WECHAT_NOT_BOUND" in fresh.headers["location"]
 
 def test_binding_after_company_disable_lands_on_status_page(api_client, monkeypatch) -> None:
     """I7 守护：确认在先、停用在后的时序下，callback 首次绑定必须以
@@ -442,7 +615,7 @@ def test_binding_after_company_disable_lands_on_status_page(api_client, monkeypa
         follow_redirects=False,
     )
     assert response.status_code == 302, response.text
-    assert "/h5/#/auth-error?code=AUTH_COMPANY_DISABLED" in response.headers["location"]
+    assert "/h5/auth-error.html?code=AUTH_COMPANY_DISABLED" in response.headers["location"]
     with factory() as db:
         identities = db.scalars(
             select(WechatIdentity).where(WechatIdentity.openid == "oauth-i7-code")
@@ -543,7 +716,7 @@ def test_callback_failure_writes_audit_and_discards_partial_writes(api_client, m
         headers={"user-agent": "p25-audit-h5"},
     )
     assert failed.status_code == 302, failed.text
-    assert failed.headers["location"] == "/h5/#/auth-error?code=AUTH_COMPANY_ALREADY_BOUND"
+    assert failed.headers["location"] == "/h5/auth-error.html?code=AUTH_COMPANY_ALREADY_BOUND"
 
     # codex #6：state 未通过验签的失败同样必须有审计，且 flow=unknown。
     invalid = client.get(
@@ -553,7 +726,7 @@ def test_callback_failure_writes_audit_and_discards_partial_writes(api_client, m
         headers={"user-agent": "p25-audit-h5"},
     )
     assert invalid.status_code == 302
-    assert invalid.headers["location"] == "/h5/#/auth-error?code=AUTH_OAUTH_STATE_INVALID"
+    assert invalid.headers["location"] == "/h5/auth-error.html?code=AUTH_OAUTH_STATE_INVALID"
 
     with factory() as db:
         bind_failed_rows = db.scalars(
@@ -610,7 +783,7 @@ def test_callback_failure_audit_persistence_failure_keeps_302(api_client, monkey
         follow_redirects=False,
     )
     assert response.status_code == 302, response.text
-    assert response.headers["location"] == "/h5/#/auth-error?code=AUTH_OAUTH_STATE_INVALID"
+    assert response.headers["location"] == "/h5/auth-error.html?code=AUTH_OAUTH_STATE_INVALID"
 
     with factory() as db:
         rows = db.scalars(
@@ -679,7 +852,7 @@ def test_expired_bind_intent_state_is_rejected_at_callback(api_client, monkeypat
         follow_redirects=False,
     )
     assert response.status_code == 302, response.text
-    assert response.headers["location"] == "/h5/#/auth-error?code=AUTH_OAUTH_STATE_INVALID"
+    assert response.headers["location"] == "/h5/auth-error.html?code=AUTH_OAUTH_STATE_INVALID"
 
     with factory() as db:
         leaked = db.scalar(select(WechatIdentity).where(WechatIdentity.openid == "i17-expired-openid"))
@@ -715,7 +888,7 @@ def test_callback_upstream_failure_keeps_specific_code_and_alerts(api_client, mo
         )
     assert response.status_code == 302, response.text
     assert (
-        response.headers["location"] == f"/h5/#/auth-error?code={code}"
+        response.headers["location"] == f"/h5/auth-error.html?code={code}"
     ), "通道故障码必须显式透传，供 H5 给出稍后重试指引"
 
     channel_errors = [
@@ -763,7 +936,7 @@ def test_callback_wechat_failure_details_never_leak(api_client, monkeypatch, cap
         )
     assert response.status_code == 302, response.text
     # 白名单码透传的是枚举本身；details（errcode/errmsg）不得拼进 URL。
-    assert response.headers["location"] == "/h5/#/auth-error?code=WECHAT_OAUTH_FAILED"
+    assert response.headers["location"] == "/h5/auth-error.html?code=WECHAT_OAUTH_FAILED"
     assert "40029" not in response.headers["location"]
     assert "secret-hint" not in response.headers["location"]
 
@@ -797,7 +970,7 @@ def test_callback_unknown_error_code_collapses_to_auth_failed(api_client, monkey
         follow_redirects=False,
     )
     assert response.status_code == 302, response.text
-    assert response.headers["location"] == "/h5/#/auth-error?code=AUTH_FAILED"
+    assert response.headers["location"] == "/h5/auth-error.html?code=AUTH_FAILED"
     assert "SOME_UNMAPPED_FAULT" not in response.headers["location"]
     assert "40029" not in response.headers["location"]
 
@@ -813,7 +986,7 @@ def test_callback_missing_params_redirect_to_status_page_not_bare_422(api_client
     # 无 state（也无 code）：state 前置校验直接拒绝
     response = client.get("/api/v1/auth/wechat/callback", follow_redirects=False)
     assert response.status_code == 302, response.text
-    assert response.headers["location"] == "/h5/#/auth-error?code=AUTH_OAUTH_STATE_INVALID"
+    assert response.headers["location"] == "/h5/auth-error.html?code=AUTH_OAUTH_STATE_INVALID"
 
     # 只缺 code：取有效 login state 后再打 callback
     start = client.get("/api/v1/auth/wechat/start", follow_redirects=False)
@@ -824,7 +997,7 @@ def test_callback_missing_params_redirect_to_status_page_not_bare_422(api_client
         follow_redirects=False,
     )
     assert response.status_code == 302, response.text
-    assert response.headers["location"] == "/h5/#/auth-error?code=AUTH_FAILED"
+    assert response.headers["location"] == "/h5/auth-error.html?code=AUTH_FAILED"
 
     # 两次缺参失败都发生在意图解析前（flow=unknown），审计不得缺席
     with factory() as db:
@@ -944,7 +1117,7 @@ def test_callback_integrity_conflict_and_unknown_failure_stay_302(api_client, mo
         )
         response = _hit_callback()
     assert response.status_code == 302, response.text
-    assert response.headers["location"] == "/h5/#/auth-error?code=AUTH_FAILED"
+    assert response.headers["location"] == "/h5/auth-error.html?code=AUTH_FAILED"
     conflict_errors = [r for r in caplog.records if r.name == "zhongshu.auth" and r.levelno == _logging.ERROR]
     assert conflict_errors, "完整性冲突必须留 error 日志"
     assert conflict_errors[0].exception_class == "IntegrityError"
@@ -957,7 +1130,7 @@ def test_callback_integrity_conflict_and_unknown_failure_stay_302(api_client, mo
     )
     response = _hit_callback()
     assert response.status_code == 302, response.text
-    assert response.headers["location"] == "/h5/#/auth-error?code=AUTH_FAILED"
+    assert response.headers["location"] == "/h5/auth-error.html?code=AUTH_FAILED"
 
     with factory() as db:
         rows = db.scalars(
@@ -1046,14 +1219,14 @@ def test_wechat_start_channel_failure_redirects_to_status_page(api_client, monke
         monkeypatch.setattr(wechat_module.settings, "wechat_app_id", "")
         response = client.get("/api/v1/auth/wechat/start", follow_redirects=False)
         assert response.status_code == 302, response.text
-        assert response.headers["location"] == "/h5/#/auth-error?code=WECHAT_NOT_CONFIGURED"
+        assert response.headers["location"] == "/h5/auth-error.html?code=WECHAT_NOT_CONFIGURED"
 
         # 场景2：scope 配置非法
         monkeypatch.setattr(wechat_module.settings, "wechat_app_id", "wx-test-only")
         monkeypatch.setattr(wechat_module.settings, "wechat_oauth_scope", "snsapi_private")
         response = client.get("/api/v1/auth/wechat/start", follow_redirects=False)
         assert response.status_code == 302, response.text
-        assert response.headers["location"] == "/h5/#/auth-error?code=WECHAT_SCOPE_INVALID"
+        assert response.headers["location"] == "/h5/auth-error.html?code=WECHAT_SCOPE_INVALID"
 
     with factory() as db:
         rows = db.scalars(

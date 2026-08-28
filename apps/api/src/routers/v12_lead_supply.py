@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from ..core.auth import CurrentPrincipal, require_permissions
 from ..core.database import get_db
 from ..core.errors import AppError
-from ..core.models import Company, Lead
+from ..core.models import Company, Lead, Region
 from ..core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12
 from ..core.responses import ok, page
 from ..core.v12_enums import LeadSourceKind
@@ -42,8 +42,10 @@ from ..services.lead_supply_v12 import (
     create_draft,
     discard_draft,
     get_lead_or_404,
+    lead_supply_list_to_dict,
     lead_supply_to_dict,
     list_supplier_leads,
+    reopen_platform_lead_for_correction,
     reopen_rejected_supplier_lead,
     review_supplier_lead,
     submit_draft,
@@ -104,6 +106,7 @@ def _capability_dict(
 def _area_dict(
     item: CompanyServiceAreaV12,
     *,
+    db: Session | None = None,
     company_name: str | None = None,
     company_code: str | None = None,
 ) -> dict:
@@ -113,6 +116,16 @@ def _area_dict(
         region_name = " · ".join(
             part for part in (region["city_name"], region["district_name"]) if part
         )
+    elif db is not None:
+        current = db.get(Region, item.region_code)
+        names: list[str] = []
+        visited: set[str] = set()
+        while current is not None and current.code not in visited:
+            visited.add(current.code)
+            names.append(current.name)
+            current = db.get(Region, current.parent_code) if current.parent_code else None
+        if names:
+            region_name = " · ".join(reversed(names))
     result = {
         "id": item.id,
         "company_id": item.company_id,
@@ -138,6 +151,10 @@ def _platform_lead_or_raise(db: Session, lead_id: str) -> Lead:
     if lead.source_kind != LeadSourceKind.PLATFORM_MANUAL.value:
         raise AppError("LEAD_SOURCE_INVALID", "仅平台来源客资可从此入口查看", 409)
     return lead
+
+
+def _lead_detail_dict(db: Session, lead: Lead, principal) -> dict:
+    return lead_supply_list_to_dict(db, [lead], principal)[0]
 
 
 @router.post("/platform/leads")
@@ -199,7 +216,33 @@ def get_platform_lead(
     db: Session = Depends(get_db),
 ):
     lead = _platform_lead_or_raise(db, lead_id)
-    return ok(request, lead_supply_to_dict(lead, principal))
+    return ok(request, _lead_detail_dict(db, lead, principal))
+
+
+@router.post("/platform/leads/{lead_id}/correction")
+def reopen_platform_lead_correction(
+    lead_id: str,
+    request: Request,
+    principal=Depends(require_permissions("lead.manual.manage")),
+    db: Session = Depends(get_db),
+):
+    lead = _platform_lead_or_raise(db, lead_id)
+    before = _lead_detail_dict(db, lead, principal)
+    reopen_platform_lead_for_correction(db, lead=lead, principal=principal)
+    after = _lead_detail_dict(db, lead, principal)
+    write_audit(
+        db,
+        principal=principal,
+        action="V12_PLATFORM_LEAD_CORRECTION_OPEN",
+        resource_type="lead",
+        resource_id=lead.id,
+        before=before,
+        after=after,
+        reason="运营纠正尚未派发的客资关键信息",
+        request_id=request.state.request_id,
+    )
+    db.commit()
+    return ok(request, after, "客资已进入纠正状态")
 
 
 @router.post("/platform/leads/{lead_id}/submit")
@@ -222,7 +265,7 @@ def submit_platform_lead(
         request_id=request.state.request_id,
     )
     db.commit()
-    return ok(request, {"lead": lead_supply_to_dict(lead, principal), "dedup": _dedup_dict(result)}, "客资已提交")
+    return ok(request, {"lead": _lead_detail_dict(db, lead, principal), "dedup": _dedup_dict(result)}, "客资已提交")
 
 
 @router.get("/platform/leads")
@@ -241,7 +284,10 @@ def list_platform_leads(
         count_stmt = count_stmt.where(Lead.status == status)
     total = db.scalar(count_stmt) or 0
     items = db.scalars(stmt.order_by(Lead.created_at.desc()).offset((page_no - 1) * page_size).limit(page_size)).all()
-    return ok(request, page([lead_supply_to_dict(item, principal) for item in items], total, page_no, page_size))
+    return ok(
+        request,
+        page(lead_supply_list_to_dict(db, list(items), principal), total, page_no, page_size),
+    )
 
 
 @router.post("/supplier/leads")
@@ -369,7 +415,7 @@ def submit_supplier_lead(
         request_id=request.state.request_id,
     )
     db.commit()
-    return ok(request, {"lead": lead_supply_to_dict(lead, principal), "dedup": _dedup_dict(result)}, "供应商客资已提交")
+    return ok(request, {"lead": _lead_detail_dict(db, lead, principal), "dedup": _dedup_dict(result)}, "供应商客资已提交")
 
 
 @router.get("/supplier/leads")
@@ -390,7 +436,10 @@ def supplier_lead_list(
         page_size=page_size,
         submitter_user_id=principal.user_id if principal.has_any_role("FRANCHISE_EMPLOYEE") else None,
     )
-    return ok(request, page([lead_supply_to_dict(item, principal) for item in items], total, page_no, page_size))
+    return ok(
+        request,
+        page(lead_supply_list_to_dict(db, list(items), principal), total, page_no, page_size),
+    )
 
 
 @router.get("/supplier/leads/{lead_id}")
@@ -408,7 +457,7 @@ def supplier_lead_detail(
         and lead.submitter_user_id != principal.user_id
     ):
         raise AppError("SUPPLIER_LEAD_NOT_OWNED", "加盟商员工只能查看本人录入的客资", 403)
-    return ok(request, lead_supply_to_dict(lead, principal))
+    return ok(request, _lead_detail_dict(db, lead, principal))
 
 
 @router.post("/admin/supplier-leads/{lead_id}/review")
@@ -425,7 +474,7 @@ def admin_review_supplier_lead(
         body.decision,
         body.decision,
     )
-    requires_telesales = review_decision in {"QUALIFIED", "INFO_INCOMPLETE"}
+    requires_telesales = review_decision == "INFO_INCOMPLETE"
     result = review_supplier_lead(
         db,
         lead=lead,
@@ -557,7 +606,7 @@ def own_service_areas(
     db: Session = Depends(get_db),
 ):
     company = require_active_company(db, principal.company_id)
-    return ok(request, [_area_dict(item) for item in list_service_areas(db, company.id)])
+    return ok(request, [_area_dict(item, db=db) for item in list_service_areas(db, company.id)])
 
 
 @router.put("/company/service-areas", deprecated=True)
@@ -585,7 +634,7 @@ def replace_own_service_areas(
         request_id=request.state.request_id,
     )
     db.commit()
-    return ok(request, [_area_dict(item) for item in items], "服务区域已提交审核")
+    return ok(request, [_area_dict(item, db=db) for item in items], "服务区域已提交审核")
 
 
 @router.get("/admin/company-capabilities", deprecated=True)
@@ -680,6 +729,8 @@ def admin_company_profile(
                 "is_test": company.is_test,
                 "owner_name": company.owner_name,
                 "contact_phone_masked": company_data["contact_phone_masked"],
+                "level_code": company.level_code,
+                "notes": company.notes,
                 "primary_user_id": company.primary_user_id,
                 "wechat_bound": bool(company.primary_user_id),
             },
@@ -688,10 +739,64 @@ def admin_company_profile(
                 for item in list_capabilities(db, company_id)
             ],
             "service_areas": [
-                _area_dict(item, company_name=company.name, company_code=company.code)
+                _area_dict(item, db=db, company_name=company.name, company_code=company.code)
                 for item in list_service_areas(db, company_id)
             ],
         },
+    )
+
+
+@router.put("/admin/companies/{company_id}/service-areas")
+def admin_configure_service_areas(
+    company_id: str,
+    body: ServiceAreaReplaceBody,
+    request: Request,
+    principal=Depends(require_permissions("company.profile.review")),
+    db: Session = Depends(get_db),
+):
+    company = db.get(Company, company_id)
+    if company is None:
+        raise AppError("COMPANY_NOT_FOUND", "公司不存在", 404)
+    items = replace_service_areas(
+        db,
+        company_id=company_id,
+        region_codes=body.region_codes,
+        primary_city_code=body.primary_city_code,
+    )
+    for item in items:
+        removal_pending = bool(item.review_note and item.review_note.startswith("[REMOVE_REQUEST]"))
+        if removal_pending or item.review_status != "APPROVED" or not item.active:
+            review_service_area(
+                db,
+                area_id=item.id,
+                approve=True,
+                reviewed_by=principal.user_id,
+                note="平台直接配置服务区域",
+            )
+    configured = list_service_areas(db, company_id)
+    active_codes = [item.region_code for item in configured if item.active]
+    write_audit(
+        db,
+        principal=principal,
+        action="V12_COMPANY_SERVICE_AREAS_CONFIGURE",
+        resource_type="company",
+        resource_id=company_id,
+        company_id=company_id,
+        after={
+            "region_codes": active_codes,
+            "primary_city_code": body.primary_city_code,
+        },
+        reason="平台直接配置服务区域",
+        request_id=request.state.request_id,
+    )
+    db.commit()
+    return ok(
+        request,
+        [
+            _area_dict(item, db=db, company_name=company.name, company_code=company.code)
+            for item in configured
+        ],
+        "服务区域已更新",
     )
 
 
@@ -753,7 +858,7 @@ def admin_approve_pending_company_profile(
         for item in capabilities
     ]
     area_items = [
-        _area_dict(item, company_name=company.name, company_code=company.code)
+        _area_dict(item, db=db, company_name=company.name, company_code=company.code)
         for item in areas
     ]
     for item in capability_items:
@@ -826,7 +931,7 @@ def admin_service_area_list(
         .limit(page_size)
     ).all()
     items = [
-        _area_dict(item, company_name=company_name, company_code=company_code)
+        _area_dict(item, db=db, company_name=company_name, company_code=company_code)
         for item, company_name, company_code in rows
     ]
     return ok(request, page(items, int(total), page_no, page_size))
@@ -862,7 +967,7 @@ def admin_review_area(
         resource_id=item.id,
         company_id=item.company_id,
         after={
-            **_area_dict(item, company_name=company.name, company_code=company.code),
+            **_area_dict(item, db=db, company_name=company.name, company_code=company.code),
             "request_type": "REMOVE" if removal_request else "OPEN",
         },
         reason=body.note or body.decision,
@@ -871,6 +976,6 @@ def admin_review_area(
     db.commit()
     return ok(
         request,
-        _area_dict(item, company_name=company.name, company_code=company.code),
+        _area_dict(item, db=db, company_name=company.name, company_code=company.code),
         "服务区域审核已完成",
     )
