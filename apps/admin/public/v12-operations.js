@@ -1,7 +1,7 @@
 import { amountToWan, wanToAmount } from '/h5/business-units.js';
 
 const API='/api/v1',app=document.querySelector('#app'),toastEl=document.querySelector('#toast'),modalRoot=document.querySelector('#modal-root');
-const S={me:null,view:'overview',id:'',status:'',page:1,leadSource:'',platformLeads:[],supplierLeads:[],platformLeadPage:1,supplierLeadPage:1,financeRewardPage:1,financeCompanyKeyword:'',financeCompanyStatus:'',financeCompanyPage:1,financeCompanyId:'',financeLedgerType:'',financeDays:30,financeRewardStatus:'',financeSource:'',platformCities:null,platformDistricts:[],companyKeyword:'',companyLifecycleStatus:'',companyPage:1,telesalesUsers:null,calendarMonth:'',unreadNotifications:0,accountNotifications:[]};
+const S={me:null,view:'overview',id:'',status:'',page:1,processedPage:1,leadSource:'',leadCreatedFrom:'',leadCreatedTo:'',leadStatusFilter:'',assignmentStatusFilter:'',leadAssignerId:'',operationUsers:null,platformLeads:[],supplierLeads:[],financeRewardPage:1,financeCompanyKeyword:'',financeCompanyStatus:'',financeCompanyPage:1,financeCompanyId:'',financeLedgerType:'',financeDays:30,financeRewardStatus:'',financeSource:'',platformCities:null,platformDistricts:[],companyKeyword:'',companyLifecycleStatus:'',companyPage:1,telesalesUsers:null,calendarMonth:'',unreadNotifications:0,accountNotifications:[]};
 const P={overview:['首页','layout-dashboard',['*','dashboard.operation.read']],leads:['客资','user-check',['*','lead.manual.manage','lead.supplier.review']],telesales:['电销','phone',['*','verification.read']],dispatch:['派发','hand-claim',['*','lead.dispatch']],companies:['加盟商','building',['*','company.profile.review','company.account.manage']],returns:['异常','rotate-ccw',['*','return.read']],finance:['资金','wallet',['*']],audit:['日志','search',['*','audit.read']],trace:['客资详情','file-text',['*','audit.read'],true],settings:['平台设置','settings',['*'],true],users:['内部账号','users',['*'],true],calendar:['工作日历','calendar',['*'],true],account:['账号中心','user',['*','dashboard.operation.read'],true]};
 const ADMIN_VIEW_CONTRACT={SUPER_ADMIN:['overview','leads','companies','finance'],OPERATION:['overview','leads','telesales','dispatch','companies']};
 const ROLE_HOME_PRIORITY=['SUPER_ADMIN','OPERATION'];
@@ -18,6 +18,8 @@ Object.assign(AUDIT_ACTION_LABEL,{POINTS_ADJUST:'人工积分调账',POINTS_REVE
 Object.assign(AUDIT_ACTION_LABEL,{AUTH_BACKUP_PASSWORD_SET:'设置备用登录密码',AUTH_PASSWORD_CHANGE:'修改登录密码',AUTH_PASSWORD_CHANGE_FAILED:'修改密码失败'});
 Object.assign(AUDIT_ACTION_LABEL,{INVITE_CREATE:'发起负责人绑定邀请',INVITE_REVOKE:'撤销负责人绑定邀请',V12_COMPANY_CAPABILITY_CONFIGURE:'配置加盟商客资功能'});
 Object.assign(AUDIT_ACTION_LABEL,{COMPANY_ENABLE:'启用加盟商主体',COMPANY_DISABLE:'停用加盟商主体',COMPANY_DELETE:'历史测试主体清理'});
+Object.assign(AUDIT_ACTION_LABEL,{V12_COMPANY_PROFILE_BULK_APPROVE:'完成加盟商资料整包审核',V12_COMPANY_CAPABILITY_REVIEW:'审核加盟商客资能力',V12_COMPANY_SERVICE_AREA_REVIEW:'审核加盟商服务区域',V12_COMPANY_SERVICE_AREAS_CONFIGURE:'配置加盟商服务区域',V12_PLATFORM_LEAD_FACT_CORRECTION:'更正客资关键信息',V12_LEAD_EXPORT_REQUESTED:'提交客资导出任务'});
+Object.assign(AUDIT_ACTION_LABEL,{LEAD_STAGING_UPDATE:'更新客资待处理信息',LEAD_DISPATCH:'派发客资',ASSIGNMENT_RELEASE:'释放派发单',RETURN_REVIEW:'完成退回审核',LEAD_DUPLICATE_DECISION:'处理重复客资',COMPANY_ACCOUNT_REQUEST_APPROVE:'通过加盟商账号申请',COMPANY_ACCOUNT_REQUEST_REJECT:'驳回加盟商账号申请',INVITE_CREATE:'创建加盟商邀请',INVITE_REVOKE:'撤销加盟商邀请',VERIFICATION_TASK_CREATE:'创建电销核验任务',VERIFICATION_TASK_ASSIGN:'分配电销核验任务',VERIFICATION_TASK_RECLAIM:'收回电销核验任务',V12_PLATFORM_LEAD_CORRECTION_OPEN:'发起客资更正',V12_PLATFORM_LEAD_FACT_CORRECTION:'完成客资更正',V12_PLATFORM_LEAD_CORRECTION_RECHECK:'重新检查更正异常',V12_PLATFORM_LEAD_CORRECTION_REDISPATCH:'解除原派发并重新入池',V12_COMPANY_PROFILE_BULK_APPROVE:'批量通过加盟商资料',V12_COMPANY_CAPABILITY_REVIEW:'审核加盟商能力',V12_COMPANY_SERVICE_AREA_REVIEW:'审核加盟商服务区域',V12_COMPANY_CAPABILITY_CONFIGURE:'配置加盟商能力',V12_COMPANY_SERVICE_AREAS_CONFIGURE:'配置加盟商服务区域'});
 const AUDIT_RESOURCE_LABEL={user:'账号',lead:'客资',assignment:'派发单',calendar_day:'工作日历',company:'加盟商公司',company_capability:'加盟商能力',company_lead_capability:'加盟商客资能力',company_service_area:'服务区域',company_service_area_v12:'服务区域',dictionary:'业务选项',followup:'跟进记录',invite:'加盟邀请',job:'系统任务',lead_price_rule:'客资积分规则',notification:'消息',outbox:'通知任务',points_account:'积分账户',points_ledger:'积分记录',points_package:'充值档位',rbac:'账号权限',return_evidence:'申诉证据',return_request:'退回申诉',supplier_lead_reward:'供客奖励',supplier_reward:'供客奖励',supplier_reward_batch:'奖励批次',supplier_reward_rule:'供客奖励规则',sync_batch:'客资导入批次',system_config:'规则配置',verification_task:'电话核验任务',verification_template:'电话核验内容',wechat_bind:'微信绑定'};
 const EXCLUSION_REASON_LABEL={COMPANY_INACTIVE:'加盟商当前未启用',RECEIVER_CAPABILITY_REQUIRED:'尚未开通接收客资能力',SELF_SUPPLY_FORBIDDEN:'不能接收自己提交的客资',SERVICE_REGION_MISMATCH:'服务区域不匹配',DUPLICATE_TO_RECEIVER:'接收方已有相同客户',RETURNED_RECEIVER_EXCLUDED:'该公司曾领取后退回，默认不再次派发',POINTS_INSUFFICIENT:'可用积分不足'};
 const NOTIFICATION_EVENT_LABEL={ASSIGNMENT_DISPATCHED:'客资派发提醒',INVITE_CREATED:'账号开通提醒',POINTS_RECHARGED:'积分到账提醒',V12_COMPANY_PROFILE_APPROVED:'加盟商审核结果',V12_SUPPLIER_LEAD_SUBMITTED:'客资提交提醒',V12_SUPPLIER_LEAD_REJECTED:'客资补正提醒'};
@@ -167,7 +169,10 @@ async function overview(){
     document.querySelectorAll('[data-overview-view]').forEach(button=>button.onclick=()=>go(button.dataset.overviewView));
     return;
   }
-  const report=await api('/v1.2/reports/overview');
+  const [report,processed]=await Promise.all([
+    api('/v1.2/reports/overview'),
+    api(`/v1.2/operations/my-processed?page=${S.processedPage}&page_size=8`),
+  ]);
   const management=report.management||{};
   const verification=management.verification||{};
   const returnVerification=management.return_verification||{};
@@ -189,67 +194,84 @@ async function overview(){
     ['退回终审',exceptions.return_final_review||0,'核验结论只作为事实依据，最终退款与后续动作由运营决定','returns'],
     ['加盟商资料审核',exceptions.company_review||0,'能力与服务区域可一键通过；加盟商内部员工分配不在运营视图展示','companies'],
   ];
-  const body=`<section class="ops-card"><div class="ops-card-head"><div><h2>今日待办</h2><p>按下一步责任人排列。电销不具备自主领取或决定后续处置的入口；加盟商内部员工分配仅由公司负责人处理。</p></div></div>${table(['待办事项','数量','下一步','操作'],operationRows.map(([name,count,description,view])=>`<tr><td><b>${esc(name)}</b></td><td>${esc(count)}</td><td>${esc(description)}</td><td><button class="ops-btn" data-overview-view="${view}">立即处理</button></td></tr>`))}</section>`;
+  const processedRows=(processed.items||[]).map(item=>`<tr><td>${fmt(item.created_at)}</td><td><b>${esc(auditAction(item.action))}</b></td><td>${esc(auditResource(item.resource_type))} · ${esc(recordCode(item.resource_id,'业务'))}</td><td>${esc(auditResult(item).text)}</td><td><button class="ops-btn" data-my-processed-detail="${esc(item.id)}">查看明细</button></td></tr>`);
+  const processedPages=Math.max(1,Math.ceil(Number(processed.total||0)/Number(processed.page_size||8)));
+  const processedPager=`<div class="ops-pager"><button class="ops-btn" id="processed-prev" ${S.processedPage<=1?'disabled':''}>上一页</button><span>${S.processedPage}/${processedPages}，共 ${Number(processed.total||0)} 条</span><button class="ops-btn" id="processed-next" ${S.processedPage>=processedPages?'disabled':''}>下一页</button></div>`;
+  const body=`<section class="ops-card"><div class="ops-card-head"><div><h2>我的待处理</h2><p>按下一步责任人排列。电销不具备自主领取或决定后续处置的入口；加盟商内部员工分配仅由公司负责人处理。</p></div></div>${table(['待办事项','数量','下一步','操作'],operationRows.map(([name,count,description,view])=>`<tr><td><b>${esc(name)}</b></td><td>${esc(count)}</td><td>${esc(description)}</td><td><button class="ops-btn" data-overview-view="${view}">立即处理</button></td></tr>`))}</section><section class="ops-card"><div class="ops-card-head"><div><h2>我已处理</h2><p>仅统计当前运营账号今日已完成的业务处置，与待处理队列分开。</p></div></div>${table(['处理时间','业务动作','相关记录','结果','操作'],processedRows)}${processedPager}</section>`;
   roleHome(ADMIN_ROLE_HOME_CONTENT[role],cards,body);
   document.querySelectorAll('[data-overview-view]').forEach(button=>button.onclick=()=>go(button.dataset.overviewView));
+  document.querySelectorAll('[data-my-processed-detail]').forEach(button=>button.onclick=()=>{
+    const item=(processed.items||[]).find(candidate=>candidate.id===button.dataset.myProcessedDetail);
+    if(item)auditDetail(item);
+  });
+  document.querySelector('#processed-prev')?.addEventListener('click',()=>{S.processedPage=Math.max(1,S.processedPage-1);overview()});
+  document.querySelector('#processed-next')?.addEventListener('click',()=>{S.processedPage=Math.min(processedPages,S.processedPage+1);overview()});
 }
+const leadDateBoundary=(value,end=false)=>{if(!value)return undefined;const start=Date.parse(`${value}T00:00:00.000+08:00`);return new Date(start+(end?86400000:0)).toISOString()};
+function leadReportFilters(){return {created_from:leadDateBoundary(S.leadCreatedFrom),created_to:leadDateBoundary(S.leadCreatedTo,true),source_kind:S.leadSource||undefined,lead_status:S.leadStatusFilter||undefined,assignment_status:S.assignmentStatusFilter||undefined,assigned_by_user_id:S.leadAssignerId||undefined}}
+const exportFilterSummary=filters=>[['创建开始',filters.created_from],['创建结束',filters.created_to],['来源',filters.source_kind],['客资状态',filters.lead_status],['派发状态',filters.assignment_status],['派发运营人员',filters.assigned_by_user_id]].filter(([,value])=>value).map(([name,value])=>`${name}：${label(value)}`).join('；')||'全部客资';
 async function review(){
-  const readOnly=primaryRole()==='SUPER_ADMIN';
-  const canPlatform=can('lead.manual.manage');
-  const canSupplier=can('lead.supplier.review');
-  const source=S.leadSource||(!canPlatform?'SUPPLIER_H5':!canSupplier?'PLATFORM_MANUAL':'');
-  const [platformData,supplierData]=await Promise.all([
-    canPlatform&&source!=='SUPPLIER_H5'?api(`/v1.2/platform/leads${qs({page:S.platformLeadPage,page_size:20})}`):Promise.resolve({items:[]}),
-    canSupplier&&source!=='PLATFORM_MANUAL'?api(`/v1.2/admin/supplier-leads${qs({page:S.supplierLeadPage,page_size:20})}`):Promise.resolve({items:[]}),
+  const readOnly=primaryRole()==='SUPER_ADMIN',canPlatform=can('lead.manual.manage'),canSupplier=can('lead.supplier.review');
+  const filters=leadReportFilters();
+  const [reportData,operationUsers,exportTasks]=await Promise.all([
+    api(`/v1.2/reports/leads${qs({...filters,page:S.page,page_size:20})}`),
+    S.operationUsers?Promise.resolve(S.operationUsers):api('/admin-meta/operation-users'),
+    can('lead.phone.export')?api('/v1.2/reports/leads/exports?page=1&page_size=10'):Promise.resolve({items:[]}),
   ]);
-  S.platformLeads=platformData.items||[];
-  S.supplierLeads=supplierData.items||[];
-  const platformRows=S.platformLeads.map(lead=>{
-    const actions=[`<button class="ops-btn" data-platform-detail="${esc(lead.id)}">详情</button>`];
-    if(!readOnly&&lead.status==='DRAFT'){
+  S.operationUsers=operationUsers;
+  const leads=reportData.items||[];
+  S.platformLeads=leads.filter(item=>item.source_kind==='PLATFORM_MANUAL');
+  S.supplierLeads=leads.filter(item=>item.source_kind==='SUPPLIER_H5');
+  const rows=leads.map(lead=>{
+    const platform=lead.source_kind==='PLATFORM_MANUAL',pending=['PENDING_REVIEW','PENDING_TELESALES_VERIFY'].includes(lead.lead_status);
+    const actions=[`<button class="ops-btn" data-lead-detail="${esc(lead.id)}" data-lead-source="${esc(lead.source_kind)}">详情</button>`];
+    if(!readOnly&&platform&&lead.lead_status==='DRAFT'){
       actions.push(`<button class="ops-btn" data-platform-edit="${esc(lead.id)}">编辑</button>`);
       actions.push(`<button class="ops-btn primary" data-platform-submit="${esc(lead.id)}">资料完整，进入派发池</button>`);
       actions.push(`<button class="ops-btn" data-platform-pre-dispatch="${esc(lead.id)}">信息不全并派发电销</button>`);
     }
-    if(!readOnly&&lead.status==='READY_DISPATCH'){
-      actions.push(`<button class="ops-btn" data-platform-correction="${esc(lead.id)}">更正关键信息</button>`);
+    if(!readOnly&&platform&&(lead.lead_status==='READY_DISPATCH'||lead.current_assignment_id))actions.push(`<button class="ops-btn" data-platform-correction="${esc(lead.id)}">更正关键信息</button>`);
+    if(!readOnly&&platform&&lead.pending_reason==='CORRECTION_REVIEW_REQUIRED'){
+      actions.push(`<button class="ops-btn primary" data-platform-correction-recheck="${esc(lead.id)}" data-snapshot-version="${Number(lead.snapshot_version||1)}">重新检查接收资格</button>`);
+      const canRelease=['PENDING_CLAIM','CLAIMED','FOLLOWING'].includes(lead.assignment_status)&&!(lead.correction_issues||[]).some(issue=>String(issue).startsWith('DEDUP_'));
+      if(canRelease)actions.push(`<button class="ops-btn danger" data-platform-correction-release="${esc(lead.id)}" data-snapshot-version="${Number(lead.snapshot_version||1)}">解除原派发并重新入池</button>`);
     }
-    return `<tr><td><b>${esc(lead.customer_name)}</b><br>${esc(lead.phone_masked||'--')}<br><small class="ops-muted">提交人：${esc(lead.submitter_name||'--')}</small></td><td>${badge(lead.source_kind)}</td><td>${esc(lead.city||'--')} ${esc(lead.district||'')}</td><td>${badge(lead.status)} ${badge(lead.review_status)}</td><td>${fmt(lead.submitted_at||lead.created_at)}</td><td>${actions.join(' ')}</td></tr>`;
-  });
-  const supplierRows=S.supplierLeads.map(lead=>{
-    const pending=['PENDING_REVIEW','PENDING_TELESALES_VERIFY'].includes(lead.status);
-    const actions=[`<button class="ops-btn" data-supplier-detail="${esc(lead.id)}">详情</button>`];
-    if(!readOnly&&pending)actions.push(`<button class="ops-btn primary" data-supplier-pre-dispatch="${esc(lead.id)}">分配电销核实</button>`);
-    return `<tr><td><b>${esc(lead.customer_name)}</b><br>${esc(lead.phone_masked||'--')}</td><td>${badge(lead.source_kind)}</td><td>${esc(lead.city||'--')} ${esc(lead.district||'')}</td><td>${badge(lead.status)} ${badge(lead.review_status)}</td><td>${fmt(lead.submitted_at)}</td><td>${actions.join(' ')}</td></tr>`;
+    if(!readOnly&&!platform&&pending)actions.push(`<button class="ops-btn primary" data-supplier-pre-dispatch="${esc(lead.id)}">分配电销核实</button>`);
+    const followup=lead.latest_followup;
+    return `<tr><td><b>${esc(lead.customer_name)}</b><br>${esc(lead.phone_masked||'--')}</td><td>${badge(lead.source_kind)}</td><td>${esc(lead.city||'--')} ${esc(lead.district||'')}</td><td>${esc(lead.receiver_company_name||'未分配')}</td><td>${badge(lead.lead_status)}</td><td>${lead.assignment_status?badge(lead.assignment_status):'--'}</td><td>${esc(lead.assigned_by_name||'未派发')}</td><td>${followup?`${badge(followup.status)}<br><small>${esc(followup.note||'无备注')} · ${fmt(followup.created_at)}</small>`:'--'}</td><td>${fmt(lead.created_at)}</td><td>${actions.join(' ')}</td></tr>`;
   });
   const sourceOptions=[['','全部来源'],['PLATFORM_MANUAL','平台录入'],['SUPPLIER_H5','加盟商提交']].filter(([value])=>!value||(value==='PLATFORM_MANUAL'?canPlatform:canSupplier));
-  const exportSource=source?`&source_kind=${encodeURIComponent(source)}`:'';
-  const exportAction=can('lead.read')?`<a class="ops-btn" href="${API}/v1.2/reports/leads/export.csv?period=month&limit=2000${exportSource}" download>导出近 30 天客资</a>`:'';
-  const platformQueue=canPlatform&&source!=='SUPPLIER_H5'?`<section class="ops-card"><div class="ops-card-head"><div><h2>平台录入队列</h2><p>${readOnly?'只读查看平台客资的来源、状态和全流程记录。':'由运营补充资料、确认入池或指定电销核验。'}</p></div></div>${table(['客户','来源','所在地','状态','提交时间','操作'],platformRows)}${leadQueuePager(platformData,'platform-lead', 'platformLeadPage')}</section>`:'';
-  const supplierQueue=canSupplier&&source!=='PLATFORM_MANUAL'?`<section class="ops-card"><div class="ops-card-head"><div><h2>加盟商客资队列</h2><p>${readOnly?'只读查看加盟商提交客资的审核与流转情况。':'资料完整的加盟商客资直接进入待派发池；缺少可派发地区时再分配电销核实。'}</p></div></div>${table(['客户','来源','所在地','状态','提交时间','操作'],supplierRows)}${leadQueuePager(supplierData,'supplier-lead','supplierLeadPage')}</section>`:'';
-  shell(`<section class="ops-card"><div class="ops-card-head"><div><h2>${readOnly?'客资总览':'客资录入与流转'}</h2><p>${readOnly?'系统管理员可查看客资全量状态与处理详情，不在此创建或处置日常客资。':'平台来源由运营补充资料；加盟商完整客资直接入池，缺少可派发地区时进入电销核实。'}</p></div><div class="ops-actions">${exportAction}<select class="ops-input" id="lead-source-filter">${sourceOptions.map(([value,text])=>`<option value="${value}" ${source===value?'selected':''}>${text}</option>`).join('')}</select>${canPlatform&&!readOnly?'<button class="ops-btn primary" id="new-platform-lead">新建平台客资</button>':''}</div></div></section>${platformQueue}${supplierQueue}`);
-  document.querySelector('#lead-source-filter').onchange=event=>setLeadSource(event.target.value);
-  if(canPlatform&&source!=='SUPPLIER_H5')bindLeadQueuePager(platformData,'platform-lead','platformLeadPage');
-  if(canSupplier&&source!=='PLATFORM_MANUAL')bindLeadQueuePager(supplierData,'supplier-lead','supplierLeadPage');
+  const leadStatusOptions=['DRAFT','PENDING_REVIEW','PENDING_TELESALES_VERIFY','PENDING_OPERATION_DISPOSITION','READY_DISPATCH','DISPATCHED','CLAIMED','FOLLOWING','RETURN_PENDING','RETURNED','COMPLETED','INVALID','DUPLICATE','CLOSED'];
+  const assignmentStatusOptions=['PENDING_CLAIM','CLAIMED','FOLLOWING','RETURN_PENDING','RETURNED','RELEASED','EXPIRED','COMPLETED'];
+  const filterPanel=`<section class="ops-card"><div class="ops-card-head"><div><h2>${readOnly?'客资总览':'客资录入与流转'}</h2><p>统一展示平台客资与加盟商客资队列；日期始终按客资创建时间筛选，客资状态与派发状态分开。“派发运营人员”是实际执行派发的后台人员。资料完整的加盟商客资直接进入待派发池，缺少可派发地区时再分配电销核实。</p></div><div class="ops-actions">${canPlatform&&!readOnly?'<button class="ops-btn primary" id="new-platform-lead">新建平台客资</button>':''}</div></div><form class="ops-filter" id="lead-report-filter"><label>创建日期从 <input class="ops-input" id="lead-created-from" type="date" value="${esc(S.leadCreatedFrom)}"></label><label>到 <input class="ops-input" id="lead-created-to" type="date" value="${esc(S.leadCreatedTo)}"></label><select class="ops-input" id="lead-source-filter">${sourceOptions.map(([value,text])=>`<option value="${value}" ${S.leadSource===value?'selected':''}>${text}</option>`).join('')}</select><select class="ops-input" id="lead-status-filter"><option value="">全部客资状态</option>${leadStatusOptions.map(value=>`<option value="${value}" ${S.leadStatusFilter===value?'selected':''}>${esc(label(value))}</option>`).join('')}</select><select class="ops-input" id="assignment-status-filter"><option value="">全部派发状态</option>${assignmentStatusOptions.map(value=>`<option value="${value}" ${S.assignmentStatusFilter===value?'selected':''}>${esc(label(value))}</option>`).join('')}</select><select class="ops-input" id="lead-assigner-filter"><option value="">全部派发运营人员</option>${operationUsers.map(user=>`<option value="${esc(user.id)}" ${S.leadAssignerId===user.id?'selected':''}>${esc(user.display_name||user.username)}</option>`).join('')}</select><button class="ops-btn primary" type="submit">查询</button><button class="ops-btn" type="button" id="lead-filter-reset">重置</button>${can('lead.phone.export')?'<button class="ops-btn" type="button" id="lead-export-request">后台导出完整手机号</button>':''}</form></section>`;
+  const queue=`<section class="ops-card"><div class="ops-card-head"><div><h2>客资记录</h2><p>列表仅显示当前接收方；完整派发和加盟商跟进记录请在详情中查看。</p></div></div>${table(['客户','来源','所在地','当前接收方','客资状态','派发状态','派发运营人员','最新加盟商跟进','创建时间','操作'],rows)}${pager(reportData)}</section>`;
+  const exportRows=(exportTasks.items||[]).map(task=>{const expired=task.expires_at&&new Date(task.expires_at)<=new Date();const action=task.status==='COMPLETED'&&!expired?`<a class="ops-btn" href="${API}/v1.2/reports/leads/exports/${encodeURIComponent(task.id)}/download" download>下载 ZIP</a>`:expired?'文件已过期':task.status==='FAILED'?esc(task.error_message||'导出失败'):'后台处理中';return `<tr><td>${fmt(task.created_at)}</td><td>${esc(exportFilterSummary(task.filters||{}))}</td><td>${badge(task.status)}</td><td>${Number(task.row_count||0)} 条</td><td>${action}</td></tr>`});
+  const exportPanel=can('lead.phone.export')?`<section class="ops-card"><div class="ops-card-head"><div><h2>后台导出任务</h2><p>完整手机号仅进入授权的后台导出文件；系统记录导出人和全部筛选条件。</p></div><button class="ops-btn" id="lead-export-refresh">刷新状态</button></div>${table(['提交时间','筛选条件','状态','客资数','文件'],exportRows)}</section>`:'';
+  shell(filterPanel+queue+exportPanel);
+  bindPager(reportData,review);
+  document.querySelector('#lead-report-filter').onsubmit=event=>{event.preventDefault();S.leadCreatedFrom=document.querySelector('#lead-created-from').value;S.leadCreatedTo=document.querySelector('#lead-created-to').value;S.leadSource=document.querySelector('#lead-source-filter').value;S.leadStatusFilter=document.querySelector('#lead-status-filter').value;S.assignmentStatusFilter=document.querySelector('#assignment-status-filter').value;S.leadAssignerId=document.querySelector('#lead-assigner-filter').value;S.page=1;review()};
+  document.querySelector('#lead-filter-reset').onclick=()=>{S.leadCreatedFrom='';S.leadCreatedTo='';S.leadSource='';S.leadStatusFilter='';S.assignmentStatusFilter='';S.leadAssignerId='';S.page=1;review()};
+  let exportIdempotencyKey=null;
+  document.querySelector('#lead-export-request')?.addEventListener('click',async()=>{const button=document.querySelector('#lead-export-request');button.disabled=true;exportIdempotencyKey=exportIdempotencyKey||`lead-export-${crypto.randomUUID()}`;try{await api('/v1.2/reports/leads/exports',{method:'POST',body:JSON.stringify({...leadReportFilters(),idempotency_key:exportIdempotencyKey})});exportIdempotencyKey=null;toast('后台导出任务已提交，完成后可在下方下载');await review()}catch(error){button.disabled=false;toast(error.message,true)}});
+  document.querySelector('#lead-export-refresh')?.addEventListener('click',review);
   document.querySelector('#new-platform-lead')?.addEventListener('click',()=>openPlatformLeadForm(null));
-  document.querySelectorAll('[data-platform-detail]').forEach(button=>button.onclick=()=>platformDetail(button.dataset.platformDetail));
-  document.querySelectorAll('[data-platform-edit]').forEach(button=>button.onclick=()=>openPlatformLeadForm(S.platformLeads.find(lead=>lead.id===button.dataset.platformEdit)));
-  document.querySelectorAll('[data-platform-correction]').forEach(button=>button.onclick=()=>openPlatformLeadForm(S.platformLeads.find(lead=>lead.id===button.dataset.platformCorrection),true));
+  document.querySelectorAll('[data-lead-detail]').forEach(button=>button.onclick=()=>button.dataset.leadSource==='PLATFORM_MANUAL'?platformDetail(button.dataset.leadDetail):reviewDetail(button.dataset.leadDetail));
+  document.querySelectorAll('[data-platform-edit]').forEach(button=>button.onclick=async()=>openPlatformLeadForm(await api(`/v1.2/platform/leads/${encodeURIComponent(button.dataset.platformEdit)}`)));
+  document.querySelectorAll('[data-platform-correction]').forEach(button=>button.onclick=async()=>openPlatformLeadForm(await api(`/v1.2/platform/leads/${encodeURIComponent(button.dataset.platformCorrection)}`),true));
+  document.querySelectorAll('[data-platform-correction-recheck]').forEach(button=>button.onclick=()=>recheckPlatformLeadCorrection(button.dataset.platformCorrectionRecheck,Number(button.dataset.snapshotVersion)));
+  document.querySelectorAll('[data-platform-correction-release]').forEach(button=>button.onclick=()=>releasePlatformLeadCorrection(button.dataset.platformCorrectionRelease,Number(button.dataset.snapshotVersion)));
   document.querySelectorAll('[data-platform-submit]').forEach(button=>button.onclick=()=>submitPlatformLead(button.dataset.platformSubmit));
   document.querySelectorAll('[data-platform-pre-dispatch]').forEach(button=>button.onclick=()=>assignPlatformPreDispatch(button.dataset.platformPreDispatch));
-  document.querySelectorAll('[data-supplier-detail]').forEach(button=>button.onclick=()=>reviewDetail(button.dataset.supplierDetail));
   document.querySelectorAll('[data-supplier-pre-dispatch]').forEach(button=>button.onclick=()=>assignPreDispatch(button.dataset.supplierPreDispatch));
-  document.querySelectorAll('[data-overview-view]').forEach(button=>button.onclick=()=>go(button.dataset.overviewView));
-  if(S.id){
-    const id=S.id;
-    S.id='';
-    await openLeadDetail(id);
-  }
+  if(S.id){const id=S.id;S.id='';await openLeadDetail(id)}
 }
-function leadQueuePager(data,prefix,pageKey){const pages=Math.max(1,Math.ceil((data.total||0)/(data.page_size||20)));return `<div class="ops-pager"><button class="ops-btn" id="${prefix}-prev" ${S[pageKey]<=1?'disabled':''}>上一页</button><span>${S[pageKey]}/${pages}，共 ${data.total||0} 条</span><button class="ops-btn" id="${prefix}-next" ${S[pageKey]>=pages?'disabled':''}>下一页</button></div>`}
-function bindLeadQueuePager(data,prefix,pageKey){const pages=Math.max(1,Math.ceil((data.total||0)/(data.page_size||20)));document.querySelector(`#${prefix}-prev`).onclick=()=>{S[pageKey]=Math.max(1,S[pageKey]-1);render()};document.querySelector(`#${prefix}-next`).onclick=()=>{S[pageKey]=Math.min(pages,S[pageKey]+1);render()}}
-function setLeadSource(source){const url=new URL(location.href);source?url.searchParams.set('source',source):url.searchParams.delete('source');history.pushState(null,'',url);S.leadSource=source;S.platformLeadPage=1;S.supplierLeadPage=1;render()}
-function leadDetailBody(x){return `<div class="ops-detail-grid">${[['客资编号',recordCode(x.id,'KZ')],['客资来源',label(x.source_kind)],['提交人',x.submitter_name],['客户',x.customer_name],['手机号',x.phone_masked],['处理状态',label(x.status)],['核验结果',label(x.review_status)],['重复检查',label(x.duplicate_status)],['所在地',`${x.city||''} ${x.district||''}`]].map(([a,b])=>`<div class="ops-detail"><small>${a}</small><b>${esc(b||'--')}</b></div>`).join('')}</div><section class="ops-card"><h3>客户需求</h3><p class="ops-muted">${esc(x.need_summary||'暂无说明')}</p></section><button class="ops-btn" id="trace">查看处理详情</button>`}
+function leadDetailBody(x){
+  const history=x.assignment_history||[];
+  const followups=x.followup_history||[];
+  const historySection=`<section class="ops-card"><h3>派发历史</h3>${history.length?table(['接收方','派发运营人员','派发时间','状态'],history.map(item=>`<tr><td>${esc(item.receiver_company_name||'--')}</td><td>${esc(item.assigned_by_name||'--')}</td><td>${fmt(item.assigned_at)}</td><td>${badge(item.status)}</td></tr>`)):'<p class="ops-muted">暂无派发记录</p>'}</section>`;
+  const followupSection=`<section class="ops-card"><h3>加盟商跟进记录</h3>${followups.length?table(['跟进人','状态','跟进内容','下次跟进','跟进时间'],followups.map(item=>`<tr><td>${esc(item.created_by_name||'--')}</td><td>${badge(item.status)}</td><td>${esc(item.note||'--')}</td><td>${fmt(item.next_followup_at)}</td><td>${fmt(item.created_at)}</td></tr>`)):'<p class="ops-muted">暂无加盟商跟进记录</p>'}</section>`;
+  return `<div class="ops-detail-grid">${[['客资编号',recordCode(x.id,'KZ')],['客资来源',label(x.source_kind)],['具体来源',x.source_display?label(x.source_display):null],['提交人',x.submitter_name],['客户',x.customer_name],['手机号',x.phone_masked],['当前接收方',x.current_receiver_company_name],['派发运营人员',x.assigned_by_name],['处理状态',label(x.status)],['核验结果',label(x.review_status)],['重复检查',label(x.duplicate_status)],['所在地',`${x.city||''} ${x.district||''}`]].map(([a,b])=>`<div class="ops-detail"><small>${a}</small><b>${esc(b||'--')}</b></div>`).join('')}</div><section class="ops-card"><h3>客户需求</h3><p class="ops-muted">${esc(x.need_summary||'暂无说明')}</p></section>${historySection}${followupSection}<button class="ops-btn" id="trace">查看处理详情</button>`
+}
 function showLeadDetail(title,x){modal(title,leadDetailBody(x),()=>document.querySelector('#trace').onclick=()=>{closeModal();go('trace',x.id)})}
 async function reviewDetail(id){const x=await api(`/v1.2/admin/supplier-leads/${encodeURIComponent(id)}`);showLeadDetail('加盟商客资详情',x)}
 async function platformDetail(id){const x=await api(`/v1.2/platform/leads/${encodeURIComponent(id)}`);showLeadDetail('平台客资详情',x)}
@@ -261,6 +283,19 @@ async function openLeadDetail(id){
 async function platformCities(){if(!S.platformCities){const tree=await api('/master-data/region-tree');S.platformCities=(tree.provinces||[]).flatMap(province=>(province.cities||[]).map(city=>({...city,province_code:province.code,province_name:province.name,option_name:`${province.name} · ${city.name}`})));}return S.platformCities}
 async function platformDistricts(cityCode){const cities=await platformCities();S.platformDistricts=cities.find(city=>city.code===cityCode)?.districts||[];return S.platformDistricts}
 async function platformTownships(districtCode){return districtCode?api(`/master-data/regions?parent_code=${encodeURIComponent(districtCode)}&level=TOWNSHIP`):[]}
+async function applyPlatformRegionSearchResult(region){
+  const path=region?.path||[];
+  const city=path.find(item=>item.level==='CITY');
+  const district=path.find(item=>item.level==='DISTRICT');
+  const township=path.find(item=>item.level==='TOWNSHIP');
+  if(!city)return;
+  const citySelect=document.querySelector('#platform-lead-city'),districtSelect=document.querySelector('#platform-lead-district'),townshipSelect=document.querySelector('#platform-lead-township');
+  citySelect.value=city.code;
+  const districts=await platformDistricts(city.code);
+  replacePlatformSelectOptions(districtSelect,districts,district?.code||'','','全市范围');
+  const townships=district?await platformTownships(district.code):[];
+  replacePlatformSelectOptions(townshipSelect,townships,township?.code||'','','可选，精确到乡镇/街道');
+}
 const platformOptionName=item=>item.option_name||item.label||item.name;
 function platformSelectOptions(items,currentCode,currentName,emptyLabel){const options=[...items];if(currentName&&!options.some(item=>item.name===currentName))options.unshift({code:currentCode||'',name:currentName});return `<option value="">${emptyLabel}</option>${options.map(item=>`<option value="${esc(item.code)}" ${item.code===currentCode||item.name===currentName?'selected':''}>${esc(platformOptionName(item))}</option>`).join('')}`}
 function replacePlatformSelectOptions(select,items,currentCode,currentName,emptyLabel){const entries=[...items];if(currentName&&!entries.some(item=>item.name===currentName))entries.unshift({code:currentCode||'',name:currentName});const option=(code,name,selected=false)=>{const node=document.createElement('option');node.value=code;node.textContent=name;node.selected=selected;return node};const options=[option('',emptyLabel),...entries.map(item=>option(item.code,platformOptionName(item),item.code===currentCode||item.name===currentName))];select.replaceChildren(...options)}
@@ -273,17 +308,27 @@ async function openPlatformLeadForm(item,correction=false){
   const currentDistrict=districts.find(district=>district.name===item?.district)||null;
   const townships=await platformTownships(currentDistrict?.code||'');
   const currentTownship=townships.find(township=>township.code===item?.region_code)||null;
-  const sourceOptions=[['MANUAL','人工录入'],['DOUYIN','抖音/信息流'],['WECHAT_VIDEO','视频号'],['XIAOHONGSHU','小红书']];
+  const sourceOptions=[['MANUAL','人工录入'],['DOUYIN','抖音/信息流'],['WECHAT_VIDEO','视频号'],['XIAOHONGSHU','小红书'],['OTHER','其他']];
+  const selectedSource=item?.source_channel||'OTHER';
   const categoryOptions=[['OLD_RENOVATION','旧房改造'],['SELF_BUILD','农村自建房'],['INTERIOR','室内装修']];
-  modal(correction?'更正平台客资':item?'编辑平台客资':'新建平台客资',`<form class="ops-form" id="platform-lead-form"><div class="ops-notice">${correction?'仅可更正尚未派发流转的待派发客资；保存后会回到草稿状态，需要重新确认入池。':'所在地可从全国城市中选择；保存草稿后，可选择“资料完整，进入派发池”或“信息不全并派发电销”。平台来源不会退回加盟商。'}</div><div class="ops-field"><label>客户姓名</label><input class="ops-input" id="platform-lead-name" value="${esc(item?.customer_name==='未填写'?'':item?.customer_name||'')}"></div><div class="ops-field"><label>联系电话</label><input class="ops-input" id="platform-lead-phone" inputmode="tel" value="${esc(item?.phone||'')}"></div><div class="ops-field"><label>所在地城市</label><select class="ops-input" id="platform-lead-city">${platformSelectOptions(cities,currentCity?.code||'',item?.city||'','请选择全国城市')}</select></div><div class="ops-field"><label>所在地区县</label><select class="ops-input" id="platform-lead-district">${platformSelectOptions(districts,currentDistrict?.code||'',item?.district||'','全市范围')}</select></div><div class="ops-field"><label>所在地乡镇/街道</label><select class="ops-input" id="platform-lead-township">${platformSelectOptions(townships,currentTownship?.code||'',currentTownship?.name||'','可选，精确到乡镇/街道')}</select></div><div class="ops-field"><label>来源渠道</label><select class="ops-input" id="platform-lead-source">${sourceOptions.map(([code,name])=>`<option value="${code}" ${item?.source_channel===code?'selected':''}>${name}</option>`).join('')}</select></div><div class="ops-field"><label>咨询类别</label><select class="ops-input" id="platform-lead-category">${categoryOptions.map(([code,name])=>`<option value="${code}" ${item?.category_code===code?'selected':''}>${name}</option>`).join('')}</select></div><div class="ops-field"><label>预算下限（万元）</label><input class="ops-input" id="platform-lead-budget-min" type="number" min="0" step="0.1" inputmode="decimal" value="${esc(budgetToWan(item?.budget_min))}"></div><div class="ops-field"><label>预算上限（万元）</label><input class="ops-input" id="platform-lead-budget-max" type="number" min="0" step="0.1" inputmode="decimal" value="${esc(budgetToWan(item?.budget_max))}"></div><div class="ops-field"><label>客户需求</label><textarea class="ops-textarea" id="platform-lead-need">${esc(item?.need_summary||'')}</textarea></div><label class="ops-field"><input id="platform-lead-consent" type="checkbox" ${item?.consent_confirmed?'checked':''}> 已获得客户信息授权</label><div class="ops-actions"><button class="ops-btn" type="button" id="platform-lead-cancel">取消</button><button class="ops-btn primary" type="submit">${correction?'保存更正':'保存草稿'}</button></div></form>`,()=>{
+  const correctionReasonLabel=item?.current_assignment_id?'更正原因 *':'更正原因（未派发可选）';
+  const quickDispatchAction=!item&&!correction?'<button class="ops-btn primary" type="button" id="platform-lead-quick-dispatch">创建并直接派发</button>':'';
+  modal(correction?'更正平台客资':item?'编辑平台客资':'新建平台客资',`<form class="ops-form" id="platform-lead-form"><div class="ops-notice">${correction?'更正会保留前后值和原因；已派发客资不会改写历史派发。':'所在地可搜索或按层级选择；默认建议使用“其他 + 具体来源”，避免重复新建渠道名。'}</div><div class="ops-field"><label>客户姓名</label><input class="ops-input" id="platform-lead-name" value="${esc(item?.customer_name==='未填写'?'':item?.customer_name||'')}"></div><div class="ops-field"><label>联系电话</label><input class="ops-input" id="platform-lead-phone" inputmode="tel" value="${esc(item?.phone||'')}"></div><div class="ops-field"><label for="platform-lead-region-search">搜索标准地区</label><input class="ops-input" id="platform-lead-region-search" placeholder="输入省、市、区县或乡镇/街道"><select class="ops-input" id="platform-lead-region-search-results" hidden><option value="">请选择搜索结果</option></select></div><div class="ops-field"><label>所在地城市</label><select class="ops-input" id="platform-lead-city">${platformSelectOptions(cities,currentCity?.code||'',item?.city||'','请选择全国城市')}</select></div><div class="ops-field"><label>所在地区县</label><select class="ops-input" id="platform-lead-district">${platformSelectOptions(districts,currentDistrict?.code||'',item?.district||'','全市范围')}</select></div><div class="ops-field"><label>所在地乡镇/街道</label><select class="ops-input" id="platform-lead-township">${platformSelectOptions(townships,currentTownship?.code||'',currentTownship?.name||'','可选，精确到乡镇/街道')}</select></div><div class="ops-field"><label>来源渠道</label><select class="ops-input" id="platform-lead-source">${sourceOptions.map(([code,name])=>`<option value="${code}" ${selectedSource===code?'selected':''}>${name}</option>`).join('')}</select></div><div class="ops-field" id="platform-lead-source-detail-field" ${selectedSource==='OTHER'?'':'hidden'}><label for="platform-lead-source-detail">具体来源 *</label><input class="ops-input" id="platform-lead-source-detail" maxlength="128" value="${esc(item?.source_detail||'')}" placeholder="例如：老客户转介绍"></div><div class="ops-field"><label>咨询类别</label><select class="ops-input" id="platform-lead-category">${categoryOptions.map(([code,name])=>`<option value="${code}" ${item?.category_code===code?'selected':''}>${name}</option>`).join('')}</select></div><div class="ops-field"><label>预算下限（万元）</label><input class="ops-input" id="platform-lead-budget-min" type="number" min="0" step="0.1" inputmode="decimal" value="${esc(budgetToWan(item?.budget_min))}"></div><div class="ops-field"><label>预算上限（万元）</label><input class="ops-input" id="platform-lead-budget-max" type="number" min="0" step="0.1" inputmode="decimal" value="${esc(budgetToWan(item?.budget_max))}"></div><div class="ops-field"><label>客户需求</label><textarea class="ops-textarea" id="platform-lead-need">${esc(item?.need_summary||'')}</textarea></div><label class="ops-field"><input id="platform-lead-consent" type="checkbox" ${item?.consent_confirmed?'checked':''}> 已获得客户信息授权</label>${correction?`<div class="ops-field"><label for="platform-lead-correction-reason">${correctionReasonLabel}</label><textarea class="ops-textarea" id="platform-lead-correction-reason" maxlength="1000" placeholder="说明信息来源和更正依据"></textarea></div>`:''}<div class="ops-actions"><button class="ops-btn" type="button" id="platform-lead-cancel">取消</button><button class="ops-btn" type="submit">${correction?'保存更正':'保存草稿'}</button>${quickDispatchAction}</div></form>`,()=>{
     const form=document.querySelector('#platform-lead-form');
+    const regionSearch=document.querySelector('#platform-lead-region-search'),regionResults=document.querySelector('#platform-lead-region-search-results'),sourceSelect=document.querySelector('#platform-lead-source'),sourceDetail=document.querySelector('#platform-lead-source-detail'),sourceDetailField=document.querySelector('#platform-lead-source-detail-field');
+    let searchResults=[],searchTimer=null;
     document.querySelector('#platform-lead-cancel').onclick=closeModal;
     document.querySelector('#platform-lead-city').onchange=async event=>{const next=await platformDistricts(event.target.value);replacePlatformSelectOptions(document.querySelector('#platform-lead-district'),next,'','','全市范围');replacePlatformSelectOptions(document.querySelector('#platform-lead-township'),[],'','','请先选择区县')};
     document.querySelector('#platform-lead-district').onchange=async event=>{const next=await platformTownships(event.target.value);replacePlatformSelectOptions(document.querySelector('#platform-lead-township'),next,'','','可选，精确到乡镇/街道')};
-    form.onsubmit=event=>{event.preventDefault();savePlatformLead(item?.id||null,correction)};
+    const syncSourceDetail=()=>{const other=sourceSelect.value==='OTHER';sourceDetailField.hidden=!other;sourceDetail.required=other;if(!other)sourceDetail.value=''};
+    sourceSelect.onchange=syncSourceDetail;syncSourceDetail();
+    regionSearch.oninput=()=>{clearTimeout(searchTimer);const keyword=regionSearch.value.trim();if(!keyword){searchResults=[];regionResults.hidden=true;return}searchTimer=setTimeout(async()=>{try{searchResults=await api(`/master-data/regions/search?keyword=${encodeURIComponent(keyword)}&limit=30`);replacePlatformSelectOptions(regionResults,searchResults.map(region=>({...region,option_name:region.path_label})), '', '', '请选择搜索结果');regionResults.hidden=!searchResults.length}catch(error){toast(error.message,true)}},250)};
+    regionResults.onchange=async()=>{const selected=searchResults.find(region=>region.code===regionResults.value);if(selected)await applyPlatformRegionSearchResult(selected)};
+    form.onsubmit=event=>{event.preventDefault();if(sourceSelect.value==='OTHER'&&!sourceDetail.value.trim()){toast('来源选择其他时，请填写具体来源',true);sourceDetail.focus();return}savePlatformLead(item,correction)};
+    document.querySelector('#platform-lead-quick-dispatch')?.addEventListener('click',async()=>{if(sourceSelect.value==='OTHER'&&!sourceDetail.value.trim()){toast('来源选择其他时，请填写具体来源',true);sourceDetail.focus();return}const payload=await readPlatformLeadPayload();if(payload)await openQuickDispatchCandidates(payload)});
   });
 }
-async function savePlatformLead(id,correction=false){
+async function readPlatformLeadPayload(){
   const citySelect=document.querySelector('#platform-lead-city');
   const districtSelect=document.querySelector('#platform-lead-district');
   const townshipSelect=document.querySelector('#platform-lead-township');
@@ -296,14 +341,39 @@ async function savePlatformLead(id,correction=false){
   const budget_min=budgetFromWan('#platform-lead-budget-min'),budget_max=budgetFromWan('#platform-lead-budget-max');
   if(Number.isNaN(budget_min)||Number.isNaN(budget_max)||budget_min!=null&&budget_min<0||budget_max!=null&&budget_max<0){toast('请填写有效的预算金额（万元）',true);return}
   if(budget_min!=null&&budget_max!=null&&budget_min>budget_max){toast('预算上限不能低于预算下限',true);return}
-  const payload={customer_name:document.querySelector('#platform-lead-name').value.trim()||null,phone:document.querySelector('#platform-lead-phone').value.trim()||null,city:city?.name||null,district:district?.name||null,region_code:township?.code||district?.code||city?.code||null,source_channel:document.querySelector('#platform-lead-source').value,category_code:document.querySelector('#platform-lead-category').value,need_summary:document.querySelector('#platform-lead-need').value.trim()||null,budget_min,budget_max,consent_confirmed:document.querySelector('#platform-lead-consent').checked};
+  return {customer_name:document.querySelector('#platform-lead-name').value.trim()||null,phone:document.querySelector('#platform-lead-phone').value.trim()||null,city:city?.name||null,district:district?.name||null,region_code:township?.code||district?.code||city?.code||null,source_channel:document.querySelector('#platform-lead-source').value,source_detail:document.querySelector('#platform-lead-source-detail').value.trim()||null,category_code:document.querySelector('#platform-lead-category').value,need_summary:document.querySelector('#platform-lead-need').value.trim()||null,budget_min,budget_max,consent_confirmed:document.querySelector('#platform-lead-consent').checked};
+}
+async function savePlatformLead(item,correction=false){
+  const id=item?.id||null;
+  const payload=await readPlatformLeadPayload();
+  if(!payload)return;
   try{
-    if(correction&&id)await api(`/v1.2/platform/leads/${encodeURIComponent(id)}/correction`,{method:'POST'});
-    await api(id?`/v1.2/platform/leads/${encodeURIComponent(id)}`:'/v1.2/platform/leads',{method:id?'PATCH':'POST',body:JSON.stringify(payload)});
-    closeModal();toast(correction?'平台客资更正已保存，请重新确认入池':'平台客资草稿已保存');await review()
+    if(correction&&id){
+      const reason=document.querySelector('#platform-lead-correction-reason').value.trim();
+      if(item.current_assignment_id&&!reason){toast('已派发客资必须填写更正原因',true);return}
+      await api(`/v1.2/platform/leads/${encodeURIComponent(id)}/correction`,{method:'PATCH',body:JSON.stringify({...payload,reason,expected_snapshot_version:item.snapshot_version})});
+    }else{
+      await api(id?`/v1.2/platform/leads/${encodeURIComponent(id)}`:'/v1.2/platform/leads',{method:id?'PATCH':'POST',body:JSON.stringify(payload)});
+    }
+    closeModal();toast(correction?'平台客资更正已保存，异常会标记待运营处理':'平台客资草稿已保存');await review()
   }catch(error){toast(error.message,true)}
 }
+async function openQuickDispatchCandidates(payload){
+  let keyword='',requestSequence=0,searchTimer;
+  const quickDispatchKeys=new Map();
+  const candidateCard=item=>`<article class="ops-candidate-card eligible"><div class="ops-candidate-head"><div><h3>${esc(item.company_name)}</h3><p>当前符合接收资格与服务区域</p></div>${badge('APPROVED')}</div><div class="ops-candidate-facts"><span><small>所需积分</small><b>${esc(item.points_price)}</b></span></div><div class="ops-actions"><button class="ops-btn primary" data-quick-dispatch-company="${esc(item.company_id)}">选择并派发</button></div></article>`;
+  modal('创建并直接派发',`<div class="ops-notice">系统会先验证客资和加盟商接收资格；选定后一次完成创建、进入派发池和派发。</div><div class="ops-filter"><input class="ops-input" id="quick-dispatch-search" placeholder="搜索可接收的加盟商" autocomplete="off"></div><div id="quick-dispatch-results"><div class="ops-loading">正在校验客资并匹配加盟商…</div></div><div class="ops-actions"><button class="ops-btn" id="quick-dispatch-cancel">取消</button></div>`,()=>{
+    const results=document.querySelector('#quick-dispatch-results');
+    const bindActions=()=>document.querySelectorAll('[data-quick-dispatch-company]').forEach(button=>button.onclick=async()=>{button.disabled=true;const companyId=button.dataset.quickDispatchCompany;if(!quickDispatchKeys.has(companyId))quickDispatchKeys.set(companyId,`quick-${crypto.randomUUID()}`);try{await api('/v1.2/platform/leads/quick-dispatch',{method:'POST',body:JSON.stringify({...payload,company_id:companyId,idempotency_key:quickDispatchKeys.get(companyId),note:'后台快捷派发'})});closeModal();toast('客资已创建并派发给所选加盟商');await review()}catch(error){button.disabled=false;toast(error.message,true)}});
+    const load=async()=>{const requestId=++requestSequence;zsSetSafeHtml(results,'<div class="ops-loading">正在校验客资并匹配加盟商…</div>');try{const data=await api(`/v1.2/platform/leads/quick-dispatch/candidates${qs({keyword,page:1,page_size:50})}`,{method:'POST',body:JSON.stringify(payload)});if(requestId!==requestSequence)return;const items=data.candidates||[];zsSetSafeHtml(results,items.length?`<div class="ops-candidate-grid">${items.map(candidateCard).join('')}</div>`:'<div class="ops-empty">当前没有符合条件的接收加盟商</div>');bindActions()}catch(error){if(requestId===requestSequence)zsSetSafeHtml(results,`<div class="ops-error">${esc(error.message||'当前客资无法快捷派发')}</div>`)}};
+    document.querySelector('#quick-dispatch-cancel').onclick=closeModal;
+    document.querySelector('#quick-dispatch-search').oninput=event=>{keyword=event.target.value.trim();clearTimeout(searchTimer);searchTimer=setTimeout(load,250)};
+    load();
+  });
+}
 async function submitPlatformLead(id){try{await api(`/v1.2/platform/leads/${encodeURIComponent(id)}/submit`,{method:'POST'});toast('资料完整，已进入待派发池');await review()}catch(error){toast(error.message,true)}}
+async function recheckPlatformLeadCorrection(id,snapshotVersion){const reason=window.prompt('请填写重新检查原因（至少5个字符）','接收方资格已调整，申请重新检查');if(!reason)return;if(reason.trim().length<5){toast('重新检查原因至少5个字符',true);return}try{const result=await api(`/v1.2/platform/leads/${encodeURIComponent(id)}/correction/recheck`,{method:'POST',body:JSON.stringify({reason:reason.trim(),expected_snapshot_version:snapshotVersion})});toast(result.pending_reason?'重新检查完成，仍有异常需处理':'接收资格重新检查通过');await review()}catch(error){toast(error.message,true)}}
+async function releasePlatformLeadCorrection(id,snapshotVersion){const reason=window.prompt('请填写解除原派发的原因（至少5个字符）','事实更正后原接收方不再符合资格，解除后重新派发');if(!reason)return;if(reason.trim().length<5){toast('解除原派发原因至少5个字符',true);return}try{await api(`/v1.2/platform/leads/${encodeURIComponent(id)}/correction/release-for-redispatch`,{method:'POST',body:JSON.stringify({reason:reason.trim(),expected_snapshot_version:snapshotVersion})});toast('原派发已解除，客资已重新进入待派发池');await review()}catch(error){toast(error.message,true)}}
 async function assignPlatformPreDispatch(leadId){
   const lead=S.platformLeads.find(item=>item.id===leadId);
   if(!lead?.phone_masked){toast('请先补充客户联系电话，再派发电话核验',true);openPlatformLeadForm(lead);return}
@@ -518,7 +588,7 @@ function changeOwnPassword(){
 }
 async function companies(){
   const companyPage=await api(`/companies${qs({keyword:S.companyKeyword,status:S.companyLifecycleStatus,page:S.companyPage,page_size:20})}`);
-  const companyBusinessSummary=company=>{const exceptions=company.exception_breakdown||{};return `<small>供资 ${Number(company.provided?.total||0)} · 接收 ${Number(company.received?.total||0)}</small><br><small>拒绝领取 ${Number(exceptions.refused_claim||0)} · 发起退回 ${Number(exceptions.return_requested||0)} · 确认无效 ${Number(exceptions.confirmed_invalid||0)}</small>`};
+  const companyBusinessSummary=company=>{const exceptions=company.exception_breakdown||{},received=company.received||{},statusButtons=Object.entries(received.by_status||{}).map(([status,count])=>`<button class="ops-company-link" data-company-received-status="${esc(company.id)}:${esc(status)}" type="button">${esc(label(status))} ${Number(count||0)}</button>`).join(' · ');return `<small>供资 ${Number(company.provided?.total||0)} · <button class="ops-company-link" data-company-received-total="${esc(company.id)}" type="button">接收 ${Number(received.total||0)}</button></small>${statusButtons?`<br><small>${statusButtons}</small>`:''}<br><small>拒绝领取 ${Number(exceptions.refused_claim||0)} · 发起退回 ${Number(exceptions.return_requested||0)} · 确认无效 ${Number(exceptions.confirmed_invalid||0)}</small>`};
   const companyRows=(companyPage.items||[]).map(company=>{const active=company.status==='ACTIVE',lifecycle=active?'disable':'enable',lifecycleLabel=active?'停用':'启用';return `<tr><td><button class="ops-company-link" data-company-detail="${esc(company.id)}" type="button">${esc(company.name)}</button><br><small>${esc(company.code)}${company.is_test?' · 测试主体':''}</small></td><td>${badge(company.status)}</td><td>${companyBusinessSummary(company)}</td><td>${esc(company.owner_name||'--')}</td><td><button class="ops-btn ${active?'danger':'primary'}" data-company-lifecycle="${esc(company.id)}:${lifecycle}">${lifecycleLabel}</button> <button class="ops-btn primary" data-company-accounts="${esc(company.id)}" data-company-name="${esc(company.name)}">账号与人员</button></td></tr>`});
   shell(`<section class="ops-card"><div class="ops-card-head"><div><h2>加盟商</h2><p>点击加盟商名称查看公司供资、接收、拒绝领取、退回与确认无效数据，并维护跨城市/乡镇服务区域。</p></div><button class="ops-btn primary" id="new-franchise-company" type="button">新建加盟商</button></div><form class="ops-filter-row" id="company-filter-form"><input class="ops-input" id="company-keyword" value="${esc(S.companyKeyword)}" placeholder="搜索公司名称或编号"><select class="ops-input" id="company-lifecycle-status"><option value="" ${S.companyLifecycleStatus===''?'selected':''}>全部状态</option><option value="ACTIVE" ${S.companyLifecycleStatus==='ACTIVE'?'selected':''}>正常</option><option value="PENDING" ${S.companyLifecycleStatus==='PENDING'?'selected':''}>待审核</option><option value="DISABLED" ${S.companyLifecycleStatus==='DISABLED'?'selected':''}>已停用</option></select><button class="ops-btn primary" type="submit">查询</button><button class="ops-btn" id="company-filter-reset" type="button">重置</button></form>${table(['加盟商','公司状态','业务数据','负责人','操作'],companyRows)}${companyQueuePager(companyPage,'company-list',S.companyPage)}</section>`);
   document.querySelector('#company-filter-form').onsubmit=event=>{event.preventDefault();S.companyKeyword=document.querySelector('#company-keyword').value.trim();S.companyLifecycleStatus=document.querySelector('#company-lifecycle-status').value;S.companyPage=1;companies()};
@@ -527,8 +597,21 @@ async function companies(){
   bindCompanyQueuePager(companyPage,'company-list','companyPage');
   const companiesById=Object.fromEntries((companyPage.items||[]).map(company=>[company.id,company]));
   document.querySelectorAll('[data-company-detail]').forEach(button=>button.onclick=()=>companyDetail(companiesById[button.dataset.companyDetail]));
+  document.querySelectorAll('[data-company-received-total]').forEach(button=>button.onclick=()=>companyAssignmentHistory(button.dataset.companyReceivedTotal,companiesById[button.dataset.companyReceivedTotal]?.name||'',null,1));
+  document.querySelectorAll('[data-company-received-status]').forEach(button=>button.onclick=()=>{const [companyId,assignmentStatus]=button.dataset.companyReceivedStatus.split(':');companyAssignmentHistory(companyId,companiesById[companyId]?.name||'',assignmentStatus,1)});
   document.querySelectorAll('[data-company-accounts]').forEach(button=>button.onclick=()=>companyAccounts(button.dataset.companyAccounts,button.dataset.companyName));
   document.querySelectorAll('[data-company-lifecycle]').forEach(button=>button.onclick=()=>{const [companyId,action]=button.dataset.companyLifecycle.split(':');changeCompanyLifecycle(companiesById[companyId],action)});
+}
+async function companyAssignmentHistory(companyId,companyName,assignmentStatus=null,pageNo=1){
+  try{
+    const result=await api(`/v1.2/companies/${encodeURIComponent(companyId)}/assignments${qs({assignment_status:assignmentStatus,page:pageNo,page_size:20})}`);
+    const rows=(result.items||[]).map(item=>`<tr><td>${esc(item.customer_name||'--')}<br><small>${esc(item.phone_masked||'--')}</small></td><td>${badge(item.status)}</td><td>${esc(label(item.lead_status))}</td><td>${esc(item.current_follow_status?label(item.current_follow_status):'暂无')}</td><td>${fmt(item.assigned_at)}</td></tr>`);
+    const totalPages=Math.max(1,Math.ceil(Number(result.total||0)/Number(result.page_size||20)));
+    modal(`${companyName||result.company_name||'加盟商'} · ${assignmentStatus?label(assignmentStatus):'全部接收客资'}`,`${assignmentStatus?`<div class="ops-notice">已自动筛选：${esc(label(assignmentStatus))}</div>`:''}${table(['客户','派发状态','客资状态','当前跟进','派发时间'],rows)}<div class="ops-pager"><button class="ops-btn" id="company-assignment-prev" ${pageNo<=1?'disabled':''}>上一页</button><span>第 ${pageNo} / ${totalPages} 页，共 ${Number(result.total||0)} 条</span><button class="ops-btn" id="company-assignment-next" ${pageNo>=totalPages?'disabled':''}>下一页</button></div>`,()=>{
+      document.querySelector('#company-assignment-prev')?.addEventListener('click',()=>companyAssignmentHistory(companyId,companyName,assignmentStatus,pageNo-1));
+      document.querySelector('#company-assignment-next')?.addEventListener('click',()=>companyAssignmentHistory(companyId,companyName,assignmentStatus,pageNo+1));
+    });
+  }catch(error){toast(error.message,true)}
 }
 function changeCompanyLifecycle(company,action){
   if(!company)return;
@@ -663,27 +746,32 @@ function revokeCompanyInvite(inviteId,company){
     await companyDetail(company);
   });
 }
-function serviceRegionBuilderMarkup(prefix,provinces){return `<div class="ops-region-builder" id="${prefix}-region-builder"><div class="ops-row"><div class="ops-field"><label for="${prefix}-province">省份</label><select class="ops-input" id="${prefix}-province"><option value="">请选择省份</option>${provinces.map(item=>`<option value="${esc(item.code)}">${esc(item.name)}</option>`).join('')}</select></div><div class="ops-field"><label for="${prefix}-city">城市</label><select class="ops-input" id="${prefix}-city" disabled><option value="">请先选省份</option></select></div></div><div class="ops-row"><div class="ops-field"><label for="${prefix}-district">区/县</label><select class="ops-input" id="${prefix}-district" disabled><option value="">可选</option></select></div><div class="ops-field"><label for="${prefix}-township">乡镇/街道</label><select class="ops-input" id="${prefix}-township" disabled><option value="">可选</option></select></div></div><div class="ops-actions ops-region-actions"><button class="ops-btn" id="${prefix}-add-city" type="button">添加整市</button><button class="ops-btn" id="${prefix}-add-district" type="button">添加区县</button><button class="ops-btn" id="${prefix}-add-township" type="button">添加乡镇</button></div><div class="ops-field"><label>已选服务区域</label><div class="ops-area-chips" id="${prefix}-selected-regions"></div></div><div class="ops-field"><label for="${prefix}-primary-city">主要城市 *</label><select class="ops-input" id="${prefix}-primary-city"></select><small class="ops-muted">可重复切换省市继续添加；乡镇数据以平台地区主数据为准。</small></div></div>`}
+function serviceRegionBuilderMarkup(prefix,provinces){return `<div class="ops-region-builder" id="${prefix}-region-builder"><div class="ops-row"><div class="ops-field"><label for="${prefix}-province">省份</label><select class="ops-input" id="${prefix}-province"><option value="">请选择省份</option>${provinces.map(item=>`<option value="${esc(item.code)}">${esc(item.name)}</option>`).join('')}</select></div><div class="ops-field"><label for="${prefix}-city">城市</label><select class="ops-input" id="${prefix}-city" disabled><option value="">请先选省份</option></select></div></div><div class="ops-row"><div class="ops-field"><label for="${prefix}-district">区/县</label><select class="ops-input" id="${prefix}-district" disabled><option value="">可选</option></select></div><div class="ops-field"><label for="${prefix}-township">乡镇/街道</label><select class="ops-input" id="${prefix}-township" disabled><option value="">可选</option></select></div></div><div class="ops-actions ops-region-actions"><button class="ops-btn" id="${prefix}-select-province-cities" type="button">全选当前省城市</button><button class="ops-btn" id="${prefix}-select-city-districts" type="button">全选当前市区县</button><button class="ops-btn" id="${prefix}-add-city" type="button">添加整市</button><button class="ops-btn" id="${prefix}-add-district" type="button">添加区县</button><button class="ops-btn" id="${prefix}-add-township" type="button">添加乡镇</button></div><div class="ops-field"><label>已选服务区域</label><div class="ops-area-chips" id="${prefix}-selected-regions"></div></div><div class="ops-field"><label for="${prefix}-primary-city">主要城市 *</label><select class="ops-input" id="${prefix}-primary-city"></select><small class="ops-muted">全选只作用于当前省的全部城市或当前市的全部区县，不影响其他已选区域。</small></div></div>`}
 function bindServiceRegionBuilder(prefix,cities,initialAreas=[]){
   const selected=new Map(initialAreas.filter(item=>item.active!==false&&item.review_status!=='REJECTED').map(item=>[item.region_code,{code:item.region_code,label:item.region_name||recordCode(item.region_code,'区域'),level:item.region_level||'DISTRICT'}]));
-  let primaryCityCode=initialAreas.find(item=>item.is_primary_city&&item.active!==false)?.region_code||'';
   const provinces=[...new Map(cities.map(city=>[city.province_code,{code:city.province_code,name:city.province_name}])).values()];
   const province=document.querySelector(`#${prefix}-province`),city=document.querySelector(`#${prefix}-city`),district=document.querySelector(`#${prefix}-district`),township=document.querySelector(`#${prefix}-township`),selectedRoot=document.querySelector(`#${prefix}-selected-regions`),primary=document.querySelector(`#${prefix}-primary-city`);
   const currentCity=()=>cities.find(item=>item.code===city.value);
   const currentDistrict=()=>currentCity()?.districts?.find(item=>item.code===district.value);
-  const add=(item,ensurePrimary=true)=>{if(!item?.code)return;if(ensurePrimary&&!Array.from(selected.values()).some(entry=>entry.level==='CITY')){const cityItem=currentCity();if(cityItem)selected.set(cityItem.code,{code:cityItem.code,label:cityItem.option_name,level:'CITY'})}selected.set(item.code,item);renderSelected()};
+  const cityForRegion=item=>{if(!item?.code)return null;if(item.level==='CITY')return cities.find(cityItem=>cityItem.code===item.code)||null;return cities.find(cityItem=>(cityItem.districts||[]).some(districtItem=>districtItem.code===item.code||(item.level==='TOWNSHIP'&&item.code.startsWith(districtItem.code))))||null};
+  const initialPrimaryArea=initialAreas.find(item=>item.is_primary_city&&item.active!==false);
+  let primaryCityCode=cityForRegion(initialPrimaryArea)?.code||'';
+  const add=item=>{if(!item?.code)return;selected.set(item.code,item);renderSelected()};
+  const addMany=items=>{items.forEach(item=>selected.set(item.code,item));renderSelected()};
   const renderSelected=()=>{
-    const cityEntries=Array.from(selected.values()).filter(item=>item.level==='CITY');
+    const cityEntries=[...new Map(Array.from(selected.values()).map(cityForRegion).filter(Boolean).map(item=>[item.code,{code:item.code,label:item.option_name,level:'CITY'}])).values()];
     if(!cityEntries.some(item=>item.code===primaryCityCode))primaryCityCode=cityEntries[0]?.code||'';
     zsSetSafeHtml(selectedRoot,selected.size?Array.from(selected.values()).map(item=>`<button class="ops-area-chip" data-remove-region="${esc(item.code)}" type="button">${esc(item.label)}（移除）</button>`).join(''):'<span class="ops-muted">尚未选择服务区域</span>');
     replacePlatformSelectOptions(primary,cityEntries,primaryCityCode,'','请先添加一个整市');
     primary.value=primaryCityCode;
-    selectedRoot.querySelectorAll('[data-remove-region]').forEach(button=>button.onclick=()=>{const item=selected.get(button.dataset.removeRegion);const otherCities=cityEntries.filter(entry=>entry.code!==item?.code);if(item?.level==='CITY'&&!otherCities.length&&selected.size>1){toast('至少保留一个主要城市',true);return}selected.delete(button.dataset.removeRegion);renderSelected()});
+    selectedRoot.querySelectorAll('[data-remove-region]').forEach(button=>button.onclick=()=>{selected.delete(button.dataset.removeRegion);renderSelected()});
   };
   province.onchange=()=>{const options=cities.filter(item=>item.province_code===province.value);replacePlatformSelectOptions(city,options,'','','请选择城市');city.disabled=!province.value;replacePlatformSelectOptions(district,[],'','','可选');district.disabled=true;replacePlatformSelectOptions(township,[],'','','可选');township.disabled=true};
   city.onchange=()=>{const options=currentCity()?.districts||[];replacePlatformSelectOptions(district,options,'','','可选区/县');district.disabled=!city.value;replacePlatformSelectOptions(township,[],'','','可选乡镇/街道');township.disabled=true};
   district.onchange=async()=>{replacePlatformSelectOptions(township,[],'','','加载中…');township.disabled=true;if(!district.value)return;try{const items=await api(`/master-data/regions?parent_code=${encodeURIComponent(district.value)}&level=TOWNSHIP`);replacePlatformSelectOptions(township,items,'','','可选乡镇/街道');township.disabled=!items.length}catch(error){replacePlatformSelectOptions(township,[],'','','乡镇数据加载失败');toast(error.message,true)}};
-  document.querySelector(`#${prefix}-add-city`).onclick=()=>{const item=currentCity();if(!item){toast('请先选择城市',true);return}add({code:item.code,label:item.option_name,level:'CITY'},false)};
+  document.querySelector(`#${prefix}-select-province-cities`).onclick=()=>{const items=cities.filter(item=>item.province_code===province.value);if(!items.length){toast('请先选择省份',true);return}addMany(items.map(item=>({code:item.code,label:item.option_name,level:'CITY'})))};
+  document.querySelector(`#${prefix}-select-city-districts`).onclick=()=>{const cityItem=currentCity(),items=currentCity()?.districts||[];if(!cityItem){toast('请先选择城市',true);return}addMany(items.map(item=>({code:item.code,label:`${cityItem.option_name} · ${item.name}`,level:'DISTRICT'})))};
+  document.querySelector(`#${prefix}-add-city`).onclick=()=>{const item=currentCity();if(!item){toast('请先选择城市',true);return}add({code:item.code,label:item.option_name,level:'CITY'})};
   document.querySelector(`#${prefix}-add-district`).onclick=()=>{const item=currentDistrict(),parent=currentCity();if(!item||!parent){toast('请先选择区/县',true);return}add({code:item.code,label:`${parent.option_name} · ${item.name}`,level:'DISTRICT'})};
   document.querySelector(`#${prefix}-add-township`).onclick=()=>{const option=township.selectedOptions[0],parent=currentCity(),districtItem=currentDistrict();if(!option?.value||!parent||!districtItem){toast('请先选择乡镇/街道',true);return}add({code:option.value,label:`${parent.option_name} · ${districtItem.name} · ${option.textContent}`,level:'TOWNSHIP'})};
   primary.onchange=()=>{primaryCityCode=primary.value};

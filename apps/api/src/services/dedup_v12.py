@@ -8,11 +8,14 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ..core.config import get_settings
-from ..core.models import Lead, LeadDuplicateRelation
+from ..core.enums import AssignmentStatus
+from ..core.errors import AppError
+from ..core.models import Assignment, Lead, LeadDuplicateRelation
 from ..core.models_v12 import DedupOverride, LeadDedupEvent
 from ..core.security import fingerprint_phone, hash_phone
 from ..core.v12_enums import DuplicateDecision, LeadSourceKind, LeadV12Status
 from .reward_rule_v12 import SupplierRewardRule, resolve_supplier_reward_rule
+from .lead_correction_guard import store_lead_correction_issues
 
 settings = get_settings()
 
@@ -227,13 +230,34 @@ def override_duplicate(
     clean_reason = reason.strip()
     if len(clean_reason) < 5:
         raise ValueError("去重覆盖原因至少 5 个字符")
-    event = db.get(LeadDedupEvent, event_id) if event_id else db.scalar(
+    locked_lead = db.scalar(
+        select(Lead)
+        .where(Lead.id == lead.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if locked_lead is None:
+        raise AppError("LEAD_NOT_FOUND", "客资不存在", 404)
+    lead = locked_lead
+    latest_event = db.scalar(
         select(LeadDedupEvent)
         .where(LeadDedupEvent.lead_id == lead.id)
-        .order_by(LeadDedupEvent.created_at.desc())
+        .order_by(LeadDedupEvent.created_at.desc(), LeadDedupEvent.id.desc())
+        .limit(1)
     )
+    event = db.get(LeadDedupEvent, event_id) if event_id else latest_event
     if event is None or event.lead_id != lead.id:
         raise ValueError("未找到当前客资的去重结论")
+    if (
+        latest_event is None
+        or event.id != latest_event.id
+        or event.phone_fingerprint != lead.phone_fingerprint
+    ):
+        raise AppError(
+            "DEDUP_OVERRIDE_STALE",
+            "去重结论已因客资更正而变更，请刷新后覆核当前结论",
+            409,
+        )
     if event.decision not in REVIEWABLE_DUPLICATE_DECISIONS:
         raise ValueError("仅重复或历史疑似结论允许人工覆盖")
     if lead.duplicate_status not in REVIEWABLE_DUPLICATE_DECISIONS:
@@ -251,11 +275,41 @@ def override_duplicate(
     details["overridden_by"] = approved_by
     event.details_json = details
     lead.duplicate_status = DuplicateDecision.OVERRIDDEN.value
-    lead.pending_reason = None
-    if lead.source_kind == LeadSourceKind.SUPPLIER_H5.value and lead.review_status != "APPROVED":
+    current_assignment = (
+        db.get(Assignment, lead.current_assignment_id)
+        if lead.current_assignment_id
+        else None
+    )
+    post_dispatch_correction = (
+        event.checkpoint == "POST_DISPATCH_CORRECTION"
+        or current_assignment is not None
+    )
+    if post_dispatch_correction:
+        from .dispatch_v12 import existing_receiver_correction_issues
+
+        issues: list[str] = []
+        if current_assignment is not None:
+            issues.extend(
+                existing_receiver_correction_issues(
+                    db,
+                    lead=lead,
+                    assignment=current_assignment,
+                )
+            )
+        store_lead_correction_issues(
+            lead,
+            issues,
+            require_action=(
+                current_assignment is None
+                or current_assignment.status != AssignmentStatus.COMPLETED.value
+            ),
+        )
+    elif lead.source_kind == LeadSourceKind.SUPPLIER_H5.value and lead.review_status != "APPROVED":
+        lead.pending_reason = None
         lead.status = LeadV12Status.PENDING_REVIEW.value
         lead.review_status = "PENDING"
     else:
+        lead.pending_reason = None
         lead.status = LeadV12Status.READY_DISPATCH.value
     db.flush()
     return override

@@ -22,19 +22,19 @@ MANAGE=${RESTORE_MANAGE_SERVICES:-true}
 RESTART=${RESTORE_RESTART_SERVICES:-NO}
 RESTORE_SUCCEEDED=false
 if [ "$MANAGE" = "true" ]; then
-  compose stop api scheduler
+  compose stop api scheduler lead-export-worker
 fi
 finish() {
   status=$?
   trap - EXIT HUP INT TERM
   if [ "$MANAGE" = "true" ]; then
     if [ "$RESTORE_SUCCEEDED" = "true" ] && [ "$RESTART" = "YES" ]; then
-      compose up -d api scheduler
+      compose up -d api scheduler lead-export-worker
     elif [ "$RESTORE_SUCCEEDED" = "true" ]; then
-      echo "restore completed; api and scheduler remain stopped for revision, reconciliation and smoke validation" >&2
+      echo "restore completed; api, scheduler and lead-export-worker remain stopped for revision, reconciliation and smoke validation" >&2
       echo "restart them manually only after post-restore gates pass" >&2
     else
-      echo "restore did not complete successfully; api and scheduler remain stopped" >&2
+      echo "restore did not complete successfully; api, scheduler and lead-export-worker remain stopped" >&2
       echo "inspect PostgreSQL, restore from a known-good backup if needed, then restart services manually" >&2
     fi
   fi

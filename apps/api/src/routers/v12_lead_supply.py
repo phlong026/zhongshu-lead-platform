@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import hashlib
+import json
+
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..core.auth import CurrentPrincipal, require_permissions
 from ..core.database import get_db
 from ..core.errors import AppError
-from ..core.models import Company, Lead, Region
+from ..core.models import Assignment, Company, Lead, Region
 from ..core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12
 from ..core.responses import ok, page
 from ..core.v12_enums import LeadSourceKind
@@ -18,7 +22,11 @@ from ..schemas.v12_lead_supply import (
     CompanyProfileBulkApproveBody,
     DedupOverrideBody,
     LeadDraftBody,
+    LeadCorrectionBody,
+    LeadCorrectionRedispatchBody,
+    LeadCorrectionRecheckBody,
     LeadDraftUpdateBody,
+    LeadQuickDispatchBody,
     ServiceAreaReplaceBody,
     ServiceAreaReviewBody,
     SupplierReviewBody,
@@ -38,13 +46,24 @@ from ..services.company_profile_v12 import (
 from ..services.company_service import company_to_dict
 from ..services.dedup_v12 import override_duplicate
 from ..services.china_regions import region_by_code
+from ..services.dispatch_v12 import (
+    acquire_manual_dispatch_idempotency_lock,
+    candidate_to_dict,
+    count_candidates,
+    dispatch_manually_with_outcome,
+    list_candidates,
+    manual_dispatch_idempotency_guard,
+)
 from ..services.lead_supply_v12 import (
     create_draft,
+    correct_platform_lead,
     discard_draft,
     get_lead_or_404,
     lead_supply_list_to_dict,
     lead_supply_to_dict,
     list_supplier_leads,
+    recheck_platform_lead_correction,
+    release_corrected_lead_for_redispatch,
     reopen_platform_lead_for_correction,
     reopen_rejected_supplier_lead,
     review_supplier_lead,
@@ -52,8 +71,11 @@ from ..services.lead_supply_v12 import (
     update_draft,
 )
 from ..services.pre_dispatch_v12 import assign_pre_dispatch_task
+from ..services.points_service import ledger_to_dict
 
 router = APIRouter(prefix="/v1.2", tags=["v1.2-lead-supply"])
+
+QUICK_DISPATCH_HASH_KEY = "quick_dispatch_request_hash"
 
 
 def _dedup_dict(result) -> dict | None:
@@ -68,6 +90,47 @@ def _dedup_dict(result) -> dict | None:
         "blocks_dispatch": result.blocks_dispatch,
         "reward_eligible": result.reward_eligible,
     }
+
+
+def _quick_dispatch_hash(body: LeadQuickDispatchBody) -> str:
+    payload = body.model_dump(exclude={"idempotency_key"}, mode="json")
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _quick_assignment_dict(assignment) -> dict:
+    return {
+        "id": assignment.id,
+        "lead_id": assignment.lead_id,
+        "company_id": assignment.company_id,
+        "receiver_company_id": assignment.receiver_company_id,
+        "status": assignment.status,
+        "points_price": assignment.points_price,
+        "assigned_by_user_id": assignment.assigned_by,
+        "assigned_at": assignment.assigned_at.isoformat(),
+    }
+
+
+def _existing_quick_dispatch(
+    db: Session,
+    *,
+    body: LeadQuickDispatchBody,
+    request_hash: str,
+) -> tuple[Assignment, Lead] | None:
+    assignment = db.scalar(
+        select(Assignment).where(Assignment.idempotency_key == body.idempotency_key)
+    )
+    if assignment is None:
+        return None
+    lead = db.get(Lead, assignment.lead_id)
+    stored_hash = (lead.raw_payload or {}).get(QUICK_DISPATCH_HASH_KEY) if lead else None
+    if (
+        lead is None
+        or assignment.company_id != body.company_id
+        or stored_hash != request_hash
+    ):
+        raise AppError("IDEMPOTENCY_CONFLICT", "幂等键已被其他快捷派发请求使用", 409)
+    return assignment, lead
 
 
 def _pre_dispatch_task_dict(task) -> dict:
@@ -154,7 +217,12 @@ def _platform_lead_or_raise(db: Session, lead_id: str) -> Lead:
 
 
 def _lead_detail_dict(db: Session, lead: Lead, principal) -> dict:
-    return lead_supply_list_to_dict(db, [lead], principal)[0]
+    return lead_supply_list_to_dict(
+        db,
+        [lead],
+        principal,
+        include_assignment_history=True,
+    )[0]
 
 
 @router.post("/platform/leads")
@@ -181,6 +249,211 @@ def create_platform_lead(
     )
     db.commit()
     return ok(request, lead_supply_to_dict(lead, principal), "客资草稿已创建")
+
+
+@router.post("/platform/leads/quick-dispatch/candidates")
+def preview_platform_lead_quick_dispatch_candidates(
+    body: LeadDraftBody,
+    request: Request,
+    principal=Depends(require_permissions("lead.manual.manage", "lead.dispatch")),
+    db: Session = Depends(get_db),
+    keyword: str | None = Query(default=None, max_length=128),
+    page_no: int = Query(default=1, alias="page", ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+):
+    try:
+        lead = create_draft(
+            db,
+            principal=principal,
+            source_kind=LeadSourceKind.PLATFORM_MANUAL,
+            values=body.model_dump(exclude_none=True),
+        )
+        dedup = submit_draft(
+            db,
+            lead=lead,
+            principal=principal,
+            checkpoint="QUICK_DISPATCH_PREVIEW",
+        )
+        if lead.status != "READY_DISPATCH" or lead.current_assignment_id:
+            raise AppError(
+                "LEAD_NOT_READY_DISPATCH",
+                "当前客资无法直接派发",
+                409,
+                {
+                    "status": lead.status,
+                    "duplicate_status": lead.duplicate_status,
+                    "dedup": _dedup_dict(dedup),
+                },
+            )
+        candidates = list_candidates(
+            db,
+            lead=lead,
+            keyword=keyword,
+            page_no=page_no,
+            page_size=page_size,
+        )
+        include_financials = principal.can("points.read") or principal.can("*")
+        eligible = [item for item in candidates if item.eligible]
+        data = {
+            "candidates": [
+                candidate_to_dict(item, include_financials=include_financials)
+                for item in eligible
+            ],
+            "page": page_no,
+            "page_size": page_size,
+            "page_eligible_count": len(eligible),
+            "total_companies": count_candidates(db, keyword=keyword),
+        }
+    finally:
+        db.rollback()
+    return ok(request, data)
+
+
+@router.post("/platform/leads/quick-dispatch")
+def quick_dispatch_platform_lead(
+    body: LeadQuickDispatchBody,
+    request: Request,
+    principal=Depends(require_permissions("lead.manual.manage", "lead.dispatch")),
+    db: Session = Depends(get_db),
+):
+    request_hash = _quick_dispatch_hash(body)
+    try:
+        with manual_dispatch_idempotency_guard(body.idempotency_key):
+            acquire_manual_dispatch_idempotency_lock(db, body.idempotency_key)
+            replay = _existing_quick_dispatch(
+                db,
+                body=body,
+                request_hash=request_hash,
+            )
+            if replay is not None:
+                assignment, lead = replay
+                return ok(
+                    request,
+                    {
+                        "lead": _lead_detail_dict(db, lead, principal),
+                        "assignment": _quick_assignment_dict(assignment),
+                        "idempotent": True,
+                    },
+                    "客资已完成快捷派发",
+                )
+
+            lead_values = body.model_dump(
+                exclude={"company_id", "idempotency_key", "note"},
+                exclude_none=True,
+            )
+            lead = create_draft(
+                db,
+                principal=principal,
+                source_kind=LeadSourceKind.PLATFORM_MANUAL,
+                values=lead_values,
+            )
+            lead.raw_payload = {
+                **(lead.raw_payload or {}),
+                QUICK_DISPATCH_HASH_KEY: request_hash,
+            }
+            write_audit(
+                db,
+                principal=principal,
+                action="V12_PLATFORM_LEAD_DRAFT_CREATE",
+                resource_type="lead",
+                resource_id=lead.id,
+                after={
+                    "status": lead.status,
+                    "source_kind": lead.source_kind,
+                    "quick_dispatch": True,
+                },
+                request_id=request.state.request_id,
+            )
+            dedup = submit_draft(
+                db,
+                lead=lead,
+                principal=principal,
+                checkpoint="QUICK_DISPATCH",
+            )
+            if lead.status != "READY_DISPATCH" or lead.current_assignment_id:
+                raise AppError(
+                    "LEAD_NOT_READY_DISPATCH",
+                    "当前客资无法直接派发",
+                    409,
+                    {
+                        "status": lead.status,
+                        "duplicate_status": lead.duplicate_status,
+                        "dedup": _dedup_dict(dedup),
+                    },
+                )
+            write_audit(
+                db,
+                principal=principal,
+                action="V12_PLATFORM_LEAD_SUBMIT",
+                resource_type="lead",
+                resource_id=lead.id,
+                after={
+                    "status": lead.status,
+                    "duplicate_status": lead.duplicate_status,
+                    "quick_dispatch": True,
+                },
+                reason=dedup.decision.value,
+                request_id=request.state.request_id,
+            )
+            outcome = dispatch_manually_with_outcome(
+                db,
+                lead_id=lead.id,
+                company_id=body.company_id,
+                assigned_by=principal.user_id,
+                idempotency_key=body.idempotency_key,
+                note=body.note,
+            )
+            assignment = outcome.assignment
+            write_audit(
+                db,
+                principal=principal,
+                action="V12_MANUAL_DISPATCH",
+                resource_type="assignment",
+                resource_id=assignment.id,
+                company_id=assignment.company_id,
+                after={
+                    "lead_id": lead.id,
+                    "company_id": assignment.company_id,
+                    "status": assignment.status,
+                    "points_price": assignment.points_price,
+                    "manual": True,
+                    "quick_dispatch": True,
+                },
+                reason=body.note,
+                request_id=request.state.request_id,
+            )
+            db.commit()
+            return ok(
+                request,
+                {
+                    "lead": _lead_detail_dict(db, lead, principal),
+                    "assignment": _quick_assignment_dict(assignment),
+                    "idempotent": False,
+                },
+                "客资已创建并派发给所选加盟商",
+            )
+    except IntegrityError:
+        db.rollback()
+        replay = _existing_quick_dispatch(
+            db,
+            body=body,
+            request_hash=request_hash,
+        )
+        if replay is None:
+            raise
+        assignment, lead = replay
+        return ok(
+            request,
+            {
+                "lead": _lead_detail_dict(db, lead, principal),
+                "assignment": _quick_assignment_dict(assignment),
+                "idempotent": True,
+            },
+            "客资已完成快捷派发",
+        )
+    except Exception:
+        db.rollback()
+        raise
 
 
 @router.patch("/platform/leads/{lead_id}")
@@ -243,6 +516,145 @@ def reopen_platform_lead_correction(
     )
     db.commit()
     return ok(request, after, "客资已进入纠正状态")
+
+
+@router.patch("/platform/leads/{lead_id}/correction")
+def correct_platform_lead_facts(
+    lead_id: str,
+    body: LeadCorrectionBody,
+    request: Request,
+    principal=Depends(require_permissions("lead.manual.manage")),
+    db: Session = Depends(get_db),
+):
+    values = body.model_dump(
+        exclude_unset=True,
+        exclude={"reason", "expected_snapshot_version"},
+    )
+    result = correct_platform_lead(
+        db,
+        lead_id=lead_id,
+        principal=principal,
+        values=values,
+        reason=body.reason,
+        expected_snapshot_version=body.expected_snapshot_version,
+    )
+    after = _lead_detail_dict(db, result.lead, principal)
+    write_audit(
+        db,
+        principal=principal,
+        action="V12_PLATFORM_LEAD_FACT_CORRECTION",
+        resource_type="lead",
+        resource_id=result.lead.id,
+        before=result.before,
+        after=result.after,
+        metadata={
+            "changed_fields": list(result.changed_fields),
+            "had_dispatch_history": result.had_dispatch_history,
+            "correction_issues": list(result.issues),
+            "dedup": _dedup_dict(result.dedup),
+        },
+        reason=body.reason,
+        request_id=request.state.request_id,
+    )
+    db.commit()
+    return ok(
+        request,
+        after,
+        "客资信息已更正"
+        if not result.issues
+        else "客资信息已更正，当前接收资格需运营处理",
+    )
+
+
+@router.post("/platform/leads/{lead_id}/correction/recheck")
+def recheck_platform_lead_correction_facts(
+    lead_id: str,
+    body: LeadCorrectionRecheckBody,
+    request: Request,
+    principal=Depends(require_permissions("lead.manual.manage")),
+    db: Session = Depends(get_db),
+):
+    result = recheck_platform_lead_correction(
+        db,
+        lead_id=lead_id,
+        principal=principal,
+        reason=body.reason,
+        expected_snapshot_version=body.expected_snapshot_version,
+    )
+    response_data = _lead_detail_dict(db, result.lead, principal)
+    write_audit(
+        db,
+        principal=principal,
+        action="V12_PLATFORM_LEAD_CORRECTION_RECHECK",
+        resource_type="lead",
+        resource_id=result.lead.id,
+        before=result.before,
+        after=result.after,
+        metadata={
+            "correction_issues_before": result.before["correction_issues"],
+            "correction_issues_after": list(result.issues),
+            "dedup": _dedup_dict(result.dedup),
+        },
+        reason=body.reason,
+        request_id=request.state.request_id,
+    )
+    db.commit()
+    return ok(
+        request,
+        response_data,
+        "接收资格重新检查通过"
+        if not result.issues
+        else "重新检查完成，仍有异常需处理",
+    )
+
+
+@router.post("/platform/leads/{lead_id}/correction/release-for-redispatch")
+def release_platform_lead_correction_for_redispatch(
+    lead_id: str,
+    body: LeadCorrectionRedispatchBody,
+    request: Request,
+    principal=Depends(require_permissions("lead.manual.manage")),
+    db: Session = Depends(get_db),
+):
+    result = release_corrected_lead_for_redispatch(
+        db,
+        lead_id=lead_id,
+        principal=principal,
+        reason=body.reason,
+        expected_snapshot_version=body.expected_snapshot_version,
+    )
+    response_data = {
+        "lead": _lead_detail_dict(db, result.lead, principal),
+        "assignment": _quick_assignment_dict(result.assignment),
+        "refund_ledger": (
+            ledger_to_dict(result.refund_ledger) if result.refund_ledger else None
+        ),
+    }
+    write_audit(
+        db,
+        principal=principal,
+        action="V12_PLATFORM_LEAD_CORRECTION_REDISPATCH",
+        resource_type="lead",
+        resource_id=result.lead.id,
+        company_id=result.assignment.company_id,
+        before=result.before,
+        after=result.after,
+        metadata={
+            "assignment_id": result.assignment.id,
+            "assignment_status_before": result.assignment_status_before,
+            "assignment_status_after": result.assignment.status,
+            "refund_ledger_id": (
+                result.refund_ledger.id if result.refund_ledger else None
+            ),
+            "refund_points": (
+                int(result.refund_ledger.delta) if result.refund_ledger else 0
+            ),
+        },
+        reason=body.reason,
+        request_id=request.state.request_id,
+    )
+    db.commit()
+    return ok(request, response_data, "原派发已解除，客资已重新进入待派发池")
 
 
 @router.post("/platform/leads/{lead_id}/submit")
@@ -457,6 +869,19 @@ def supplier_lead_detail(
         and lead.submitter_user_id != principal.user_id
     ):
         raise AppError("SUPPLIER_LEAD_NOT_OWNED", "加盟商员工只能查看本人录入的客资", 403)
+    return ok(request, _lead_detail_dict(db, lead, principal))
+
+
+@router.get("/admin/supplier-leads/{lead_id}")
+def admin_supplier_lead_detail(
+    lead_id: str,
+    request: Request,
+    principal=Depends(require_permissions("lead.supplier.review")),
+    db: Session = Depends(get_db),
+):
+    lead = get_lead_or_404(db, lead_id)
+    if lead.source_kind != LeadSourceKind.SUPPLIER_H5.value:
+        raise AppError("LEAD_SOURCE_INVALID", "仅加盟商来源客资可从此入口查看", 409)
     return ok(request, _lead_detail_dict(db, lead, principal))
 
 

@@ -4,6 +4,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import hashlib
 from threading import Lock
 from typing import Any
 
@@ -19,6 +20,7 @@ from ..core.security import decrypt_text, mask_phone
 from ..core.time import as_utc
 from ..core.v12_enums import DuplicateDecision, LeadV12Status, RewardStatus
 from .company_profile_v12 import REMOVAL_REQUEST_PREFIX, has_lead_capability, require_lead_capability
+from .lead_correction_guard import require_correction_review_resolved
 from .points_service import change_points, resolve_price
 from .reward_rule_v12 import (
     SupplierRewardRule,
@@ -75,6 +77,16 @@ def manual_dispatch_idempotency_guard(idempotency_key: str) -> Iterator[None]:
             if entry.users == 0:
                 _dispatch_locks.pop(idempotency_key, None)
 
+
+def acquire_manual_dispatch_idempotency_lock(db: Session, idempotency_key: str) -> None:
+    """Serialize same-key quick dispatches across PostgreSQL API processes."""
+
+    if db.get_bind().dialect.name != "postgresql":
+        return
+    digest = hashlib.sha256(f"v12-manual-dispatch:{idempotency_key}".encode("utf-8")).digest()
+    lock_id = int.from_bytes(digest[:8], byteorder="big", signed=True)
+    db.execute(select(func.pg_advisory_xact_lock(lock_id)))
+
 # Base.metadata.create_all is still used in development and tests. Register the
 # same partial unique index that migration 0003 creates for PostgreSQL/SQLite.
 _active_assignment_predicate = Assignment.__table__.c.status.in_(ACTIVE_ASSIGNMENT_STATUS_VALUES)
@@ -116,7 +128,7 @@ class ClaimResult:
 def get_dispatch_lead(db: Session, lead_id: str, *, lock: bool = False) -> Lead:
     stmt = select(Lead).where(Lead.id == lead_id)
     if lock:
-        stmt = stmt.with_for_update()
+        stmt = stmt.with_for_update().execution_options(populate_existing=True)
     lead = db.scalar(stmt)
     if lead is None:
         raise AppError("LEAD_NOT_FOUND", "客资不存在", 404)
@@ -126,14 +138,48 @@ def get_dispatch_lead(db: Session, lead_id: str, *, lock: bool = False) -> Lead:
 def _region_matches(db: Session, company_id: str, lead: Lead) -> bool:
     if not lead.region_code:
         return False
-    return db.scalar(
+    direct_match = db.scalar(
         select(CompanyServiceAreaV12.id).where(
             CompanyServiceAreaV12.company_id == company_id,
             _service_area_region_clause(lead.region_code),
             CompanyServiceAreaV12.active.is_(True),
             _service_area_dispatchable(),
         )
-    ) is not None
+    )
+    if direct_match is not None:
+        return True
+
+    lead_region = db.get(Region, lead.region_code)
+    if lead_region is None or lead_region.level != "CITY":
+        return False
+    active_district_count = int(
+        db.scalar(
+            select(func.count(Region.code)).where(
+                Region.parent_code == lead_region.code,
+                Region.level == "DISTRICT",
+                Region.active.is_(True),
+            )
+        )
+        or 0
+    )
+    if active_district_count == 0:
+        return False
+    covered_district_count = int(
+        db.scalar(
+            select(func.count(func.distinct(CompanyServiceAreaV12.region_code)))
+            .join(Region, Region.code == CompanyServiceAreaV12.region_code)
+            .where(
+                CompanyServiceAreaV12.company_id == company_id,
+                CompanyServiceAreaV12.active.is_(True),
+                _service_area_dispatchable(),
+                Region.parent_code == lead_region.code,
+                Region.level == "DISTRICT",
+                Region.active.is_(True),
+            )
+        )
+        or 0
+    )
+    return covered_district_count == active_district_count
 
 
 def _service_area_region_clause(lead_region_code: str):
@@ -294,6 +340,41 @@ def evaluate_candidate(
     )
 
 
+def existing_receiver_correction_issues(
+    db: Session,
+    *,
+    lead: Lead,
+    assignment: Assignment,
+) -> list[str]:
+    """Recheck facts that can invalidate the current receiver after correction.
+
+    Historical pricing and points are intentionally excluded: a factual correction
+    must not rewrite an already-created assignment's commercial snapshot.
+    """
+
+    company_id = assignment.receiver_company_id or assignment.company_id
+    company = db.get(Company, company_id)
+    issues: list[str] = []
+    if company is None:
+        return ["RECEIVER_COMPANY_MISSING"]
+    if company.status != "ACTIVE":
+        issues.append("COMPANY_INACTIVE")
+    if not has_lead_capability(db, company.id, "LEAD_RECEIVER"):
+        issues.append("RECEIVER_CAPABILITY_REQUIRED")
+    if lead.supplier_company_id and lead.supplier_company_id == company.id:
+        issues.append("SELF_SUPPLY_FORBIDDEN")
+    if not _region_matches(db, company.id, lead):
+        issues.append("SERVICE_REGION_MISMATCH")
+    if _receiver_duplicate_assignment(
+        db,
+        lead=lead,
+        company_id=company.id,
+        exclude_assignment_id=assignment.id,
+    ) is not None:
+        issues.append("DUPLICATE_TO_RECEIVER")
+    return issues
+
+
 def count_candidates(db: Session, *, keyword: str | None = None) -> int:
     stmt = select(func.count(Company.id))
     normalized_keyword = (keyword or "").strip()
@@ -419,16 +500,49 @@ def list_candidates(
             )
         )
     if lead.region_code:
-        region_companies = (
+        direct_region_companies = (
             select(CompanyServiceAreaV12.company_id)
             .where(
                 _service_area_region_clause(lead.region_code),
                 CompanyServiceAreaV12.active.is_(True),
                 _service_area_dispatchable(),
             )
-            .distinct()
-            .subquery()
         )
+        lead_region = db.get(Region, lead.region_code)
+        active_district_count = 0
+        if lead_region is not None and lead_region.level == "CITY":
+            active_district_count = int(
+                db.scalar(
+                    select(func.count(Region.code)).where(
+                        Region.parent_code == lead_region.code,
+                        Region.level == "DISTRICT",
+                        Region.active.is_(True),
+                    )
+                )
+                or 0
+            )
+        if active_district_count:
+            all_district_region_companies = (
+                select(CompanyServiceAreaV12.company_id)
+                .join(Region, Region.code == CompanyServiceAreaV12.region_code)
+                .where(
+                    CompanyServiceAreaV12.active.is_(True),
+                    _service_area_dispatchable(),
+                    Region.parent_code == lead.region_code,
+                    Region.level == "DISTRICT",
+                    Region.active.is_(True),
+                )
+                .group_by(CompanyServiceAreaV12.company_id)
+                .having(
+                    func.count(func.distinct(CompanyServiceAreaV12.region_code))
+                    == active_district_count
+                )
+            )
+            region_companies = direct_region_companies.union(
+                all_district_region_companies
+            ).subquery()
+        else:
+            region_companies = direct_region_companies.distinct().subquery()
         company_stmt = company_stmt.add_columns(
             region_companies.c.company_id.label("region_company_id")
         ).outerjoin(region_companies, region_companies.c.company_id == Company.id)
@@ -787,13 +901,18 @@ def claim_assignment(
     claimed_by: str,
 ) -> ClaimResult:
     assignment = db.scalar(
-        select(Assignment).where(Assignment.id == assignment_id).with_for_update()
+        select(Assignment)
+        .where(Assignment.id == assignment_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if assignment is None:
         raise AppError("ASSIGNMENT_NOT_FOUND", "派发单不存在", 404)
     if assignment.company_id != company_id:
         raise AppError("ASSIGNMENT_FORBIDDEN", "无权领取其他公司的派发单", 403)
 
+    lead = get_dispatch_lead(db, assignment.lead_id, lock=True)
+    require_correction_review_resolved(lead)
     existing_ledger = db.scalar(
         select(PointsLedger).where(
             PointsLedger.company_id == company_id,
@@ -803,7 +922,6 @@ def claim_assignment(
     if assignment.status in CLAIMED_CONTACT_STATUSES:
         if existing_ledger is None:
             raise AppError("CLAIM_LEDGER_MISSING", "派发单已领取但积分流水缺失", 500)
-        lead = get_dispatch_lead(db, assignment.lead_id)
         reward = db.scalar(
             select(SupplierLeadReward).where(SupplierLeadReward.assignment_id == assignment.id)
         )
@@ -827,7 +945,6 @@ def claim_assignment(
     if expires_at and expires_at <= now:
         raise AppError("ASSIGNMENT_EXPIRED", "派发单已过期", 409)
     require_lead_capability(db, company_id, "LEAD_RECEIVER")
-    lead = get_dispatch_lead(db, assignment.lead_id, lock=True)
     if lead.current_assignment_id != assignment.id or lead.status != LeadV12Status.DISPATCHED.value:
         raise AppError("LEAD_ASSIGNMENT_CONFLICT", "客资与派发单状态不一致", 409)
     if lead.supplier_company_id and lead.supplier_company_id == company_id:
@@ -921,7 +1038,10 @@ def refuse_pending_assignment(
     reason: str,
 ) -> tuple[Assignment, Lead]:
     assignment = db.scalar(
-        select(Assignment).where(Assignment.id == assignment_id).with_for_update()
+        select(Assignment)
+        .where(Assignment.id == assignment_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if assignment is None:
         raise AppError("ASSIGNMENT_NOT_FOUND", "派发单不存在", 404)
@@ -935,6 +1055,7 @@ def refuse_pending_assignment(
             {"status": assignment.status},
         )
     lead = get_dispatch_lead(db, assignment.lead_id, lock=True)
+    require_correction_review_resolved(lead)
     if lead.current_assignment_id != assignment.id or lead.status != LeadV12Status.DISPATCHED.value:
         raise AppError("LEAD_ASSIGNMENT_CONFLICT", "客资与派发单状态不一致", 409)
 

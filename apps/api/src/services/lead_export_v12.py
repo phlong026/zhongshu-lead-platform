@@ -1,0 +1,940 @@
+from __future__ import annotations
+
+import csv
+import logging
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from io import TextIOWrapper
+from pathlib import Path
+from tempfile import NamedTemporaryFile
+from threading import Lock
+from time import monotonic
+from typing import Any, Callable
+from zipfile import ZIP_DEFLATED, ZipFile
+
+from sqlalchemy import func, or_, select, update
+from sqlalchemy.orm import Session, aliased
+
+from ..core.models import (
+    Assignment,
+    Company,
+    FollowUp,
+    Lead,
+    LeadExportTask,
+    StorageCleanupOutbox,
+    User,
+)
+from ..core.security import decrypt_text, mask_phone
+from .storage import get_storage
+from .storage_cleanup_worker import enqueue_storage_cleanup
+
+logger = logging.getLogger("zhongshu.lead_export")
+MAX_LEAD_EXPORT_ROWS = 50_000
+MAX_FOLLOWUP_EXPORT_ROWS = 250_000
+MAX_EXPORT_CSV_BYTES = 512 * 1024 * 1024
+MAX_EXPORT_ARCHIVE_BYTES = 512 * 1024 * 1024
+EXPORT_STREAM_BATCH_SIZE = 500
+EXPORT_HEARTBEAT_ROW_INTERVAL = 1_000
+LEAD_EXPORT_UPLOAD_LEASE_RENEW_SECONDS = 60
+LEAD_EXPORT_LEASE_TIMEOUT = timedelta(hours=2)
+LEAD_EXPORT_ATTEMPT_CLEANUP_DELAY = timedelta(days=1)
+
+
+class LeadExportLimitError(RuntimeError):
+    pass
+
+
+class LeadExportLeaseLostError(RuntimeError):
+    pass
+
+
+@dataclass(slots=True)
+class _CsvByteBudget:
+    limit: int
+    used: int = 0
+
+    def consume(self, value: str) -> None:
+        self.used += len(value.encode("utf-8"))
+        if self.used > self.limit:
+            raise LeadExportLimitError(
+                "导出文件超过安全大小，请缩小筛选范围后分批导出"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class LeadReportRow:
+    lead: Lead
+    assignment: Assignment | None
+    receiver_company_name: str | None
+    assigned_by_name: str | None
+    supplier_company_name: str | None
+
+
+def _datetime_value(value: Any) -> datetime | None:
+    if value is None or isinstance(value, datetime):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    return datetime.fromisoformat(text.replace("Z", "+00:00"))
+
+
+def normalized_lead_report_filters(filters: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "created_from": _datetime_value(filters.get("created_from")),
+        "created_to": _datetime_value(filters.get("created_to")),
+        "source_kind": _upper(filters.get("source_kind")),
+        "receiver_company_id": _text(filters.get("receiver_company_id")),
+        "lead_status": _upper(filters.get("lead_status")),
+        "assignment_status": _upper(filters.get("assignment_status")),
+        "assigned_by_user_id": _text(filters.get("assigned_by_user_id")),
+    }
+
+
+def _text(value: Any) -> str | None:
+    text = str(value).strip() if value is not None else ""
+    return text or None
+
+
+def _upper(value: Any) -> str | None:
+    text = _text(value)
+    return text.upper() if text else None
+
+
+def _conditions(filters: dict[str, Any], current_assignment) -> list[Any]:
+    values = normalized_lead_report_filters(filters)
+    conditions = [Lead.source_kind.is_not(None)]
+    if values["created_from"]:
+        conditions.append(Lead.created_at >= values["created_from"])
+    if values["created_to"]:
+        conditions.append(Lead.created_at < values["created_to"])
+    if values["source_kind"]:
+        conditions.append(Lead.source_kind == values["source_kind"])
+    if values["receiver_company_id"]:
+        conditions.append(
+            func.coalesce(
+                current_assignment.receiver_company_id,
+                current_assignment.company_id,
+            )
+            == values["receiver_company_id"]
+        )
+    if values["lead_status"]:
+        conditions.append(Lead.status == values["lead_status"])
+    if values["assignment_status"]:
+        conditions.append(current_assignment.status == values["assignment_status"])
+    if values["assigned_by_user_id"]:
+        conditions.append(current_assignment.assigned_by == values["assigned_by_user_id"])
+    return conditions
+
+
+def _report_select(filters: dict[str, Any]):
+    current_assignment = aliased(Assignment, name="current_assignment")
+    receiver = aliased(Company, name="current_receiver")
+    supplier = aliased(Company, name="lead_supplier")
+    assigned_by = aliased(User, name="assigned_by_user")
+    statement = (
+        select(
+            Lead,
+            current_assignment,
+            receiver.name.label("receiver_company_name"),
+            assigned_by.display_name.label("assigned_by_name"),
+            supplier.name.label("supplier_company_name"),
+        )
+        .outerjoin(current_assignment, current_assignment.id == Lead.current_assignment_id)
+        .outerjoin(
+            receiver,
+            receiver.id
+            == func.coalesce(
+                current_assignment.receiver_company_id,
+                current_assignment.company_id,
+            ),
+        )
+        .outerjoin(assigned_by, assigned_by.id == current_assignment.assigned_by)
+        .outerjoin(supplier, supplier.id == Lead.supplier_company_id)
+        .where(*_conditions(filters, current_assignment))
+    )
+    return statement, current_assignment
+
+
+def list_lead_report_rows(
+    db: Session,
+    *,
+    filters: dict[str, Any],
+    page_no: int,
+    page_size: int,
+) -> tuple[list[LeadReportRow], int]:
+    statement, current_assignment = _report_select(filters)
+    total = int(
+        db.scalar(
+            select(func.count(Lead.id))
+            .outerjoin(current_assignment, current_assignment.id == Lead.current_assignment_id)
+            .where(*_conditions(filters, current_assignment))
+        )
+        or 0
+    )
+    rows = db.execute(
+        statement.order_by(Lead.created_at.desc(), Lead.id.desc())
+        .offset((page_no - 1) * page_size)
+        .limit(page_size)
+    ).all()
+    return [
+        LeadReportRow(
+            lead=row[0],
+            assignment=row[1],
+            receiver_company_name=row.receiver_company_name,
+            assigned_by_name=row.assigned_by_name,
+            supplier_company_name=row.supplier_company_name,
+        )
+        for row in rows
+    ], total
+
+
+def _followup_dict(item: FollowUp, *, created_by_name: str | None = None) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "assignment_id": item.assignment_id,
+        "status": item.status,
+        "note": item.note,
+        "next_followup_at": item.next_followup_at.isoformat()
+        if item.next_followup_at
+        else None,
+        "created_by_user_id": item.created_by,
+        "created_by_name": created_by_name,
+        "created_at": item.created_at.isoformat(),
+    }
+
+
+def lead_report_to_dicts(
+    db: Session,
+    rows: list[LeadReportRow],
+    *,
+    include_full_phone: bool = False,
+    include_latest_followup: bool = True,
+) -> list[dict[str, Any]]:
+    assignment_ids = {
+        row.assignment.id for row in rows if row.assignment is not None
+    }
+    latest_followups: dict[str, dict[str, Any]] = {}
+    if assignment_ids and include_latest_followup:
+        creator = aliased(User, name="followup_creator")
+        ranked_followups = (
+            select(
+                FollowUp.id.label("followup_id"),
+                func.row_number()
+                .over(
+                    partition_by=FollowUp.assignment_id,
+                    order_by=(FollowUp.created_at.desc(), FollowUp.id.desc()),
+                )
+                .label("row_number"),
+            )
+            .where(FollowUp.assignment_id.in_(assignment_ids))
+            .subquery()
+        )
+        followup_rows = db.execute(
+            select(FollowUp, creator.display_name.label("created_by_name"))
+            .join(
+                ranked_followups,
+                ranked_followups.c.followup_id == FollowUp.id,
+            )
+            .outerjoin(creator, creator.id == FollowUp.created_by)
+            .where(ranked_followups.c.row_number == 1)
+        ).all()
+        for followup, created_by_name in followup_rows:
+            latest_followups[followup.assignment_id] = _followup_dict(
+                followup,
+                created_by_name=created_by_name,
+            )
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        lead = row.lead
+        assignment = row.assignment
+        phone = decrypt_text(lead.phone_encrypted)
+        source_display = (
+            f"其他（{lead.source_detail}）"
+            if lead.source_channel == "OTHER" and lead.source_detail
+            else lead.source_channel
+        )
+        result.append(
+            {
+                "id": lead.id,
+                "customer_name": lead.customer_name,
+                "phone": phone if include_full_phone else None,
+                "phone_masked": mask_phone(phone),
+                "source_kind": lead.source_kind,
+                "source_channel": lead.source_channel,
+                "source_detail": lead.source_detail,
+                "source_display": source_display,
+                "city": lead.city,
+                "district": lead.district,
+                "region_code": lead.region_code,
+                "need_summary": lead.need_summary,
+                "lead_status": lead.status,
+                "review_status": lead.review_status,
+                "pending_reason": lead.pending_reason,
+                "correction_issues": list(
+                    (lead.raw_payload or {}).get("correction_issues") or []
+                ),
+                "snapshot_version": lead.snapshot_version,
+                "current_follow_status": lead.current_follow_status,
+                "supplier_company_id": lead.supplier_company_id,
+                "supplier_company_name": row.supplier_company_name,
+                "current_assignment_id": assignment.id if assignment else None,
+                "assignment_status": assignment.status if assignment else None,
+                "receiver_company_id": (
+                    assignment.receiver_company_id or assignment.company_id
+                    if assignment
+                    else None
+                ),
+                "receiver_company_name": row.receiver_company_name,
+                "assigned_by_user_id": assignment.assigned_by if assignment else None,
+                "assigned_by_name": row.assigned_by_name,
+                "assigned_at": assignment.assigned_at.isoformat() if assignment else None,
+                "latest_followup": latest_followups.get(assignment.id) if assignment else None,
+                "created_at": lead.created_at.isoformat(),
+            }
+        )
+    return result
+
+
+def _safe_csv_cell(value: Any) -> str:
+    text = "" if value is None else str(value)
+    return f"'{text}" if text.startswith(("=", "+", "-", "@", "\t", "\r", "\n")) else text
+
+
+LEAD_EXPORT_FIELDS = [
+    "客资编号",
+    "客户姓名",
+    "完整手机号",
+    "来源类型",
+    "来源渠道",
+    "城市",
+    "区县",
+    "客资状态",
+    "派发状态",
+    "接收加盟商",
+    "派发运营人员",
+    "派发时间",
+    "创建时间",
+]
+
+FOLLOWUP_EXPORT_FIELDS = [
+    "客资编号",
+    "客户姓名",
+    "派发单编号",
+    "接收加盟商",
+    "跟进状态",
+    "跟进内容",
+    "下次跟进时间",
+    "跟进人",
+    "跟进时间",
+]
+
+
+def _iter_report_rows(db: Session, filters: dict[str, Any]):
+    statement, _current_assignment = _report_select(filters)
+    rows = db.execute(
+        statement.order_by(Lead.created_at.desc(), Lead.id.desc()).execution_options(
+            yield_per=EXPORT_STREAM_BATCH_SIZE
+        )
+    )
+    for row in rows:
+        yield LeadReportRow(
+            lead=row[0],
+            assignment=row[1],
+            receiver_company_name=row.receiver_company_name,
+            assigned_by_name=row.assigned_by_name,
+            supplier_company_name=row.supplier_company_name,
+        )
+
+
+def _followup_export_statement(filters: dict[str, Any]):
+    current_assignment = aliased(Assignment, name="filtered_current_assignment")
+    followup_assignment = aliased(Assignment, name="followup_assignment")
+    receiver = aliased(Company, name="followup_receiver")
+    creator = aliased(User, name="followup_creator_export")
+    return (
+        select(
+            Lead.id.label("lead_id"),
+            Lead.customer_name,
+            followup_assignment.id.label("assignment_id"),
+            receiver.name.label("receiver_company_name"),
+            FollowUp.status,
+            FollowUp.note,
+            FollowUp.next_followup_at,
+            creator.display_name.label("created_by_name"),
+            FollowUp.created_at,
+        )
+        .join(followup_assignment, followup_assignment.lead_id == Lead.id)
+        .join(FollowUp, FollowUp.assignment_id == followup_assignment.id)
+        .outerjoin(current_assignment, current_assignment.id == Lead.current_assignment_id)
+        .outerjoin(
+            receiver,
+            receiver.id
+            == func.coalesce(
+                followup_assignment.receiver_company_id,
+                followup_assignment.company_id,
+            ),
+        )
+        .outerjoin(creator, creator.id == FollowUp.created_by)
+        .where(*_conditions(filters, current_assignment))
+        .order_by(Lead.created_at.desc(), FollowUp.created_at.desc())
+    )
+
+
+def _iter_followup_export_rows(db: Session, filters: dict[str, Any]):
+    rows = db.execute(
+        _followup_export_statement(filters).execution_options(
+            yield_per=EXPORT_STREAM_BATCH_SIZE
+        )
+    )
+    for row in rows:
+        yield {
+            "客资编号": row.lead_id,
+            "客户姓名": row.customer_name,
+            "派发单编号": row.assignment_id,
+            "接收加盟商": row.receiver_company_name,
+            "跟进状态": row.status,
+            "跟进内容": row.note,
+            "下次跟进时间": row.next_followup_at.isoformat()
+            if row.next_followup_at
+            else None,
+            "跟进人": row.created_by_name,
+            "跟进时间": row.created_at.isoformat(),
+        }
+
+
+def _count_export_followups(db: Session, filters: dict[str, Any]) -> int:
+    current_assignment = aliased(Assignment, name="count_current_assignment")
+    followup_assignment = aliased(Assignment, name="count_followup_assignment")
+    return int(
+        db.scalar(
+            select(func.count(FollowUp.id))
+            .select_from(Lead)
+            .join(followup_assignment, followup_assignment.lead_id == Lead.id)
+            .join(FollowUp, FollowUp.assignment_id == followup_assignment.id)
+            .outerjoin(
+                current_assignment,
+                current_assignment.id == Lead.current_assignment_id,
+            )
+            .where(*_conditions(filters, current_assignment))
+        )
+        or 0
+    )
+
+
+class _BoundedCsvWriter:
+    def __init__(self, output: TextIOWrapper, budget: _CsvByteBudget) -> None:
+        self.output = output
+        self.budget = budget
+
+    def write(self, value: str) -> int:
+        self.budget.consume(value)
+        return self.output.write(value)
+
+
+def _write_csv_member(
+    archive: ZipFile,
+    *,
+    filename: str,
+    fieldnames: list[str],
+    rows,
+    heartbeat: Callable[[], None],
+    budget: _CsvByteBudget,
+    max_rows: int,
+) -> int:
+    count = 0
+    with archive.open(filename, "w") as binary_output:
+        with TextIOWrapper(
+            binary_output,
+            encoding="utf-8-sig",
+            newline="",
+        ) as text_output:
+            bounded_output = _BoundedCsvWriter(text_output, budget)
+            writer = csv.DictWriter(bounded_output, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(
+                    {key: _safe_csv_cell(row.get(key)) for key in fieldnames}
+                )
+                count += 1
+                if count > max_rows:
+                    raise LeadExportLimitError(
+                        f"导出记录超过 {max_rows} 条，请缩小筛选范围后分批导出"
+                    )
+                if count % EXPORT_HEARTBEAT_ROW_INTERVAL == 0:
+                    heartbeat()
+    return count
+
+
+def _lead_export_row(row: LeadReportRow) -> dict[str, Any]:
+    lead = row.lead
+    assignment = row.assignment
+    phone = decrypt_text(lead.phone_encrypted)
+    source_display = (
+        f"其他（{lead.source_detail}）"
+        if lead.source_channel == "OTHER" and lead.source_detail
+        else lead.source_channel
+    )
+    return {
+        "客资编号": lead.id,
+        "客户姓名": lead.customer_name,
+        "完整手机号": phone,
+        "来源类型": lead.source_kind,
+        "来源渠道": source_display,
+        "城市": lead.city,
+        "区县": lead.district,
+        "客资状态": lead.status,
+        "派发状态": assignment.status if assignment else None,
+        "接收加盟商": row.receiver_company_name,
+        "派发运营人员": row.assigned_by_name,
+        "派发时间": assignment.assigned_at.isoformat() if assignment else None,
+        "创建时间": lead.created_at.isoformat(),
+    }
+
+
+def build_lead_export_archive(
+    db: Session,
+    filters: dict[str, Any],
+    *,
+    heartbeat: Callable[[], None] | None = None,
+) -> tuple[Path, int]:
+    beat = heartbeat or (lambda: None)
+    beat()
+    _sample, total = list_lead_report_rows(
+        db,
+        filters=filters,
+        page_no=1,
+        page_size=1,
+    )
+    if total > MAX_LEAD_EXPORT_ROWS:
+        raise LeadExportLimitError(
+            f"客资数超过 {MAX_LEAD_EXPORT_ROWS} 条，请缩小筛选范围后分批导出"
+        )
+    followup_total = _count_export_followups(db, filters)
+    if followup_total > MAX_FOLLOWUP_EXPORT_ROWS:
+        raise LeadExportLimitError(
+            f"跟进记录超过 {MAX_FOLLOWUP_EXPORT_ROWS} 条，请缩小筛选范围后分批导出"
+        )
+    temporary = NamedTemporaryFile(
+        prefix="zhongshu-lead-export-",
+        suffix=".zip",
+        delete=False,
+    )
+    archive_path = Path(temporary.name)
+    temporary.close()
+    try:
+        row_heartbeat = beat if db.get_bind().dialect.name == "postgresql" else (lambda: None)
+        budget = _CsvByteBudget(MAX_EXPORT_CSV_BYTES)
+        with ZipFile(archive_path, "w", compression=ZIP_DEFLATED) as archive:
+            lead_count = _write_csv_member(
+                archive,
+                filename="客资明细.csv",
+                fieldnames=LEAD_EXPORT_FIELDS,
+                rows=(_lead_export_row(row) for row in _iter_report_rows(db, filters)),
+                heartbeat=row_heartbeat,
+                budget=budget,
+                max_rows=MAX_LEAD_EXPORT_ROWS,
+            )
+            beat()
+            _write_csv_member(
+                archive,
+                filename="跟进记录.csv",
+                fieldnames=FOLLOWUP_EXPORT_FIELDS,
+                rows=_iter_followup_export_rows(db, filters),
+                heartbeat=row_heartbeat,
+                budget=budget,
+                max_rows=MAX_FOLLOWUP_EXPORT_ROWS,
+            )
+        if archive_path.stat().st_size > MAX_EXPORT_ARCHIVE_BYTES:
+            raise LeadExportLimitError(
+                "压缩后的导出文件超过安全大小，请缩小筛选范围后分批导出"
+            )
+        beat()
+        return archive_path, lead_count
+    except Exception:
+        archive_path.unlink(missing_ok=True)
+        raise
+
+
+def _claim_next_lead_export_task(
+    db: Session,
+    *,
+    stale_before: datetime,
+) -> tuple[str, str] | None:
+    now = datetime.now(timezone.utc)
+    task = db.scalar(
+        select(LeadExportTask)
+        .where(
+            or_(
+                LeadExportTask.status == "PENDING",
+                (
+                    (LeadExportTask.status == "RUNNING")
+                    & (LeadExportTask.started_at < stale_before)
+                ),
+            )
+        )
+        .order_by(LeadExportTask.created_at.asc(), LeadExportTask.id.asc())
+        .with_for_update(skip_locked=True)
+        .limit(1)
+    )
+    if task is None:
+        db.rollback()
+        return None
+    attempt_token = uuid.uuid4().hex
+    task.status = "RUNNING"
+    task.started_at = now
+    task.completed_at = None
+    task.error_message = None
+    task.attempt_token = attempt_token
+    db.commit()
+    return task.id, attempt_token
+
+
+def _renew_lead_export_lease(
+    db: Session,
+    *,
+    task_id: str,
+    attempt_token: str,
+) -> None:
+    bind = db.get_bind()
+    if bind.dialect.name == "postgresql":
+        # PostgreSQL yield_per uses a server-side cursor. Renewing the lease on
+        # the export Session would commit that cursor's transaction mid-stream.
+        _renew_lead_export_lease_from_bind(
+            bind,
+            task_id=task_id,
+            attempt_token=attempt_token,
+        )
+        return
+    _renew_lead_export_lease_in_session(
+        db,
+        task_id=task_id,
+        attempt_token=attempt_token,
+    )
+
+
+def _renew_lead_export_lease_from_bind(
+    bind,
+    *,
+    task_id: str,
+    attempt_token: str,
+) -> None:
+    engine = getattr(bind, "engine", bind)
+    with Session(bind=engine, expire_on_commit=False) as lease_db:
+        _renew_lead_export_lease_in_session(
+            lease_db,
+            task_id=task_id,
+            attempt_token=attempt_token,
+        )
+
+
+def _lead_export_upload_progress(
+    db: Session,
+    *,
+    task_id: str,
+    attempt_token: str,
+    report_progress: Callable[[], None],
+    clock: Callable[[], float] = monotonic,
+) -> Callable[[], None]:
+    """Report real upload progress and renew a PostgreSQL lease at most once/minute."""
+
+    bind = db.get_bind()
+    if bind.dialect.name != "postgresql":
+        return report_progress
+    renewal_lock = Lock()
+    last_renewed_at = clock()
+
+    def progress() -> None:
+        nonlocal last_renewed_at
+        report_progress()
+        with renewal_lock:
+            now = clock()
+            if now - last_renewed_at < LEAD_EXPORT_UPLOAD_LEASE_RENEW_SECONDS:
+                return
+            _renew_lead_export_lease_from_bind(
+                bind,
+                task_id=task_id,
+                attempt_token=attempt_token,
+            )
+            last_renewed_at = now
+
+    return progress
+
+
+def _renew_lead_export_lease_in_session(
+    lease_db: Session,
+    *,
+    task_id: str,
+    attempt_token: str,
+) -> None:
+    result = lease_db.execute(
+        update(LeadExportTask)
+        .where(
+            LeadExportTask.id == task_id,
+            LeadExportTask.status == "RUNNING",
+            LeadExportTask.attempt_token == attempt_token,
+        )
+        .values(started_at=datetime.now(timezone.utc))
+    )
+    if result.rowcount != 1:
+        lease_db.rollback()
+        raise LeadExportLeaseLostError("导出任务租约已被其他工作进程接管")
+    lease_db.commit()
+
+
+def _attempt_cleanup_event_key(task_id: str, attempt_token: str) -> str:
+    return f"lead-export-attempt:{task_id}:{attempt_token}"
+
+
+def _attempt_object_key(
+    *,
+    task_id: str,
+    attempt_token: str,
+    created_at: datetime,
+) -> str:
+    return f"lead-exports/{created_at:%Y/%m}/{task_id}/{attempt_token}.zip"
+
+
+def _persist_attempt_cleanup_intent(
+    db: Session,
+    *,
+    object_key: str,
+    task_id: str,
+    attempt_token: str,
+) -> StorageCleanupOutbox:
+    cleanup = enqueue_storage_cleanup(
+        db,
+        event_key=_attempt_cleanup_event_key(task_id, attempt_token),
+        object_key=object_key,
+        source_type="lead_export_attempt",
+        source_id=task_id,
+        reason="完整手机号导出尝试的中断兜底清理",
+    )
+    cleanup.next_attempt_at = (
+        datetime.now(timezone.utc) + LEAD_EXPORT_ATTEMPT_CLEANUP_DELAY
+    )
+    db.commit()
+    return cleanup
+
+
+def _delete_or_schedule_attempt_cleanup(
+    db: Session,
+    *,
+    storage,
+    object_key: str,
+    task_id: str,
+    attempt_token: str,
+) -> None:
+    event_key = _attempt_cleanup_event_key(task_id, attempt_token)
+    try:
+        storage.delete(object_key)
+    except Exception as exc:
+        logger.warning(
+            "lead export orphan immediate cleanup failed task_id=%s",
+            task_id,
+            exc_info=True,
+        )
+        cleanup = enqueue_storage_cleanup(
+            db,
+            event_key=event_key,
+            object_key=object_key,
+            source_type="lead_export_attempt",
+            source_id=task_id,
+            reason="导出任务租约失效或失败后的敏感文件清理",
+        )
+        cleanup.status = "PENDING"
+        cleanup.next_attempt_at = datetime.now(timezone.utc)
+        cleanup.last_error = f"{type(exc).__name__}: immediate cleanup failed"
+        db.commit()
+        return
+    cleanup = db.scalar(
+        select(StorageCleanupOutbox).where(StorageCleanupOutbox.event_key == event_key)
+    )
+    if cleanup is None:
+        cleanup = enqueue_storage_cleanup(
+            db,
+            event_key=event_key,
+            object_key=object_key,
+            source_type="lead_export_attempt",
+            source_id=task_id,
+            reason="导出任务租约失效或失败后的敏感文件清理",
+        )
+    cleanup.status = "DELETED"
+    cleanup.deleted_at = datetime.now(timezone.utc)
+    cleanup.next_attempt_at = None
+    cleanup.last_error = None
+    db.commit()
+
+
+def process_lead_export_tasks(
+    db: Session,
+    *,
+    limit: int = 10,
+    progress: Callable[[], None] | None = None,
+) -> dict[str, int]:
+    stale_before = datetime.now(timezone.utc) - LEAD_EXPORT_LEASE_TIMEOUT
+    report_progress = progress or (lambda: None)
+
+    claimed = 0
+    completed = 0
+    failed = 0
+    superseded = 0
+    storage = get_storage()
+    for _ in range(max(0, int(limit))):
+        claim = _claim_next_lead_export_task(db, stale_before=stale_before)
+        if claim is None:
+            break
+        task_id, attempt_token = claim
+        claimed += 1
+        report_progress()
+        attempt_object_key: str | None = None
+        cleanup_intent: StorageCleanupOutbox | None = None
+        archive_path: Path | None = None
+        try:
+            task = db.get(LeadExportTask, task_id)
+            if task is None or task.attempt_token != attempt_token:
+                db.rollback()
+                superseded += 1
+                continue
+            def renew_lease_and_report_progress() -> None:
+                _renew_lead_export_lease(
+                    db,
+                    task_id=task_id,
+                    attempt_token=attempt_token,
+                )
+                report_progress()
+
+            archive_path, row_count = build_lead_export_archive(
+                db,
+                task.filters_json,
+                heartbeat=renew_lease_and_report_progress,
+            )
+            completed_at = datetime.now(timezone.utc)
+            expires_at = completed_at + timedelta(days=7)
+            file_name = f"客资完整导出_{completed_at:%Y%m%d_%H%M%S}.zip"
+            attempt_object_key = _attempt_object_key(
+                task_id=task_id,
+                attempt_token=attempt_token,
+                created_at=completed_at,
+            )
+            cleanup_intent = _persist_attempt_cleanup_intent(
+                db,
+                object_key=attempt_object_key,
+                task_id=task_id,
+                attempt_token=attempt_token,
+            )
+            renew_lease_and_report_progress()
+            upload_progress = _lead_export_upload_progress(
+                db,
+                task_id=task_id,
+                attempt_token=attempt_token,
+                report_progress=report_progress,
+            )
+            stored = storage.save_file(
+                archive_path,
+                prefix=f"lead-exports/{completed_at:%Y/%m}/{task.id}",
+                filename=file_name,
+                mime_type="application/zip",
+                object_key=attempt_object_key,
+                progress_callback=upload_progress,
+            )
+            renew_lease_and_report_progress()
+            archive_path.unlink()
+            archive_path = None
+            result = db.execute(
+                update(LeadExportTask)
+                .where(
+                    LeadExportTask.id == task_id,
+                    LeadExportTask.status == "RUNNING",
+                    LeadExportTask.attempt_token == attempt_token,
+                )
+                .values(
+                    status="COMPLETED",
+                    attempt_token=None,
+                    row_count=row_count,
+                    object_key=stored.object_key,
+                    file_name=file_name,
+                    mime_type=stored.mime_type,
+                    file_size=stored.size,
+                    sha256=stored.sha256,
+                    completed_at=completed_at,
+                    expires_at=expires_at,
+                )
+            )
+            if result.rowcount != 1:
+                db.rollback()
+                _delete_or_schedule_attempt_cleanup(
+                    db,
+                    storage=storage,
+                    object_key=stored.object_key,
+                    task_id=task_id,
+                    attempt_token=attempt_token,
+                )
+                attempt_object_key = None
+                cleanup_intent = None
+                superseded += 1
+                continue
+            cleanup_intent.event_key = f"lead-export-expire:{task_id}"
+            cleanup_intent.source_type = "lead_export_task"
+            cleanup_intent.reason = "完整手机号导出文件到期清理"
+            cleanup_intent.next_attempt_at = expires_at
+            db.commit()
+            attempt_object_key = None
+            cleanup_intent = None
+            completed += 1
+        except Exception as exc:  # pragma: no cover - storage/driver boundary
+            db.rollback()
+            if attempt_object_key is not None and cleanup_intent is not None:
+                _delete_or_schedule_attempt_cleanup(
+                    db,
+                    storage=storage,
+                    object_key=attempt_object_key,
+                    task_id=task_id,
+                    attempt_token=attempt_token,
+                )
+                attempt_object_key = None
+                cleanup_intent = None
+            error_message = (
+                str(exc)
+                if isinstance(exc, LeadExportLimitError)
+                else f"{type(exc).__name__}: 导出任务处理失败"
+            )
+            result = db.execute(
+                update(LeadExportTask)
+                .where(
+                    LeadExportTask.id == task_id,
+                    LeadExportTask.status == "RUNNING",
+                    LeadExportTask.attempt_token == attempt_token,
+                )
+                .values(
+                    status="FAILED",
+                    attempt_token=None,
+                    error_message=error_message,
+                    completed_at=datetime.now(timezone.utc),
+                )
+            )
+            if result.rowcount == 1:
+                db.commit()
+                failed += 1
+            else:
+                db.rollback()
+                superseded += 1
+            logger.exception("lead export task failed task_id=%s", task_id)
+        finally:
+            if archive_path is not None:
+                try:
+                    archive_path.unlink(missing_ok=True)
+                except OSError:
+                    logger.error(
+                        "lead export temporary archive cleanup failed task_id=%s path=%s",
+                        task_id,
+                        archive_path,
+                        exc_info=True,
+                    )
+    return {
+        "claimed": claimed,
+        "completed": completed,
+        "failed": failed,
+        "superseded": superseded,
+    }

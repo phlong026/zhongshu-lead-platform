@@ -11,6 +11,7 @@ from ..core.enums import AssignmentStatus, FollowStatus, LeadStatus
 from ..core.errors import AppError
 from ..core.models import Assignment, AssignmentEvent, FollowUp, Lead, Notification
 from .company_assignment_v12 import require_company_assignment_access
+from .lead_correction_guard import require_correction_review_resolved
 from .notification_service import create_station_message, enqueue_outbox
 from .supplier_reward_v12 import activate_supplier_reward_after_effective_confirmation
 
@@ -32,9 +33,35 @@ def add_followup(
     note: str | None,
     next_followup_at: datetime | None,
 ) -> FollowUp:
+    locked_assignment = db.scalar(
+        select(Assignment)
+        .where(Assignment.id == assignment.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if locked_assignment is None:
+        raise AppError("ASSIGNMENT_NOT_FOUND", "派发订单不存在", 404)
+    assignment = locked_assignment
     require_company_assignment_access(principal, assignment)
-    if assignment.status not in {AssignmentStatus.CLAIMED, AssignmentStatus.FOLLOWING}:
+    lead = db.scalar(
+        select(Lead)
+        .where(Lead.id == assignment.lead_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if lead is None:
+        raise AppError("LEAD_NOT_FOUND", "客资不存在", 404)
+    if assignment.status not in {
+        AssignmentStatus.CLAIMED.value,
+        AssignmentStatus.FOLLOWING.value,
+    }:
         raise AppError("FOLLOWUP_NOT_ALLOWED", "订单当前不可跟进", 409)
+    if (
+        assignment.receiver_company_id is not None
+        and lead.current_assignment_id != assignment.id
+    ):
+        raise AppError("FOLLOWUP_ASSIGNMENT_STALE", "该派发单已不是当前接收方", 409)
+    require_correction_review_resolved(lead)
     normalized_status = status.strip().upper()
     if normalized_status == FollowStatus.INVALID.value:
         raise AppError(
@@ -53,13 +80,11 @@ def add_followup(
     )
     db.add(followup)
     assignment.status = AssignmentStatus.COMPLETED if normalized_status == FollowStatus.DEAL else AssignmentStatus.FOLLOWING
-    lead = db.get(Lead, assignment.lead_id)
-    if lead:
-        lead.current_follow_status = normalized_status
-        if normalized_status == FollowStatus.DEAL:
-            lead.status = LeadStatus.CLOSED
-        else:
-            lead.status = LeadStatus.FOLLOWING
+    lead.current_follow_status = normalized_status
+    if normalized_status == FollowStatus.DEAL:
+        lead.status = LeadStatus.CLOSED
+    else:
+        lead.status = LeadStatus.FOLLOWING
     db.add(
         AssignmentEvent(
             assignment_id=assignment.id,

@@ -242,6 +242,35 @@ class SyncBatch(Base, TimestampMixin):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class LeadExportTask(Base, TimestampMixin):
+    __tablename__ = "lead_export_tasks"
+    __table_args__ = (
+        Index("ix_lead_export_status_created", "status", "created_at"),
+        Index("ix_lead_export_requester_created", "requested_by", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    requested_by: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
+    requested_by_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="PENDING", nullable=False, index=True)
+    attempt_token: Mapped[str | None] = mapped_column(String(64))
+    filters_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    include_full_phone: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    row_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    object_key: Mapped[str | None] = mapped_column(String(512))
+    file_name: Mapped[str | None] = mapped_column(String(255))
+    mime_type: Mapped[str | None] = mapped_column(String(128))
+    file_size: Mapped[int | None] = mapped_column(BigInteger)
+    sha256: Mapped[str | None] = mapped_column(String(64))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
+
 class Lead(Base, TimestampMixin):
     __tablename__ = "leads"
     __table_args__ = (
@@ -255,6 +284,7 @@ class Lead(Base, TimestampMixin):
     source_table_id: Mapped[str | None] = mapped_column(String(128))
     source_record_id: Mapped[str | None] = mapped_column(String(128))
     source_channel: Mapped[str | None] = mapped_column(String(64), index=True)
+    source_detail: Mapped[str | None] = mapped_column(String(128))
     customer_name: Mapped[str] = mapped_column(String(64), nullable=False)
     phone_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
     phone_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)

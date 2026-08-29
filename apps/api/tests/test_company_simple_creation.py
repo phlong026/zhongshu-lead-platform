@@ -88,7 +88,6 @@ def test_operation_can_open_a_new_franchise_company(api_client) -> None:
         (item["region_name"], item["active"], item["review_status"])
         for item in areas.json()["data"]
     } == {
-        ("北京市", True, "APPROVED"),
         ("北京市 · 东城区", True, "APPROVED"),
     }
 
@@ -166,10 +165,11 @@ def test_simple_company_creation_automatically_opens_v12_dispatch_profile(api_cl
                 CompanyServiceAreaV12.company_id == company.id
             )
         ).all()
-        assert {"310000", "310104", "310115"}.issubset({item.region_code for item in service_areas})
+        assert "310000" not in {item.region_code for item in service_areas}
+        assert {"310104", "310115"}.issubset({item.region_code for item in service_areas})
         assert len(service_areas) > 10
         assert all(item.active and item.review_status == "APPROVED" for item in service_areas)
-        assert next(item for item in service_areas if item.region_code == "310000").is_primary_city
+        assert sum(item.is_primary_city for item in service_areas) == 1
 
         audit = db.scalar(
             select(AuditLog).where(
@@ -276,8 +276,37 @@ def test_simple_company_creation_materializes_selected_nationwide_regions(api_cl
         service_areas = db.scalars(
             select(CompanyServiceAreaV12).where(CompanyServiceAreaV12.company_id == company_id)
         ).all()
-        assert {item.region_code for item in service_areas} == {"440100", "440106"}
+        assert {item.region_code for item in service_areas} == {"440106"}
         assert all(item.active and item.review_status == "APPROVED" for item in service_areas)
+
+
+def test_simple_company_district_selection_does_not_grant_whole_city(api_client) -> None:
+    client, factory = api_client
+    admin = _login_admin(client)
+
+    response = client.post(
+        "/api/v1/companies/simple",
+        headers=admin,
+        json={
+            "name": "浦东单区县加盟商",
+            "primary_city_code": "310000",
+            "district_codes": [],
+            "region_codes": ["310115"],
+            "serve_all_districts": False,
+        },
+    )
+    assert response.status_code == 200, response.text
+    company_id = response.json()["data"]["id"]
+
+    with factory() as db:
+        service_areas = db.scalars(
+            select(CompanyServiceAreaV12).where(
+                CompanyServiceAreaV12.company_id == company_id,
+                CompanyServiceAreaV12.active.is_(True),
+            )
+        ).all()
+        assert [item.region_code for item in service_areas] == ["310115"]
+        assert service_areas[0].is_primary_city is True
 
 
 def test_simple_company_creation_accepts_cross_city_region_codes(api_client) -> None:
@@ -337,5 +366,6 @@ def test_simple_company_creation_materializes_all_city_districts(api_client) -> 
                 )
             ).all()
         )
-        assert {"440100", "440103", "440106"}.issubset(service_codes)
+        assert "440100" not in service_codes
+        assert {"440103", "440106"}.issubset(service_codes)
         assert len(service_codes) > 10

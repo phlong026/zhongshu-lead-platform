@@ -1,20 +1,32 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from ..core.auth import Principal
+from ..core.enums import AssignmentStatus, PointsLedgerType
 from ..core.errors import AppError
-from ..core.models import Assignment, Lead, Region, User
-from ..core.models_v12 import LeadDedupEvent
+from ..core.models import Assignment, AssignmentEvent, Company, FollowUp, Lead, PointsLedger, Region, User
+from ..core.models_v12 import LeadDedupEvent, SupplierLeadReward
 from ..core.security import decrypt_text, encrypt_text, fingerprint_phone, hash_phone, mask_phone, normalize_phone
-from ..core.v12_enums import LeadReviewStatus, LeadSourceKind, LeadV12Status
+from ..core.v12_enums import (
+    DuplicateDecision,
+    LeadReviewStatus,
+    LeadSourceKind,
+    LeadV12Status,
+    RewardStatus,
+)
 from .company_profile_v12 import require_lead_capability
 from .china_regions import region_by_code
 from .dedup_v12 import DedupResult, apply_submission_decision, evaluate_phone
+from .dispatch_v12 import existing_receiver_correction_issues
+from .lead_correction_guard import store_lead_correction_issues
+from .notification_service import create_station_message, enqueue_outbox
+from .points_service import change_points
 from .pre_dispatch_v12 import queue_pre_dispatch_task
 
 
@@ -28,12 +40,34 @@ EDITABLE_FIELDS = {
     "category_code",
     "brand_code",
     "source_channel",
+    "source_detail",
     "need_summary",
     "budget_min",
     "budget_max",
     "acquisition_cost_cents",
     "consent_confirmed",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class LeadCorrectionResult:
+    lead: Lead
+    dedup: DedupResult | None
+    had_dispatch_history: bool
+    changed_fields: tuple[str, ...]
+    issues: tuple[str, ...]
+    before: dict[str, Any]
+    after: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class LeadCorrectionRedispatchResult:
+    lead: Lead
+    assignment: Assignment
+    assignment_status_before: str
+    refund_ledger: PointsLedger | None
+    before: dict[str, Any]
+    after: dict[str, Any]
 
 
 def _clean_text(value: Any, *, empty_to_none: bool = True) -> str | None:
@@ -105,6 +139,12 @@ def update_draft(
     _assert_draft(lead)
     supplier = lead.source_kind == LeadSourceKind.SUPPLIER_H5.value
     _assert_owner(lead, principal, supplier=supplier)
+    _apply_editable_values(lead, values)
+    db.flush()
+    return lead
+
+
+def _apply_editable_values(lead: Lead, values: dict[str, Any]) -> None:
     for field, raw_value in values.items():
         if field not in EDITABLE_FIELDS:
             continue
@@ -125,10 +165,51 @@ def update_draft(
             lead.consent_confirmed = bool(raw_value)
             continue
         setattr(lead, field, _clean_text(raw_value))
+    lead.source_channel = _clean_text(lead.source_channel)
+    if lead.source_channel:
+        lead.source_channel = lead.source_channel.upper()
+    if lead.source_channel != "OTHER":
+        lead.source_detail = None
     if lead.customer_name is None:
         lead.customer_name = "未填写"
-    db.flush()
-    return lead
+
+
+def _editable_fact_snapshot(lead: Lead) -> dict[str, Any]:
+    snapshot = {field: getattr(lead, field) for field in EDITABLE_FIELDS if field != "phone"}
+    snapshot["phone"] = normalize_phone(decrypt_text(lead.phone_encrypted) or "")
+    return snapshot
+
+
+def _correction_audit_snapshot(lead: Lead) -> dict[str, Any]:
+    phone = decrypt_text(lead.phone_encrypted)
+    return {
+        "id": lead.id,
+        "customer_name": lead.customer_name,
+        "phone_masked": mask_phone(phone),
+        "contact_fingerprint": lead.phone_fingerprint
+        or fingerprint_phone(phone or ""),
+        "province": lead.province,
+        "city": lead.city,
+        "district": lead.district,
+        "region_code": lead.region_code,
+        "category_code": lead.category_code,
+        "brand_code": lead.brand_code,
+        "source_channel": lead.source_channel,
+        "source_detail": lead.source_detail,
+        "need_summary": lead.need_summary,
+        "budget_min": lead.budget_min,
+        "budget_max": lead.budget_max,
+        "consent_confirmed": lead.consent_confirmed,
+        "status": lead.status,
+        "review_status": lead.review_status,
+        "duplicate_status": lead.duplicate_status,
+        "pending_reason": lead.pending_reason,
+        "correction_issues": list(
+            (lead.raw_payload or {}).get("correction_issues") or []
+        ),
+        "current_assignment_id": lead.current_assignment_id,
+        "snapshot_version": lead.snapshot_version,
+    }
 
 
 def discard_draft(
@@ -197,6 +278,463 @@ def reopen_platform_lead_for_correction(
     return lead
 
 
+def correct_platform_lead(
+    db: Session,
+    *,
+    lead_id: str,
+    principal: Principal,
+    values: dict[str, Any],
+    reason: str | None,
+    expected_snapshot_version: int | None,
+) -> LeadCorrectionResult:
+    lead = db.scalar(
+        select(Lead)
+        .where(Lead.id == lead_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if lead is None:
+        raise AppError("LEAD_NOT_FOUND", "客资不存在", 404)
+    if lead.source_kind != LeadSourceKind.PLATFORM_MANUAL.value:
+        raise AppError("LEAD_SOURCE_INVALID", "仅平台录入客资支持运营更正", 409)
+    if not (principal.can("*") or principal.can("lead.manual.manage")):
+        raise AppError("FORBIDDEN", "无权更正平台客资", 403)
+    if (
+        expected_snapshot_version is not None
+        and expected_snapshot_version != lead.snapshot_version
+    ):
+        raise AppError(
+            "LEAD_VERSION_CONFLICT",
+            "客资已被其他人更新，请刷新后重试",
+            409,
+            {
+                "expected_snapshot_version": expected_snapshot_version,
+                "current_snapshot_version": lead.snapshot_version,
+            },
+        )
+
+    current_assignment = (
+        db.get(Assignment, lead.current_assignment_id)
+        if lead.current_assignment_id
+        else None
+    )
+    has_dispatch_history = bool(
+        current_assignment
+        or db.scalar(select(Assignment.id).where(Assignment.lead_id == lead.id).limit(1))
+    )
+    clean_reason = _clean_text(reason)
+    if has_dispatch_history and not clean_reason:
+        raise AppError(
+            "LEAD_CORRECTION_REASON_REQUIRED",
+            "已派发客资更正必须填写原因",
+            422,
+        )
+    if has_dispatch_history and expected_snapshot_version is None:
+        raise AppError(
+            "LEAD_CORRECTION_VERSION_REQUIRED",
+            "已派发客资更正必须携带当前版本",
+            422,
+        )
+    if not has_dispatch_history and lead.status not in {
+        LeadV12Status.DRAFT.value,
+        LeadV12Status.READY_DISPATCH.value,
+    }:
+        raise AppError(
+            "LEAD_CORRECTION_NOT_ALLOWED",
+            "当前客资正在其他处理流程中，暂不能直接更正",
+            409,
+        )
+
+    before = _correction_audit_snapshot(lead)
+    before_facts = _editable_fact_snapshot(lead)
+    before_phone = normalize_phone(decrypt_text(lead.phone_encrypted) or "")
+    before_region_code = lead.region_code
+    original_status = lead.status
+    _apply_editable_values(lead, values)
+    after_facts = _editable_fact_snapshot(lead)
+    changed_fields = tuple(
+        sorted(
+            field
+            for field in EDITABLE_FIELDS
+            if before_facts[field] != after_facts[field]
+        )
+    )
+    if not changed_fields:
+        raise AppError(
+            "LEAD_CORRECTION_NO_CHANGES",
+            "客资事实没有变化，无需提交更正",
+            422,
+        )
+    phone = normalize_phone(decrypt_text(lead.phone_encrypted) or "")
+    phone_changed = phone != before_phone
+    region_changed = lead.region_code != before_region_code
+    dedup_result: DedupResult | None = None
+    previous_issues = list((lead.raw_payload or {}).get("correction_issues") or [])
+    issues: list[str] = (
+        []
+        if phone_changed
+        else [issue for issue in previous_issues if issue.startswith("DEDUP_")]
+    )
+
+    if not has_dispatch_history and original_status == LeadV12Status.READY_DISPATCH.value:
+        lead.status = LeadV12Status.DRAFT.value
+        lead.review_status = LeadReviewStatus.DRAFT.value
+        lead.pending_reason = None
+        dedup_result = submit_draft(
+            db,
+            lead=lead,
+            principal=principal,
+            checkpoint="PLATFORM_CORRECTION",
+        )
+    elif has_dispatch_history:
+        _materialize_nationwide_location(db, lead)
+        phone = _validate_submission(db, lead)
+        if phone_changed:
+            dedup_result = evaluate_phone(
+                db,
+                lead=lead,
+                normalized_phone=phone,
+                checkpoint="POST_DISPATCH_CORRECTION",
+                now=datetime.now(timezone.utc),
+            )
+            if dedup_result.blocks_dispatch:
+                issues.append(f"DEDUP_{dedup_result.decision.value}")
+        recheck_receiver = current_assignment is not None and (
+            phone_changed
+            or region_changed
+            or any(not issue.startswith("DEDUP_") for issue in previous_issues)
+        )
+        if current_assignment is not None and recheck_receiver:
+            issues.extend(
+                existing_receiver_correction_issues(
+                    db,
+                    lead=lead,
+                    assignment=current_assignment,
+                )
+            )
+
+        store_lead_correction_issues(
+            lead,
+            issues,
+            require_action=(
+                current_assignment is None
+                or current_assignment.status != AssignmentStatus.COMPLETED.value
+            ),
+        )
+
+    lead.snapshot_version += 1
+    db.flush()
+    after = _correction_audit_snapshot(lead)
+    return LeadCorrectionResult(
+        lead=lead,
+        dedup=dedup_result,
+        had_dispatch_history=has_dispatch_history,
+        changed_fields=changed_fields,
+        issues=tuple(dict.fromkeys(issues)),
+        before=before,
+        after=after,
+    )
+
+
+def recheck_platform_lead_correction(
+    db: Session,
+    *,
+    lead_id: str,
+    principal: Principal,
+    reason: str,
+    expected_snapshot_version: int,
+) -> LeadCorrectionResult:
+    lead = db.scalar(
+        select(Lead)
+        .where(Lead.id == lead_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if lead is None:
+        raise AppError("LEAD_NOT_FOUND", "客资不存在", 404)
+    if lead.source_kind != LeadSourceKind.PLATFORM_MANUAL.value:
+        raise AppError("LEAD_SOURCE_INVALID", "仅平台录入客资支持运营更正", 409)
+    if not (principal.can("*") or principal.can("lead.manual.manage")):
+        raise AppError("FORBIDDEN", "无权重新检查平台客资", 403)
+    if expected_snapshot_version != lead.snapshot_version:
+        raise AppError(
+            "LEAD_VERSION_CONFLICT",
+            "客资已被其他人更新，请刷新后重试",
+            409,
+            {
+                "expected_snapshot_version": expected_snapshot_version,
+                "current_snapshot_version": lead.snapshot_version,
+            },
+        )
+    previous_issues = list((lead.raw_payload or {}).get("correction_issues") or [])
+    if lead.pending_reason != "CORRECTION_REVIEW_REQUIRED" or not previous_issues:
+        raise AppError(
+            "LEAD_CORRECTION_RECHECK_NOT_REQUIRED",
+            "当前客资没有待重新检查的更正异常",
+            409,
+        )
+    if len(reason.strip()) < 5:
+        raise AppError("LEAD_CORRECTION_REASON_REQUIRED", "重新检查必须填写原因", 422)
+
+    before = _correction_audit_snapshot(lead)
+    _materialize_nationwide_location(db, lead)
+    phone = _validate_submission(db, lead)
+    issues: list[str] = []
+    dedup_result: DedupResult | None = None
+    if any(issue.startswith("DEDUP_") for issue in previous_issues):
+        if lead.duplicate_status != DuplicateDecision.OVERRIDDEN.value:
+            dedup_result = evaluate_phone(
+                db,
+                lead=lead,
+                normalized_phone=phone,
+                checkpoint="POST_DISPATCH_CORRECTION_RECHECK",
+                now=datetime.now(timezone.utc),
+            )
+            if dedup_result.blocks_dispatch:
+                issues.append(f"DEDUP_{dedup_result.decision.value}")
+    current_assignment = (
+        db.get(Assignment, lead.current_assignment_id)
+        if lead.current_assignment_id
+        else None
+    )
+    if current_assignment is not None:
+        issues.extend(
+            existing_receiver_correction_issues(
+                db,
+                lead=lead,
+                assignment=current_assignment,
+            )
+        )
+    normalized_issues = store_lead_correction_issues(lead, issues)
+    lead.snapshot_version += 1
+    db.flush()
+    return LeadCorrectionResult(
+        lead=lead,
+        dedup=dedup_result,
+        had_dispatch_history=True,
+        changed_fields=(),
+        issues=normalized_issues,
+        before=before,
+        after=_correction_audit_snapshot(lead),
+    )
+
+
+def release_corrected_lead_for_redispatch(
+    db: Session,
+    *,
+    lead_id: str,
+    principal: Principal,
+    reason: str,
+    expected_snapshot_version: int,
+) -> LeadCorrectionRedispatchResult:
+    """Release an ineligible receiver and return a corrected lead to dispatch."""
+
+    if not (principal.can("*") or principal.can("lead.manual.manage")):
+        raise AppError("FORBIDDEN", "无权处理更正后的派发异常", 403)
+    normalized_reason = reason.strip()
+    if len(normalized_reason) < 5:
+        raise AppError("LEAD_CORRECTION_REASON_REQUIRED", "解除派发必须填写原因", 422)
+
+    # Claiming and follow-up both lock Assignment before Lead. Keep the same
+    # order here so a cross-process race cannot deadlock or revive a release.
+    observed_lead = db.scalar(
+        select(Lead)
+        .where(Lead.id == lead_id)
+        .execution_options(populate_existing=True)
+    )
+    if observed_lead is None:
+        raise AppError("LEAD_NOT_FOUND", "客资不存在", 404)
+    observed_assignment_id = observed_lead.current_assignment_id
+    if not observed_assignment_id:
+        raise AppError("LEAD_ASSIGNMENT_CONFLICT", "客资当前没有可解除的派发单", 409)
+
+    assignment = db.scalar(
+        select(Assignment)
+        .where(Assignment.id == observed_assignment_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if assignment is None:
+        raise AppError("LEAD_ASSIGNMENT_CONFLICT", "客资当前派发单已变更", 409)
+    lead = db.scalar(
+        select(Lead)
+        .where(Lead.id == lead_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if lead is None:
+        raise AppError("LEAD_NOT_FOUND", "客资不存在", 404)
+    if lead.current_assignment_id != assignment.id or assignment.lead_id != lead.id:
+        raise AppError("LEAD_ASSIGNMENT_CONFLICT", "客资与当前派发单不一致", 409)
+    if lead.source_kind != LeadSourceKind.PLATFORM_MANUAL.value:
+        raise AppError("LEAD_SOURCE_INVALID", "仅平台录入客资支持更正后重新派发", 409)
+    if expected_snapshot_version != lead.snapshot_version:
+        raise AppError(
+            "LEAD_VERSION_CONFLICT",
+            "客资已被其他人更新，请刷新后重试",
+            409,
+            {
+                "expected_snapshot_version": expected_snapshot_version,
+                "current_snapshot_version": lead.snapshot_version,
+            },
+        )
+    correction_issues = list((lead.raw_payload or {}).get("correction_issues") or [])
+    if lead.pending_reason != "CORRECTION_REVIEW_REQUIRED" or not correction_issues:
+        raise AppError(
+            "LEAD_CORRECTION_REDISPATCH_NOT_REQUIRED",
+            "当前客资没有需要解除派发的更正异常",
+            409,
+        )
+    if any(issue.startswith("DEDUP_") for issue in correction_issues):
+        raise AppError(
+            "LEAD_CORRECTION_DEDUP_UNRESOLVED",
+            "请先完成重复客资处置，再解除原派发",
+            409,
+        )
+    if assignment.status == AssignmentStatus.RETURN_PENDING.value:
+        raise AppError(
+            "LEAD_CORRECTION_RETURN_IN_PROGRESS",
+            "当前派发单正在退回处理，请先完成退回终审",
+            409,
+        )
+    releasable_statuses = {
+        AssignmentStatus.PENDING_CLAIM.value,
+        AssignmentStatus.CLAIMED.value,
+        AssignmentStatus.FOLLOWING.value,
+    }
+    if assignment.status not in releasable_statuses:
+        raise AppError(
+            "LEAD_CORRECTION_ASSIGNMENT_NOT_RELEASABLE",
+            "当前派发状态不支持自动解除，需人工复核",
+            409,
+            {"assignment_status": assignment.status},
+        )
+
+    before = _correction_audit_snapshot(lead)
+    assignment_status_before = assignment.status
+    now = datetime.now(timezone.utc)
+    refund_ledger: PointsLedger | None = None
+    reward = db.scalar(
+        select(SupplierLeadReward)
+        .where(SupplierLeadReward.assignment_id == assignment.id)
+        .with_for_update()
+    )
+    if reward is not None and reward.status == RewardStatus.SETTLED.value:
+        raise AppError(
+            "LEAD_CORRECTION_REWARD_SETTLED",
+            "供客奖励已结算，请先完成奖励冲正再解除派发",
+            409,
+            {"reward_id": reward.id},
+        )
+
+    if assignment.status in {
+        AssignmentStatus.CLAIMED.value,
+        AssignmentStatus.FOLLOWING.value,
+    }:
+        claim_ledger = db.scalar(
+            select(PointsLedger)
+            .where(
+                PointsLedger.company_id == assignment.company_id,
+                PointsLedger.ledger_type == PointsLedgerType.CLAIM.value,
+                PointsLedger.business_id == assignment.id,
+                PointsLedger.business_type.in_(("V12_ASSIGNMENT_CLAIM", "ASSIGNMENT")),
+            )
+            .order_by(PointsLedger.created_at.desc())
+            .with_for_update()
+        )
+        if claim_ledger is None or int(claim_ledger.delta) >= 0:
+            raise AppError("CLAIM_LEDGER_MISSING", "派发单已领取但原扣分流水缺失", 500)
+        refund_points = abs(int(claim_ledger.delta))
+        refund_ledger = change_points(
+            db,
+            company_id=assignment.company_id,
+            delta=refund_points,
+            ledger_type=PointsLedgerType.RETURN.value,
+            business_type="V12_CORRECTION_REDISPATCH_REFUND",
+            business_id=assignment.id,
+            idempotency_key=f"v12-correction:{assignment.id}:redispatch-refund",
+            related_ledger_id=claim_ledger.id,
+            created_by=principal.user_id,
+            metadata={
+                "lead_id": lead.id,
+                "assignment_id": assignment.id,
+                "correction_issues": correction_issues,
+                "reason": normalized_reason,
+            },
+        )
+
+    if reward is not None and reward.status in {
+        RewardStatus.WAITING_CLAIM.value,
+        RewardStatus.OBSERVING.value,
+        RewardStatus.FROZEN.value,
+    }:
+        reward.status = RewardStatus.CANCELLED.value
+        reward.cancelled_at = now
+        reward.exception_reason = "CORRECTION_REDISPATCH"
+
+    assignment.status = AssignmentStatus.RELEASED.value
+    assignment.released_at = now
+    assignment.release_reason = "CORRECTION_REDISPATCH"
+    lead.current_assignment_id = None
+    lead.status = LeadV12Status.READY_DISPATCH.value
+    lead.current_follow_status = None
+    store_lead_correction_issues(lead, [])
+    lead.snapshot_version += 1
+    db.add(
+        AssignmentEvent(
+            assignment_id=assignment.id,
+            event_type="V12_CORRECTION_REDISPATCH_RELEASE",
+            actor_user_id=principal.user_id,
+            payload={
+                "lead_id": lead.id,
+                "correction_issues": correction_issues,
+                "refund_ledger_id": refund_ledger.id if refund_ledger else None,
+                "refund_points": int(refund_ledger.delta) if refund_ledger else 0,
+                "reward_id": reward.id if reward else None,
+                "reason": normalized_reason,
+            },
+        )
+    )
+    notification_body = (
+        f"平台因客资事实更正已撤回该客资，{int(refund_ledger.delta)} 积分已全额退回。"
+        if refund_ledger is not None
+        else "平台因客资事实更正已撤回该待领取客资。"
+    )
+    notification = create_station_message(
+        db,
+        user_id=None,
+        company_id=assignment.company_id,
+        scene="V12_CORRECTION_REDISPATCH",
+        title="客资已由平台撤回",
+        body=notification_body,
+        deep_link=f"/h5/v12-workbench.html?view=assignments&id={assignment.id}",
+    )
+    enqueue_outbox(
+        db,
+        event_key=f"v12-correction:{assignment.id}:redispatch-notification",
+        event_type="V12_CORRECTION_REDISPATCH",
+        aggregate_type="assignment",
+        aggregate_id=assignment.id,
+        payload={
+            "notification_id": notification.id,
+            "company_id": assignment.company_id,
+            "assignment_id": assignment.id,
+            "lead_id": lead.id,
+            "deep_link": notification.deep_link,
+            "refund_points": int(refund_ledger.delta) if refund_ledger else 0,
+        },
+    )
+    db.flush()
+    return LeadCorrectionRedispatchResult(
+        lead=lead,
+        assignment=assignment,
+        assignment_status_before=assignment_status_before,
+        refund_ledger=refund_ledger,
+        before=before,
+        after=_correction_audit_snapshot(lead),
+    )
+
+
 def _validate_submission(db: Session, lead: Lead) -> str:
     phone = normalize_phone(decrypt_text(lead.phone_encrypted) or "")
     errors: dict[str, str] = {}
@@ -208,6 +746,8 @@ def _validate_submission(db: Session, lead: Lead) -> str:
         errors["region_code"] = "标准地区编码无效或已停用"
     if not lead.consent_confirmed:
         errors["consent_confirmed"] = "必须确认已获得客户信息授权"
+    if lead.source_channel == "OTHER" and not _clean_text(lead.source_detail):
+        errors["source_detail"] = "来源选择其他时，必须填写具体来源"
     if lead.budget_min is not None and lead.budget_max is not None and lead.budget_min > lead.budget_max:
         errors["budget_max"] = "预算上限不能低于预算下限"
     if errors:
@@ -465,6 +1005,9 @@ def lead_supply_to_dict(
     submitter_name: str | None = None,
     region_name: str | None = None,
     region_level: str | None = None,
+    current_assignment: dict[str, Any] | None = None,
+    assignment_history: list[dict[str, Any]] | None = None,
+    followup_history: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     phone = decrypt_text(lead.phone_encrypted)
     can_view_phone = bool(
@@ -476,7 +1019,7 @@ def lead_supply_to_dict(
             or lead.submitter_user_id == principal.user_id
         )
     )
-    return {
+    result = {
         "id": lead.id,
         "source_kind": lead.source_kind,
         "submitter_user_id": lead.submitter_user_id,
@@ -494,6 +1037,12 @@ def lead_supply_to_dict(
         "category_code": lead.category_code,
         "brand_code": lead.brand_code,
         "source_channel": lead.source_channel,
+        "source_detail": lead.source_detail,
+        "source_display": (
+            f"其他（{lead.source_detail}）"
+            if lead.source_channel == "OTHER" and lead.source_detail
+            else lead.source_channel
+        ),
         "need_summary": lead.need_summary,
         "budget_min": lead.budget_min,
         "budget_max": lead.budget_max,
@@ -504,10 +1053,77 @@ def lead_supply_to_dict(
         "review_note": lead.review_note,
         "duplicate_status": lead.duplicate_status,
         "pending_reason": lead.pending_reason,
+        "correction_issues": list((lead.raw_payload or {}).get("correction_issues") or []),
+        "current_assignment_id": lead.current_assignment_id,
+        "current_assignment_status": (
+            current_assignment.get("status") if current_assignment else None
+        ),
+        "current_receiver_company_id": (
+            current_assignment.get("receiver_company_id") if current_assignment else None
+        ),
+        "current_receiver_company_name": (
+            current_assignment.get("receiver_company_name") if current_assignment else None
+        ),
+        "assigned_by_user_id": (
+            current_assignment.get("assigned_by_user_id") if current_assignment else None
+        ),
+        "assigned_by_name": (
+            current_assignment.get("assigned_by_name") if current_assignment else None
+        ),
+        "assigned_at": current_assignment.get("assigned_at") if current_assignment else None,
+        "snapshot_version": lead.snapshot_version,
         "submitted_at": lead.submitted_at.isoformat() if lead.submitted_at else None,
         "reviewed_at": lead.reviewed_at.isoformat() if lead.reviewed_at else None,
         "created_at": lead.created_at.isoformat(),
         "updated_at": lead.updated_at.isoformat(),
+    }
+    if assignment_history is not None:
+        result["assignment_history"] = assignment_history
+    if followup_history is not None:
+        result["followup_history"] = followup_history
+        result["latest_followup"] = followup_history[-1] if followup_history else None
+    return result
+
+
+def _assignment_projection(
+    assignment: Assignment,
+    *,
+    receiver_company_name: str | None,
+    assigned_by_name: str | None,
+) -> dict[str, Any]:
+    return {
+        "id": assignment.id,
+        "assignment_id": assignment.id,
+        "receiver_company_id": assignment.receiver_company_id or assignment.company_id,
+        "receiver_company_name": receiver_company_name,
+        "status": assignment.status,
+        "assigned_by_user_id": assignment.assigned_by,
+        "assigned_by_name": assigned_by_name,
+        "assigned_at": assignment.assigned_at.isoformat(),
+        "claimed_at": assignment.claimed_at.isoformat() if assignment.claimed_at else None,
+        "released_at": assignment.released_at.isoformat() if assignment.released_at else None,
+        "release_reason": assignment.release_reason,
+    }
+
+
+def _followup_projection(
+    followup: FollowUp,
+    *,
+    created_by_name: str | None,
+) -> dict[str, Any]:
+    return {
+        "id": followup.id,
+        "assignment_id": followup.assignment_id,
+        "status": followup.status,
+        "note": followup.note,
+        "next_followup_at": (
+            followup.next_followup_at.isoformat()
+            if followup.next_followup_at
+            else None
+        ),
+        "created_by_user_id": followup.created_by,
+        "created_by_name": created_by_name,
+        "created_at": followup.created_at.isoformat(),
     }
 
 
@@ -515,6 +1131,8 @@ def lead_supply_list_to_dict(
     db: Session,
     leads: list[Lead],
     principal: Principal | None = None,
+    *,
+    include_assignment_history: bool = False,
 ) -> list[dict[str, Any]]:
     submitter_ids = {lead.submitter_user_id for lead in leads if lead.submitter_user_id}
     submitter_names = dict(
@@ -527,6 +1145,72 @@ def lead_supply_list_to_dict(
         region.code: region
         for region in db.scalars(select(Region).where(Region.code.in_(region_codes))).all()
     } if region_codes else {}
+    assigned_by_user = aliased(User)
+    current_assignment_ids = {
+        lead.current_assignment_id for lead in leads if lead.current_assignment_id
+    }
+    current_assignments: dict[str, dict[str, Any]] = {}
+    if current_assignment_ids:
+        current_rows = db.execute(
+            select(Assignment, Company.name, assigned_by_user.display_name)
+            .outerjoin(
+                Company,
+                Company.id == func.coalesce(
+                    Assignment.receiver_company_id,
+                    Assignment.company_id,
+                ),
+            )
+            .outerjoin(assigned_by_user, assigned_by_user.id == Assignment.assigned_by)
+            .where(Assignment.id.in_(current_assignment_ids))
+        ).all()
+        current_assignments = {
+            assignment.id: _assignment_projection(
+                assignment,
+                receiver_company_name=company_name,
+                assigned_by_name=assigned_by_name,
+            )
+            for assignment, company_name, assigned_by_name in current_rows
+        }
+
+    histories: dict[str, list[dict[str, Any]]] = {}
+    followups: dict[str, list[dict[str, Any]]] = {}
+    if include_assignment_history and leads:
+        history_rows = db.execute(
+            select(Assignment, Company.name, assigned_by_user.display_name)
+            .outerjoin(
+                Company,
+                Company.id == func.coalesce(
+                    Assignment.receiver_company_id,
+                    Assignment.company_id,
+                ),
+            )
+            .outerjoin(assigned_by_user, assigned_by_user.id == Assignment.assigned_by)
+            .where(Assignment.lead_id.in_([lead.id for lead in leads]))
+            .order_by(Assignment.assigned_at.asc(), Assignment.id.asc())
+        ).all()
+        for assignment, company_name, assigned_by_name in history_rows:
+            histories.setdefault(assignment.lead_id, []).append(
+                _assignment_projection(
+                    assignment,
+                    receiver_company_name=company_name,
+                    assigned_by_name=assigned_by_name,
+                )
+            )
+        followup_creator = aliased(User)
+        followup_rows = db.execute(
+            select(FollowUp, Assignment.lead_id, followup_creator.display_name)
+            .join(Assignment, Assignment.id == FollowUp.assignment_id)
+            .outerjoin(followup_creator, followup_creator.id == FollowUp.created_by)
+            .where(Assignment.lead_id.in_([lead.id for lead in leads]))
+            .order_by(FollowUp.created_at.asc(), FollowUp.id.asc())
+        ).all()
+        for followup, lead_id, created_by_name in followup_rows:
+            followups.setdefault(lead_id, []).append(
+                _followup_projection(
+                    followup,
+                    created_by_name=created_by_name,
+                )
+            )
     return [
         lead_supply_to_dict(
             lead,
@@ -534,6 +1218,9 @@ def lead_supply_list_to_dict(
             submitter_name=submitter_names.get(lead.submitter_user_id),
             region_name=(regions_by_code.get(lead.region_code).name if regions_by_code.get(lead.region_code) else None),
             region_level=(regions_by_code.get(lead.region_code).level if regions_by_code.get(lead.region_code) else None),
+            current_assignment=current_assignments.get(lead.current_assignment_id),
+            assignment_history=(histories.get(lead.id, []) if include_assignment_history else None),
+            followup_history=(followups.get(lead.id, []) if include_assignment_history else None),
         )
         for lead in leads
     ]

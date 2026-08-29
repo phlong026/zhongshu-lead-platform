@@ -32,10 +32,10 @@ CONFIRM_RESTORE=YES ENV_FILE=.env \
 恢复脚本会：
 
 1. 校验 SHA-256（存在校验文件时）；
-2. 默认停止 API/Scheduler；
+2. 默认停止 API、Scheduler 和完整手机号导出 worker；
 3. 使用 `pg_restore --exit-on-error --clean --if-exists`，任一 SQL 错误立即失败；
 4. 用 `psql -v ON_ERROR_STOP=1 -c "SELECT 1"` 检查数据库基本可连接性；
-5. **无论成功或失败，默认都保持 API/Scheduler 停止**，等待完整的 revision、数据对账和业务冒烟。
+5. **无论成功或失败，默认都保持 API、Scheduler 和完整手机号导出 worker 停止**，等待完整的 revision、数据对账和业务冒烟。
 
 只有在隔离演练环境、且已经有额外自动验证包围恢复命令时，才允许显式设置 `RESTORE_RESTART_SERVICES=YES` 让成功恢复后自动重启。正式生产回滚默认不得设置该变量。
 
@@ -56,7 +56,7 @@ python -m json.tool dist/v12-reconciliation-after-restore.json >/dev/null
 上述检查和核心角色冒烟全部通过后，才手工恢复服务：
 
 ```bash
-docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml up -d api scheduler
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml up -d api scheduler lead-export-worker
 ```
 
 ## 3. 对象存储

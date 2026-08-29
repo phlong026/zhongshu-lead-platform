@@ -59,6 +59,31 @@ def telesales_users(
     )
 
 
+@router.get("/operation-users")
+def operation_users(
+    request: Request,
+    principal=Depends(require_permissions("lead.read")),
+    db: Session = Depends(get_db),
+):
+    users = db.scalars(
+        select(User).options(selectinload(User.roles)).order_by(User.display_name)
+    ).all()
+    return ok(
+        request,
+        [
+            {
+                "id": user.id,
+                "display_name": user.display_name,
+                "username": user.username,
+                "status": user.status,
+            }
+            for user in users
+            if user.status == "ACTIVE"
+            and any(role.code == "OPERATION" for role in user.roles)
+        ],
+    )
+
+
 @router.get("/companies/{company_id}")
 def company_detail(
     company_id: str,

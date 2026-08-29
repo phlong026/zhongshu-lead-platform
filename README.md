@@ -22,7 +22,7 @@ V1.2 不包含在线支付、自动派发、微信小程序、云外呼或 H5 �
 - FastAPI、SQLAlchemy 2、Alembic；
 - PostgreSQL 16 生产主库，SQLite 仅用于本地开发和部分单元测试；
 - 加盟商微信 H5、内部电销 H5、平台管理后台；
-- API 与 Scheduler 分进程运行；
+- API、Scheduler 与完整手机号导出 Worker 分进程运行，大导出不阻塞超时、通知和积分定时任务；
 - 腾讯云 COS 上海地域私有 Bucket 保存截图和录音；
 - Nginx、HTTPS、RBAC、字段隔离、结构化日志、备份恢复和审计追踪。
 
@@ -114,6 +114,8 @@ python scripts/preflight_v12.py \
 当 `.env` 只配置 `POSTGRES_*` 时，配置校验会推导与 Compose 一致的内部 PostgreSQL URL；真正的 Alembic revision 和 V1.2 数据对账由 `--compose-database` 通过 API 一次性容器在生产 Compose 网络执行，避免宿主机误连 SQLite。
 
 飞书是显式可选集成：启用时设置 `FEISHU_ENABLED=true` 并配置全部凭据；不启用时不得保留无效生产凭据。
+
+完整手机号报表仅允许有导出权限的后台运营人员创建。`lead-export-worker` 每次只处理 1 个任务，记录导出人、筛选条件、文件摘要和到期清理任务；上传前先持久化清理意图，进程中断后也能删除孤儿敏感文件。
 
 生产操作文档：
 

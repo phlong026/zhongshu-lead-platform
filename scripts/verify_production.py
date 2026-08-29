@@ -29,6 +29,8 @@ REQUIRED_FILES = (
     "docker/prepare-env.sh",
     "docker/entrypoint.sh",
     "docker/scheduler-entrypoint.sh",
+    "docker/lead-export-worker-entrypoint.sh",
+    "scripts/lead_export_worker.py",
     "scripts/backup_postgres.sh",
     "scripts/restore_postgres.sh",
     "scripts/baseline_v101.py",

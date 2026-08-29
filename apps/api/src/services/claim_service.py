@@ -11,9 +11,10 @@ from ..core.config import get_settings
 from ..core.enums import AssignmentStatus, LeadStatus, PointsLedgerType
 from ..core.errors import AppError
 from ..core.models import Assignment, AssignmentEvent, Company, Lead, PointsLedger
-from ..core.security import decrypt_text, mask_phone
 from ..core.time import as_utc, utcnow
 from .company_assignment_v12 import require_company_assignment_access
+from .lead_correction_guard import require_correction_review_resolved
+from .lead_service import lead_to_dict
 from .notification_service import create_station_message, enqueue_outbox
 from .points_service import change_points, points_available_for_dispatch
 
@@ -23,11 +24,23 @@ settings = get_settings()
 def claim_assignment(db: Session, assignment_id: str, principal: Principal, idempotency_key: str) -> tuple[Assignment, PointsLedger]:
     if not principal.company_id:
         raise AppError("COMPANY_CONTEXT_REQUIRED", "当前账号未绑定加盟商公司", 403)
-    assignment = db.scalar(select(Assignment).where(Assignment.id == assignment_id).with_for_update())
+    assignment = db.scalar(
+        select(Assignment)
+        .where(Assignment.id == assignment_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if not assignment:
         raise AppError("ASSIGNMENT_NOT_FOUND", "派发订单不存在", 404)
     if assignment.company_id != principal.company_id:
         raise AppError("FORBIDDEN", "无权领取该客资", 403)
+    lead = db.scalar(
+        select(Lead)
+        .where(Lead.id == assignment.lead_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    require_correction_review_resolved(lead)
     existing_ledger = db.scalar(
         select(PointsLedger).where(
             PointsLedger.company_id == assignment.company_id,
@@ -62,7 +75,6 @@ def claim_assignment(db: Session, assignment_id: str, principal: Principal, idem
     assignment.status = AssignmentStatus.CLAIMED
     assignment.claimed_at = now
     assignment.first_followup_due_at = now + timedelta(hours=settings.first_followup_hours)
-    lead = db.scalar(select(Lead).where(Lead.id == assignment.lead_id).with_for_update())
     if lead:
         lead.status = LeadStatus.CLAIMED
     db.add(AssignmentEvent(assignment_id=assignment.id, event_type="CLAIMED", actor_user_id=principal.user_id, payload={"points": assignment.points_price, "ledger_id": ledger.id}))
@@ -74,14 +86,32 @@ def claim_assignment(db: Session, assignment_id: str, principal: Principal, idem
 def own_assignment_detail(db: Session, assignment: Assignment, principal: Principal) -> dict[str, Any]:
     require_company_assignment_access(principal, assignment)
     lead = db.get(Lead, assignment.lead_id)
-    phone = decrypt_text(lead.phone_encrypted) if lead else None
-    unlocked = assignment.status in {
+    correction_blocked = bool(
+        lead and lead.pending_reason == "CORRECTION_REVIEW_REQUIRED"
+    )
+    unlocked = not correction_blocked and assignment.status in {
         AssignmentStatus.CLAIMED,
         AssignmentStatus.FOLLOWING,
         AssignmentStatus.RETURN_PENDING,
         AssignmentStatus.COMPLETED,
     }
     balance, reserved, available = points_available_for_dispatch(db, assignment.company_id)
+    if lead is not None:
+        current_lead = lead_to_dict(lead, principal, reveal_phone=unlocked)
+    else:
+        current_lead = dict(assignment.lead_snapshot)
+        current_lead.update(
+            {
+                "phone": None,
+                "phone_masked": current_lead.get("phone_masked"),
+            }
+        )
+    current_lead.update(
+        {
+            "contact_unlocked": unlocked,
+            "correction_blocked": correction_blocked,
+        }
+    )
     return {
         "id": assignment.id,
         "status": assignment.status,
@@ -90,12 +120,8 @@ def own_assignment_detail(db: Session, assignment: Assignment, principal: Princi
         "claimed_at": assignment.claimed_at.isoformat() if assignment.claimed_at else None,
         "expires_at": assignment.expires_at.isoformat() if assignment.expires_at else None,
         "first_followup_due_at": assignment.first_followup_due_at.isoformat() if assignment.first_followup_due_at else None,
-        "lead": {
-            **assignment.lead_snapshot,
-            "phone": phone if unlocked else None,
-            "phone_masked": mask_phone(phone),
-            "contact_unlocked": unlocked,
-        },
+        "lead": current_lead,
+        "historical_lead_snapshot": dict(assignment.lead_snapshot),
         "points": {"balance": balance, "pending_claim_points": reserved, "available": available},
     }
 

@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     feishu_writeback_enabled: bool = True
     object_storage_backend: str = "local"
     object_storage_dir: str = "./storage"
+    lead_export_active_per_user_limit: int = 2
+    lead_export_active_global_limit: int = 20
+    lead_export_rolling_24h_per_user_limit: int = 10
     s3_endpoint_url: str = "https://cos.ap-shanghai.myqcloud.com"
     s3_access_key_id: str = ""
     s3_secret_access_key: str = ""
@@ -90,6 +93,9 @@ class Settings(BaseSettings):
         "login_lock_minutes",
         "pre_dispatch_verification_hours",
         "return_verification_hours",
+        "lead_export_active_per_user_limit",
+        "lead_export_active_global_limit",
+        "lead_export_rolling_24h_per_user_limit",
     )
     @classmethod
     def validate_positive_window(cls, value: int) -> int:

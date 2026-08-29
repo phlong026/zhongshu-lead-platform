@@ -36,6 +36,7 @@ from ..core.v12_enums import (
 )
 from .points_service import change_points
 from .company_assignment_v12 import require_return_request_access
+from .lead_correction_guard import require_correction_review_resolved
 from .workday_calendar import WorkdayCalendarService
 
 VALID_RETURN_REASONS = {item.value for item in ReturnReasonCode}
@@ -101,7 +102,7 @@ def _now() -> datetime:
 def _get_return(db: Session, return_id: str, *, lock: bool = False) -> ReturnRequest:
     stmt = select(ReturnRequest).where(ReturnRequest.id == return_id)
     if lock:
-        stmt = stmt.with_for_update()
+        stmt = stmt.with_for_update().execution_options(populate_existing=True)
     item = db.scalar(stmt)
     if item is None:
         raise AppError("RETURN_NOT_FOUND", "退回申请不存在", 404)
@@ -111,7 +112,7 @@ def _get_return(db: Session, return_id: str, *, lock: bool = False) -> ReturnReq
 def _get_assignment(db: Session, assignment_id: str, *, lock: bool = False) -> Assignment:
     stmt = select(Assignment).where(Assignment.id == assignment_id)
     if lock:
-        stmt = stmt.with_for_update()
+        stmt = stmt.with_for_update().execution_options(populate_existing=True)
     item = db.scalar(stmt)
     if item is None:
         raise AppError("ASSIGNMENT_NOT_FOUND", "派发单不存在", 404)
@@ -121,7 +122,7 @@ def _get_assignment(db: Session, assignment_id: str, *, lock: bool = False) -> A
 def _get_lead(db: Session, lead_id: str, *, lock: bool = False) -> Lead:
     stmt = select(Lead).where(Lead.id == lead_id)
     if lock:
-        stmt = stmt.with_for_update()
+        stmt = stmt.with_for_update().execution_options(populate_existing=True)
     item = db.scalar(stmt)
     if item is None:
         raise AppError("LEAD_NOT_FOUND", "客资不存在", 404)
@@ -149,17 +150,29 @@ def create_or_update_return_draft(
     reason_code: str,
     description: str,
 ) -> ReturnRequest:
-    assignment = _get_assignment(db, assignment_id, lock=True)
     item = db.scalar(
         select(ReturnRequest)
-        .where(ReturnRequest.assignment_id == assignment.id)
+        .where(ReturnRequest.assignment_id == assignment_id)
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
+    assignment = _get_assignment(db, assignment_id, lock=True)
+    lead = _get_lead(db, assignment.lead_id, lock=True)
+    if item is None:
+        # A concurrent creator may have committed while this transaction waited
+        # for the assignment lock. Re-read after the lock before inserting.
+        item = db.scalar(
+            select(ReturnRequest)
+            .where(ReturnRequest.assignment_id == assignment.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
     require_return_request_access(
         principal,
         assignment,
         submitted_by=item.submitted_by if item else None,
     )
+    require_correction_review_resolved(lead)
     reason = reason_code.strip().upper()
     if reason not in VALID_RETURN_REASONS:
         raise AppError("RETURN_REASON_INVALID", "退回原因不在 V1.2 冻结范围内", 422)
@@ -291,6 +304,12 @@ def submit_return_request(
 ) -> ReturnSubmitResult:
     request = _get_return(db, return_id, lock=True)
     assignment_for_access = _get_assignment(db, request.assignment_id, lock=True)
+    lead = _get_lead(db, assignment_for_access.lead_id, lock=True)
+    if (
+        request.assignment_id != assignment_for_access.id
+        or request.lead_id != lead.id
+    ):
+        raise AppError("RETURN_ASSIGNMENT_CONFLICT", "退回申请与当前派发单不一致", 409)
     require_return_request_access(
         principal,
         assignment_for_access,
@@ -312,6 +331,8 @@ def submit_return_request(
 
     now = _now()
     initial_submission = request.submitted_at is None
+    if initial_submission:
+        require_correction_review_resolved(lead)
     deadline = as_utc(request.appeal_deadline_at or request.due_at)
     if initial_submission and deadline and now > deadline:
         assert_return_transition(ReturnV12Status.DRAFT, ReturnV12Status.EXPIRED)
@@ -331,8 +352,7 @@ def submit_return_request(
             {"evidence_count": evidence_count},
         )
 
-    assignment = _get_assignment(db, request.assignment_id, lock=True)
-    lead = _get_lead(db, request.lead_id, lock=True)
+    assignment = assignment_for_access
     if initial_submission:
         if assignment.status not in {
             AssignmentStatus.CLAIMED.value,

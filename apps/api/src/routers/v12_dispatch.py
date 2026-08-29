@@ -10,7 +10,7 @@ from ..core.auth import CurrentPrincipal, require_permissions
 from ..core.database import get_db
 from ..core.enums import AssignmentStatus
 from ..core.errors import AppError
-from ..core.models import Assignment, Lead
+from ..core.models import Assignment, Company, Lead
 from ..core.responses import ok, page
 from ..core.security import decrypt_text, mask_phone
 from ..core.v12_enums import LeadV12Status
@@ -47,12 +47,23 @@ def _masked_encrypted_phone(phone_encrypted: str) -> str:
     return mask_phone(decrypt_text(phone_encrypted))
 
 
+def _receive_confirmation(claimed_at) -> tuple[str, str | None]:
+    return (
+        "CONFIRMED" if claimed_at else "PENDING",
+        claimed_at.isoformat() if claimed_at else None,
+    )
+
+
 def _assignment_dict(assignment: Assignment, lead: Lead, *, reveal_phone: bool = False) -> dict:
+    reveal_phone = reveal_phone and lead.pending_reason != "CORRECTION_REVIEW_REQUIRED"
     phone = decrypt_text(lead.phone_encrypted) if reveal_phone else None
     phone_masked = (
         mask_phone(phone)
         if phone is not None
         else _masked_encrypted_phone(lead.phone_encrypted)
+    )
+    receive_confirmation_status, receive_confirmed_at = _receive_confirmation(
+        assignment.claimed_at
     )
     return {
         "id": assignment.id,
@@ -62,7 +73,11 @@ def _assignment_dict(assignment: Assignment, lead: Lead, *, reveal_phone: bool =
         "receiver_company_id": assignment.receiver_company_id,
         "status": assignment.status,
         "lead_status": lead.status,
+        "lead_pending_reason": lead.pending_reason,
+        "correction_issues": list((lead.raw_payload or {}).get("correction_issues") or []),
         "current_follow_status": lead.current_follow_status,
+        "receive_confirmation_status": receive_confirmation_status,
+        "receive_confirmed_at": receive_confirmed_at,
         "points_price": assignment.points_price,
         "claim_points": assignment.claim_points,
         "price_rule_id": assignment.price_rule_id,
@@ -117,6 +132,7 @@ def _assignment_detail_projection(assignment_id: str, company_id: str):
             Lead.region_code,
             Lead.need_summary,
             Lead.status.label("lead_status"),
+            Lead.pending_reason.label("lead_pending_reason"),
             Lead.current_follow_status,
         )
         .join(Lead, Lead.id == Assignment.lead_id)
@@ -125,10 +141,15 @@ def _assignment_detail_projection(assignment_id: str, company_id: str):
 
 
 def _projected_assignment_dict(row, *, reveal_phone: bool = False) -> dict:
+    reveal_phone = (
+        reveal_phone
+        and row.lead_pending_reason != "CORRECTION_REVIEW_REQUIRED"
+    )
     phone = decrypt_text(row.phone_encrypted) if reveal_phone else None
     phone_masked = (
         mask_phone(phone) if phone is not None else _masked_encrypted_phone(row.phone_encrypted)
     )
+    receive_confirmation_status, receive_confirmed_at = _receive_confirmation(row.claimed_at)
     return {
         "id": row.id,
         "lead_id": row.lead_id,
@@ -137,7 +158,11 @@ def _projected_assignment_dict(row, *, reveal_phone: bool = False) -> dict:
         "receiver_company_id": row.receiver_company_id,
         "status": row.status,
         "lead_status": row.lead_status,
+        "lead_pending_reason": row.lead_pending_reason,
+        "correction_issues": [],
         "current_follow_status": row.current_follow_status,
+        "receive_confirmation_status": receive_confirmation_status,
+        "receive_confirmed_at": receive_confirmed_at,
         "points_price": row.points_price,
         "claim_points": row.claim_points,
         "price_rule_id": row.price_rule_id,
@@ -542,6 +567,50 @@ def company_assignment_summary(
         request,
         {"company_id": company_id, "total": sum(counts.values()), "by_status": counts},
     )
+
+
+@router.get("/companies/{company_id}/assignments")
+def company_assignments(
+    company_id: str,
+    request: Request,
+    principal=Depends(require_permissions("assignment.read")),
+    db: Session = Depends(get_db),
+    assignment_status: str | None = Query(default=None),
+    page_no: int = Query(default=1, alias="page", ge=1),
+    page_size: int = Query(default=20, ge=1, le=200),
+):
+    company = db.get(Company, company_id)
+    if company is None:
+        raise AppError("COMPANY_NOT_FOUND", "加盟商不存在", 404)
+    filters = [Assignment.company_id == company_id]
+    if assignment_status:
+        filters.append(Assignment.status == assignment_status.strip().upper())
+    total = db.scalar(select(func.count(Assignment.id)).where(*filters)) or 0
+    rows = db.execute(
+        select(Assignment, Lead)
+        .join(Lead, Lead.id == Assignment.lead_id)
+        .where(*filters)
+        .order_by(Assignment.assigned_at.desc(), Assignment.id.desc())
+        .offset((page_no - 1) * page_size)
+        .limit(page_size)
+    ).all()
+    payload = page(
+        [
+            _assignment_dict(
+                assignment,
+                lead,
+                reveal_phone=principal.can("lead.phone.read") or principal.can("*"),
+            )
+            for assignment, lead in rows
+        ],
+        int(total),
+        page_no,
+        page_size,
+    )
+    payload["company_id"] = company.id
+    payload["company_name"] = company.name
+    payload["assignment_status"] = assignment_status.strip().upper() if assignment_status else None
+    return ok(request, payload)
 
 
 @router.get("/admin/companies/{company_id}/internal-assignments")

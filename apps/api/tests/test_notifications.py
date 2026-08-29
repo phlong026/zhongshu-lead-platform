@@ -3,11 +3,19 @@ import json
 from sqlalchemy import select
 
 import apps.api.src.integrations.wechat as wechat_module
-from apps.api.src.core.models import Notification, NotificationOutbox, SystemConfig, User
+from apps.api.src.core.models import (
+    Company,
+    Notification,
+    NotificationOutbox,
+    SystemConfig,
+    User,
+    WechatIdentity,
+)
+from apps.api.src.integrations.wechat import WechatOfficialAccountClient, WechatSendResult
 from apps.api.src.schemas.company import CompanyCreateBody
 from apps.api.src.services.auth_service import create_internal_user
 from apps.api.src.services.company_service import create_company
-from apps.api.src.services.notification_service import enqueue_outbox
+from apps.api.src.services.notification_service import create_station_message, enqueue_outbox
 from apps.api.src.services.outbox_worker import _default_title, process_outbox
 # I19/N13：admin 登录头与 test_auth_company 单一来源，不再手写样板。
 from test_auth_company import _admin_headers
@@ -68,6 +76,91 @@ def test_publish_wechat_template_config_rejects_invalid_field_map(api_client) ->
 
 def test_outbox_default_title_keeps_v12_copy_in_config_not_worker_fallback() -> None:
     assert _default_title("V12_ASSIGNMENT_DISPATCHED") == "业务通知"
+
+
+def test_same_company_same_scene_outbox_uses_its_own_notification(
+    db,
+    monkeypatch,
+) -> None:
+    company = Company(code="NOTIFY-BIND", name="通知精确绑定测试公司")
+    db.add(company)
+    db.flush()
+    owner = User(display_name="通知负责人", company_id=company.id)
+    db.add(owner)
+    db.flush()
+    company.primary_user_id = owner.id
+    db.add(WechatIdentity(openid="o-notification-binding", user_id=owner.id))
+    first_notification = create_station_message(
+        db,
+        user_id=None,
+        company_id=company.id,
+        scene="V12_CORRECTION_REDISPATCH",
+        title="第一条撤回",
+        body="第一条客资退回 100 积分",
+        deep_link="/h5/v12-workbench.html?view=assignments&id=assignment-1",
+    )
+    second_notification = create_station_message(
+        db,
+        user_id=None,
+        company_id=company.id,
+        scene="V12_CORRECTION_REDISPATCH",
+        title="第二条撤回",
+        body="第二条客资退回 200 积分",
+        deep_link="/h5/v12-workbench.html?view=assignments&id=assignment-2",
+    )
+    for index, notification in enumerate(
+        (first_notification, second_notification),
+        start=1,
+    ):
+        enqueue_outbox(
+            db,
+            event_key=f"test:correction-redispatch:{index}",
+            event_type="V12_CORRECTION_REDISPATCH",
+            aggregate_type="assignment",
+            aggregate_id=f"assignment-{index}",
+            payload={
+                "company_id": company.id,
+                "notification_id": notification.id,
+                "deep_link": notification.deep_link,
+            },
+        )
+    db.commit()
+    sent: list[tuple[str, str, str | None]] = []
+
+    def capture_message(
+        _client,
+        *,
+        title: str,
+        body: str,
+        url: str | None,
+        **_kwargs,
+    ) -> WechatSendResult:
+        sent.append((title, body, url))
+        return WechatSendResult(success=True, message_id=f"sent-{len(sent)}")
+
+    monkeypatch.setattr(
+        WechatOfficialAccountClient,
+        "send_scene_message",
+        capture_message,
+    )
+
+    result = process_outbox(db)
+
+    assert result["sent"] == 2
+    assert sent == [
+        (
+            "第一条撤回",
+            "第一条客资退回 100 积分",
+            wechat_module.settings.app_base_url.rstrip("/")
+            + first_notification.deep_link,
+        ),
+        (
+            "第二条撤回",
+            "第二条客资退回 200 积分",
+            wechat_module.settings.app_base_url.rstrip("/")
+            + second_notification.deep_link,
+        ),
+    ]
 
 
 def test_publishing_draft_wechat_template_revalidates_empty_literal(api_client) -> None:

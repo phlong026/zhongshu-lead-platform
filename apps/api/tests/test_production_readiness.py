@@ -272,8 +272,16 @@ def test_production_deployment_files_enforce_tls_least_privilege_and_fail_closed
     assert "RESTORE_SUCCEEDED=false" in restore
     assert "RESTORE_RESTART_SERVICES:-NO" in restore
     assert 'if [ "$RESTORE_SUCCEEDED" = "true" ] && [ "$RESTART" = "YES" ]' in restore
-    assert "restore did not complete successfully; api and scheduler remain stopped" in restore
-    assert "restore completed; api and scheduler remain stopped" in restore
+    assert "compose stop api scheduler lead-export-worker" in restore
+    assert "compose up -d api scheduler lead-export-worker" in restore
+    assert (
+        "restore did not complete successfully; api, scheduler and "
+        "lead-export-worker remain stopped"
+    ) in restore
+    assert (
+        "restore completed; api, scheduler and lead-export-worker remain stopped"
+        in restore
+    )
 
 
 def test_health_and_api_responses_include_version_security_and_no_store(api_client):
