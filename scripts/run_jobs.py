@@ -18,6 +18,7 @@ from apps.api.src.services.feishu_sync_service import fetch_and_import_feishu, w
 from apps.api.src.services.notification_v12 import drain_due_supplier_reward_settlement_notified
 from apps.api.src.services.outbox_worker import process_outbox
 from apps.api.src.services.points_service import run_low_points_warnings
+from apps.api.src.services.storage_cleanup_worker import process_storage_cleanup
 
 
 def main() -> int:
@@ -29,6 +30,7 @@ def main() -> int:
             "followup-overdue",
             "low-points",
             "outbox",
+            "storage-cleanup",
             "feishu-sync",
             "supplier-rewards",
             "all",
@@ -48,6 +50,8 @@ def main() -> int:
             output["low_points"] = run_low_points_warnings(db)
         if args.job in {"outbox", "all"}:
             output["outbox"] = process_outbox(db, limit=args.limit)
+        if args.job in {"storage-cleanup", "all"}:
+            output["storage_cleanup"] = process_storage_cleanup(db, limit=args.limit)
         if args.job in {"supplier-rewards", "all"}:
             output["supplier_rewards"] = drain_due_supplier_reward_settlement_notified(
                 db,

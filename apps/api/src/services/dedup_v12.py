@@ -82,10 +82,48 @@ def evaluate_phone(
     checkpoint: str,
     now: datetime | None = None,
 ) -> DedupResult:
-    now = _as_utc(now or datetime.now(timezone.utc))
-    rule = resolve_supplier_reward_rule(db, as_of=now)
     fingerprint = fingerprint_phone(normalized_phone)
     legacy_hash = hash_phone(normalized_phone)
+    return _evaluate_phone_identity(
+        db,
+        lead=lead,
+        fingerprint=fingerprint,
+        legacy_hash=legacy_hash,
+        checkpoint=checkpoint,
+        now=now,
+    )
+
+
+def reevaluate_existing_phone_identity(
+    db: Session,
+    *,
+    lead: Lead,
+    checkpoint: str,
+    now: datetime | None = None,
+) -> DedupResult:
+    """Re-run dedup after a matched historical record has been removed."""
+
+    return _evaluate_phone_identity(
+        db,
+        lead=lead,
+        fingerprint=lead.phone_fingerprint or lead.phone_hash,
+        legacy_hash=lead.phone_hash,
+        checkpoint=checkpoint,
+        now=now,
+    )
+
+
+def _evaluate_phone_identity(
+    db: Session,
+    *,
+    lead: Lead,
+    fingerprint: str,
+    legacy_hash: str,
+    checkpoint: str,
+    now: datetime | None,
+) -> DedupResult:
+    now = _as_utc(now or datetime.now(timezone.utc))
+    rule = resolve_supplier_reward_rule(db, as_of=now)
     cutoff = now - timedelta(days=rule.historical_suspect_days)
     candidates = db.scalars(
         select(Lead)

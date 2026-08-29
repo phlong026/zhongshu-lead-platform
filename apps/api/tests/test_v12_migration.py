@@ -7,6 +7,7 @@ import subprocess
 import sys
 import uuid
 
+import pytest
 import sqlalchemy as sa
 from sqlalchemy import create_engine, inspect
 
@@ -232,3 +233,44 @@ def test_v12_migration_upgrades_and_downgrades_from_v101(tmp_path: Path) -> None
     inspector = inspect(engine)
     assignment_columns = {column["name"] for column in inspector.get_columns("assignments")}
     assert {"internal_assignee_user_id", "internal_assigned_by", "internal_assigned_at"} <= assignment_columns
+
+
+def test_storage_cleanup_downgrade_refuses_to_drop_unfinished_jobs(tmp_path: Path) -> None:
+    database = tmp_path / "storage-cleanup-downgrade.db"
+    database_url = f"sqlite:///{database}"
+    _alembic(database_url, "upgrade", "head")
+    engine = create_engine(database_url)
+    metadata = sa.MetaData()
+    metadata.reflect(engine, only=["storage_cleanup_outbox"])
+    cleanup = metadata.tables["storage_cleanup_outbox"]
+    cleanup_id = str(uuid.uuid4())
+    with engine.begin() as connection:
+        connection.execute(
+            cleanup.insert().values(
+                id=cleanup_id,
+                event_key=f"migration-test:{cleanup_id}",
+                object_key="returns/private.bin",
+                storage_backend="local",
+                storage_namespace="/private/storage",
+                source_type="return_evidence",
+                source_id=str(uuid.uuid4()),
+                reason="迁移回滚安全测试",
+                status="PENDING",
+                attempts=0,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+
+    with pytest.raises(subprocess.CalledProcessError) as exc_info:
+        _alembic(database_url, "downgrade", "0013_internal_user_test")
+    assert "unfinished storage cleanup jobs" in exc_info.value.stderr
+    assert "storage_cleanup_outbox" in set(inspect(engine).get_table_names())
+
+    with engine.begin() as connection:
+        connection.execute(
+            cleanup.update()
+            .where(cleanup.c.id == cleanup_id)
+            .values(status="DELETED")
+        )
+    _alembic(database_url, "downgrade", "0013_internal_user_test")
+    assert "storage_cleanup_outbox" not in set(inspect(engine).get_table_names())

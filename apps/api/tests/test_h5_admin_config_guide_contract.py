@@ -24,6 +24,7 @@ def test_guide_matches_current_storage_wechat_and_outbox_implementation() -> Non
         "wechat_template",
         "V12_ASSIGNMENT_DISPATCHED",
         "python scripts/run_jobs.py outbox --limit 100",
+        "python scripts/run_jobs.py storage-cleanup --limit 100",
         "/api/v1/notifications/gate0",
         "MANUAL_ACTION_REQUIRED",
     ):

@@ -531,6 +531,26 @@ class NotificationOutbox(Base):
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class StorageCleanupOutbox(Base):
+    __tablename__ = "storage_cleanup_outbox"
+    __table_args__ = (UniqueConstraint("event_key", name="uq_storage_cleanup_event_key"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    event_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    object_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    storage_backend: Mapped[str] = mapped_column(String(32), nullable=False)
+    storage_namespace: Mapped[str | None] = mapped_column(String(512))
+    source_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="PENDING", nullable=False, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class Notification(Base):
     __tablename__ = "notifications"
 

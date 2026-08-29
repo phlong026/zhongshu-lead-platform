@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
 from sqlalchemy import select
 
+from apps.api.src.core.errors import AppError
 from apps.api.src.core.models import (
     Assignment,
     AuditLog,
@@ -12,17 +15,22 @@ from apps.api.src.core.models import (
     FollowUp,
     InviteToken,
     Lead,
+    LeadDuplicateRelation,
     Notification,
     NotificationOutbox,
     PointsAccount,
     PointsLedger,
+    ReturnEvidence,
     ReturnRequest,
+    StorageCleanupOutbox,
     User,
     WechatIdentity,
 )
-from apps.api.src.core.models_v12 import SupplierLeadReward
+from apps.api.src.core.models_v12 import LeadDedupEvent, SupplierLeadReward
 from apps.api.src.services.auth_service import bind_wechat_by_invite
 from apps.api.src.services.outbox_worker import process_outbox
+from apps.api.src.services.storage import get_storage
+from apps.api.src.services.storage_cleanup_worker import process_storage_cleanup
 
 
 def _login(client, username: str, password: str) -> dict[str, str]:
@@ -78,6 +86,32 @@ def _disable_company(client, headers: dict[str, str], company_id: str) -> None:
         json={"status": "DISABLED", "reason": "业务隔离"},
     )
     assert response.status_code == 200, response.text
+
+
+def _purge_preview(client, headers: dict[str, str], company_id: str) -> dict:
+    response = client.get(
+        f"/api/v1/companies/{company_id}/purge-preview",
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["data"]
+
+
+def _mark_test_body(
+    client,
+    headers: dict[str, str],
+    company_id: str,
+    *,
+    confirm_name: str,
+    reason: str,
+) -> dict[str, str]:
+    preview = _purge_preview(client, headers, company_id)
+    return {
+        "confirm_name": confirm_name,
+        "reason": reason,
+        "confirm_phrase": "永久删除测试数据",
+        "scope_token": preview["scope_token"],
+    }
 
 
 def test_company_disable_isolates_business_without_releasing_wechat(api_client) -> None:
@@ -218,9 +252,10 @@ def test_unbind_releases_wechat_and_allows_new_company_binding(api_client) -> No
         assert audit.metadata_json["reason"] == "负责人改签新公司"
 
 
-def test_delete_endpoint_does_not_remove_disabled_test_company_or_binding(api_client) -> None:
+def test_delete_removes_disabled_test_company_and_binding(api_client) -> None:
     client, factory = api_client
     operation = _login(client, "operation", "Operation123!")
+    admin = _login(client, "admin", "Admin123!")
     company_id = _create_company(
         client,
         operation,
@@ -235,30 +270,55 @@ def test_delete_endpoint_does_not_remove_disabled_test_company_or_binding(api_cl
         "openid-delete-test",
     )
     _disable_company(client, operation, company_id)
+    with factory() as db:
+        unrelated_notification = Notification(
+            user_id=owner_user_id,
+            company_id=None,
+            scene="PLATFORM_NOTICE",
+            title="无关平台通知",
+            body="这条消息与测试加盟商删除无关",
+            deep_link="/h5/#/notifications/platform-notice",
+            status="CREATED",
+        )
+        db.add(unrelated_notification)
+        db.commit()
+        unrelated_notification_id = unrelated_notification.id
 
-    response = client.request(
+    forbidden = client.request(
         "DELETE",
         f"/api/v1/companies/{company_id}",
         headers=operation,
         json={"confirm_name": "可删除测试主体", "reason": "清理历史联测数据"},
     )
-    assert response.status_code == 405, response.text
+    assert forbidden.status_code == 403, forbidden.text
+
+    response = client.request(
+        "DELETE",
+        f"/api/v1/companies/{company_id}",
+        headers=admin,
+        json={"confirm_name": "可删除测试主体", "reason": "清理历史联测数据"},
+    )
+    assert response.status_code == 200, response.text
 
     with factory() as db:
-        assert db.get(Company, company_id) is not None
+        assert db.get(Company, company_id) is None
         assert db.scalar(
             select(WechatIdentity).where(WechatIdentity.openid == "openid-delete-test")
-        ) is not None
+        ) is None
         owner = db.get(User, owner_user_id)
         assert owner is not None
-        assert owner.company_id == company_id
+        assert owner.status == "DISABLED"
+        assert owner.company_id is None
+        assert db.get(Notification, unrelated_notification_id) is not None
         audit = db.scalar(
             select(AuditLog).where(
                 AuditLog.action == "COMPANY_TEST_DELETE",
                 AuditLog.resource_id == company_id,
             )
         )
-        assert audit is None
+        assert audit is not None
+        assert audit.before_json["name"] == "可删除测试主体"
+        assert audit.metadata_json["reason"] == "清理历史联测数据"
 
 
 def test_existing_zero_business_company_requires_superadmin_to_mark_as_test(api_client) -> None:
@@ -276,14 +336,27 @@ def test_existing_zero_business_company_requires_superadmin_to_mark_as_test(api_
     forbidden = client.post(
         f"/api/v1/companies/{company_id}/mark-test",
         headers=operation,
-        json={"confirm_name": "历史联测主体", "reason": "清理历史联测数据"},
+        json={
+            "confirm_name": "历史联测主体",
+            "reason": "清理历史联测数据",
+            "confirm_phrase": "永久删除测试数据",
+            "scope_token": "0" * 64,
+        },
     )
     assert forbidden.status_code == 403, forbidden.text
 
+    preview = _purge_preview(client, admin, company_id)
+    assert preview["counts"]["assignments"] == 0
     response = client.post(
         f"/api/v1/companies/{company_id}/mark-test",
         headers=admin,
-        json={"confirm_name": "历史联测主体", "reason": "清理历史联测数据"},
+        json=_mark_test_body(
+            client,
+            admin,
+            company_id,
+            confirm_name="历史联测主体",
+            reason="清理历史联测数据",
+        ),
     )
     assert response.status_code == 200, response.text
 
@@ -300,7 +373,7 @@ def test_existing_zero_business_company_requires_superadmin_to_mark_as_test(api_
         assert audit.metadata_json["reason"] == "清理历史联测数据"
 
 
-def test_superadmin_can_mark_but_cannot_delete_historical_test_company_with_points(api_client) -> None:
+def test_superadmin_can_mark_and_delete_historical_test_company_with_points(api_client) -> None:
     client, factory = api_client
     admin = _login(client, "admin", "Admin123!")
     company_id = _create_company(
@@ -328,10 +401,18 @@ def test_superadmin_can_mark_but_cannot_delete_historical_test_company_with_poin
         )
         db.commit()
 
+    preview = _purge_preview(client, admin, company_id)
+    assert preview["counts"]["points_ledgers"] == 1
     marked = client.post(
         f"/api/v1/companies/{company_id}/mark-test",
         headers=admin,
-        json={"confirm_name": "历史有积分联测主体", "reason": "确认为历史联测账号"},
+        json=_mark_test_body(
+            client,
+            admin,
+            company_id,
+            confirm_name="历史有积分联测主体",
+            reason="确认为历史联测账号",
+        ),
     )
     assert marked.status_code == 200, marked.text
 
@@ -341,13 +422,13 @@ def test_superadmin_can_mark_but_cannot_delete_historical_test_company_with_poin
         headers=admin,
         json={"confirm_name": "历史有积分联测主体", "reason": "清理历史联测数据"},
     )
-    assert deleted.status_code == 405, deleted.text
+    assert deleted.status_code == 200, deleted.text
     with factory() as db:
-        assert db.get(Company, company_id) is not None
-        assert db.scalar(select(PointsLedger).where(PointsLedger.company_id == company_id)) is not None
+        assert db.get(Company, company_id) is None
+        assert db.scalar(select(PointsLedger).where(PointsLedger.company_id == company_id)) is None
 
 
-def test_historical_company_with_platform_assignment_cannot_be_marked_as_test(api_client) -> None:
+def test_historical_company_with_platform_assignment_can_be_marked_and_deleted(api_client) -> None:
     client, factory = api_client
     admin = _login(client, "admin", "Admin123!")
     company_id = _create_company(
@@ -367,29 +448,116 @@ def test_historical_company_with_platform_assignment_cannot_be_marked_as_test(ap
         )
         db.add(lead)
         db.flush()
+        assignment = Assignment(
+            lead_id=lead.id,
+            company_id=company_id,
+            status="PENDING_CLAIM",
+            points_price=100,
+            lead_snapshot={},
+            assigned_by=operator.id,
+        )
+        db.add(assignment)
+        db.flush()
+        lead.current_assignment_id = assignment.id
+        lead.status = "DISPATCHED"
+        db.commit()
+        lead_id = lead.id
+        assignment_id = assignment.id
+
+    _disable_company(client, admin, company_id)
+    preview = _purge_preview(client, admin, company_id)
+    assert preview["counts"]["assignments"] == 1
+    assert preview["cross_company_impact"]["companies"] == 0
+    response = client.post(
+        f"/api/v1/companies/{company_id}/mark-test",
+        headers=admin,
+        json=_mark_test_body(
+            client,
+            admin,
+            company_id,
+            confirm_name="与平台客资关联的主体",
+            reason="尝试标记为测试",
+        ),
+    )
+    assert response.status_code == 200, response.text
+
+    deleted = client.request(
+        "DELETE",
+        f"/api/v1/companies/{company_id}",
+        headers=admin,
+        json={"confirm_name": "与平台客资关联的主体", "reason": "清理历史测试派发"},
+    )
+    assert deleted.status_code == 200, deleted.text
+    with factory() as db:
+        assert db.get(Company, company_id) is None
+        preserved_lead = db.get(Lead, lead_id)
+        assert preserved_lead is not None
+        assert preserved_lead.current_assignment_id is None
+        assert preserved_lead.status == "READY_DISPATCH"
+        assert db.get(Assignment, assignment_id) is None
+
+
+def test_mark_test_requires_current_scope_preview_and_strong_confirmation(api_client) -> None:
+    client, factory = api_client
+    admin = _login(client, "admin", "Admin123!")
+    company_id = _create_company(
+        client,
+        admin,
+        name="强确认历史联测主体",
+        is_test=False,
+    )
+    _disable_company(client, admin, company_id)
+
+    missing_confirmation = client.post(
+        f"/api/v1/companies/{company_id}/mark-test",
+        headers=admin,
+        json={"confirm_name": "强确认历史联测主体", "reason": "确认联测数据"},
+    )
+    assert missing_confirmation.status_code == 422, missing_confirmation.text
+
+    stale_preview = _purge_preview(client, admin, company_id)
+    with factory() as db:
         db.add(
-            Assignment(
-                lead_id=lead.id,
-                company_id=company_id,
-                status="PENDING_CLAIM",
-                points_price=100,
-                lead_snapshot={},
-                assigned_by=operator.id,
+            Lead(
+                customer_name="预览后新增测试客资",
+                phone_encrypted="test-encrypted-phone",
+                phone_hash="stale-preview-test-phone",
+                status="READY_DISPATCH",
+                source_kind="SUPPLIER_H5",
+                supplier_company_id=company_id,
             )
         )
         db.commit()
 
-    _disable_company(client, admin, company_id)
-    response = client.post(
+    stale = client.post(
         f"/api/v1/companies/{company_id}/mark-test",
         headers=admin,
-        json={"confirm_name": "与平台客资关联的主体", "reason": "尝试标记为测试"},
+        json={
+            "confirm_name": "强确认历史联测主体",
+            "reason": "确认联测数据",
+            "confirm_phrase": "永久删除测试数据",
+            "scope_token": stale_preview["scope_token"],
+        },
     )
-    assert response.status_code == 409, response.text
-    assert response.json()["code"] == "COMPANY_TEST_DATA_CROSS_BUSINESS_BLOCKED"
+    assert stale.status_code == 409, stale.text
+    assert stale.json()["code"] == "COMPANY_PURGE_PREVIEW_STALE"
+
+    current_preview = _purge_preview(client, admin, company_id)
+    assert current_preview["counts"]["leads"] == 1
+    marked = client.post(
+        f"/api/v1/companies/{company_id}/mark-test",
+        headers=admin,
+        json={
+            "confirm_name": "强确认历史联测主体",
+            "reason": "确认联测数据",
+            "confirm_phrase": "永久删除测试数据",
+            "scope_token": current_preview["scope_token"],
+        },
+    )
+    assert marked.status_code == 200, marked.text
 
 
-def test_test_supplier_with_lead_dispatched_to_another_company_cannot_be_deleted(
+def test_test_supplier_and_dispatched_lead_can_be_deleted_without_deleting_receiver(
     api_client,
 ) -> None:
     client, factory = api_client
@@ -419,32 +587,345 @@ def test_test_supplier_with_lead_dispatched_to_another_company_cannot_be_deleted
         )
         db.add(lead)
         db.flush()
-        db.add(
-            Assignment(
-                lead_id=lead.id,
-                company_id=receiver_id,
-                supplier_company_id=None,
-                receiver_company_id=receiver_id,
-                status="CLAIMED",
-                points_price=100,
-                claim_points=100,
-                lead_snapshot={},
-                assigned_by=operator.id,
-            )
+        assignment = Assignment(
+            lead_id=lead.id,
+            company_id=receiver_id,
+            supplier_company_id=None,
+            receiver_company_id=receiver_id,
+            status="CLAIMED",
+            points_price=100,
+            claim_points=100,
+            lead_snapshot={},
+            assigned_by=operator.id,
         )
+        db.add(assignment)
+        db.flush()
+        receiver_account = db.scalar(
+            select(PointsAccount).where(PointsAccount.company_id == receiver_id)
+        )
+        assert receiver_account is not None
+        receiver_account.balance = 50
+        recharge_ledger = PointsLedger(
+            account_id=receiver_account.id,
+            company_id=receiver_id,
+            ledger_type="RECHARGE",
+            delta=100,
+            balance_after=100,
+            business_type="POINTS_PACKAGE",
+            business_id="cross-company-test-recharge",
+            idempotency_key="cross-company-test-recharge",
+        )
+        claim_ledger = PointsLedger(
+            account_id=receiver_account.id,
+            company_id=receiver_id,
+            ledger_type="CLAIM",
+            delta=-100,
+            balance_after=0,
+            business_type="V12_ASSIGNMENT_CLAIM",
+            business_id=assignment.id,
+            idempotency_key="cross-company-test-lead-claim",
+        )
+        later_ledger = PointsLedger(
+            account_id=receiver_account.id,
+            company_id=receiver_id,
+            ledger_type="ADJUST",
+            delta=50,
+            balance_after=50,
+            business_type="MANUAL_ADJUSTMENT",
+            business_id="cross-company-test-later-adjustment",
+            idempotency_key="cross-company-test-later-adjustment",
+        )
+        receiver_notification = Notification(
+            company_id=receiver_id,
+            scene="CLAIM_SUCCESS",
+            title="测试客资已领取",
+            body="该消息应随测试派发一并清理",
+            deep_link=f"/h5/#/leads/{assignment.id}",
+            status="CREATED",
+        )
+        db.add_all([recharge_ledger, claim_ledger, later_ledger, receiver_notification])
         db.commit()
+        lead_id = lead.id
+        assignment_id = assignment.id
+        receiver_account_id = receiver_account.id
+        claim_ledger_id = claim_ledger.id
+        recharge_ledger_id = recharge_ledger.id
+        later_ledger_id = later_ledger.id
+        receiver_notification_id = receiver_notification.id
 
     _disable_company(client, admin, supplier_id)
     response = client.request(
         "DELETE",
         f"/api/v1/companies/{supplier_id}",
         headers=admin,
-        json={"confirm_name": "跨主体供资测试方", "reason": "验证跨主体保护"},
+        json={"confirm_name": "跨主体供资测试方", "reason": "清理已派发测试客资"},
     )
-    assert response.status_code == 405, response.text
+    assert response.status_code == 200, response.text
+    with factory() as db:
+        assert db.get(Company, supplier_id) is None
+        assert db.get(Lead, lead_id) is None
+        assert db.get(Assignment, assignment_id) is None
+        assert db.get(Company, receiver_id) is not None
+        assert db.get(PointsLedger, claim_ledger_id) is None
+        assert db.get(Notification, receiver_notification_id) is None
+        receiver_account = db.get(PointsAccount, receiver_account_id)
+        assert receiver_account is not None
+        assert receiver_account.balance == 150
+        recharge_ledger = db.get(PointsLedger, recharge_ledger_id)
+        later_ledger = db.get(PointsLedger, later_ledger_id)
+        assert recharge_ledger is not None and recharge_ledger.balance_after == 100
+        assert later_ledger is not None and later_ledger.balance_after == 150
 
 
-def test_test_company_with_return_or_followup_on_external_assignment_cannot_be_deleted(
+def test_delete_rechecks_formal_duplicate_after_test_source_is_removed(api_client) -> None:
+    client, factory = api_client
+    admin = _login(client, "admin", "Admin123!")
+    test_company_id = _create_company(
+        client,
+        admin,
+        name="去重源测试主体",
+        is_test=True,
+    )
+    now = datetime.now(timezone.utc)
+    with factory() as db:
+        test_lead = Lead(
+            customer_name="将被删除的测试客资",
+            phone_encrypted="test-encrypted-phone",
+            phone_hash="dedup-after-purge",
+            phone_fingerprint="dedup-after-purge-fingerprint",
+            status="READY_DISPATCH",
+            source_kind="SUPPLIER_H5",
+            supplier_company_id=test_company_id,
+            imported_at=now - timedelta(days=1),
+        )
+        formal_lead = Lead(
+            customer_name="应恢复的正式客资",
+            phone_encrypted="formal-encrypted-phone",
+            phone_hash="dedup-after-purge",
+            phone_fingerprint="dedup-after-purge-fingerprint",
+            status="DUPLICATE",
+            pending_reason="HARD_DUPLICATE",
+            duplicate_status="HARD_DUPLICATE",
+            review_status="APPROVED",
+            source_kind="PLATFORM_MANUAL",
+            imported_at=now,
+        )
+        db.add_all([test_lead, formal_lead])
+        db.flush()
+        db.add_all(
+            [
+                LeadDedupEvent(
+                    lead_id=formal_lead.id,
+                    phone_fingerprint=formal_lead.phone_fingerprint,
+                    checkpoint="SUBMIT",
+                    decision="HARD_DUPLICATE",
+                    matched_lead_id=test_lead.id,
+                    window_days=30,
+                    details_json={"age_days": 1},
+                ),
+                LeadDuplicateRelation(
+                    lead_id=formal_lead.id,
+                    duplicate_lead_id=test_lead.id,
+                    reason="V12_HARD_DUPLICATE",
+                ),
+            ]
+        )
+        db.commit()
+        formal_lead_id = formal_lead.id
+
+    _disable_company(client, admin, test_company_id)
+    response = client.request(
+        "DELETE",
+        f"/api/v1/companies/{test_company_id}",
+        headers=admin,
+        json={"confirm_name": "去重源测试主体", "reason": "清理会阻断正式客资的测试源"},
+    )
+    assert response.status_code == 200, response.text
+
+    with factory() as db:
+        formal_lead = db.get(Lead, formal_lead_id)
+        assert formal_lead is not None
+        assert formal_lead.status == "READY_DISPATCH"
+        assert formal_lead.duplicate_status == "CLEAR"
+        assert formal_lead.pending_reason is None
+        latest = db.scalar(
+            select(LeadDedupEvent)
+            .where(LeadDedupEvent.lead_id == formal_lead_id)
+            .order_by(LeadDedupEvent.created_at.desc(), LeadDedupEvent.id.desc())
+        )
+        assert latest is not None
+        assert latest.decision == "CLEAR"
+        assert latest.matched_lead_id is None
+
+
+def test_delete_keeps_formal_duplicate_when_another_formal_match_remains(api_client) -> None:
+    client, factory = api_client
+    admin = _login(client, "admin", "Admin123!")
+    test_company_id = _create_company(
+        client,
+        admin,
+        name="多源去重测试主体",
+        is_test=True,
+    )
+    now = datetime.now(timezone.utc)
+    with factory() as db:
+        test_lead = Lead(
+            customer_name="将被删除的重复源",
+            phone_encrypted="test-encrypted-phone",
+            phone_hash="dedup-formal-remains",
+            phone_fingerprint="dedup-formal-remains-fingerprint",
+            status="READY_DISPATCH",
+            source_kind="SUPPLIER_H5",
+            supplier_company_id=test_company_id,
+            imported_at=now - timedelta(days=1),
+        )
+        surviving_match = Lead(
+            customer_name="保留的正式重复源",
+            phone_encrypted="surviving-encrypted-phone",
+            phone_hash="dedup-formal-remains",
+            phone_fingerprint="dedup-formal-remains-fingerprint",
+            status="READY_DISPATCH",
+            source_kind="PLATFORM_MANUAL",
+            imported_at=now - timedelta(hours=12),
+        )
+        formal_lead = Lead(
+            customer_name="仍应阻断的正式客资",
+            phone_encrypted="formal-encrypted-phone",
+            phone_hash="dedup-formal-remains",
+            phone_fingerprint="dedup-formal-remains-fingerprint",
+            status="DUPLICATE",
+            pending_reason="HARD_DUPLICATE",
+            duplicate_status="HARD_DUPLICATE",
+            review_status="APPROVED",
+            source_kind="PLATFORM_MANUAL",
+            imported_at=now,
+        )
+        db.add_all([test_lead, surviving_match, formal_lead])
+        db.flush()
+        db.add(
+            LeadDedupEvent(
+                lead_id=formal_lead.id,
+                phone_fingerprint=formal_lead.phone_fingerprint,
+                checkpoint="SUBMIT",
+                decision="HARD_DUPLICATE",
+                matched_lead_id=test_lead.id,
+                window_days=30,
+                details_json={"age_days": 1},
+            )
+        )
+        db.commit()
+        formal_lead_id = formal_lead.id
+        surviving_match_id = surviving_match.id
+
+    _disable_company(client, admin, test_company_id)
+    response = client.request(
+        "DELETE",
+        f"/api/v1/companies/{test_company_id}",
+        headers=admin,
+        json={"confirm_name": "多源去重测试主体", "reason": "清理但保留真实重复判定"},
+    )
+    assert response.status_code == 200, response.text
+
+    with factory() as db:
+        formal_lead = db.get(Lead, formal_lead_id)
+        assert formal_lead is not None
+        assert formal_lead.status == "DUPLICATE"
+        assert formal_lead.duplicate_status == "HARD_DUPLICATE"
+        assert formal_lead.pending_reason == "HARD_DUPLICATE"
+        latest = db.scalar(
+            select(LeadDedupEvent)
+            .where(LeadDedupEvent.lead_id == formal_lead_id)
+            .order_by(LeadDedupEvent.created_at.desc(), LeadDedupEvent.id.desc())
+        )
+        assert latest is not None
+        assert latest.decision == "HARD_DUPLICATE"
+        assert latest.matched_lead_id == surviving_match_id
+
+
+def test_delete_reblocks_overridden_formal_lead_when_another_match_remains(api_client) -> None:
+    client, factory = api_client
+    admin = _login(client, "admin", "Admin123!")
+    test_company_id = _create_company(
+        client,
+        admin,
+        name="覆盖去重测试主体",
+        is_test=True,
+    )
+    now = datetime.now(timezone.utc)
+    with factory() as db:
+        test_lead = Lead(
+            customer_name="将被删除的覆盖源",
+            phone_encrypted="test-encrypted-phone",
+            phone_hash="dedup-override-remains",
+            phone_fingerprint="dedup-override-remains-fingerprint",
+            status="READY_DISPATCH",
+            source_kind="SUPPLIER_H5",
+            supplier_company_id=test_company_id,
+            imported_at=now - timedelta(days=1),
+        )
+        surviving_match = Lead(
+            customer_name="仍存在的正式重复源",
+            phone_encrypted="surviving-encrypted-phone",
+            phone_hash="dedup-override-remains",
+            phone_fingerprint="dedup-override-remains-fingerprint",
+            status="READY_DISPATCH",
+            source_kind="PLATFORM_MANUAL",
+            imported_at=now - timedelta(hours=12),
+        )
+        overridden_lead = Lead(
+            customer_name="必须重新阻断的正式客资",
+            phone_encrypted="formal-encrypted-phone",
+            phone_hash="dedup-override-remains",
+            phone_fingerprint="dedup-override-remains-fingerprint",
+            status="READY_DISPATCH",
+            pending_reason=None,
+            duplicate_status="OVERRIDDEN",
+            review_status="APPROVED",
+            source_kind="PLATFORM_MANUAL",
+            imported_at=now,
+        )
+        db.add_all([test_lead, surviving_match, overridden_lead])
+        db.flush()
+        db.add(
+            LeadDedupEvent(
+                lead_id=overridden_lead.id,
+                phone_fingerprint=overridden_lead.phone_fingerprint,
+                checkpoint="OVERRIDE",
+                decision="OVERRIDDEN",
+                matched_lead_id=test_lead.id,
+                window_days=30,
+                details_json={"override": True},
+            )
+        )
+        db.commit()
+        overridden_lead_id = overridden_lead.id
+        surviving_match_id = surviving_match.id
+
+    _disable_company(client, admin, test_company_id)
+    response = client.request(
+        "DELETE",
+        f"/api/v1/companies/{test_company_id}",
+        headers=admin,
+        json={"confirm_name": "覆盖去重测试主体", "reason": "清理覆盖源并恢复真实阻断"},
+    )
+    assert response.status_code == 200, response.text
+
+    with factory() as db:
+        lead = db.get(Lead, overridden_lead_id)
+        assert lead is not None
+        assert lead.status == "DUPLICATE"
+        assert lead.duplicate_status == "HARD_DUPLICATE"
+        assert lead.pending_reason == "HARD_DUPLICATE"
+        latest = db.scalar(
+            select(LeadDedupEvent)
+            .where(LeadDedupEvent.lead_id == overridden_lead_id)
+            .order_by(LeadDedupEvent.created_at.desc(), LeadDedupEvent.id.desc())
+        )
+        assert latest is not None
+        assert latest.matched_lead_id == surviving_match_id
+
+
+def test_test_company_with_return_or_followup_on_external_assignment_can_be_deleted(
     api_client,
 ) -> None:
     client, factory = api_client
@@ -490,7 +971,7 @@ def test_test_company_with_return_or_followup_on_external_assignment_cannot_be_d
                     assignment_id=assignment.id,
                     company_id=test_company_id,
                     status="FOLLOWING",
-                    note="不应随测试主体误删",
+                    note="测试主体产生的跟进",
                     created_by=operator.id,
                 ),
                 ReturnRequest(
@@ -499,22 +980,133 @@ def test_test_company_with_return_or_followup_on_external_assignment_cannot_be_d
                     company_id=test_company_id,
                     reason_code="TEST_RETURN",
                     reason_version=1,
-                    description="不应随测试主体误删",
+                    description="测试主体产生的退回",
                     status="DRAFT",
                     submitted_by=operator.id,
                 ),
             ]
         )
         db.commit()
+        lead_id = lead.id
+        assignment_id = assignment.id
 
     _disable_company(client, admin, test_company_id)
     response = client.request(
         "DELETE",
         f"/api/v1/companies/{test_company_id}",
         headers=admin,
-        json={"confirm_name": "跨主体退回测试方", "reason": "验证跨主体保护"},
+        json={"confirm_name": "跨主体退回测试方", "reason": "清理跨主体测试记录"},
     )
-    assert response.status_code == 405, response.text
+    assert response.status_code == 200, response.text
+    with factory() as db:
+        assert db.get(Company, test_company_id) is None
+        assert db.get(Company, receiver_id) is not None
+        assert db.get(Lead, lead_id) is not None
+        assert db.get(Assignment, assignment_id) is not None
+        assert db.scalar(select(FollowUp).where(FollowUp.company_id == test_company_id)) is None
+        assert db.scalar(
+            select(ReturnRequest).where(ReturnRequest.company_id == test_company_id)
+        ) is None
+
+
+def test_test_receiver_can_be_deleted_after_supplier_reward_settlement(api_client) -> None:
+    client, factory = api_client
+    admin = _login(client, "admin", "Admin123!")
+    test_receiver_id = _create_company(
+        client,
+        admin,
+        name="奖励已结算测试接收方",
+        is_test=True,
+    )
+    supplier_id = _create_company(
+        client,
+        admin,
+        name="保留的供资方",
+        is_test=False,
+    )
+    with factory() as db:
+        operator = db.scalar(select(User).where(User.username == "admin"))
+        supplier_account = db.scalar(
+            select(PointsAccount).where(PointsAccount.company_id == supplier_id)
+        )
+        assert operator is not None
+        assert supplier_account is not None
+        lead = Lead(
+            customer_name="外部供资客户",
+            phone_encrypted="test-encrypted-phone",
+            phone_hash="test-receiver-settled-reward",
+            status="CLAIMED",
+            source_kind="SUPPLIER_H5",
+            supplier_company_id=supplier_id,
+        )
+        db.add(lead)
+        db.flush()
+        assignment = Assignment(
+            lead_id=lead.id,
+            company_id=test_receiver_id,
+            supplier_company_id=supplier_id,
+            receiver_company_id=test_receiver_id,
+            status="CLAIMED",
+            points_price=100,
+            claim_points=100,
+            lead_snapshot={},
+            assigned_by=operator.id,
+        )
+        db.add(assignment)
+        db.flush()
+        reward = SupplierLeadReward(
+            lead_id=lead.id,
+            assignment_id=assignment.id,
+            supplier_company_id=supplier_id,
+            receiver_company_id=test_receiver_id,
+            status="SETTLED",
+            claim_points=100,
+            reward_ratio_bps=3000,
+            reward_points=30,
+            rule_version=1,
+            rule_snapshot_json={"version": 1, "ratio_bps": 3000},
+        )
+        db.add(reward)
+        db.flush()
+        supplier_account.balance = 30
+        reward_ledger = PointsLedger(
+            account_id=supplier_account.id,
+            company_id=supplier_id,
+            ledger_type="REWARD",
+            delta=30,
+            balance_after=30,
+            business_type="V12_SUPPLIER_REWARD",
+            business_id=reward.id,
+            idempotency_key="test-receiver-settled-reward",
+        )
+        db.add(reward_ledger)
+        db.flush()
+        reward.ledger_id = reward_ledger.id
+        db.commit()
+        lead_id = lead.id
+        assignment_id = assignment.id
+        reward_id = reward.id
+        reward_ledger_id = reward_ledger.id
+        supplier_account_id = supplier_account.id
+
+    _disable_company(client, admin, test_receiver_id)
+    response = client.request(
+        "DELETE",
+        f"/api/v1/companies/{test_receiver_id}",
+        headers=admin,
+        json={"confirm_name": "奖励已结算测试接收方", "reason": "清理已结算测试业务"},
+    )
+    assert response.status_code == 200, response.text
+    with factory() as db:
+        assert db.get(Company, test_receiver_id) is None
+        assert db.get(Company, supplier_id) is not None
+        assert db.get(Lead, lead_id) is not None
+        assert db.get(Assignment, assignment_id) is None
+        assert db.get(SupplierLeadReward, reward_id) is None
+        assert db.get(PointsLedger, reward_ledger_id) is None
+        supplier_account = db.get(PointsAccount, supplier_account_id)
+        assert supplier_account is not None
+        assert supplier_account.balance == 0
 
 
 def test_test_marker_cannot_be_changed_through_general_company_update(api_client) -> None:
@@ -570,9 +1162,40 @@ def test_company_status_change_requires_an_auditable_reason(api_client) -> None:
     assert enabled_without_reason.status_code == 422, enabled_without_reason.text
 
 
-def test_company_delete_endpoint_is_not_exposed_and_points_history_is_preserved(api_client) -> None:
+def test_delete_rejects_normal_company_but_purges_test_company_points_history(api_client) -> None:
     client, factory = api_client
     admin = _login(client, "admin", "Admin123!")
+    active_test_id = _create_company(
+        client,
+        admin,
+        name="未停用测试主体",
+        is_test=True,
+    )
+    active_response = client.request(
+        "DELETE",
+        f"/api/v1/companies/{active_test_id}",
+        headers=admin,
+        json={"confirm_name": "未停用测试主体", "reason": "尝试跳过停用"},
+    )
+    assert active_response.status_code == 409, active_response.text
+    assert active_response.json()["code"] == "COMPANY_MUST_BE_DISABLED"
+
+    normal_id = _create_company(
+        client,
+        admin,
+        name="正常加盟商不可删",
+        is_test=False,
+    )
+    _disable_company(client, admin, normal_id)
+    normal_response = client.request(
+        "DELETE",
+        f"/api/v1/companies/{normal_id}",
+        headers=admin,
+        json={"confirm_name": "正常加盟商不可删", "reason": "尝试清理正常主体"},
+    )
+    assert normal_response.status_code == 409, normal_response.text
+    assert normal_response.json()["code"] == "COMPANY_DELETE_TEST_ONLY"
+
     test_id = _create_company(
         client,
         admin,
@@ -606,15 +1229,15 @@ def test_company_delete_endpoint_is_not_exposed_and_points_history_is_preserved(
         headers=admin,
         json={"confirm_name": "有积分流水测试主体", "reason": "尝试清理有业务数据"},
     )
-    assert deleted_response.status_code == 405, deleted_response.text
+    assert deleted_response.status_code == 200, deleted_response.text
 
     with factory() as db:
-        assert db.get(Company, test_id) is not None
-        assert db.scalar(select(PointsAccount).where(PointsAccount.company_id == test_id)) is not None
-        assert db.scalar(select(PointsLedger).where(PointsLedger.company_id == test_id)) is not None
+        assert db.get(Company, test_id) is None
+        assert db.scalar(select(PointsAccount).where(PointsAccount.company_id == test_id)) is None
+        assert db.scalar(select(PointsLedger).where(PointsLedger.company_id == test_id)) is None
 
 
-def test_delete_preserves_self_contained_test_company_business_history(api_client) -> None:
+def test_delete_purges_self_contained_test_company_business_history(api_client) -> None:
     client, factory = api_client
     admin = _login(client, "admin", "Admin123!")
     company_id = _create_company(
@@ -672,18 +1295,35 @@ def test_delete_preserves_self_contained_test_company_business_history(api_clien
                 created_by=owner_user_id,
             )
         )
-        db.add(
-            ReturnRequest(
-                assignment_id=assignment.id,
-                lead_id=lead.id,
-                company_id=company_id,
-                reason_code="TEST_RETURN",
-                reason_version=1,
-                description="测试退回",
-                status="DRAFT",
-                submitted_by=owner_user_id,
-            )
+        return_request = ReturnRequest(
+            assignment_id=assignment.id,
+            lead_id=lead.id,
+            company_id=company_id,
+            reason_code="TEST_RETURN",
+            reason_version=1,
+            description="测试退回",
+            status="DRAFT",
+            submitted_by=owner_user_id,
         )
+        db.add(return_request)
+        db.flush()
+        stored_evidence = get_storage().save(
+            b"test-company-return-evidence",
+            prefix=f"returns/{return_request.id}",
+            filename="evidence.txt",
+            mime_type="text/plain",
+        )
+        evidence = ReturnEvidence(
+            return_request_id=return_request.id,
+            evidence_type="SCREENSHOT",
+            object_key=stored_evidence.object_key,
+            original_name="evidence.txt",
+            mime_type=stored_evidence.mime_type,
+            file_size=stored_evidence.size,
+            sha256=stored_evidence.sha256,
+            uploaded_by=owner_user_id,
+        )
+        db.add(evidence)
         db.add(
             SupplierLeadReward(
                 lead_id=lead.id,
@@ -746,6 +1386,8 @@ def test_delete_preserves_self_contained_test_company_business_history(api_clien
             )
         )
         db.commit()
+        evidence_id = evidence.id
+        evidence_object_key = evidence.object_key
 
     _disable_company(client, admin, company_id)
     response = client.request(
@@ -754,30 +1396,45 @@ def test_delete_preserves_self_contained_test_company_business_history(api_clien
         headers=admin,
         json={"confirm_name": "全量清理测试主体", "reason": "清理完整联测数据"},
     )
-    assert response.status_code == 405, response.text
+    assert response.status_code == 200, response.text
 
     with factory() as db:
-        assert db.get(Company, company_id) is not None
-        assert db.scalar(select(Lead).where(Lead.supplier_company_id == company_id)) is not None
-        assert db.scalar(select(Assignment).where(Assignment.company_id == company_id)) is not None
-        assert db.scalar(select(FollowUp).where(FollowUp.company_id == company_id)) is not None
-        assert db.scalar(select(ReturnRequest).where(ReturnRequest.company_id == company_id)) is not None
+        assert db.get(Company, company_id) is None
+        assert db.scalar(select(Lead).where(Lead.supplier_company_id == company_id)) is None
+        assert db.scalar(select(Assignment).where(Assignment.company_id == company_id)) is None
+        assert db.scalar(select(FollowUp).where(FollowUp.company_id == company_id)) is None
+        assert db.scalar(select(ReturnRequest).where(ReturnRequest.company_id == company_id)) is None
         assert db.scalar(
             select(SupplierLeadReward).where(
                 SupplierLeadReward.supplier_company_id == company_id
             )
-        ) is not None
-        assert db.scalar(select(PointsLedger).where(PointsLedger.company_id == company_id)) is not None
-        assert db.scalar(select(PointsAccount).where(PointsAccount.company_id == company_id)) is not None
-        assert db.get(Notification, platform_notification_id) is not None
+        ) is None
+        assert db.scalar(select(PointsLedger).where(PointsLedger.company_id == company_id)) is None
+        assert db.scalar(select(PointsAccount).where(PointsAccount.company_id == company_id)) is None
+        assert db.get(Notification, platform_notification_id) is None
         assert db.scalar(
             select(NotificationOutbox).where(
                 NotificationOutbox.aggregate_id == company_id
             )
-        ) is not None
+        ) is None
+        cleanup = db.scalar(
+            select(StorageCleanupOutbox).where(
+                StorageCleanupOutbox.source_type == "return_evidence",
+                StorageCleanupOutbox.source_id == evidence_id,
+            )
+        )
+        assert cleanup is not None and cleanup.status == "PENDING"
+        result = process_storage_cleanup(db)
+        db.commit()
+        assert result["deleted"] == 1
+        assert cleanup.status == "DELETED"
+
+    with pytest.raises(AppError) as exc_info:
+        get_storage().read(evidence_object_key)
+    assert exc_info.value.code == "FILE_NOT_FOUND"
 
 
-def test_company_delete_endpoint_preserves_account_application_history(api_client) -> None:
+def test_delete_purges_test_company_account_application_history(api_client) -> None:
     client, factory = api_client
     admin = _login(client, "admin", "Admin123!")
     company_id = _create_company(
@@ -810,14 +1467,14 @@ def test_company_delete_endpoint_preserves_account_application_history(api_clien
         headers=admin,
         json={"confirm_name": "有账号申请的测试主体", "reason": "尝试清理申请历史"},
     )
-    assert response.status_code == 405, response.text
+    assert response.status_code == 200, response.text
     with factory() as db:
-        assert db.get(Company, company_id) is not None
+        assert db.get(Company, company_id) is None
         assert db.scalar(
             select(CompanyAccountRequest).where(
                 CompanyAccountRequest.company_id == company_id
             )
-        ) is not None
+        ) is None
 
 
 def test_company_lifecycle_mutations_require_platform_permission(api_client) -> None:
@@ -839,6 +1496,23 @@ def test_company_lifecycle_mutations_require_platform_permission(api_client) -> 
     )
     assert response.status_code == 403, response.text
 
+    delete_response = client.request(
+        "DELETE",
+        f"/api/v1/companies/{company_id}",
+        headers=franchise,
+        json={"confirm_name": "权限测试主体", "reason": "无权越权删除"},
+    )
+    assert delete_response.status_code == 403, delete_response.text
+
+    operation = _login(client, "operation", "Operation123!")
+    operation_delete = client.request(
+        "DELETE",
+        f"/api/v1/companies/{company_id}",
+        headers=operation,
+        json={"confirm_name": "权限测试主体", "reason": "运营不得永久删除"},
+    )
+    assert operation_delete.status_code == 403, operation_delete.text
+
 
 def test_company_test_flag_migration_is_reversible() -> None:
     migration = Path("migrations/versions/0012_company_test_flag.py").read_text(
@@ -850,3 +1524,14 @@ def test_company_test_flag_migration_is_reversible() -> None:
     assert "op.add_column(" in migration
     assert '"companies"' in migration
     assert 'op.drop_column("companies", "is_test")' in migration
+
+
+def test_storage_cleanup_outbox_migration_is_reversible() -> None:
+    migration = Path("migrations/versions/0014_storage_cleanup_outbox.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'revision = "0014_storage_cleanup"' in migration
+    assert 'down_revision = "0013_internal_user_test"' in migration
+    assert '"storage_cleanup_outbox"' in migration
+    assert 'op.drop_table("storage_cleanup_outbox")' in migration

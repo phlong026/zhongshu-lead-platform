@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import mimetypes
 import os
 import pathlib
@@ -37,6 +38,11 @@ class ObjectStorage:
     def read(self, object_key: str) -> bytes:
         raise NotImplementedError
 
+    def delete(self, object_key: str) -> None:
+        """Delete an object idempotently so durable cleanup jobs can retry safely."""
+
+        raise NotImplementedError
+
     def check_readiness(self) -> None:
         """Verify the backend is reachable without writing an object."""
 
@@ -65,6 +71,12 @@ class LocalObjectStorage(ObjectStorage):
         if self.root not in target.parents or not target.exists():
             raise AppError("FILE_NOT_FOUND", "文件不存在", 404)
         return target.read_bytes()
+
+    def delete(self, object_key: str) -> None:
+        target = (self.root / object_key).resolve()
+        if self.root not in target.parents:
+            raise AppError("STORAGE_PATH_INVALID", "文件路径非法", 400)
+        target.unlink(missing_ok=True)
 
     def check_readiness(self) -> None:
         if not self.root.is_dir() or not os.access(self.root, os.W_OK):
@@ -122,6 +134,9 @@ class S3ObjectStorage(ObjectStorage):
         response = self.client.get_object(Bucket=settings.s3_bucket, Key=object_key)
         return response["Body"].read()
 
+    def delete(self, object_key: str) -> None:
+        self.client.delete_object(Bucket=settings.s3_bucket, Key=object_key)
+
     def check_readiness(self) -> None:
         try:
             self.client.head_bucket(Bucket=settings.s3_bucket)
@@ -160,6 +175,27 @@ class S3ObjectStorage(ObjectStorage):
 
 def get_storage() -> ObjectStorage:
     return S3ObjectStorage() if settings.object_storage_backend.lower() == "s3" else LocalObjectStorage()
+
+
+def storage_target_snapshot() -> tuple[str, str]:
+    backend = settings.object_storage_backend.strip().lower()
+    if backend == "s3":
+        parsed = urlparse(settings.s3_endpoint_url.strip())
+        host = (parsed.hostname or "").lower()
+        if parsed.port:
+            host = f"{host}:{parsed.port}"
+        endpoint = f"{parsed.scheme.lower()}://{host}{parsed.path.rstrip('/')}"
+        namespace = json.dumps(
+            {
+                "bucket": settings.s3_bucket.strip(),
+                "endpoint": endpoint,
+                "region": settings.s3_region.strip(),
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        return backend, namespace
+    return "local", str(pathlib.Path(settings.object_storage_dir).resolve())
 
 
 def create_file_access_token(evidence_id: str, user_id: str, expires_minutes: int = 10) -> str:

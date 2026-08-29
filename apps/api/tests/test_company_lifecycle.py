@@ -72,8 +72,8 @@ def test_operation_can_disable_and_enable_a_franchise_company(api_client) -> Non
         assert stored is not None and stored.status == "ACTIVE"
 
 
-def test_superadmin_cannot_delete_an_empty_test_company(api_client) -> None:
-    client, factory = api_client
+def test_superadmin_can_delete_an_empty_test_company(api_client) -> None:
+    client, _ = api_client
     admin = _login(client, "admin", "Admin123!")
     company = _create_empty_company(client, admin, "管理员可删除测试主体")
     disabled = client.patch(
@@ -89,32 +89,33 @@ def test_superadmin_cannot_delete_an_empty_test_company(api_client) -> None:
         headers=admin,
         json={"confirm_name": company["name"], "reason": "清理联测主体"},
     )
-    assert deleted.status_code == 405, deleted.text
-    with factory() as db:
-        assert db.get(Company, company["id"]) is not None
+    assert deleted.status_code == 200, deleted.text
 
 
-def test_active_company_delete_endpoint_is_not_exposed(api_client) -> None:
+def test_active_company_cannot_be_deleted(api_client) -> None:
     client, _ = api_client
     operation = _login(client, "operation", "Operation123!")
+    admin = _login(client, "admin", "Admin123!")
     company = _create_empty_company(client, operation, "未停用测试加盟商")
 
     rejected = client.request(
         "DELETE",
         f"/api/v1/companies/{company['id']}",
-        headers=operation,
+        headers=admin,
         json={"confirm_name": company["name"], "reason": "尝试跳过停用"},
     )
-    assert rejected.status_code == 405
+    assert rejected.status_code == 409
+    assert rejected.json()["code"] == "COMPANY_MUST_BE_DISABLED"
 
 
-def test_disabled_test_company_delete_endpoint_is_not_exposed(api_client) -> None:
+def test_test_company_can_be_deleted_after_name_confirmation(api_client) -> None:
     client, factory = api_client
     operation = _login(client, "operation", "Operation123!")
+    admin = _login(client, "admin", "Admin123!")
     company = _create_empty_company(client, operation, "可删除测试加盟商")
     disabled = client.patch(
         f"/api/v1/companies/{company['id']}",
-        headers=operation,
+        headers=admin,
         json={"status": "DISABLED", "reason": "清理联测主体"},
     )
     assert disabled.status_code == 200, disabled.text
@@ -122,32 +123,34 @@ def test_disabled_test_company_delete_endpoint_is_not_exposed(api_client) -> Non
     wrong_confirmation = client.request(
         "DELETE",
         f"/api/v1/companies/{company['id']}",
-        headers=operation,
+        headers=admin,
         json={"confirm_name": "错误名称", "reason": "清理联测主体"},
     )
-    assert wrong_confirmation.status_code == 405
+    assert wrong_confirmation.status_code == 409
+    assert wrong_confirmation.json()["code"] == "COMPANY_CONFIRMATION_MISMATCH"
 
     deleted = client.request(
         "DELETE",
         f"/api/v1/companies/{company['id']}",
-        headers=operation,
+        headers=admin,
         json={"confirm_name": company["name"], "reason": "清理联测主体"},
     )
-    assert deleted.status_code == 405, deleted.text
+    assert deleted.status_code == 200, deleted.text
 
     with factory() as db:
-        assert db.get(Company, company["id"]) is not None
+        assert db.get(Company, company["id"]) is None
         assert db.scalar(
             select(AuditLog).where(
                 AuditLog.action == "COMPANY_TEST_DELETE",
                 AuditLog.resource_id == company["id"],
             )
-        ) is None
+        )
 
 
-def test_company_with_assignment_history_can_only_be_disabled(api_client) -> None:
+def test_test_company_with_assignment_history_can_be_deleted(api_client) -> None:
     client, factory = api_client
     operation = _login(client, "operation", "Operation123!")
+    admin = _login(client, "admin", "Admin123!")
     company = _create_empty_company(client, operation, "经营中加盟商")
 
     with factory() as db:
@@ -163,35 +166,33 @@ def test_company_with_assignment_history_can_only_be_disabled(api_client) -> Non
         )
         db.add(lead)
         db.flush()
-        db.add(
-            Assignment(
-                lead_id=lead.id,
-                company_id=company["id"],
-                status="PENDING_CLAIM",
-                points_price=100,
-                assigned_by=operator.id,
-            )
+        assignment = Assignment(
+            lead_id=lead.id,
+            company_id=company["id"],
+            status="PENDING_CLAIM",
+            points_price=100,
+            assigned_by=operator.id,
         )
+        db.add(assignment)
         db.commit()
+        lead_id = lead.id
+        assignment_id = assignment.id
 
     disabled = client.patch(
         f"/api/v1/companies/{company['id']}",
-        headers=operation,
+        headers=admin,
         json={"status": "DISABLED", "reason": "核对历史业务"},
     )
     assert disabled.status_code == 200, disabled.text
 
-    rejected = client.request(
+    deleted = client.request(
         "DELETE",
         f"/api/v1/companies/{company['id']}",
-        headers=operation,
-        json={"confirm_name": company["name"], "reason": "尝试清理有业务主体"},
+        headers=admin,
+        json={"confirm_name": company["name"], "reason": "清理有派发的测试主体"},
     )
-    assert rejected.status_code == 405
-
-    enabled = client.patch(
-        f"/api/v1/companies/{company['id']}",
-        headers=operation,
-        json={"status": "ACTIVE", "reason": "继续保留业务主体"},
-    )
-    assert enabled.status_code == 200, enabled.text
+    assert deleted.status_code == 200, deleted.text
+    with factory() as db:
+        assert db.get(Company, company["id"]) is None
+        assert db.get(Lead, lead_id) is not None
+        assert db.get(Assignment, assignment_id) is None
