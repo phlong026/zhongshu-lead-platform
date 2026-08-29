@@ -19,6 +19,16 @@ from ..services.outbox_worker import process_outbox
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
 
+def _visible_notification_condition(principal: CurrentPrincipal):
+    condition = Notification.user_id == principal.user_id
+    if principal.has_any_role("FRANCHISE_OWNER") and principal.company_id:
+        condition = condition | (
+            Notification.user_id.is_(None)
+            & (Notification.company_id == principal.company_id)
+        )
+    return condition
+
+
 @router.get("/gate0")
 def gate0(request: Request, principal=Depends(require_permissions("*"))):
     return ok(request, WechatOfficialAccountClient().gate0_diagnostics())
@@ -33,12 +43,12 @@ def list_notifications(
     page_no: int = Query(default=1, alias="page", ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
 ):
-    stmt = select(Notification).where((Notification.user_id == principal.user_id) | ((Notification.user_id.is_(None)) & (Notification.company_id == principal.company_id)))
-    count_stmt = select(func.count(Notification.id)).where((Notification.user_id == principal.user_id) | ((Notification.user_id.is_(None)) & (Notification.company_id == principal.company_id)))
+    visible = _visible_notification_condition(principal)
+    stmt = select(Notification).where(visible)
+    count_stmt = select(func.count(Notification.id)).where(visible)
     unread_total = db.scalar(
         select(func.count(Notification.id)).where(
-            (Notification.user_id == principal.user_id)
-            | ((Notification.user_id.is_(None)) & (Notification.company_id == principal.company_id)),
+            visible,
             Notification.read_at.is_(None),
         )
     ) or 0
@@ -55,7 +65,15 @@ def list_notifications(
 @router.post("/{notification_id}/read")
 def mark_read(notification_id: str, request: Request, principal: CurrentPrincipal, db: Session = Depends(get_db)):
     item = db.get(Notification, notification_id)
-    if not item or (item.user_id not in {None, principal.user_id}) or (item.company_id and item.company_id != principal.company_id):
+    is_legacy_company_message = bool(
+        item
+        and item.user_id is None
+        and principal.has_any_role("FRANCHISE_OWNER")
+        and item.company_id == principal.company_id
+    )
+    if not item or (
+        item.user_id != principal.user_id and not is_legacy_company_message
+    ) or (item.company_id and item.company_id != principal.company_id):
         raise AppError("NOTIFICATION_NOT_FOUND", "消息不存在", 404)
     if item.read_at is None:
         item.read_at = datetime.now(timezone.utc)

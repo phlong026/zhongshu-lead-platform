@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import csv
+from io import StringIO
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
@@ -29,6 +31,7 @@ from ..core.models import (
 from ..core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12, SupplierLeadReward
 from ..core.responses import ok, page
 from ..core.security import decrypt_text, mask_phone
+from ..core.v12_enums import VerificationTaskType
 from ..services.return_v12 import return_request_to_dict
 from ..services.storage import create_file_access_token
 
@@ -44,8 +47,38 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
 
 
+def _safe_csv_cell(value: Any) -> str:
+    """Prevent spreadsheet applications from evaluating exported user text."""
+
+    text = "" if value is None else str(value)
+    if text.startswith(("=", "+", "-", "@", "\t", "\r", "\n")):
+        return f"'{text}"
+    return text
+
+
+def _latest_datetime(*values: datetime | None) -> datetime | None:
+    present = [value for value in values if value is not None]
+    if not present:
+        return None
+
+    def sort_key(value: datetime) -> float:
+        normalized = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return normalized.timestamp()
+
+    return max(present, key=sort_key)
+
+
 def _time(column, start: datetime | None, end: datetime | None) -> list[Any]:
     return ([column >= start] if start else []) + ([column <= end] if end else [])
+
+
+def _period_window(period: str | None) -> tuple[str, datetime, datetime]:
+    normalized = (period or "month").strip().lower()
+    days_by_period = {"day": 1, "week": 7, "month": 30}
+    if normalized not in days_by_period:
+        raise AppError("PERIOD_INVALID", "统计周期仅支持 day/week/month", 422)
+    now = datetime.now(timezone.utc)
+    return normalized, now - timedelta(days=days_by_period[normalized]), now
 
 
 def _counts(db: Session, model, filters: list[Any]) -> dict[str, int]:
@@ -58,6 +91,67 @@ def _summary(db: Session, model, filters: list[Any]) -> dict[str, Any]:
         "total": int(db.scalar(select(func.count(model.id)).where(*filters)) or 0),
         "by_status": _counts(db, model, filters),
     }
+
+
+def _exception_breakdown(
+    db: Session,
+    *,
+    assignment_filters: list[Any],
+    return_filters: list[Any],
+) -> dict[str, int]:
+    """Keep the three user-facing rejection concepts separate."""
+
+    return_requested_statuses = (
+        "SUBMITTED",
+        "VERIFYING",
+        "REVIEWING",
+        "NEED_MORE_EVIDENCE",
+        "APPROVED",
+        "REJECTED",
+    )
+    return {
+        "refused_claim": int(
+            db.scalar(
+                select(func.count(Assignment.id)).where(
+                    *assignment_filters,
+                    Assignment.status == "RELEASED",
+                    Assignment.release_reason == "REFUSED_CLAIM",
+                )
+            )
+            or 0
+        ),
+        "return_requested": int(
+            db.scalar(
+                select(func.count(ReturnRequest.id)).where(
+                    *return_filters,
+                    ReturnRequest.status.in_(return_requested_statuses),
+                )
+            )
+            or 0
+        ),
+        "confirmed_invalid": int(
+            db.scalar(
+                select(func.count(ReturnRequest.id)).where(
+                    *return_filters,
+                    ReturnRequest.status == "APPROVED",
+                )
+            )
+            or 0
+        ),
+    }
+
+
+def _consumed_points(db: Session, filters: list[Any]) -> int:
+    return int(
+        db.scalar(
+            select(func.coalesce(func.sum(-PointsLedger.delta), 0)).where(
+                PointsLedger.ledger_type == "CLAIM",
+                PointsLedger.delta < 0,
+                *filters,
+            )
+        )
+        or 0
+    )
 
 
 def _count_subquery(model, *filters: Any):
@@ -83,22 +177,48 @@ def _management_overview(db: Session, principal: CurrentPrincipal) -> dict[str, 
         _count_subquery(Lead, Lead.status.in_(problem_lead_statuses)).label("lead_problem"),
         _count_subquery(
             VerificationTask,
+            VerificationTask.task_type == VerificationTaskType.PRE_DISPATCH_VERIFY.value,
             VerificationTask.status.in_(("PENDING", "ASSIGNED")),
         ).label("verification_pending"),
         _count_subquery(
             VerificationTask,
+            VerificationTask.task_type == VerificationTaskType.PRE_DISPATCH_VERIFY.value,
             VerificationTask.status == "IN_PROGRESS",
         ).label("verification_in_progress"),
         _count_subquery(
             VerificationTask,
+            VerificationTask.task_type == VerificationTaskType.PRE_DISPATCH_VERIFY.value,
             VerificationTask.status == "SUBMITTED",
         ).label("verification_awaiting_operation"),
         _count_subquery(
             VerificationTask,
+            VerificationTask.task_type == VerificationTaskType.PRE_DISPATCH_VERIFY.value,
             VerificationTask.status.in_(verification_open),
             VerificationTask.due_at.is_not(None),
             VerificationTask.due_at < now,
         ).label("verification_overdue"),
+        _count_subquery(
+            VerificationTask,
+            VerificationTask.task_type == VerificationTaskType.RETURN_VERIFY.value,
+            VerificationTask.status.in_(("PENDING", "ASSIGNED")),
+        ).label("return_verification_pending"),
+        _count_subquery(
+            VerificationTask,
+            VerificationTask.task_type == VerificationTaskType.RETURN_VERIFY.value,
+            VerificationTask.status == "IN_PROGRESS",
+        ).label("return_verification_in_progress"),
+        _count_subquery(
+            VerificationTask,
+            VerificationTask.task_type == VerificationTaskType.RETURN_VERIFY.value,
+            VerificationTask.status == "SUBMITTED",
+        ).label("return_verification_awaiting_operation"),
+        _count_subquery(
+            VerificationTask,
+            VerificationTask.task_type == VerificationTaskType.RETURN_VERIFY.value,
+            VerificationTask.status.in_(verification_open),
+            VerificationTask.due_at.is_not(None),
+            VerificationTask.due_at < now,
+        ).label("return_verification_overdue"),
         _count_subquery(ReturnRequest, ReturnRequest.status == "REVIEWING").label("return_final_review"),
         _count_subquery(
             CompanyLeadCapability,
@@ -134,6 +254,12 @@ def _management_overview(db: Session, principal: CurrentPrincipal) -> dict[str, 
             "in_progress": int(totals.verification_in_progress),
             "awaiting_operation": int(totals.verification_awaiting_operation),
             "overdue": int(totals.verification_overdue),
+        },
+        "return_verification": {
+            "pending": int(totals.return_verification_pending),
+            "in_progress": int(totals.return_verification_in_progress),
+            "awaiting_operation": int(totals.return_verification_awaiting_operation),
+            "overdue": int(totals.return_verification_overdue),
         },
         "exceptions": {
             "return_final_review": int(totals.return_final_review),
@@ -176,6 +302,11 @@ def overview(
         "leads": _summary(db, Lead, lead_f),
         "assignments": _summary(db, Assignment, assignment_f),
         "returns": _summary(db, ReturnRequest, return_f),
+        "exception_breakdown": _exception_breakdown(
+            db,
+            assignment_filters=assignment_f,
+            return_filters=return_f,
+        ),
         "supplier_rewards": rewards,
         "management": _management_overview(db, principal),
     }
@@ -666,12 +797,18 @@ def finance_dashboard(
 
 
 @router.get("/reports/own")
-def own_report(request: Request, principal: CurrentPrincipal, db: Session = Depends(get_db)):
+def own_report(
+    request: Request,
+    principal: CurrentPrincipal,
+    db: Session = Depends(get_db),
+    period: str | None = Query(default="month"),
+):
     if not principal.company_id:
         raise AppError("COMPANY_CONTEXT_REQUIRED", "当前账号未绑定公司", 403)
     if not any(principal.can(code) for code in ("*", "assignment.own.read", "assignment.employee.read", "supplier.lead.manage", "supplier.reward.own.read", "points.own.read")):
         raise AppError("FORBIDDEN", "无权查看公司业务报表", 403)
     company_id = principal.company_id
+    normalized_period, period_start, period_end = _period_window(period)
     employee_scope = principal.has_any_role("FRANCHISE_EMPLOYEE") and principal.can("assignment.employee.read")
     if employee_scope:
         assignment_ids = select(Assignment.id).where(
@@ -681,37 +818,233 @@ def own_report(request: Request, principal: CurrentPrincipal, db: Session = Depe
         lead_f = [
             Lead.supplier_company_id == company_id,
             Lead.submitter_user_id == principal.user_id,
+            *_time(Lead.created_at, period_start, period_end),
         ]
         assignment_f = [
             Assignment.company_id == company_id,
             Assignment.internal_assignee_user_id == principal.user_id,
+            *_time(Assignment.assigned_at, period_start, period_end),
         ]
         return_f = [
             ReturnRequest.company_id == company_id,
-            ReturnRequest.assignment_id.in_(assignment_ids),
+            or_(
+                ReturnRequest.submitted_by == principal.user_id,
+                ReturnRequest.assignment_id.in_(assignment_ids),
+            ),
+            *_time(ReturnRequest.created_at, period_start, period_end),
+        ]
+        points_f = [
+            PointsLedger.company_id == company_id,
+            PointsLedger.business_id.in_(assignment_ids),
+            *_time(PointsLedger.created_at, period_start, period_end),
         ]
         rewards = {"total": 0, "by_status": {}, "points": 0}
     else:
-        lead_f = [Lead.supplier_company_id == company_id]
-        assignment_f = [or_(Assignment.company_id == company_id, Assignment.receiver_company_id == company_id)]
-        return_f = [ReturnRequest.company_id == company_id]
-        reward_f = [SupplierLeadReward.supplier_company_id == company_id]
+        assignment_ids = select(Assignment.id).where(
+            or_(Assignment.company_id == company_id, Assignment.receiver_company_id == company_id)
+        )
+        lead_f = [
+            Lead.supplier_company_id == company_id,
+            *_time(Lead.created_at, period_start, period_end),
+        ]
+        assignment_f = [
+            or_(Assignment.company_id == company_id, Assignment.receiver_company_id == company_id),
+            *_time(Assignment.assigned_at, period_start, period_end),
+        ]
+        return_f = [
+            ReturnRequest.company_id == company_id,
+            *_time(ReturnRequest.created_at, period_start, period_end),
+        ]
+        points_f = [
+            PointsLedger.company_id == company_id,
+            PointsLedger.business_id.in_(assignment_ids),
+            *_time(PointsLedger.created_at, period_start, period_end),
+        ]
+        reward_f = [
+            SupplierLeadReward.supplier_company_id == company_id,
+            *_time(SupplierLeadReward.created_at, period_start, period_end),
+        ]
         rewards = _summary(db, SupplierLeadReward, reward_f)
         rewards["points"] = int(
             db.scalar(select(func.coalesce(func.sum(SupplierLeadReward.reward_points), 0)).where(*reward_f)) or 0
         )
+    supplier_leads = _summary(db, Lead, lead_f)
+    received_assignments = _summary(db, Assignment, assignment_f)
+    returns = _summary(db, ReturnRequest, return_f)
+    exception_breakdown = _exception_breakdown(
+        db,
+        assignment_filters=assignment_f,
+        return_filters=return_f,
+    )
+    consumed_points = _consumed_points(db, points_f)
+    claimed = sum(
+        int(received_assignments["by_status"].get(status, 0))
+        for status in ("CLAIMED", "FOLLOWING", "RETURN_PENDING", "COMPLETED", "RETURNED")
+    )
+    statistics = {
+        "period": normalized_period,
+        "period_start": period_start.date().isoformat(),
+        "scope": "employee" if employee_scope else "company",
+        "received": int(received_assignments["total"]),
+        "claimed": claimed,
+        "effective": int(received_assignments["by_status"].get("COMPLETED", 0)),
+        "refused_claims": exception_breakdown["refused_claim"],
+        "return_requests": exception_breakdown["return_requested"],
+        "confirmed_invalid": exception_breakdown["confirmed_invalid"],
+        "consumed_points": consumed_points,
+    }
     unread = db.scalar(select(func.count(Notification.id)).where(
         or_(Notification.user_id == principal.user_id, (Notification.user_id.is_(None)) & (Notification.company_id == company_id)),
         Notification.read_at.is_(None),
     )) or 0
+    points = {"consumed_points": consumed_points}
     return ok(request, {
         "company_id": company_id,
-        "supplier_leads": _summary(db, Lead, lead_f),
-        "received_assignments": _summary(db, Assignment, assignment_f),
-        "returns": _summary(db, ReturnRequest, return_f),
+        "scope": statistics["scope"],
+        "period": normalized_period,
+        "period_start": statistics["period_start"],
+        "period_end": period_end.date().isoformat(),
+        "statistics": statistics,
+        "supplier_leads": supplier_leads,
+        "received_assignments": received_assignments,
+        "returns": returns,
+        "exception_breakdown": exception_breakdown,
+        "points": points,
+        "finance": points,
         "supplier_rewards": rewards,
         "unread_notifications": int(unread),
     })
+
+
+@router.get("/reports/leads/export.csv")
+def export_leads_csv(
+    _principal=Depends(require_permissions("lead.read")),
+    period: str | None = Query(default="month"),
+    limit: int = Query(default=500, ge=1, le=2000),
+    source_kind: str | None = Query(default=None),
+    receiver_company_id: str | None = Query(default=None),
+    lead_status: str | None = Query(default=None),
+    assignment_status: str | None = Query(default=None),
+    return_status: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    _normalized_period, period_start, period_end = _period_window(period)
+    creator = aliased(User)
+    supplier = aliased(Company)
+    receiver = aliased(Company)
+    filters = list(_time(Lead.created_at, period_start, period_end))
+    if source_kind:
+        filters.append(Lead.source_kind == source_kind.strip().upper())
+    if receiver_company_id:
+        filters.append(
+            func.coalesce(Assignment.receiver_company_id, Assignment.company_id)
+            == receiver_company_id.strip()
+        )
+    if lead_status:
+        filters.append(Lead.status == lead_status.strip().upper())
+    if assignment_status:
+        filters.append(Assignment.status == assignment_status.strip().upper())
+    if return_status:
+        filters.append(ReturnRequest.status == return_status.strip().upper())
+    rows = db.execute(
+        select(
+            Lead,
+            Assignment,
+            ReturnRequest,
+            creator.display_name.label("creator_name"),
+            supplier.name.label("supplier_company"),
+            receiver.name.label("receiver_company"),
+        )
+        .outerjoin(creator, creator.id == Lead.submitter_user_id)
+        .outerjoin(supplier, supplier.id == Lead.supplier_company_id)
+        .outerjoin(Assignment, Assignment.lead_id == Lead.id)
+        .outerjoin(receiver, receiver.id == func.coalesce(Assignment.receiver_company_id, Assignment.company_id))
+        .outerjoin(ReturnRequest, ReturnRequest.assignment_id == Assignment.id)
+        .where(*filters)
+        .order_by(Lead.created_at.desc(), Assignment.assigned_at.desc())
+        .limit(limit)
+    ).all()
+    buffer = StringIO()
+    fieldnames = [
+        "lead_id",
+        "assignment_id",
+        "return_id",
+        "customer_name",
+        "lead_source",
+        "source_kind",
+        "creator_name",
+        "supplier_company",
+        "receiver_company",
+        "receiver_company_id",
+        "lead_status",
+        "review_status",
+        "current_follow_status",
+        "pending_reason",
+        "assignment_status",
+        "assigned_at",
+        "refusal_reason",
+        "return_status",
+        "return_submitted_at",
+        "return_reviewed_at",
+        "processing_outcome",
+        "last_handled_at",
+        "created_at",
+    ]
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+    writer.writeheader()
+    for row in rows:
+        lead, assignment, return_request = row[0], row[1], row[2]
+        receiver_id = (
+            assignment.receiver_company_id or assignment.company_id
+            if assignment is not None
+            else ""
+        )
+        processing_outcome = (
+            lead.current_follow_status
+            or (return_request.status if return_request is not None else None)
+            or (assignment.status if assignment is not None else None)
+            or lead.status
+        )
+        last_handled_at = _latest_datetime(
+            lead.updated_at,
+            assignment.updated_at if assignment is not None else None,
+            assignment.assigned_at if assignment is not None else None,
+            assignment.released_at if assignment is not None else None,
+            return_request.updated_at if return_request is not None else None,
+            return_request.submitted_at if return_request is not None else None,
+            return_request.reviewed_at if return_request is not None else None,
+        )
+        csv_row = {
+            "lead_id": lead.id,
+            "assignment_id": assignment.id if assignment is not None else "",
+            "return_id": return_request.id if return_request is not None else "",
+            "customer_name": lead.customer_name,
+            "lead_source": lead.source_channel or lead.source_kind or lead.source_type or "",
+            "source_kind": lead.source_kind or "",
+            "creator_name": row.creator_name or "",
+            "supplier_company": row.supplier_company or "",
+            "receiver_company": row.receiver_company or "",
+            "receiver_company_id": receiver_id,
+            "lead_status": lead.status,
+            "review_status": lead.review_status or "",
+            "current_follow_status": lead.current_follow_status or "",
+            "pending_reason": lead.pending_reason or "",
+            "assignment_status": assignment.status if assignment is not None else "",
+            "assigned_at": _iso(assignment.assigned_at) if assignment is not None else "",
+            "refusal_reason": assignment.release_reason if assignment is not None else "",
+            "return_status": return_request.status if return_request is not None else "",
+            "return_submitted_at": _iso(return_request.submitted_at) if return_request is not None else "",
+            "return_reviewed_at": _iso(return_request.reviewed_at) if return_request is not None else "",
+            "processing_outcome": processing_outcome,
+            "last_handled_at": _iso(last_handled_at) or "",
+            "created_at": _iso(lead.created_at) or "",
+        }
+        writer.writerow({key: _safe_csv_cell(value) for key, value in csv_row.items()})
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="v12-leads.csv"'},
+    )
 
 
 def _audit(item: AuditLog, *, actor_name: str | None = None) -> dict[str, Any]:

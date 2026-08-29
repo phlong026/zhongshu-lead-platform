@@ -314,9 +314,6 @@ def _recharge(
 def _submit_supplier_lead(
     client,
     supplier: dict[str, str],
-    operation: dict[str, str],
-    telesales: dict[str, str],
-    telesales_user_id: str,
     *,
     phone: str,
     label: str,
@@ -347,45 +344,7 @@ def _submit_supplier_lead(
             headers=supplier,
         )
     )
-    assert submitted["lead"]["status"] == "PENDING_TELESALES_VERIFY"
-    assigned = _data(
-        client.post(
-            f"/api/v1/v1.2/admin/leads/{lead_id}/pre-dispatch-verification",
-            headers=operation,
-            json={
-                "assignee_user_id": telesales_user_id,
-                "reason": "E2E 确认客户意向、预算和可联系时间",
-            },
-        )
-    )
-    task_id = assigned["id"]
-    assert assigned["status"] == "ASSIGNED"
-    _data(
-        client.post(
-            f"/api/v1/v1.2/pre-dispatch-verifications/tasks/{task_id}/start",
-            headers=telesales,
-        )
-    )
-    submitted = _data(
-        client.post(
-            f"/api/v1/v1.2/pre-dispatch-verifications/tasks/{task_id}/submit",
-            headers=telesales,
-            json={
-                "contact_result": "CONNECTED",
-                "conclusion": "QUALIFIED",
-                "note": "E2E 客户确认存在装修需求且可继续跟进",
-            },
-        )
-    )
-    assert submitted["result"] == "QUALIFIED"
-    disposed = _data(
-        client.post(
-            f"/api/v1/v1.2/admin/leads/{lead_id}/pre-dispatch-disposition",
-            headers=operation,
-            json={"decision": "APPROVE_POOL", "note": "E2E 电销核实合格，进入派发池"},
-        )
-    )
-    assert disposed["status"] == "READY_DISPATCH"
+    assert submitted["lead"]["status"] == "READY_DISPATCH"
     return lead_id
 
 
@@ -655,9 +614,6 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
     lead_one = _submit_supplier_lead(
         client,
         supplier,
-        operation,
-        telesales,
-        telesales_user_id,
         phone="13900001001",
         label="奖励结算",
     )
@@ -756,9 +712,6 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
     lead_two = _submit_supplier_lead(
         client,
         supplier,
-        operation,
-        telesales,
-        telesales_user_id,
         phone="13900001002",
         label="退回通过",
     )
@@ -784,9 +737,6 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
     lead_three = _submit_supplier_lead(
         client,
         supplier,
-        operation,
-        telesales,
-        telesales_user_id,
         phone="13900001003",
         label="退回驳回",
     )
@@ -829,9 +779,6 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
     lead_four = _submit_supplier_lead(
         client,
         supplier,
-        operation,
-        telesales,
-        telesales_user_id,
         phone="13900001004",
         label="超期申诉",
     )
@@ -909,12 +856,13 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
         assert {item.business_id for item in reward_ledgers} == {reward_one, reward_three}
         assert db.scalar(select(func.count(NotificationOutbox.id))) >= 1
         assert db.scalar(select(func.count(AuditLog.id))) >= 30
-        assert db.scalar(select(func.count(VerificationTask.id))) == 6
+        # 资料完整的供客直接进入派发池；仅两笔退回申诉产生电销核验任务。
+        assert db.scalar(select(func.count(VerificationTask.id))) == 2
         assert db.scalar(
             select(func.count(VerificationTask.id)).where(
                 VerificationTask.task_type == "PRE_DISPATCH_VERIFY"
             )
-        ) == 4
+        ) == 0
         assert db.scalar(
             select(func.count(VerificationTask.id)).where(
                 VerificationTask.task_type == "RETURN_VERIFY"

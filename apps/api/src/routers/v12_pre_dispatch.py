@@ -31,6 +31,13 @@ from ..services.pre_dispatch_v12 import (
 
 router = APIRouter(prefix="/v1.2", tags=["v1.2-pre-dispatch-verification"])
 
+_OPEN_TASK_STATUSES = (
+    VerificationTaskStatus.PENDING.value,
+    VerificationTaskStatus.ASSIGNED.value,
+    VerificationTaskStatus.IN_PROGRESS.value,
+    VerificationTaskStatus.SUBMITTED.value,
+)
+
 
 def _task_or_raise(db: Session, task_id: str) -> VerificationTask:
     task = db.scalar(
@@ -136,6 +143,8 @@ def list_pre_dispatch_tasks(
         filters.append(VerificationTask.assignee_user_id == principal.user_id)
     if status:
         filters.append(VerificationTask.status == status.strip().upper())
+    else:
+        filters.append(VerificationTask.status.in_(_OPEN_TASK_STATUSES))
     total = int(db.scalar(select(func.count(VerificationTask.id)).where(*filters)) or 0)
     tasks = db.scalars(
         select(VerificationTask)

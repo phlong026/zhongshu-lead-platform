@@ -8,12 +8,13 @@ from sqlalchemy.orm import Session
 
 from ..core.auth import CurrentPrincipal, require_permissions
 from ..core.database import get_db
+from ..core.enums import AssignmentStatus
 from ..core.errors import AppError
 from ..core.models import Assignment, Lead
 from ..core.responses import ok, page
 from ..core.security import decrypt_text, mask_phone
 from ..core.v12_enums import LeadV12Status
-from ..schemas.v12_dispatch import InternalAssignmentBody, ManualDispatchBody
+from ..schemas.v12_dispatch import InternalAssignmentBody, ManualDispatchBody, RefuseAssignmentBody
 from ..services.audit import write_audit
 from ..services.claim_singleflight import run_claim_singleflight
 from ..services.company_account_management import require_superadmin_reason
@@ -22,12 +23,14 @@ from ..services.dispatch_v12 import (
     CLAIMED_CONTACT_STATUSES,
     candidate_to_dict,
     claim_assignment,
+    count_candidates,
     dispatch_manually_with_outcome,
     get_dispatch_lead,
     lead_pool_item,
     list_candidates,
     list_dispatch_pool,
     manual_dispatch_idempotency_guard,
+    refuse_pending_assignment,
 )
 
 router = APIRouter(prefix="/v1.2", tags=["v1.2-dispatch-claim"])
@@ -74,6 +77,8 @@ def _assignment_dict(assignment: Assignment, lead: Lead, *, reveal_phone: bool =
         "assigned_at": assignment.assigned_at.isoformat(),
         "expires_at": assignment.expires_at.isoformat() if assignment.expires_at else None,
         "claimed_at": assignment.claimed_at.isoformat() if assignment.claimed_at else None,
+        "released_at": assignment.released_at.isoformat() if assignment.released_at else None,
+        "release_reason": assignment.release_reason,
         "appeal_deadline_at": assignment.appeal_deadline_at.isoformat() if assignment.appeal_deadline_at else None,
         "reward_due_at": assignment.reward_due_at.isoformat() if assignment.reward_due_at else None,
         "first_followup_due_at": assignment.first_followup_due_at.isoformat() if assignment.first_followup_due_at else None,
@@ -98,6 +103,8 @@ def _assignment_detail_projection(assignment_id: str, company_id: str):
             Assignment.assigned_at,
             Assignment.expires_at,
             Assignment.claimed_at,
+            Assignment.released_at,
+            Assignment.release_reason,
             Assignment.appeal_deadline_at,
             Assignment.reward_due_at,
             Assignment.first_followup_due_at,
@@ -145,6 +152,8 @@ def _projected_assignment_dict(row, *, reveal_phone: bool = False) -> dict:
         "assigned_at": row.assigned_at.isoformat(),
         "expires_at": row.expires_at.isoformat() if row.expires_at else None,
         "claimed_at": row.claimed_at.isoformat() if row.claimed_at else None,
+        "released_at": row.released_at.isoformat() if row.released_at else None,
+        "release_reason": row.release_reason,
         "appeal_deadline_at": row.appeal_deadline_at.isoformat()
         if row.appeal_deadline_at
         else None,
@@ -185,6 +194,9 @@ def dispatch_candidates(
     request: Request,
     principal=Depends(require_permissions("lead.dispatch")),
     db: Session = Depends(get_db),
+    keyword: str | None = Query(default=None, max_length=128),
+    page_no: int = Query(default=1, alias="page", ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
 ):
     lead = get_dispatch_lead(db, lead_id)
     if lead.status != LeadV12Status.READY_DISPATCH.value or lead.current_assignment_id:
@@ -194,13 +206,24 @@ def dispatch_candidates(
             409,
             {"status": lead.status, "current_assignment_id": lead.current_assignment_id},
         )
-    items = list_candidates(db, lead=lead)
+    items = list_candidates(
+        db,
+        lead=lead,
+        keyword=keyword,
+        page_no=page_no,
+        page_size=page_size,
+    )
+    total = count_candidates(db, keyword=keyword)
     include_financials = principal.can("points.read") or principal.can("*")
     return ok(
         request,
         {
             "lead": lead_pool_item(lead),
-            "eligible_count": sum(1 for item in items if item.eligible),
+            "page_eligible_count": sum(1 for item in items if item.eligible),
+            "total": total,
+            "page": page_no,
+            "page_size": page_size,
+            "has_more": page_no * page_size < total,
             "candidates": [
                 candidate_to_dict(item, include_financials=include_financials) for item in items
             ],
@@ -404,6 +427,58 @@ def claim_own_assignment(
         )
         db.commit()
     return ok(request, payload, "派发单已领取" if payload["idempotent"] else "领取成功")
+
+
+@router.post("/assignments/{assignment_id}/refuse")
+def refuse_own_assignment(
+    assignment_id: str,
+    body: RefuseAssignmentBody,
+    request: Request,
+    principal: CurrentPrincipal,
+    db: Session = Depends(get_db),
+):
+    if not principal.has_any_role("FRANCHISE_OWNER") or not principal.can("assignment.own.claim"):
+        raise AppError("FORBIDDEN", "仅加盟商负责人可拒绝领取客资", 403)
+    company_id = _principal_company_id(principal)
+    assignment, lead = refuse_pending_assignment(
+        db,
+        assignment_id=assignment_id,
+        company_id=company_id,
+        refused_by=principal.user_id,
+        reason=body.reason,
+    )
+    write_audit(
+        db,
+        principal=principal,
+        action="V12_ASSIGNMENT_REFUSE",
+        resource_type="assignment",
+        resource_id=assignment.id,
+        company_id=company_id,
+        before={
+            "status": AssignmentStatus.PENDING_CLAIM.value,
+            "lead_status": LeadV12Status.DISPATCHED.value,
+        },
+        after={
+            "status": assignment.status,
+            "lead_status": lead.status,
+            "release_reason": assignment.release_reason,
+        },
+        reason=body.reason,
+        request_id=request.state.request_id,
+    )
+    db.commit()
+    return ok(
+        request,
+        {
+            "assignment_id": assignment.id,
+            "lead_id": lead.id,
+            "status": assignment.status,
+            "lead_status": lead.status,
+            "released_at": assignment.released_at.isoformat() if assignment.released_at else None,
+            "release_reason": assignment.release_reason,
+        },
+        "已拒绝领取，客资已回到待派发池",
+    )
 
 
 @router.post("/assignments/{assignment_id}/internal-assignee")

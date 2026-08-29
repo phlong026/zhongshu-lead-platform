@@ -13,6 +13,7 @@ from ..core.errors import AppError
 from ..core.models import Assignment, AssignmentEvent, Company, Lead, PointsLedger
 from ..core.security import decrypt_text, mask_phone
 from ..core.time import as_utc, utcnow
+from .company_assignment_v12 import require_company_assignment_access
 from .notification_service import create_station_message, enqueue_outbox
 from .points_service import change_points, points_available_for_dispatch
 
@@ -71,8 +72,7 @@ def claim_assignment(db: Session, assignment_id: str, principal: Principal, idem
 
 
 def own_assignment_detail(db: Session, assignment: Assignment, principal: Principal) -> dict[str, Any]:
-    if assignment.company_id != principal.company_id:
-        raise AppError("FORBIDDEN", "无权查看该订单", 403)
+    require_company_assignment_access(principal, assignment)
     lead = db.get(Lead, assignment.lead_id)
     phone = decrypt_text(lead.phone_encrypted) if lead else None
     unlocked = assignment.status in {

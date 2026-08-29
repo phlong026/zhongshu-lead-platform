@@ -4,7 +4,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import Response
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..core.auth import CurrentPrincipal, require_permissions
@@ -13,7 +13,7 @@ from ..core.enums import EvidenceType, VerificationTaskStatus
 from ..core.errors import AppError
 from ..core.models import Assignment, ReturnEvidence, ReturnRequest, VerificationTask
 from ..core.responses import ok, page
-from ..core.v12_enums import VerificationTaskType
+from ..core.v12_enums import ReturnV12Status, VerificationTaskType
 from ..schemas.v12_returns import (
     ReturnDraftV12Body,
     ReturnFinalReviewBody,
@@ -28,6 +28,7 @@ from ..services.return_v12 import (
     claim_return_verification_task,
     create_or_update_return_draft,
     final_review_return,
+    return_request_list_to_dict,
     return_request_to_dict,
     return_verification_task_list_to_dict,
     return_verification_task_to_dict,
@@ -35,10 +36,21 @@ from ..services.return_v12 import (
     submit_return_request,
     submit_return_verification,
 )
-from ..services.company_assignment_v12 import require_company_assignment_access
+from ..services.company_assignment_v12 import require_return_request_access
 from ..services.storage import create_file_access_token, decode_file_access_token, get_storage
 
 router = APIRouter(prefix="/v1.2", tags=["v1.2-return-verification"])
+
+_OPEN_RETURN_TASK_STATUSES = (
+    VerificationTaskStatus.PENDING.value,
+    VerificationTaskStatus.ASSIGNED.value,
+    VerificationTaskStatus.IN_PROGRESS.value,
+    VerificationTaskStatus.SUBMITTED.value,
+)
+_OPEN_RETURN_REQUEST_STATUSES = (
+    ReturnV12Status.VERIFYING.value,
+    ReturnV12Status.REVIEWING.value,
+)
 
 IMAGE_MIME = {"image/jpeg", "image/png", "image/webp"}
 AUDIO_MIME = {
@@ -62,7 +74,11 @@ def _can_read_return(db: Session, principal, item: ReturnRequest) -> bool:
     if assignment is None:
         return False
     try:
-        require_company_assignment_access(principal, assignment)
+        require_return_request_access(
+            principal,
+            assignment,
+            submitted_by=item.submitted_by,
+        )
     except AppError:
         return False
     return True
@@ -110,8 +126,14 @@ def upload_return_evidence(
     item = db.get(ReturnRequest, return_id)
     if item is None:
         raise AppError("RETURN_NOT_FOUND", "退回申请不存在", 404)
-    if not principal.company_id or item.company_id != principal.company_id:
-        raise AppError("FORBIDDEN", "无权上传该退回申请的证据", 403)
+    assignment = db.get(Assignment, item.assignment_id)
+    if assignment is None:
+        raise AppError("ASSIGNMENT_NOT_FOUND", "派发单不存在", 404)
+    require_return_request_access(
+        principal,
+        assignment,
+        submitted_by=item.submitted_by,
+    )
     content = file.file.read()
     normalized_type = evidence_type.strip().upper()
     if normalized_type == EvidenceType.CHAT_SCREENSHOT.value:
@@ -224,10 +246,13 @@ def list_returns_v12(
         filters.extend(
             [
                 ReturnRequest.company_id == principal.company_id,
-                ReturnRequest.assignment_id.in_(
-                    select(Assignment.id).where(
-                        Assignment.internal_assignee_user_id == principal.user_id
-                    )
+                or_(
+                    ReturnRequest.submitted_by == principal.user_id,
+                    ReturnRequest.assignment_id.in_(
+                        select(Assignment.id).where(
+                            Assignment.internal_assignee_user_id == principal.user_id
+                        )
+                    ),
                 ),
             ]
         )
@@ -245,7 +270,7 @@ def list_returns_v12(
     ).all()
     return ok(
         request,
-        page([return_request_to_dict(db, item) for item in items], int(total), page_no, page_size),
+        page(return_request_list_to_dict(db, list(items)), int(total), page_no, page_size),
     )
 
 
@@ -324,6 +349,13 @@ def list_return_verification_tasks(
         filters.append(VerificationTask.assignee_user_id == principal.user_id)
     if status:
         filters.append(VerificationTask.status == status.strip().upper())
+    else:
+        filters.append(VerificationTask.status.in_(_OPEN_RETURN_TASK_STATUSES))
+        filters.append(
+            VerificationTask.return_request_id.in_(
+                select(ReturnRequest.id).where(ReturnRequest.status.in_(_OPEN_RETURN_REQUEST_STATUSES))
+            )
+        )
     total = db.scalar(select(func.count(VerificationTask.id)).where(*filters)) or 0
     tasks = db.scalars(
         select(VerificationTask)

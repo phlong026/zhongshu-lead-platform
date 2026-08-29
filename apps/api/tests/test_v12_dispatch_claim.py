@@ -173,6 +173,36 @@ def test_city_service_area_covers_child_district_leads(db, dispatch_setup) -> No
     assert listed[receiver.id].eligible is True
 
 
+def test_city_service_area_covers_child_township_leads(db, dispatch_setup) -> None:
+    _, _, receiver, _, lead = dispatch_setup
+    district_area = db.scalar(
+        select(CompanyServiceAreaV12).where(
+            CompanyServiceAreaV12.company_id == receiver.id,
+            CompanyServiceAreaV12.region_code == "420106",
+        )
+    )
+    assert district_area is not None
+    district_area.region_code = "420100"
+    district_area.region_level = "CITY"
+    district_area.is_primary_city = True
+    db.add(
+        Region(
+            code="420106001",
+            name="粮道街道",
+            level="TOWNSHIP",
+            parent_code="420106",
+            aliases=[],
+            active=True,
+        )
+    )
+    lead.region_code = "420106001"
+    db.commit()
+
+    result = evaluate_candidate(db, lead=lead, company=receiver)
+    assert result.region_match is True
+    assert result.eligible is True
+
+
 def test_candidate_list_prioritizes_matching_service_area(db, dispatch_setup) -> None:
     supplier, _, receiver, _, lead = dispatch_setup
 

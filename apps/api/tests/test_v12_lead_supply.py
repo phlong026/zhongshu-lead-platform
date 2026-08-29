@@ -4,7 +4,7 @@ import pytest
 
 from apps.api.src.core.auth import Principal
 from apps.api.src.core.errors import AppError
-from apps.api.src.core.models import Company, Lead, Region, User, VerificationTask
+from apps.api.src.core.models import Assignment, Company, Lead, Region, User, VerificationTask
 from apps.api.src.core.models_v12 import CompanyLeadCapability
 from apps.api.src.core.security import fingerprint_phone
 from apps.api.src.core.v12_enums import DuplicateDecision, LeadSourceKind, LeadV12Status
@@ -18,6 +18,7 @@ from apps.api.src.services.dedup_v12 import classify_age, override_duplicate
 from apps.api.src.services.lead_supply_v12 import (
     create_draft,
     discard_draft,
+    reopen_platform_lead_for_correction,
     reopen_rejected_supplier_lead,
     review_supplier_lead,
     submit_draft,
@@ -156,6 +157,58 @@ def test_operation_can_rework_platform_draft_created_by_another_operator(db) -> 
     assert lead.need_summary == "运营复核后补充的建房需求"
 
 
+def test_operation_can_reopen_an_unflowed_platform_lead_without_changing_creator(db) -> None:
+    db.add(Region(code="420100", name="武汉市", level="CITY", aliases=[], active=True))
+    _, creator = _seed_identity(db, company_code="PLATFORM-CORRECTION-CREATOR")
+    _, reworker = _seed_identity(db, company_code="PLATFORM-CORRECTION-OPERATION")
+    creator_principal = _principal(creator.id, None, "lead.manual.manage")
+    reworker_principal = _principal(reworker.id, None, "lead.manual.manage")
+    lead = create_draft(
+        db,
+        principal=creator_principal,
+        source_kind=LeadSourceKind.PLATFORM_MANUAL,
+        values=_valid_values("13800138009"),
+    )
+    submit_draft(db, lead=lead, principal=creator_principal)
+    assert lead.status == LeadV12Status.READY_DISPATCH.value
+
+    reopen_platform_lead_for_correction(db, lead=lead, principal=reworker_principal)
+
+    assert lead.status == LeadV12Status.DRAFT.value
+    assert lead.review_status == "DRAFT"
+    assert lead.submitter_user_id == creator.id
+    assert lead.submitted_at is None
+
+
+def test_operation_cannot_reopen_a_platform_lead_after_any_dispatch_history(db) -> None:
+    db.add(Region(code="420100", name="武汉市", level="CITY", aliases=[], active=True))
+    company, creator = _seed_identity(db, company_code="PLATFORM-FLOWED-COMPANY")
+    principal = _principal(creator.id, None, "lead.manual.manage")
+    lead = create_draft(
+        db,
+        principal=principal,
+        source_kind=LeadSourceKind.PLATFORM_MANUAL,
+        values=_valid_values("13800138010"),
+    )
+    submit_draft(db, lead=lead, principal=principal)
+    db.add(
+        Assignment(
+            lead_id=lead.id,
+            company_id=company.id,
+            status="RELEASED",
+            points_price=100,
+            assigned_by=creator.id,
+        )
+    )
+    db.flush()
+
+    with pytest.raises(AppError) as exc_info:
+        reopen_platform_lead_for_correction(db, lead=lead, principal=principal)
+
+    assert exc_info.value.code == "LEAD_CORRECTION_NOT_ALLOWED"
+    assert lead.status == LeadV12Status.READY_DISPATCH.value
+
+
 def test_clear_dedup_result_cannot_be_artificially_overridden(db) -> None:
     db.add(Region(code="420100", name="武汉市", level="CITY", aliases=[], active=True))
     _, user = _seed_identity(db, company_code="CLEAR001")
@@ -204,7 +257,7 @@ def test_recent_duplicate_is_blocked_and_can_be_audited_override(db) -> None:
     assert second.duplicate_status == DuplicateDecision.OVERRIDDEN.value
 
 
-def test_supplier_upload_requires_approved_capability_and_telesales_verification(db) -> None:
+def test_supplier_upload_requires_approved_capability_and_complete_lead_enters_dispatch_pool(db) -> None:
     db.add(Region(code="420100", name="武汉市", level="CITY", aliases=[], active=True))
     company, user = _seed_identity(db, company_code="SUP001")
     principal = _principal(user.id, company.id, "supplier.lead.manage")
@@ -224,12 +277,61 @@ def test_supplier_upload_requires_approved_capability_and_telesales_verification
     lead = create_draft(db, principal=principal, source_kind=LeadSourceKind.SUPPLIER_H5, values=_valid_values())
     result = submit_draft(db, lead=lead, principal=principal)
     assert result.decision is DuplicateDecision.CLEAR
+    assert lead.status == LeadV12Status.READY_DISPATCH.value
+    assert lead.review_status == "APPROVED"
+    assert lead.pending_reason is None
+    assert db.query(VerificationTask).filter_by(lead_id=lead.id).one_or_none() is None
+
+
+def test_supplier_submission_without_location_enters_telesales_but_only_phone_and_consent_are_required(db) -> None:
+    company, user = _seed_identity(db, company_code="SUP-MISSING-LOCATION")
+    _approve_supplier_capability(db, company, user)
+    principal = _principal(user.id, company.id, "supplier.lead.manage")
+    lead = create_draft(
+        db,
+        principal=principal,
+        source_kind=LeadSourceKind.SUPPLIER_H5,
+        values={
+            "phone": "13700137002",
+            "consent_confirmed": True,
+        },
+    )
+
+    result = submit_draft(db, lead=lead, principal=principal)
+
+    assert result.decision is DuplicateDecision.CLEAR
+    assert lead.customer_name == "未填写"
     assert lead.status == LeadV12Status.PENDING_TELESALES_VERIFY.value
     assert lead.review_status == "PENDING"
-    assert lead.pending_reason == "SUPPLIER_SUBMISSION_REQUIRES_TELESALES_VERIFY"
+    assert lead.pending_reason == "LOCATION_REQUIRES_TELESALES_VERIFY"
     task = db.query(VerificationTask).filter_by(lead_id=lead.id).one()
     assert task.status == "PENDING"
     assert task.assignee_user_id is None
+
+
+@pytest.mark.parametrize(
+    ("values", "field"),
+    [
+        ({"consent_confirmed": True}, "phone"),
+        ({"phone": "13700137003"}, "consent_confirmed"),
+    ],
+)
+def test_formal_submission_requires_phone_and_customer_authorization(db, values, field) -> None:
+    company, user = _seed_identity(db, company_code=f"SUP-REQUIRED-{field}")
+    _approve_supplier_capability(db, company, user)
+    principal = _principal(user.id, company.id, "supplier.lead.manage")
+    lead = create_draft(
+        db,
+        principal=principal,
+        source_kind=LeadSourceKind.SUPPLIER_H5,
+        values=values,
+    )
+
+    with pytest.raises(AppError) as exc_info:
+        submit_draft(db, lead=lead, principal=principal)
+
+    assert exc_info.value.code == "LEAD_SUBMISSION_INVALID"
+    assert field in exc_info.value.details["fields"]
 
 
 def test_supplier_submission_cannot_bypass_telesales_verification_with_initial_review(db) -> None:
@@ -256,7 +358,7 @@ def test_supplier_submission_cannot_bypass_telesales_verification_with_initial_r
         )
 
     assert exc_info.value.code == "LEAD_REVIEW_STATE_INVALID"
-    assert lead.status == LeadV12Status.PENDING_TELESALES_VERIFY.value
+    assert lead.status == LeadV12Status.READY_DISPATCH.value
 
 
 def test_supplier_can_discard_own_draft(db) -> None:
@@ -366,8 +468,8 @@ def test_rejected_supplier_lead_can_be_revised_and_resubmitted(db) -> None:
     lead.need_summary = "计划在武汉建设两层自住房，近期确认设计方案"
     submit_draft(db, lead=lead, principal=principal)
 
-    assert lead.status == LeadV12Status.PENDING_TELESALES_VERIFY.value
-    assert lead.review_status == "PENDING"
+    assert lead.status == LeadV12Status.READY_DISPATCH.value
+    assert lead.review_status == "APPROVED"
     assert lead.review_note is None
 
 

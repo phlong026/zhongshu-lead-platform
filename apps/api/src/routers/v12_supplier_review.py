@@ -10,15 +10,17 @@ from ..core.errors import AppError
 from ..core.models import Lead
 from ..core.responses import ok, page
 from ..core.v12_enums import LeadSourceKind
-from ..services.lead_supply_v12 import get_lead_or_404, lead_supply_to_dict
+from ..services.lead_supply_v12 import (
+    get_lead_or_404,
+    lead_supply_list_to_dict,
+)
 
 router = APIRouter(prefix="/v1.2/admin/supplier-leads", tags=["v1.2-supplier-review"])
 
 
-def _queue_item(lead: Lead, principal) -> dict:
+def _queue_item(item: dict) -> dict:
     """Use data minimisation in list views even for privileged reviewers."""
 
-    item = lead_supply_to_dict(lead, principal)
     item["phone"] = None
     return item
 
@@ -48,7 +50,12 @@ def supplier_review_queue(
     ).all()
     return ok(
         request,
-        page([_queue_item(item, principal) for item in items], total, page_no, page_size),
+        page(
+            [_queue_item(item) for item in lead_supply_list_to_dict(db, list(items), principal)],
+            total,
+            page_no,
+            page_size,
+        ),
     )
 
 
@@ -62,4 +69,4 @@ def supplier_review_detail(
     lead = get_lead_or_404(db, lead_id)
     if lead.source_kind != LeadSourceKind.SUPPLIER_H5.value:
         raise AppError("LEAD_SOURCE_INVALID", "该客资不是供应商上传客资", 409)
-    return ok(request, lead_supply_to_dict(lead, principal))
+    return ok(request, lead_supply_list_to_dict(db, [lead], principal)[0])

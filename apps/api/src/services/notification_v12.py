@@ -47,6 +47,7 @@ def build_v12_deep_link(target: str, business_id: str, *, admin: bool = False) -
         normalized = "notification"
     if normalized == "call":
         return "/h5/call/#/verify"
+    normalized = {"return": "returns", "reward": "rewards"}.get(normalized, normalized)
     root = "/admin/v12-operations.html" if admin else "/h5/v12-workbench.html"
     if admin:
         normalized = {"lead": "leads", "review": "leads"}.get(normalized, normalized)
@@ -65,9 +66,10 @@ def emit_business_notification(
     business_id: str,
     business_ids: dict[str, str | None] | None = None,
     user_id: str | None = None,
+    station_user_ids: set[str | None] | None = None,
     admin: bool = False,
 ) -> NotificationOutbox | None:
-    """Create one in-app message and one transactional outbox row.
+    """Create recipient-scoped station messages and one transactional outbox row.
 
     `event_key` is the cross-channel idempotency key. Re-running a command,
     retrying a request, or projecting the same domain transition cannot create
@@ -83,19 +85,52 @@ def emit_business_notification(
         return existing
 
     deep_link = build_v12_deep_link(target, business_id, admin=admin)
+    delivery_user_id = user_id
+    if delivery_user_id is None and company_id:
+        company = db.get(Company, company_id)
+        if company and company.primary_user_id:
+            delivery_user_id = company.primary_user_id
+        elif company:
+            delivery_user_id = db.scalar(
+                select(User.id)
+                .join(User.roles)
+                .where(
+                    User.company_id == company_id,
+                    User.status == "ACTIVE",
+                    Role.code == "FRANCHISE_OWNER",
+                )
+                .order_by(User.id.asc())
+                .limit(1)
+            )
     notification = create_station_message(
         db,
-        user_id=user_id,
+        user_id=delivery_user_id,
         company_id=company_id,
         scene=event_type,
         title=title,
         body=body,
         deep_link=deep_link,
     )
+    for recipient_user_id in sorted(
+        {
+            candidate
+            for candidate in (station_user_ids or set())
+            if candidate and candidate != delivery_user_id
+        }
+    ):
+        create_station_message(
+            db,
+            user_id=recipient_user_id,
+            company_id=company_id,
+            scene=event_type,
+            title=title,
+            body=body,
+            deep_link=deep_link,
+        )
     payload = {
         "notification_id": notification.id,
         "company_id": company_id,
-        "user_id": user_id,
+        "user_id": delivery_user_id,
         "deep_link": deep_link,
         "business_ids": {
             key: value for key, value in (business_ids or {}).items() if value
@@ -183,11 +218,13 @@ def _notify_reward_state(db: Session, reward: SupplierLeadReward) -> None:
     if not copy:
         return
     event_type, title, body = copy
+    lead = db.get(Lead, reward.lead_id)
     emit_business_notification(
         db,
         event_key=f"v12:reward:{reward.id}:{status.lower()}",
         event_type=event_type,
         company_id=reward.supplier_company_id,
+        station_user_ids={lead.submitter_user_id} if lead else None,
         title=title,
         body=body,
         target="reward",
@@ -267,28 +304,47 @@ def project_v12_notifications(
         lead = db.get(Lead, resource_id)
         if lead and lead.supplier_company_id:
             event_round = _lead_event_round(after, lead, timestamp_field="submitted_at")
+            needs_telesales = str(lead.status).upper() == "PENDING_TELESALES_VERIFY"
             emit_business_notification(
                 db,
                 event_key=f"v12:lead:{lead.id}:submitted:{event_round}",
                 event_type="V12_SUPPLIER_LEAD_SUBMITTED",
                 company_id=lead.supplier_company_id,
-                title="客资已进入电销核实",
-                body="平台已收到客资资料，电销核实与运营处置结果会通过消息通知。",
+                station_user_ids={lead.submitter_user_id},
+                title="客资已进入电销核实" if needs_telesales else "客资已进入待派发池",
+                body=(
+                    "平台已收到客资资料，电销核实与运营处置结果会通过消息通知。"
+                    if needs_telesales
+                    else "手机号和授权已通过基础校验，平台会匹配候选接收公司。"
+                ),
                 target="lead",
                 business_id=lead.id,
                 business_ids={"lead_id": lead.id},
             )
-            emit_platform_role_notifications(
-                db,
-                event_key=f"v12:lead:{lead.id}:submitted:{event_round}:platform",
-                event_type="V12_SUPPLIER_LEAD_REVIEW_REQUIRED",
-                role_codes={"OPERATION", "SUPER_ADMIN"},
-                title="有新的加盟商客资待分配电销核实",
-                body="请分配电销人员核对客户意向、资料完整性和去重结果。",
-                target="telesales",
-                business_id=lead.id,
-                business_ids={"lead_id": lead.id},
-            )
+            if needs_telesales:
+                emit_platform_role_notifications(
+                    db,
+                    event_key=f"v12:lead:{lead.id}:submitted:{event_round}:platform",
+                    event_type="V12_SUPPLIER_LEAD_REVIEW_REQUIRED",
+                    role_codes={"OPERATION", "SUPER_ADMIN"},
+                    title="有新的加盟商客资待分配电销核实",
+                    body="请分配电销人员核对客户意向、资料完整性和服务所在地。",
+                    target="telesales",
+                    business_id=lead.id,
+                    business_ids={"lead_id": lead.id},
+                )
+            else:
+                emit_platform_role_notifications(
+                    db,
+                    event_key=f"v12:lead:{lead.id}:ready-dispatch:{event_round}:platform",
+                    event_type="V12_LEAD_DISPATCH_REQUIRED",
+                    role_codes={"OPERATION", "SUPER_ADMIN"},
+                    title="有新的加盟商客资待人工派发",
+                    body="请进入待派发池选择符合区域、能力、去重和积分条件的接收公司。",
+                    target="dispatch",
+                    business_id=lead.id,
+                    business_ids={"lead_id": lead.id},
+                )
         return
 
     if action == "V12_SUPPLIER_LEAD_REVIEW":
@@ -303,6 +359,7 @@ def project_v12_notifications(
                     event_key=f"v12:lead:{lead.id}:review:{event_round}:info-incomplete",
                     event_type="V12_SUPPLIER_LEAD_TELESALES_VERIFY_REQUIRED",
                     company_id=lead.supplier_company_id,
+                    station_user_ids={lead.submitter_user_id},
                     title="客资已安排电话核验",
                     body="平台正在核对客户意向和资料完整性，核验结论会同步至供客进度。",
                     target="lead",
@@ -316,6 +373,7 @@ def project_v12_notifications(
                     event_key=f"v12:lead:{lead.id}:review:{event_round}:duplicate",
                     event_type="V12_SUPPLIER_LEAD_DUPLICATE_REVIEW",
                     company_id=lead.supplier_company_id,
+                    station_user_ids={lead.submitter_user_id},
                     title="客资进入重复核查",
                     body="平台正在核对重复记录，处理结果会通过消息通知。",
                     target="lead",
@@ -333,6 +391,7 @@ def project_v12_notifications(
                 event_key=f"v12:lead:{lead.id}:review:{event_round}:{str(lead.review_status).lower()}",
                 event_type=event_type,
                 company_id=lead.supplier_company_id,
+                station_user_ids={lead.submitter_user_id},
                 title="客资初审已通过" if approved else "客资初审未通过",
                 body=(
                     "客资已进入待人工派发池。"
@@ -435,6 +494,7 @@ def project_v12_notifications(
                 event_key=f"v12:assignment:{assignment.id}:dispatched",
                 event_type="V12_ASSIGNMENT_DISPATCHED",
                 company_id=receiver_company_id,
+                station_user_ids={assignment.internal_assignee_user_id},
                 title="新客资已派发",
                 body="您有一条新的客资待领取，请在有效期内处理。",
                 target="assignment",
@@ -455,6 +515,7 @@ def project_v12_notifications(
                 event_key=f"v12:assignment:{assignment.id}:claimed",
                 event_type="V12_ASSIGNMENT_CLAIMED",
                 company_id=receiver_company_id,
+                station_user_ids={assignment.internal_assignee_user_id},
                 title="客资领取成功",
                 body="客户联系方式已解锁，请按跟进时限完成首次联系。",
                 target="assignment",
@@ -482,6 +543,7 @@ def project_v12_notifications(
                 event_key=f"v12:return:{request.id}:submit:{event_round}",
                 event_type="V12_RETURN_SUBMITTED",
                 company_id=request.company_id,
+                station_user_ids={request.submitted_by},
                 title="退回申诉已提交",
                 body="申诉已进入后置电销核验，终审结果将通过消息通知。",
                 target="return",
@@ -589,6 +651,7 @@ def project_v12_notifications(
             ),
             company_id=None if is_platform else lead.supplier_company_id,
             user_id=lead.submitter_user_id if is_platform else None,
+            station_user_ids={lead.submitter_user_id} if not is_platform else None,
             title=title,
             body=body,
             target="lead",
@@ -649,6 +712,7 @@ def project_v12_notifications(
                     else "V12_RETURN_REJECTED"
                 ),
                 company_id=request.company_id,
+                station_user_ids={request.submitted_by},
                 title=(
                     "退回申诉终审通过"
                     if approved

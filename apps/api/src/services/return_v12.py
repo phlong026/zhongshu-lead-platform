@@ -35,7 +35,7 @@ from ..core.v12_enums import (
     VerificationTaskType,
 )
 from .points_service import change_points
-from .company_assignment_v12 import require_company_assignment_access
+from .company_assignment_v12 import require_return_request_access
 from .workday_calendar import WorkdayCalendarService
 
 VALID_RETURN_REASONS = {item.value for item in ReturnReasonCode}
@@ -150,16 +150,20 @@ def create_or_update_return_draft(
     description: str,
 ) -> ReturnRequest:
     assignment = _get_assignment(db, assignment_id, lock=True)
-    require_company_assignment_access(principal, assignment)
-    reason = reason_code.strip().upper()
-    if reason not in VALID_RETURN_REASONS:
-        raise AppError("RETURN_REASON_INVALID", "退回原因不在 V1.2 冻结范围内", 422)
-
     item = db.scalar(
         select(ReturnRequest)
         .where(ReturnRequest.assignment_id == assignment.id)
         .with_for_update()
     )
+    require_return_request_access(
+        principal,
+        assignment,
+        submitted_by=item.submitted_by if item else None,
+    )
+    reason = reason_code.strip().upper()
+    if reason not in VALID_RETURN_REASONS:
+        raise AppError("RETURN_REASON_INVALID", "退回原因不在 V1.2 冻结范围内", 422)
+
     if item:
         if item.company_id != principal.company_id:
             raise AppError("FORBIDDEN", "无权修改该退回申请", 403)
@@ -212,7 +216,11 @@ def add_return_evidence(
     duration_seconds: int | None,
 ) -> ReturnEvidence:
     assignment = _get_assignment(db, request.assignment_id, lock=True)
-    require_company_assignment_access(principal, assignment)
+    require_return_request_access(
+        principal,
+        assignment,
+        submitted_by=request.submitted_by,
+    )
     if request.status not in {
         ReturnV12Status.DRAFT.value,
         ReturnV12Status.NEED_MORE_EVIDENCE.value,
@@ -283,7 +291,11 @@ def submit_return_request(
 ) -> ReturnSubmitResult:
     request = _get_return(db, return_id, lock=True)
     assignment_for_access = _get_assignment(db, request.assignment_id, lock=True)
-    require_company_assignment_access(principal, assignment_for_access)
+    require_return_request_access(
+        principal,
+        assignment_for_access,
+        submitted_by=request.submitted_by,
+    )
     if request.status in {
         ReturnV12Status.VERIFYING.value,
         ReturnV12Status.REVIEWING.value,
@@ -603,6 +615,8 @@ def final_review_return(
     if normalized_decision == "NEED_MORE":
         assert_return_transition(ReturnV12Status.REVIEWING, ReturnV12Status.NEED_MORE_EVIDENCE)
         request.status = ReturnV12Status.NEED_MORE_EVIDENCE.value
+        task.status = VerificationTaskStatus.RELEASED.value
+        task.lock_version += 1
         db.add(
             AssignmentEvent(
                 assignment_id=assignment.id,
@@ -617,6 +631,8 @@ def final_review_return(
     if normalized_decision == "REJECT":
         assert_return_transition(ReturnV12Status.REVIEWING, ReturnV12Status.REJECTED)
         request.status = ReturnV12Status.REJECTED.value
+        task.status = VerificationTaskStatus.RELEASED.value
+        task.lock_version += 1
         assignment.status = _restore_assignment_status(lead)
         if lead.status not in {LeadV12Status.CLAIMED.value, LeadV12Status.FOLLOWING.value}:
             lead.status = LeadV12Status.CLAIMED.value
@@ -663,6 +679,8 @@ def final_review_return(
     request.status = ReturnV12Status.APPROVED.value
     request.refund_points = refund_points
     request.refund_ledger_id = refund_ledger.id
+    task.status = VerificationTaskStatus.RELEASED.value
+    task.lock_version += 1
     assignment.status = AssignmentStatus.RETURNED.value
     assignment.released_at = now
     assignment.release_reason = "V12_RETURN_APPROVED"
@@ -699,12 +717,50 @@ def final_review_return(
     return ReturnFinalReviewResult(request=request, refund_ledger=refund_ledger)
 
 
-def return_request_to_dict(db: Session, item: ReturnRequest, *, include_evidence: bool = False) -> dict[str, Any]:
+def return_request_to_dict(
+    db: Session,
+    item: ReturnRequest,
+    *,
+    include_evidence: bool = False,
+    leads_by_id: dict[str, Lead] | None = None,
+    assignments_by_id: dict[str, Assignment] | None = None,
+    users_by_id: dict[str, User] | None = None,
+    tasks_by_id: dict[str, VerificationTask] | None = None,
+    rewards_by_assignment_id: dict[str, SupplierLeadReward] | None = None,
+) -> dict[str, Any]:
+    lead = (
+        leads_by_id.get(item.lead_id)
+        if leads_by_id is not None
+        else db.get(Lead, item.lead_id)
+    )
+    assignment = (
+        assignments_by_id.get(item.assignment_id)
+        if assignments_by_id is not None
+        else db.get(Assignment, item.assignment_id)
+    )
+    submitter = (
+        users_by_id.get(item.submitted_by)
+        if users_by_id is not None and item.submitted_by
+        else db.get(User, item.submitted_by)
+        if item.submitted_by
+        else None
+    )
+    snapshot = assignment.lead_snapshot if assignment and assignment.lead_snapshot else {}
+    phone_masked = snapshot.get("phone_masked")
+    if not phone_masked and lead:
+        phone_masked = mask_phone(decrypt_text(lead.phone_encrypted))
     data: dict[str, Any] = {
         "id": item.id,
         "assignment_id": item.assignment_id,
         "lead_id": item.lead_id,
         "company_id": item.company_id,
+        "assignment_code": f"PF-{item.assignment_id[:8].upper()}",
+        "customer_name": snapshot.get("customer_name") or (lead.customer_name if lead else None),
+        "phone_masked": phone_masked,
+        "city": snapshot.get("city") or (lead.city if lead else None),
+        "district": snapshot.get("district") or (lead.district if lead else None),
+        "region_code": snapshot.get("region_code") or (lead.region_code if lead else None),
+        "submitted_by_name": submitter.display_name if submitter else None,
         "reason_code": item.reason_code,
         "description": item.description,
         "status": item.status,
@@ -741,7 +797,13 @@ def return_request_to_dict(db: Session, item: ReturnRequest, *, include_evidence
             for evidence in evidences
         ]
         data["evidence_summary"] = _evidence_summary(db, item.id)
-    task = db.get(VerificationTask, item.verification_task_id) if item.verification_task_id else None
+    task = (
+        tasks_by_id.get(item.verification_task_id)
+        if tasks_by_id is not None and item.verification_task_id
+        else db.get(VerificationTask, item.verification_task_id)
+        if item.verification_task_id
+        else None
+    )
     if task:
         data["verification"] = {
             "task_id": task.id,
@@ -753,8 +815,14 @@ def return_request_to_dict(db: Session, item: ReturnRequest, *, include_evidence
             "due_at": task.due_at.isoformat() if task.due_at else None,
             "is_overdue": _return_task_is_overdue(task),
         }
-    reward = db.scalar(
-        select(SupplierLeadReward).where(SupplierLeadReward.assignment_id == item.assignment_id)
+    reward = (
+        rewards_by_assignment_id.get(item.assignment_id)
+        if rewards_by_assignment_id is not None
+        else db.scalar(
+            select(SupplierLeadReward).where(
+                SupplierLeadReward.assignment_id == item.assignment_id
+            )
+        )
     )
     if reward:
         data["reward"] = {
@@ -764,6 +832,63 @@ def return_request_to_dict(db: Session, item: ReturnRequest, *, include_evidence
             "reward_due_at": reward.reward_due_at.isoformat() if reward.reward_due_at else None,
         }
     return data
+
+
+def return_request_list_to_dict(
+    db: Session,
+    items: list[ReturnRequest],
+) -> list[dict[str, Any]]:
+    """Serialize one return-request page with a fixed number of relation queries."""
+    if not items:
+        return []
+    lead_ids = {item.lead_id for item in items}
+    assignment_ids = {item.assignment_id for item in items}
+    user_ids = {item.submitted_by for item in items if item.submitted_by}
+    task_ids = {item.verification_task_id for item in items if item.verification_task_id}
+    leads_by_id = {
+        lead.id: lead
+        for lead in db.scalars(select(Lead).where(Lead.id.in_(lead_ids))).all()
+    }
+    assignments_by_id = {
+        assignment.id: assignment
+        for assignment in db.scalars(
+            select(Assignment).where(Assignment.id.in_(assignment_ids))
+        ).all()
+    }
+    users_by_id = {
+        user.id: user
+        for user in db.scalars(select(User).where(User.id.in_(user_ids))).all()
+    }
+    tasks_by_id = (
+        {
+            task.id: task
+            for task in db.scalars(
+                select(VerificationTask).where(VerificationTask.id.in_(task_ids))
+            ).all()
+        }
+        if task_ids
+        else {}
+    )
+    rewards_by_assignment_id = {
+        reward.assignment_id: reward
+        for reward in db.scalars(
+            select(SupplierLeadReward).where(
+                SupplierLeadReward.assignment_id.in_(assignment_ids)
+            )
+        ).all()
+    }
+    return [
+        return_request_to_dict(
+            db,
+            item,
+            leads_by_id=leads_by_id,
+            assignments_by_id=assignments_by_id,
+            users_by_id=users_by_id,
+            tasks_by_id=tasks_by_id,
+            rewards_by_assignment_id=rewards_by_assignment_id,
+        )
+        for item in items
+    ]
 
 
 def return_verification_task_list_to_dict(
