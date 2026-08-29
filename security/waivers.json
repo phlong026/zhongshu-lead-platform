@@ -15,7 +15,7 @@
       "scanner": "semgrep",
       "id": "dangerous-subprocess-use-audit",
       "scope": "apps/api/tests/test_v12_migration.py",
-      "occurrence": "L19:C5-L26:C6",
+      "occurrence": "L20:C5-L27:C6",
       "reason": "The migration test invokes the current Python interpreter with a fixed Alembic module/config prefix and test-owned migration arguments. It never enables a shell and runs only in the isolated test database workflow.",
       "owner": "platform-security",
       "created_on": "2026-08-10",
