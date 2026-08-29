@@ -9,11 +9,13 @@ from ..core.config import get_settings
 from ..core.database import get_db
 from ..core.enums import LeadStatus
 from ..core.errors import AppError
-from ..core.models import Lead
+from ..core.models import Assignment, Lead
 from ..core.responses import ok, page
 from ..integrations.feishu import FeishuClient, FeishuRecord
 from ..schemas.leads import DuplicateDecisionBody, FeishuMockSyncBody, LeadStagingUpdateBody
 from ..services.audit import write_audit
+from ..services.company_assignment_v12 import require_company_assignment_access
+from ..services.dispatch_v12 import CLAIMED_CONTACT_STATUSES
 from ..services.feishu_sync_service import configured_mapping, fetch_and_import_feishu, writeback_feishu_results
 from ..services.lead_service import import_records, lead_to_dict, update_staging_lead
 from ..services.staging_cleanup_service import preview_feishu_staging_cleanup
@@ -129,12 +131,34 @@ def get_lead(lead_id: str, request: Request, principal: CurrentPrincipal, db: Se
     lead = db.get(Lead, lead_id)
     if not lead:
         raise AppError("LEAD_NOT_FOUND", "客资不存在", 404)
-    if principal.has_any_role("FRANCHISE_OWNER"):
-        from ..core.models import Assignment
-        assignment = db.scalar(select(Assignment).where(Assignment.lead_id == lead.id, Assignment.company_id == principal.company_id))
+    reveal_phone: bool | None = None
+    if principal.has_any_role("FRANCHISE_OWNER", "FRANCHISE_EMPLOYEE"):
+        assignment_query = select(Assignment).where(
+            Assignment.lead_id == lead.id,
+            Assignment.company_id == principal.company_id,
+        )
+        if lead.current_assignment_id:
+            assignment_query = assignment_query.where(
+                Assignment.id == lead.current_assignment_id
+            )
+        else:
+            assignment_query = assignment_query.order_by(Assignment.assigned_at.desc())
+        assignment = db.scalar(assignment_query)
         if not assignment:
             raise AppError("FORBIDDEN", "无权查看该客资", 403)
-    return ok(request, lead_to_dict(lead, principal, include_raw=True))
+        require_company_assignment_access(principal, assignment)
+        reveal_phone = assignment.status in CLAIMED_CONTACT_STATUSES
+    elif not (principal.can("lead.read") or principal.can("*")):
+        raise AppError("FORBIDDEN", "无权查看该客资", 403)
+    return ok(
+        request,
+        lead_to_dict(
+            lead,
+            principal,
+            include_raw=True,
+            reveal_phone=reveal_phone,
+        ),
+    )
 
 
 @router.patch("/{lead_id}/staging")
