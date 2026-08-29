@@ -35,7 +35,7 @@ from ..core.v12_enums import (
     VerificationTaskType,
 )
 from .points_service import change_points
-from .company_assignment_v12 import require_company_assignment_access
+from .company_assignment_v12 import require_return_request_access
 from .workday_calendar import WorkdayCalendarService
 
 VALID_RETURN_REASONS = {item.value for item in ReturnReasonCode}
@@ -150,16 +150,20 @@ def create_or_update_return_draft(
     description: str,
 ) -> ReturnRequest:
     assignment = _get_assignment(db, assignment_id, lock=True)
-    require_company_assignment_access(principal, assignment)
-    reason = reason_code.strip().upper()
-    if reason not in VALID_RETURN_REASONS:
-        raise AppError("RETURN_REASON_INVALID", "退回原因不在 V1.2 冻结范围内", 422)
-
     item = db.scalar(
         select(ReturnRequest)
         .where(ReturnRequest.assignment_id == assignment.id)
         .with_for_update()
     )
+    require_return_request_access(
+        principal,
+        assignment,
+        submitted_by=item.submitted_by if item else None,
+    )
+    reason = reason_code.strip().upper()
+    if reason not in VALID_RETURN_REASONS:
+        raise AppError("RETURN_REASON_INVALID", "退回原因不在 V1.2 冻结范围内", 422)
+
     if item:
         if item.company_id != principal.company_id:
             raise AppError("FORBIDDEN", "无权修改该退回申请", 403)
@@ -212,7 +216,11 @@ def add_return_evidence(
     duration_seconds: int | None,
 ) -> ReturnEvidence:
     assignment = _get_assignment(db, request.assignment_id, lock=True)
-    require_company_assignment_access(principal, assignment)
+    require_return_request_access(
+        principal,
+        assignment,
+        submitted_by=request.submitted_by,
+    )
     if request.status not in {
         ReturnV12Status.DRAFT.value,
         ReturnV12Status.NEED_MORE_EVIDENCE.value,
@@ -283,7 +291,11 @@ def submit_return_request(
 ) -> ReturnSubmitResult:
     request = _get_return(db, return_id, lock=True)
     assignment_for_access = _get_assignment(db, request.assignment_id, lock=True)
-    require_company_assignment_access(principal, assignment_for_access)
+    require_return_request_access(
+        principal,
+        assignment_for_access,
+        submitted_by=request.submitted_by,
+    )
     if request.status in {
         ReturnV12Status.VERIFYING.value,
         ReturnV12Status.REVIEWING.value,

@@ -23,6 +23,7 @@ from ..services.dispatch_v12 import (
     CLAIMED_CONTACT_STATUSES,
     candidate_to_dict,
     claim_assignment,
+    count_candidates,
     dispatch_manually_with_outcome,
     get_dispatch_lead,
     lead_pool_item,
@@ -193,6 +194,9 @@ def dispatch_candidates(
     request: Request,
     principal=Depends(require_permissions("lead.dispatch")),
     db: Session = Depends(get_db),
+    keyword: str | None = Query(default=None, max_length=128),
+    page_no: int = Query(default=1, alias="page", ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
 ):
     lead = get_dispatch_lead(db, lead_id)
     if lead.status != LeadV12Status.READY_DISPATCH.value or lead.current_assignment_id:
@@ -202,13 +206,24 @@ def dispatch_candidates(
             409,
             {"status": lead.status, "current_assignment_id": lead.current_assignment_id},
         )
-    items = list_candidates(db, lead=lead)
+    items = list_candidates(
+        db,
+        lead=lead,
+        keyword=keyword,
+        page_no=page_no,
+        page_size=page_size,
+    )
+    total = count_candidates(db, keyword=keyword)
     include_financials = principal.can("points.read") or principal.can("*")
     return ok(
         request,
         {
             "lead": lead_pool_item(lead),
-            "eligible_count": sum(1 for item in items if item.eligible),
+            "page_eligible_count": sum(1 for item in items if item.eligible),
+            "total": total,
+            "page": page_no,
+            "page_size": page_size,
+            "has_more": page_no * page_size < total,
             "candidates": [
                 candidate_to_dict(item, include_financials=include_financials) for item in items
             ],

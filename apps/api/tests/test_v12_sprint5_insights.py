@@ -344,9 +344,10 @@ def test_management_overview_exposes_business_pool_verification_and_risk_counts(
 
     assert response.status_code == 200, response.text
     management = response.json()["data"]["management"]
-    assert {"lead_pool", "verification", "exceptions"} <= set(management)
+    assert {"lead_pool", "verification", "return_verification", "exceptions"} <= set(management)
     assert {"total", "unassigned", "dispatching", "problem"} <= set(management["lead_pool"])
     assert {"pending", "in_progress", "awaiting_operation", "overdue"} <= set(management["verification"])
+    assert {"pending", "in_progress", "awaiting_operation", "overdue"} <= set(management["return_verification"])
 
 
 def test_operation_can_update_a_franchise_company_profile(api_client):
