@@ -170,11 +170,13 @@ async function overview(){
   const report=await api('/v1.2/reports/overview');
   const management=report.management||{};
   const verification=management.verification||{};
+  const returnVerification=management.return_verification||{};
   const exceptions=management.exceptions||{};
   const cards=[
     ['待核实',(report.leads.by_status?.PENDING_REVIEW||0)+(report.leads.by_status?.PENDING_TELESALES_VERIFY||0),'user-check','?view=telesales'],
     ['电销处理中',(verification.pending||0)+(verification.in_progress||0),'phone','?view=telesales'],
     ['待运营处置',verification.awaiting_operation||0,'clipboard-check','?view=telesales'],
+    ['退回核验中',(returnVerification.pending||0)+(returnVerification.in_progress||0),'rotate-ccw','?view=returns'],
     ['待派发',report.leads.by_status?.READY_DISPATCH||0,'hand-claim','?view=dispatch'],
     ['待退回终审',exceptions.return_final_review||0,'rotate-ccw','?view=returns'],
   ];
@@ -182,6 +184,7 @@ async function overview(){
     ['加盟商客资待核实',(report.leads.by_status?.PENDING_REVIEW||0)+(report.leads.by_status?.PENDING_TELESALES_VERIFY||0),'分配电销确认客户意向、资料与服务区域','telesales'],
     ['电销正在核验',(verification.pending||0)+(verification.in_progress||0),'电销只核实事实；运营可改派超时或异常任务','telesales'],
     ['电销结论待处置',verification.awaiting_operation||0,'电销提交事实结论后，由运营决定进入派发池、补充或关闭','telesales'],
+    ['退回事实核验',(returnVerification.pending||0)+(returnVerification.in_progress||0),'退回核验独立于派发前电销任务，进入退回页分配或改派','returns'],
     ['待人工派发',report.leads.by_status?.READY_DISPATCH||0,'优先选择覆盖客资所在地且符合接收条件的加盟商','dispatch'],
     ['退回终审',exceptions.return_final_review||0,'核验结论只作为事实依据，最终退款与后续动作由运营决定','returns'],
     ['加盟商资料审核',exceptions.company_review||0,'能力与服务区域可一键通过；加盟商内部员工分配不在运营视图展示','companies'],
@@ -761,17 +764,30 @@ function showInitialPassword(password,onClose){
 }
 async function dispatch(){const d=await api(`/v1.2/dispatch-pool${qs({page:S.page,page_size:20})}`);const rows=(d.items||[]).map(x=>`<tr><td><b>${esc(x.customer_name)}</b><br>${esc(x.phone_masked||'--')}</td><td>${esc(x.city||'--')} ${esc(x.district||'')}</td><td>${esc(label(x.source_kind))}</td><td>${esc(x.need_summary||'--')}</td><td><button class="ops-btn primary" data-candidate="${x.id}">选择接收公司</button></td></tr>`);shell(`<section class="ops-card"><div class="ops-card-head"><div><h2>待人工派发池</h2><p>“所在地”属于客资；加盟商的服务区域仅用于判断是否可承接。</p></div></div>${table(['客户','所在地','客资来源','客户需求','操作'],rows)}${pager(d)}</section>`);bindPager(d,dispatch);document.querySelectorAll('[data-candidate]').forEach(b=>b.onclick=()=>candidates(b.dataset.candidate));if(S.id){const id=S.id;S.id='';candidates(id)}}
 async function candidates(leadId){
-  modal('选择接收公司','<div class="ops-loading">正在匹配可承接的加盟商…</div>');
-  let d;
-  try{d=await api(`/v1.2/dispatch-pool/${encodeURIComponent(leadId)}/candidates`)}catch(error){modal('选择接收公司',`<div class="ops-error">${esc(error.message||'暂时无法获取可派发的加盟商')}</div>`);return}
-  const candidates=[...(d.candidates||[])].sort((a,b)=>Number(Boolean(b.region_match))-Number(Boolean(a.region_match))||Number(Boolean(b.eligible))-Number(Boolean(a.eligible))||String(a.company_name||'').localeCompare(String(b.company_name||''),'zh-CN'));
   const candidateCard=x=>{const returnedReceiver=(x.exclusion_reasons||[]).includes('RETURNED_RECEIVER_EXCLUDED');const onlyReturnedReceiver=returnedReceiver&&(x.exclusion_reasons||[]).length===1;const action=x.eligible?`<button class="ops-btn primary" data-dispatch="${esc(x.company_id)}">派发</button>`:onlyReturnedReceiver?`<button class="ops-btn" data-dispatch-override="${esc(x.company_id)}">例外派发</button>`:'<span class="ops-muted">不可派发</span>';return `<article class="ops-candidate-card ${x.eligible?'eligible':'blocked'}"><div class="ops-candidate-head"><div><h3>${esc(x.company_name)}</h3><p>${x.region_match?'与客户所在地匹配':'其他服务区域'}</p></div>${x.eligible?badge('APPROVED'):badge('REJECTED')}</div><div class="ops-candidate-facts"><span><small>所需积分</small><b>${esc(x.points_price)}</b></span><span><small>可用积分</small><b>${esc(x.points_available??'按权限隐藏')}</b></span></div><p class="ops-candidate-reason">${esc(candidateReasons(x.exclusion_reasons))}</p><div class="ops-actions">${action}</div></article>`};
-  const draw=keyword=>{const cards=candidates.filter(item=>String(item.company_name||'').toLowerCase().includes(keyword.toLowerCase())).map(candidateCard).join('');return cards?`<div class="ops-candidate-grid">${cards}</div>`:'<div class="ops-empty">没有匹配的候选公司</div>'};
-  modal('选择接收公司',`<div class="ops-notice">按所在地优先展示可承接的加盟商；也可以搜索其他加盟商。曾领取后退回的原公司默认不可再次派发，确需例外派发时必须填写运营判断原因并保留审计。</div><div class="ops-filter"><input class="ops-input" id="candidate-search" placeholder="搜索其他加盟商" autocomplete="off"></div><div id="candidate-results">${draw('')}</div>`,()=>{
+  let keyword='',page=0,items=[],hasMore=false,requestSequence=0,searchTimer;
+  modal('选择接收公司',`<div class="ops-notice">按所在地优先展示可承接的加盟商；也可以搜索其他加盟商。曾领取后退回的原公司默认不可再次派发，确需例外派发时必须填写运营判断原因并保留审计。</div><div class="ops-filter"><input class="ops-input" id="candidate-search" placeholder="搜索其他加盟商" autocomplete="off"></div><div id="candidate-results"><div class="ops-loading">正在匹配可承接的加盟商…</div></div>`,()=>{
     const result=document.querySelector('#candidate-results');
     const bindActions=()=>{document.querySelectorAll('[data-dispatch]').forEach(b=>b.onclick=()=>dispatchOne(leadId,b.dataset.dispatch));document.querySelectorAll('[data-dispatch-override]').forEach(b=>b.onclick=()=>dispatchOne(leadId,b.dataset.dispatchOverride,true))};
-    document.querySelector('#candidate-search').oninput=event=>{zsSetSafeHtml(result,draw(event.target.value.trim()));bindActions()};
-    bindActions();
+    const draw=()=>{const cards=items.map(candidateCard).join('');const body=cards?`<div class="ops-candidate-grid">${cards}</div>`:'<div class="ops-empty">没有匹配的候选公司</div>';const more=hasMore?'<div class="ops-actions"><button class="ops-btn" id="candidate-load-more">加载更多</button></div>':'';zsSetSafeHtml(result,body+more);bindActions();document.querySelector('#candidate-load-more')?.addEventListener('click',()=>loadCandidates(false))};
+    const loadCandidates=async reset=>{
+      const requestedPage=reset?1:page+1;
+      const requestId=++requestSequence;
+      if(reset)zsSetSafeHtml(result,'<div class="ops-loading">正在匹配可承接的加盟商…</div>');
+      try{
+        const data=await api(`/v1.2/dispatch-pool/${encodeURIComponent(leadId)}/candidates${qs({page:requestedPage,page_size:20,keyword})}`);
+        if(requestId!==requestSequence)return;
+        items=reset?[...(data.candidates||[])]:[...items,...(data.candidates||[])];
+        page=Number(data.page||requestedPage);
+        hasMore=Boolean(data.has_more);
+        draw();
+      }catch(error){
+        if(requestId!==requestSequence)return;
+        zsSetSafeHtml(result,`<div class="ops-error">${esc(error.message||'暂时无法获取可派发的加盟商')}</div>`);
+      }
+    };
+    document.querySelector('#candidate-search').oninput=event=>{keyword=event.target.value.trim();clearTimeout(searchTimer);searchTimer=setTimeout(()=>loadCandidates(true),250)};
+    loadCandidates(true);
   });
 }
 function dispatchOne(leadId,companyId,returnReceiverOverride=false){actionForm({title:returnReceiverOverride?'确认例外派发':'确认人工派发',message:returnReceiverOverride?'该公司曾领取后退回本条客资。请写明运营复核后仍允许再次派发的例外原因。':'请再次核对接收公司。提交后会生成派发单并记录审计。',labelText:returnReceiverOverride?'例外派发原因':'派发备注',required:returnReceiverOverride,minLength:returnReceiverOverride?2:undefined,submitLabel:returnReceiverOverride?'确认例外派发':'确认派发'},async note=>{await api(`/v1.2/dispatch-pool/${encodeURIComponent(leadId)}/dispatch`,{method:'POST',body:JSON.stringify({company_id:companyId,idempotency_key:`dispatch-${crypto.randomUUID()}`,note:returnReceiverOverride?null:note||null,return_receiver_override:returnReceiverOverride,return_receiver_override_reason:returnReceiverOverride?note:null})});toast('客资已派发');await dispatch()})}

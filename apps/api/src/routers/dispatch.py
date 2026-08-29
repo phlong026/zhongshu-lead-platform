@@ -12,6 +12,7 @@ from ..core.models import Assignment, AssignmentEvent, Lead
 from ..core.responses import ok, page
 from ..schemas.dispatch import DispatchBody, ReleaseAssignmentBody
 from ..services.audit import write_audit
+from ..services.company_assignment_v12 import require_company_assignment_access
 from ..services.dispatch_service import assignment_to_dict, candidate_companies, dispatch_lead, release_assignment
 from ..services.lead_service import lead_to_dict
 
@@ -97,8 +98,8 @@ def assignment_detail(assignment_id: str, request: Request, principal: CurrentPr
     assignment = db.get(Assignment, assignment_id)
     if not assignment:
         raise AppError("ASSIGNMENT_NOT_FOUND", "派发订单不存在", 404)
-    if principal.has_any_role("FRANCHISE_OWNER") and assignment.company_id != principal.company_id:
-        raise AppError("FORBIDDEN", "无权查看该订单", 403)
+    if principal.has_any_role("FRANCHISE_OWNER", "FRANCHISE_EMPLOYEE"):
+        require_company_assignment_access(principal, assignment)
     events = db.scalars(select(AssignmentEvent).where(AssignmentEvent.assignment_id == assignment.id).order_by(AssignmentEvent.occurred_at)).all()
     data = assignment_to_dict(assignment)
     data["timeline"] = [{"type": x.event_type, "payload": x.payload, "occurred_at": x.occurred_at.isoformat()} for x in events]
