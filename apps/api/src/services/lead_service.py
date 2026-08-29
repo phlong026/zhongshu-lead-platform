@@ -39,9 +39,26 @@ def _resolve_region_code(db: Session, explicit_code: str | None, city: str | Non
     return None
 
 
-def lead_to_dict(lead: Lead, principal: Principal | None = None, *, include_raw: bool = False) -> dict[str, Any]:
+def lead_to_dict(
+    lead: Lead,
+    principal: Principal | None = None,
+    *,
+    include_raw: bool = False,
+    reveal_phone: bool | None = None,
+) -> dict[str, Any]:
     phone = decrypt_text(lead.phone_encrypted)
-    can_view_phone = bool(principal and (principal.can("lead.phone.read") or principal.can("lead.own.phone.read") or principal.can("*")))
+    can_view_phone = (
+        reveal_phone
+        if reveal_phone is not None
+        else bool(
+            principal
+            and (
+                principal.can("lead.phone.read")
+                or principal.can("lead.own.phone.read")
+                or principal.can("*")
+            )
+        )
+    )
     data: dict[str, Any] = {
         "id": lead.id,
         "customer_name": lead.customer_name,
