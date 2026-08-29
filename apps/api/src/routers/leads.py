@@ -33,6 +33,24 @@ def _ensure_feishu_mock_allowed() -> None:
         raise AppError("FEISHU_MOCK_DISABLED", "飞书模拟同步仅允许在已启用模拟的非生产环境使用", 404)
 
 
+def _legacy_mutation_lead_or_raise(db: Session, lead_id: str) -> Lead:
+    lead = db.scalar(
+        select(Lead)
+        .where(Lead.id == lead_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if lead is None:
+        raise AppError("LEAD_NOT_FOUND", "客资不存在", 404)
+    if lead.source_kind is not None:
+        raise AppError(
+            "LEAD_CORRECTION_API_REQUIRED",
+            "V1.2 客资请使用统一客资更正入口",
+            409,
+        )
+    return lead
+
+
 @router.post("/feishu/mock-sync")
 def mock_sync(
     body: FeishuMockSyncBody,
@@ -169,9 +187,7 @@ def update_staging(
     principal=Depends(require_permissions("lead.edit")),
     db: Session = Depends(get_db),
 ):
-    lead = db.get(Lead, lead_id)
-    if not lead:
-        raise AppError("LEAD_NOT_FOUND", "客资不存在", 404)
+    lead = _legacy_mutation_lead_or_raise(db, lead_id)
     before = lead_to_dict(lead, principal)
     update_staging_lead(db, lead, body.model_dump(exclude_unset=True))
     write_audit(db, principal=principal, action="LEAD_STAGING_UPDATE", resource_type="lead", resource_id=lead.id, before=before, after=lead_to_dict(lead, principal), request_id=request.state.request_id)
@@ -187,6 +203,7 @@ def decide_duplicate(
     principal=Depends(require_permissions("lead.edit")),
     db: Session = Depends(get_db),
 ):
+    lead = _legacy_mutation_lead_or_raise(db, lead_id)
     relation = db.scalar(select(LeadDuplicateRelation).where(LeadDuplicateRelation.lead_id == lead_id, LeadDuplicateRelation.duplicate_lead_id == body.duplicate_lead_id))
     if not relation:
         raise AppError("DUPLICATE_RELATION_NOT_FOUND", "疑似重复关系不存在", 404)
@@ -194,14 +211,12 @@ def decide_duplicate(
     relation.decided_by = principal.user_id
     from datetime import datetime, timezone
     relation.decided_at = datetime.now(timezone.utc)
-    lead = db.get(Lead, lead_id)
-    if lead:
-        if body.decision in {"CONFIRMED", "KEEP_FIRST"}:
-            lead.status = LeadStatus.INVALID
-            lead.pending_reason = "DUPLICATE_CONFIRMED"
-        else:
-            lead.status = LeadStatus.IMPORTED
-            lead.pending_reason = None
+    if body.decision in {"CONFIRMED", "KEEP_FIRST"}:
+        lead.status = LeadStatus.INVALID
+        lead.pending_reason = "DUPLICATE_CONFIRMED"
+    else:
+        lead.status = LeadStatus.IMPORTED
+        lead.pending_reason = None
     write_audit(db, principal=principal, action="LEAD_DUPLICATE_DECISION", resource_type="lead", resource_id=lead_id, after={"decision": body.decision, "duplicate_lead_id": body.duplicate_lead_id}, request_id=request.state.request_id)
     db.commit()
     return ok(request)

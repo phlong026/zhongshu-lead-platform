@@ -73,7 +73,13 @@ REWARD_TRANSITIONS: Mapping[RewardStatus, Set[RewardStatus]] = {
     RewardStatus.OBSERVING: {RewardStatus.FROZEN, RewardStatus.SETTLED, RewardStatus.CANCELLED},
     RewardStatus.FROZEN: {RewardStatus.OBSERVING, RewardStatus.SETTLED, RewardStatus.CANCELLED},
     RewardStatus.SETTLED: {RewardStatus.REVERSED},
-    RewardStatus.CANCELLED: set(),
+    # Only correction-dedup cancellations may be restored, and the service
+    # verifies its own exception marker before using these transitions.
+    RewardStatus.CANCELLED: {
+        RewardStatus.WAITING_CLAIM,
+        RewardStatus.OBSERVING,
+        RewardStatus.FROZEN,
+    },
     RewardStatus.REVERSED: set(),
 }
 

@@ -1808,6 +1808,16 @@ def test_item_8_full_phone_export_runs_as_audited_background_task(api_client) ->
         assert audit is not None
         assert audit.actor_user_id == operation_id
         assert audit.metadata_json["filters"]["assignment_status"] == AssignmentStatus.FOLLOWING.value
+        download_audit = db.scalar(
+            select(AuditLog).where(
+                AuditLog.action == "V12_LEAD_EXPORT_DOWNLOADED",
+                AuditLog.resource_id == task_id,
+            )
+        )
+        assert download_audit is not None
+        assert download_audit.actor_user_id == operation_id
+        assert download_audit.metadata_json["owner_user_id"] == operation_id
+        assert download_audit.metadata_json["file_sha256"] == task.sha256
         cleanup = db.scalar(
             select(StorageCleanupOutbox).where(
                 StorageCleanupOutbox.event_key == f"lead-export-expire:{task_id}"

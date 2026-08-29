@@ -43,7 +43,7 @@ from ..core.responses import ok, page
 from ..core.security import decrypt_text, mask_phone
 from ..core.time import as_utc
 from ..core.v12_enums import VerificationTaskType
-from ..schemas.v12_reports import LeadExportRequestBody
+from ..schemas.v12_reports import LeadExportRequestBody, LeadReportSearchBody
 from ..services.audit import write_audit
 from ..services.lead_export_v12 import lead_report_to_dicts, list_lead_report_rows
 from ..services.return_v12 import return_request_to_dict
@@ -160,7 +160,6 @@ OPERATION_PROCESSED_ACTIONS_BY_PERMISSION = {
         {
             "V12_PLATFORM_LEAD_DRAFT_CREATE",
             "V12_PLATFORM_LEAD_DRAFT_UPDATE",
-            "V12_PLATFORM_LEAD_CORRECTION_OPEN",
             "V12_PLATFORM_LEAD_FACT_CORRECTION",
             "V12_PLATFORM_LEAD_CORRECTION_RECHECK",
             "V12_PLATFORM_LEAD_CORRECTION_REDISPATCH",
@@ -1171,14 +1170,61 @@ def _existing_lead_export_task(
     return existing
 
 
+@router.get("/reports/leads/filter-options")
+def lead_report_filter_options(
+    request: Request,
+    _principal=Depends(require_permissions("lead.read")),
+    db: Session = Depends(get_db),
+):
+    submitters = db.execute(
+        select(User.id, User.display_name)
+        .join(Lead, Lead.submitter_user_id == User.id)
+        .where(Lead.source_kind.is_not(None))
+        .distinct()
+        .order_by(User.display_name.asc(), User.id.asc())
+    ).all()
+    receiver_companies = db.execute(
+        select(Company.id, Company.name, Company.status).order_by(
+            Company.name.asc(),
+            Company.id.asc(),
+        )
+    ).all()
+    assigners = db.execute(
+        select(User.id, User.display_name, User.status)
+        .join(Assignment, Assignment.assigned_by == User.id)
+        .join(Lead, Lead.id == Assignment.lead_id)
+        .where(Lead.source_kind.is_not(None))
+        .distinct()
+        .order_by(User.display_name.asc(), User.id.asc())
+    ).all()
+    return ok(
+        request,
+        {
+            "submitters": [
+                {"id": item.id, "name": item.display_name} for item in submitters
+            ],
+            "receiver_companies": [
+                {"id": item.id, "name": item.name, "status": item.status}
+                for item in receiver_companies
+            ],
+            "assigners": [
+                {"id": item.id, "name": item.display_name, "status": item.status}
+                for item in assigners
+            ],
+        },
+    )
+
+
 @router.get("/reports/leads")
 def lead_report_list(
     request: Request,
-    _principal=Depends(require_permissions("lead.read")),
+    principal=Depends(require_permissions("lead.read")),
     db: Session = Depends(get_db),
     created_from: datetime | None = Query(default=None),
     created_to: datetime | None = Query(default=None),
     source_kind: str | None = Query(default=None),
+    submitter_user_id: str | None = Query(default=None),
+    region: str | None = Query(default=None, max_length=64),
     receiver_company_id: str | None = Query(default=None),
     lead_status: str | None = Query(default=None),
     assignment_status: str | None = Query(default=None),
@@ -1194,6 +1240,9 @@ def lead_report_list(
         "created_from": created_from,
         "created_to": created_to,
         "source_kind": source_kind,
+        "submitter_user_id": submitter_user_id,
+        "phone_hash": None,
+        "region": region,
         "receiver_company_id": receiver_company_id,
         "lead_status": lead_status,
         "assignment_status": assignment_status,
@@ -1208,6 +1257,28 @@ def lead_report_list(
     return ok(
         request,
         page(lead_report_to_dicts(db, rows), total, page_no, page_size),
+    )
+
+
+@router.post("/reports/leads/search")
+def search_lead_report(
+    body: LeadReportSearchBody,
+    request: Request,
+    principal=Depends(require_permissions("lead.read")),
+    db: Session = Depends(get_db),
+):
+    if body.phone and not principal.can("lead.phone.export"):
+        raise AppError("FORBIDDEN", "无权按完整手机号筛选", 403)
+    filters = body.filters()
+    rows, total = list_lead_report_rows(
+        db,
+        filters=filters,
+        page_no=body.page,
+        page_size=body.page_size,
+    )
+    return ok(
+        request,
+        page(lead_report_to_dicts(db, rows), total, body.page, body.page_size),
     )
 
 
@@ -1315,6 +1386,7 @@ def get_lead_export(
 @router.get("/reports/leads/exports/{task_id}/download")
 def download_lead_export(
     task_id: str,
+    request: Request,
     principal=Depends(require_permissions("lead.phone.export")),
     db: Session = Depends(get_db),
 ):
@@ -1331,6 +1403,22 @@ def download_lead_export(
     }
     if task.file_size is not None:
         headers["Content-Length"] = str(task.file_size)
+    write_audit(
+        db,
+        principal=principal,
+        action="V12_LEAD_EXPORT_DOWNLOADED",
+        resource_type="lead_export_task",
+        resource_id=task.id,
+        after={"status": task.status, "file_name": filename},
+        metadata={
+            "owner_user_id": task.requested_by,
+            "filters": task.filters_json,
+            "file_sha256": task.sha256,
+            "file_size": task.file_size,
+        },
+        request_id=request.state.request_id,
+    )
+    db.commit()
     return StreamingResponse(
         storage.iter_read(task.object_key),
         media_type=task.mime_type or "application/zip",
@@ -1571,7 +1659,10 @@ def my_processed_operations(
             AuditLog.created_at < created_to,
         ]
     else:
-        time_filters = _time(AuditLog.created_at, created_from, created_to)
+        time_filters = (
+            ([AuditLog.created_at >= created_from] if created_from else [])
+            + ([AuditLog.created_at < created_to] if created_to else [])
+        )
 
     priority = case(
         *[

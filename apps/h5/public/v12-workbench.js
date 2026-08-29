@@ -385,7 +385,9 @@ async function assignments(){
     const currentAssignee=employeeName(x.internal_assignee_user_id);
     const collaboration=canManageInternal&&canCollaborate(x.status)?`<p>内部处理：${esc(currentAssignee||'负责人自己跟进')}</p>`:'';
     const manage=canManageInternal&&canCollaborate(x.status)?`<button class="wb-btn" data-internal-assignment="${x.id}">分配员工</button>`:'';
-    return item(x.customer_name||x.lead?.customer_name||'客户',x.status,`<p>${esc(x.phone||x.phone_masked||'领取后查看')} · ${esc(x.city||x.lead?.city||'')}</p><p>客资积分 ${x.points_price||0} · 领取截止 ${fmt(x.claim_deadline_at)}</p>${collaboration}`,`<button class="wb-btn" data-assignment="${x.id}">详情</button>${x.status==='PENDING_CLAIM'&&can('assignment.own.claim')?`<button class="wb-btn primary" data-claim="${x.id}">领取</button><button class="wb-btn danger" data-refuse="${x.id}">拒绝领取</button>`:''}${manage}`);
+    const receiveConfirmation=x.receive_confirmation_status==='CONFIRMED'?'已确认':'待确认';
+    const currentFollow=x.current_follow_status?readableLabel(x.current_follow_status):'暂无';
+    return item(x.customer_name||x.lead?.customer_name||'客户',x.status,`<p>${esc(x.phone||x.phone_masked||'领取后查看')} · ${esc(x.city||x.lead?.city||'')}</p><p>接收确认：${esc(receiveConfirmation)} · 当前跟进：${esc(currentFollow)}</p><p>客资积分 ${x.points_price||0} · 领取截止 ${fmt(x.claim_deadline_at)}</p>${collaboration}`,`<button class="wb-btn" data-assignment="${x.id}">详情</button>${x.status==='PENDING_CLAIM'&&can('assignment.own.claim')?`<button class="wb-btn primary" data-claim="${x.id}">领取</button><button class="wb-btn danger" data-refuse="${x.id}">拒绝领取</button>`:''}${manage}`);
   }).join('');
   const title=followMode?'跟进':'接收';
   shell(`<section class="wb-page-head"><h1>${title}</h1></section><div class="wb-list">${list||`<div class="wb-empty">暂无${title==='接收'?'待领取':'待跟进'}客资</div>`}</div>`);

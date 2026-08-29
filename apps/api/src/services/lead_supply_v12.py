@@ -13,6 +13,7 @@ from ..core.errors import AppError
 from ..core.models import Assignment, AssignmentEvent, Company, FollowUp, Lead, PointsLedger, Region, User
 from ..core.models_v12 import LeadDedupEvent, SupplierLeadReward
 from ..core.security import decrypt_text, encrypt_text, fingerprint_phone, hash_phone, mask_phone, normalize_phone
+from ..core.state_machine_v12 import assert_reward_transition
 from ..core.v12_enums import (
     DuplicateDecision,
     LeadReviewStatus,
@@ -24,10 +25,13 @@ from .company_profile_v12 import require_lead_capability
 from .china_regions import region_by_code
 from .dedup_v12 import DedupResult, apply_submission_decision, evaluate_phone
 from .dispatch_v12 import existing_receiver_correction_issues
-from .lead_correction_guard import store_lead_correction_issues
+from .lead_correction_guard import (
+    require_correction_review_resolved,
+    store_lead_correction_issues,
+)
 from .notification_service import create_station_message, enqueue_outbox
 from .points_service import change_points
-from .pre_dispatch_v12 import queue_pre_dispatch_task
+from .pre_dispatch_v12 import queue_pre_dispatch_task, restart_pre_dispatch_after_correction
 
 
 EDITABLE_FIELDS = {
@@ -58,6 +62,7 @@ class LeadCorrectionResult:
     issues: tuple[str, ...]
     before: dict[str, Any]
     after: dict[str, Any]
+    reward_changes: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,6 +189,7 @@ def _correction_audit_snapshot(lead: Lead) -> dict[str, Any]:
     phone = decrypt_text(lead.phone_encrypted)
     return {
         "id": lead.id,
+        "source_kind": lead.source_kind,
         "customer_name": lead.customer_name,
         "phone_masked": mask_phone(phone),
         "contact_fingerprint": lead.phone_fingerprint
@@ -199,6 +205,7 @@ def _correction_audit_snapshot(lead: Lead) -> dict[str, Any]:
         "need_summary": lead.need_summary,
         "budget_min": lead.budget_min,
         "budget_max": lead.budget_max,
+        "acquisition_cost_cents": lead.acquisition_cost_cents,
         "consent_confirmed": lead.consent_confirmed,
         "status": lead.status,
         "review_status": lead.review_status,
@@ -210,6 +217,137 @@ def _correction_audit_snapshot(lead: Lead) -> dict[str, Any]:
         "current_assignment_id": lead.current_assignment_id,
         "snapshot_version": lead.snapshot_version,
     }
+
+
+def _restore_correction_workflow(lead: Lead) -> None:
+    payload = dict(lead.raw_payload or {})
+    resume_status = payload.pop("correction_resume_status", None)
+    if not resume_status:
+        return
+    lead.status = resume_status
+    lead.review_status = payload.pop(
+        "correction_resume_review_status",
+        lead.review_status,
+    )
+    lead.pending_reason = payload.pop("correction_resume_pending_reason", None)
+    lead.raw_payload = payload
+
+
+def restore_unassigned_correction_workflow(db: Session, lead: Lead) -> None:
+    """Restore a cleared correction without bypassing location verification."""
+
+    _restore_correction_workflow(lead)
+    if (
+        lead.current_assignment_id is None
+        and lead.status == LeadV12Status.READY_DISPATCH.value
+        and not _has_known_location(db, lead)
+    ):
+        lead.status = LeadV12Status.PENDING_REVIEW.value
+        lead.review_status = LeadReviewStatus.PENDING.value
+        lead.pending_reason = None
+        db.flush()
+        queue_pre_dispatch_task(
+            db,
+            lead_id=lead.id,
+            reason="LOCATION_REQUIRES_TELESALES_VERIFY",
+        )
+
+
+_CORRECTION_REWARD_REASON_PREFIX = "CORRECTION_DEDUP_"
+_CORRECTION_REWARD_PREVIOUS_MARKER = "|PREVIOUS_STATUS="
+_RESTORABLE_REWARD_STATUSES = {
+    RewardStatus.WAITING_CLAIM.value,
+    RewardStatus.OBSERVING.value,
+    RewardStatus.FROZEN.value,
+}
+
+
+def _correction_cancelled_reward_previous_status(
+    reward: SupplierLeadReward,
+) -> str | None:
+    reason = reward.exception_reason or ""
+    if not reason.startswith(_CORRECTION_REWARD_REASON_PREFIX):
+        return None
+    _separator, marker, previous_status = reason.partition(
+        _CORRECTION_REWARD_PREVIOUS_MARKER
+    )
+    if not marker or previous_status not in _RESTORABLE_REWARD_STATUSES:
+        return None
+    return previous_status
+
+
+def reconcile_supplier_rewards_after_dedup(
+    db: Session,
+    *,
+    lead: Lead,
+    dedup_result: DedupResult | None,
+) -> tuple[dict[str, Any], ...]:
+    if dedup_result is None:
+        return ()
+    rewards = list(
+        db.scalars(
+            select(SupplierLeadReward)
+            .where(SupplierLeadReward.lead_id == lead.id)
+            .order_by(SupplierLeadReward.id.asc())
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
+    )
+    changes: list[dict[str, Any]] = []
+    if dedup_result.reward_eligible:
+        for reward in rewards:
+            if reward.status != RewardStatus.CANCELLED.value:
+                continue
+            previous_status = _correction_cancelled_reward_previous_status(reward)
+            if previous_status is None:
+                continue
+            assert_reward_transition(reward.status, previous_status)
+            reward.status = previous_status
+            reward.cancelled_at = None
+            reward.exception_reason = None
+            changes.append(
+                {
+                    "reward_id": reward.id,
+                    "before_status": RewardStatus.CANCELLED.value,
+                    "after_status": previous_status,
+                    "reason": "CORRECTION_DEDUP_CLEARED",
+                }
+            )
+        return tuple(changes)
+
+    settled = [
+        reward.id
+        for reward in rewards
+        if reward.status == RewardStatus.SETTLED.value
+    ]
+    if settled:
+        raise AppError(
+            "LEAD_CORRECTION_REWARD_REVERSAL_REQUIRED",
+            "该客资已有结算奖励，请先完成奖励冲正后再更正手机号",
+            409,
+            {"reward_ids": settled, "dedup_decision": dedup_result.decision.value},
+        )
+    now = datetime.now(timezone.utc)
+    for reward in rewards:
+        if reward.status not in _RESTORABLE_REWARD_STATUSES:
+            continue
+        before_status = reward.status
+        assert_reward_transition(before_status, RewardStatus.CANCELLED)
+        reward.status = RewardStatus.CANCELLED.value
+        reward.cancelled_at = now
+        reward.exception_reason = (
+            f"{_CORRECTION_REWARD_REASON_PREFIX}{dedup_result.decision.value}"
+            f"{_CORRECTION_REWARD_PREVIOUS_MARKER}{before_status}"
+        )
+        changes.append(
+            {
+                "reward_id": reward.id,
+                "before_status": before_status,
+                "after_status": reward.status,
+                "reason": reward.exception_reason,
+            }
+        )
+    return tuple(changes)
 
 
 def discard_draft(
@@ -232,6 +370,16 @@ def reopen_rejected_supplier_lead(
     lead: Lead,
     principal: Principal,
 ) -> Lead:
+    locked_lead = db.scalar(
+        select(Lead)
+        .where(Lead.id == lead.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if locked_lead is None:
+        raise AppError("LEAD_NOT_FOUND", "客资不存在", 404)
+    lead = locked_lead
+    require_correction_review_resolved(lead)
     _assert_owner(lead, principal, supplier=True)
     if lead.source_kind != LeadSourceKind.SUPPLIER_H5.value:
         raise AppError("LEAD_SOURCE_INVALID", "仅供应商上传客资支持修改后重新提交", 409)
@@ -256,6 +404,16 @@ def reopen_platform_lead_for_correction(
     lead: Lead,
     principal: Principal,
 ) -> Lead:
+    locked_lead = db.scalar(
+        select(Lead)
+        .where(Lead.id == lead.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if locked_lead is None:
+        raise AppError("LEAD_NOT_FOUND", "客资不存在", 404)
+    lead = locked_lead
+    require_correction_review_resolved(lead)
     if lead.source_kind != LeadSourceKind.PLATFORM_MANUAL.value:
         raise AppError("LEAD_SOURCE_INVALID", "仅平台录入客资支持运营纠正", 409)
     if not (principal.can("*") or principal.can("lead.manual.manage")):
@@ -295,10 +453,8 @@ def correct_platform_lead(
     )
     if lead is None:
         raise AppError("LEAD_NOT_FOUND", "客资不存在", 404)
-    if lead.source_kind != LeadSourceKind.PLATFORM_MANUAL.value:
-        raise AppError("LEAD_SOURCE_INVALID", "仅平台录入客资支持运营更正", 409)
     if not (principal.can("*") or principal.can("lead.manual.manage")):
-        raise AppError("FORBIDDEN", "无权更正平台客资", 403)
+        raise AppError("FORBIDDEN", "无权更正客资", 403)
     if (
         expected_snapshot_version is not None
         and expected_snapshot_version != lead.snapshot_version
@@ -335,16 +491,6 @@ def correct_platform_lead(
             "已派发客资更正必须携带当前版本",
             422,
         )
-    if not has_dispatch_history and lead.status not in {
-        LeadV12Status.DRAFT.value,
-        LeadV12Status.READY_DISPATCH.value,
-    }:
-        raise AppError(
-            "LEAD_CORRECTION_NOT_ALLOWED",
-            "当前客资正在其他处理流程中，暂不能直接更正",
-            409,
-        )
-
     before = _correction_audit_snapshot(lead)
     before_facts = _editable_fact_snapshot(lead)
     before_phone = normalize_phone(decrypt_text(lead.phone_encrypted) or "")
@@ -365,9 +511,24 @@ def correct_platform_lead(
             "客资事实没有变化，无需提交更正",
             422,
         )
+    if original_status != LeadV12Status.DRAFT.value:
+        _materialize_nationwide_location(db, lead)
+        _validate_submission(db, lead)
     phone = normalize_phone(decrypt_text(lead.phone_encrypted) or "")
     phone_changed = phone != before_phone
     region_changed = lead.region_code != before_region_code
+    verification_restarted = False
+    if (
+        not has_dispatch_history
+        and (phone_changed or region_changed)
+        and original_status
+        in {
+            LeadV12Status.PENDING_TELESALES_VERIFY.value,
+            LeadV12Status.PENDING_OPERATION_DISPOSITION.value,
+        }
+    ):
+        restart_pre_dispatch_after_correction(db, lead=lead)
+        verification_restarted = True
     dedup_result: DedupResult | None = None
     previous_issues = list((lead.raw_payload or {}).get("correction_issues") or [])
     issues: list[str] = (
@@ -376,7 +537,11 @@ def correct_platform_lead(
         else [issue for issue in previous_issues if issue.startswith("DEDUP_")]
     )
 
-    if not has_dispatch_history and original_status == LeadV12Status.READY_DISPATCH.value:
+    if (
+        not has_dispatch_history
+        and original_status == LeadV12Status.READY_DISPATCH.value
+        and lead.source_kind == LeadSourceKind.PLATFORM_MANUAL.value
+    ):
         lead.status = LeadV12Status.DRAFT.value
         lead.review_status = LeadReviewStatus.DRAFT.value
         lead.pending_reason = None
@@ -386,9 +551,43 @@ def correct_platform_lead(
             principal=principal,
             checkpoint="PLATFORM_CORRECTION",
         )
+        if not dedup_result.blocks_dispatch:
+            restore_unassigned_correction_workflow(db, lead)
+    elif not has_dispatch_history:
+        # Unassigned leads may already be in review or telesales workflows. Keep
+        # that workflow state intact; only phone changes can introduce a new
+        # dedup blocker that must be resolved before processing continues.
+        if phone_changed and phone:
+            dedup_result = evaluate_phone(
+                db,
+                lead=lead,
+                normalized_phone=phone,
+                checkpoint="UNASSIGNED_CORRECTION",
+                now=datetime.now(timezone.utc),
+            )
+            if dedup_result.blocks_dispatch:
+                issues.append(f"DEDUP_{dedup_result.decision.value}")
+        if issues:
+            payload = dict(lead.raw_payload or {})
+            if verification_restarted:
+                payload["correction_resume_status"] = lead.status
+                payload["correction_resume_review_status"] = lead.review_status
+                payload["correction_resume_pending_reason"] = lead.pending_reason
+            else:
+                payload.setdefault("correction_resume_status", original_status)
+                payload.setdefault(
+                    "correction_resume_review_status",
+                    before["review_status"],
+                )
+                payload.setdefault(
+                    "correction_resume_pending_reason",
+                    before["pending_reason"],
+                )
+            lead.raw_payload = payload
+        store_lead_correction_issues(lead, issues)
+        if not issues:
+            restore_unassigned_correction_workflow(db, lead)
     elif has_dispatch_history:
-        _materialize_nationwide_location(db, lead)
-        phone = _validate_submission(db, lead)
         if phone_changed:
             dedup_result = evaluate_phone(
                 db,
@@ -413,6 +612,18 @@ def correct_platform_lead(
                 )
             )
 
+        if issues and current_assignment is None:
+            payload = dict(lead.raw_payload or {})
+            payload.setdefault("correction_resume_status", original_status)
+            payload.setdefault(
+                "correction_resume_review_status",
+                before["review_status"],
+            )
+            payload.setdefault(
+                "correction_resume_pending_reason",
+                before["pending_reason"],
+            )
+            lead.raw_payload = payload
         store_lead_correction_issues(
             lead,
             issues,
@@ -421,7 +632,14 @@ def correct_platform_lead(
                 or current_assignment.status != AssignmentStatus.COMPLETED.value
             ),
         )
+        if not issues and current_assignment is None:
+            restore_unassigned_correction_workflow(db, lead)
 
+    reward_changes = reconcile_supplier_rewards_after_dedup(
+        db,
+        lead=lead,
+        dedup_result=dedup_result,
+    )
     lead.snapshot_version += 1
     db.flush()
     after = _correction_audit_snapshot(lead)
@@ -433,6 +651,7 @@ def correct_platform_lead(
         issues=tuple(dict.fromkeys(issues)),
         before=before,
         after=after,
+        reward_changes=reward_changes,
     )
 
 
@@ -452,10 +671,8 @@ def recheck_platform_lead_correction(
     )
     if lead is None:
         raise AppError("LEAD_NOT_FOUND", "客资不存在", 404)
-    if lead.source_kind != LeadSourceKind.PLATFORM_MANUAL.value:
-        raise AppError("LEAD_SOURCE_INVALID", "仅平台录入客资支持运营更正", 409)
     if not (principal.can("*") or principal.can("lead.manual.manage")):
-        raise AppError("FORBIDDEN", "无权重新检查平台客资", 403)
+        raise AppError("FORBIDDEN", "无权重新检查客资", 403)
     if expected_snapshot_version != lead.snapshot_version:
         raise AppError(
             "LEAD_VERSION_CONFLICT",
@@ -481,22 +698,30 @@ def recheck_platform_lead_correction(
     phone = _validate_submission(db, lead)
     issues: list[str] = []
     dedup_result: DedupResult | None = None
+    current_assignment = (
+        db.get(Assignment, lead.current_assignment_id)
+        if lead.current_assignment_id
+        else None
+    )
+    has_dispatch_history = bool(
+        current_assignment
+        or db.scalar(select(Assignment.id).where(Assignment.lead_id == lead.id).limit(1))
+    )
     if any(issue.startswith("DEDUP_") for issue in previous_issues):
         if lead.duplicate_status != DuplicateDecision.OVERRIDDEN.value:
             dedup_result = evaluate_phone(
                 db,
                 lead=lead,
                 normalized_phone=phone,
-                checkpoint="POST_DISPATCH_CORRECTION_RECHECK",
+                checkpoint=(
+                    "POST_DISPATCH_CORRECTION_RECHECK"
+                    if has_dispatch_history
+                    else "UNASSIGNED_CORRECTION_RECHECK"
+                ),
                 now=datetime.now(timezone.utc),
             )
             if dedup_result.blocks_dispatch:
                 issues.append(f"DEDUP_{dedup_result.decision.value}")
-    current_assignment = (
-        db.get(Assignment, lead.current_assignment_id)
-        if lead.current_assignment_id
-        else None
-    )
     if current_assignment is not None:
         issues.extend(
             existing_receiver_correction_issues(
@@ -506,16 +731,24 @@ def recheck_platform_lead_correction(
             )
         )
     normalized_issues = store_lead_correction_issues(lead, issues)
+    if not normalized_issues and current_assignment is None:
+        restore_unassigned_correction_workflow(db, lead)
     lead.snapshot_version += 1
+    reward_changes = reconcile_supplier_rewards_after_dedup(
+        db,
+        lead=lead,
+        dedup_result=dedup_result,
+    )
     db.flush()
     return LeadCorrectionResult(
         lead=lead,
         dedup=dedup_result,
-        had_dispatch_history=True,
+        had_dispatch_history=has_dispatch_history,
         changed_fields=(),
         issues=normalized_issues,
         before=before,
         after=_correction_audit_snapshot(lead),
+        reward_changes=reward_changes,
     )
 
 
@@ -566,8 +799,6 @@ def release_corrected_lead_for_redispatch(
         raise AppError("LEAD_NOT_FOUND", "客资不存在", 404)
     if lead.current_assignment_id != assignment.id or assignment.lead_id != lead.id:
         raise AppError("LEAD_ASSIGNMENT_CONFLICT", "客资与当前派发单不一致", 409)
-    if lead.source_kind != LeadSourceKind.PLATFORM_MANUAL.value:
-        raise AppError("LEAD_SOURCE_INVALID", "仅平台录入客资支持更正后重新派发", 409)
     if expected_snapshot_version != lead.snapshot_version:
         raise AppError(
             "LEAD_VERSION_CONFLICT",
@@ -679,6 +910,7 @@ def release_corrected_lead_for_redispatch(
     lead.status = LeadV12Status.READY_DISPATCH.value
     lead.current_follow_status = None
     store_lead_correction_issues(lead, [])
+    restore_unassigned_correction_workflow(db, lead)
     lead.snapshot_version += 1
     db.add(
         AssignmentEvent(
@@ -805,12 +1037,23 @@ def _materialize_nationwide_location(db: Session, lead: Lead) -> None:
                 422,
                 {"fields": {"region_code": "标准地区编码层级无效或已停用"}},
             )
+        province = (
+            db.get(Region, city.parent_code)
+            if city.parent_code
+            else None
+        )
+        location = region_by_code(district.code if district else city.code)
+        if province is not None and province.active and province.level == "PROVINCE":
+            lead.province = province.name
+        elif location is not None:
+            lead.province = str(location["province_name"])
         lead.city = city.name
         lead.district = district.name if district else None
         return
     location = region_by_code(lead.region_code)
     if location is None:
         return
+    lead.province = str(location["province_name"])
     city_code = str(location["city_code"])
     city = db.get(Region, city_code)
     if city is None:
@@ -871,6 +1114,7 @@ def submit_draft(
         else:
             lead.status = LeadV12Status.PENDING_REVIEW.value
             lead.review_status = LeadReviewStatus.PENDING.value
+            db.flush()
             queue_pre_dispatch_task(
                 db,
                 lead_id=lead.id,
@@ -889,6 +1133,16 @@ def review_supplier_lead(
     approve: bool | None = None,
     decision: str | None = None,
 ) -> DedupResult | None:
+    locked_lead = db.scalar(
+        select(Lead)
+        .where(Lead.id == lead.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if locked_lead is None:
+        raise AppError("LEAD_NOT_FOUND", "客资不存在", 404)
+    lead = locked_lead
+    require_correction_review_resolved(lead)
     if lead.source_kind != LeadSourceKind.SUPPLIER_H5.value:
         raise AppError("LEAD_SOURCE_INVALID", "仅供应商上传客资需要资料初审", 409)
     if lead.status not in {LeadV12Status.PENDING_REVIEW.value, LeadV12Status.DUPLICATE.value}:
@@ -941,6 +1195,7 @@ def review_supplier_lead(
         lead.pending_reason = None
     else:
         lead.status = LeadV12Status.PENDING_REVIEW.value
+        db.flush()
         queue_pre_dispatch_task(
             db,
             lead_id=lead.id,

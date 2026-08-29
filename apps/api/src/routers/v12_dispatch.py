@@ -3,14 +3,14 @@ from __future__ import annotations
 from functools import lru_cache
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from ..core.auth import CurrentPrincipal, require_permissions
 from ..core.database import get_db
 from ..core.enums import AssignmentStatus
 from ..core.errors import AppError
-from ..core.models import Assignment, Company, Lead
+from ..core.models import Assignment, Company, FollowUp, Lead
 from ..core.responses import ok, page
 from ..core.security import decrypt_text, mask_phone
 from ..core.v12_enums import LeadV12Status
@@ -54,7 +54,28 @@ def _receive_confirmation(claimed_at) -> tuple[str, str | None]:
     )
 
 
-def _assignment_dict(assignment: Assignment, lead: Lead, *, reveal_phone: bool = False) -> dict:
+def _assignment_follow_status_expression():
+    latest_followup_status = (
+        select(FollowUp.status)
+        .where(FollowUp.assignment_id == Assignment.id)
+        .order_by(FollowUp.created_at.desc(), FollowUp.id.desc())
+        .limit(1)
+        .correlate(Assignment)
+        .scalar_subquery()
+    )
+    return case(
+        (Lead.current_assignment_id == Assignment.id, Lead.current_follow_status),
+        else_=latest_followup_status,
+    ).label("assignment_follow_status")
+
+
+def _assignment_dict(
+    assignment: Assignment,
+    lead: Lead,
+    *,
+    reveal_phone: bool = False,
+    follow_status: str | None = None,
+) -> dict:
     reveal_phone = reveal_phone and lead.pending_reason != "CORRECTION_REVIEW_REQUIRED"
     phone = decrypt_text(lead.phone_encrypted) if reveal_phone else None
     phone_masked = (
@@ -75,7 +96,13 @@ def _assignment_dict(assignment: Assignment, lead: Lead, *, reveal_phone: bool =
         "lead_status": lead.status,
         "lead_pending_reason": lead.pending_reason,
         "correction_issues": list((lead.raw_payload or {}).get("correction_issues") or []),
-        "current_follow_status": lead.current_follow_status,
+        "current_follow_status": (
+            follow_status
+            if follow_status is not None
+            else lead.current_follow_status
+            if lead.current_assignment_id == assignment.id
+            else None
+        ),
         "receive_confirmation_status": receive_confirmation_status,
         "receive_confirmed_at": receive_confirmed_at,
         "points_price": assignment.points_price,
@@ -133,7 +160,7 @@ def _assignment_detail_projection(assignment_id: str, company_id: str):
             Lead.need_summary,
             Lead.status.label("lead_status"),
             Lead.pending_reason.label("lead_pending_reason"),
-            Lead.current_follow_status,
+            _assignment_follow_status_expression(),
         )
         .join(Lead, Lead.id == Assignment.lead_id)
         .where(Assignment.id == assignment_id, Assignment.company_id == company_id)
@@ -160,7 +187,7 @@ def _projected_assignment_dict(row, *, reveal_phone: bool = False) -> dict:
         "lead_status": row.lead_status,
         "lead_pending_reason": row.lead_pending_reason,
         "correction_issues": [],
-        "current_follow_status": row.current_follow_status,
+        "current_follow_status": row.assignment_follow_status,
         "receive_confirmation_status": receive_confirmation_status,
         "receive_confirmed_at": receive_confirmed_at,
         "points_price": row.points_price,
@@ -324,7 +351,7 @@ def own_assignments(
         filters.append(Assignment.status == status.strip().upper())
     total = db.scalar(select(func.count(Assignment.id)).where(*filters)) or 0
     rows = db.execute(
-        select(Assignment, Lead)
+        select(Assignment, Lead, _assignment_follow_status_expression())
         .join(Lead, Lead.id == Assignment.lead_id)
         .where(*filters)
         .order_by(Assignment.assigned_at.desc())
@@ -336,8 +363,9 @@ def own_assignments(
             assignment,
             lead,
             reveal_phone=assignment.status in CLAIMED_CONTACT_STATUSES,
+            follow_status=follow_status,
         )
-        for assignment, lead in rows
+        for assignment, lead, follow_status in rows
     ]
     return ok(request, page(items, int(total), page_no, page_size))
 
@@ -587,7 +615,7 @@ def company_assignments(
         filters.append(Assignment.status == assignment_status.strip().upper())
     total = db.scalar(select(func.count(Assignment.id)).where(*filters)) or 0
     rows = db.execute(
-        select(Assignment, Lead)
+        select(Assignment, Lead, _assignment_follow_status_expression())
         .join(Lead, Lead.id == Assignment.lead_id)
         .where(*filters)
         .order_by(Assignment.assigned_at.desc(), Assignment.id.desc())
@@ -600,8 +628,9 @@ def company_assignments(
                 assignment,
                 lead,
                 reveal_phone=principal.can("lead.phone.read") or principal.can("*"),
+                follow_status=follow_status,
             )
-            for assignment, lead in rows
+            for assignment, lead, follow_status in rows
         ],
         int(total),
         page_no,

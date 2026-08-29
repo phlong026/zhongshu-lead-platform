@@ -209,8 +209,18 @@ def _area_dict(
     return result
 
 
-def _platform_lead_or_raise(db: Session, lead_id: str) -> Lead:
-    lead = get_lead_or_404(db, lead_id)
+def _platform_lead_or_raise(db: Session, lead_id: str, *, lock: bool = False) -> Lead:
+    if lock:
+        lead = db.scalar(
+            select(Lead)
+            .where(Lead.id == lead_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if lead is None:
+            raise AppError("LEAD_NOT_FOUND", "客资不存在", 404)
+    else:
+        lead = get_lead_or_404(db, lead_id)
     if lead.source_kind != LeadSourceKind.PLATFORM_MANUAL.value:
         raise AppError("LEAD_SOURCE_INVALID", "仅平台来源客资可从此入口查看", 409)
     return lead
@@ -464,7 +474,7 @@ def update_platform_lead(
     principal=Depends(require_permissions("lead.manual.manage")),
     db: Session = Depends(get_db),
 ):
-    lead = _platform_lead_or_raise(db, lead_id)
+    lead = _platform_lead_or_raise(db, lead_id, lock=True)
     before = lead_supply_to_dict(lead, principal)
     update_draft(db, lead=lead, principal=principal, values=body.model_dump(exclude_unset=True))
     write_audit(
@@ -492,6 +502,17 @@ def get_platform_lead(
     return ok(request, _lead_detail_dict(db, lead, principal))
 
 
+@router.get("/admin/leads/{lead_id}")
+def get_admin_lead(
+    lead_id: str,
+    request: Request,
+    principal=Depends(require_permissions("lead.manual.manage")),
+    db: Session = Depends(get_db),
+):
+    lead = get_lead_or_404(db, lead_id)
+    return ok(request, _lead_detail_dict(db, lead, principal))
+
+
 @router.post("/platform/leads/{lead_id}/correction")
 def reopen_platform_lead_correction(
     lead_id: str,
@@ -499,7 +520,7 @@ def reopen_platform_lead_correction(
     principal=Depends(require_permissions("lead.manual.manage")),
     db: Session = Depends(get_db),
 ):
-    lead = _platform_lead_or_raise(db, lead_id)
+    lead = _platform_lead_or_raise(db, lead_id, lock=True)
     before = _lead_detail_dict(db, lead, principal)
     reopen_platform_lead_for_correction(db, lead=lead, principal=principal)
     after = _lead_detail_dict(db, lead, principal)
@@ -552,6 +573,7 @@ def correct_platform_lead_facts(
             "had_dispatch_history": result.had_dispatch_history,
             "correction_issues": list(result.issues),
             "dedup": _dedup_dict(result.dedup),
+            "reward_changes": list(result.reward_changes),
         },
         reason=body.reason,
         request_id=request.state.request_id,
@@ -594,6 +616,7 @@ def recheck_platform_lead_correction_facts(
             "correction_issues_before": result.before["correction_issues"],
             "correction_issues_after": list(result.issues),
             "dedup": _dedup_dict(result.dedup),
+            "reward_changes": list(result.reward_changes),
         },
         reason=body.reason,
         request_id=request.state.request_id,
@@ -984,6 +1007,7 @@ def admin_override_dedup(
         resource_id=lead.id,
         before=before,
         after=lead_supply_to_dict(lead, principal),
+        metadata={"reward_changes": list(getattr(item, "reward_changes", ()))},
         reason=body.reason,
         request_id=request.state.request_id,
     )

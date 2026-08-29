@@ -50,6 +50,7 @@ from ..core.v12_enums import CompanyLeadCapabilityCode, LeadSourceKind, LeadV12S
 from ..schemas.company import CompanyCreateBody, CompanySimpleCreateBody, CompanyUpdateBody
 from .china_regions import city_by_code, region_by_code
 from .dedup_v12 import reevaluate_existing_phone_identity
+from .lead_correction_guard import lead_requires_correction_review
 from .storage_cleanup_worker import enqueue_storage_cleanup
 
 DEFAULT_RECEIVER_CATEGORIES = ("OLD_RENOVATION", "SELF_BUILD", "INTERIOR")
@@ -850,7 +851,7 @@ def _deep_link_references_resource(deep_link: str | None, resource_ids: list[str
 
 
 def _restore_dedup_affected_lead(lead: Lead, *, blocks_dispatch: bool, decision: str) -> None:
-    if lead.current_assignment_id:
+    if lead.current_assignment_id or lead_requires_correction_review(lead):
         return
     if blocks_dispatch:
         if lead.status in {

@@ -73,10 +73,14 @@ def test_large_lead_exports_run_in_an_isolated_worker() -> None:
     )
     assert ". /app/docker/prepare-env.sh" in worker_entrypoint
     assert production["services"]["lead-export-worker"]["read_only"] is True
-    assert "640m" in " ".join(
-        production["services"]["lead-export-worker"]["tmpfs"]
-    )
     worker = base["services"]["lead-export-worker"]
+    for compose_worker in (worker, production["services"]["lead-export-worker"]):
+        tmpfs = " ".join(compose_worker["tmpfs"])
+        assert "640m" in tmpfs
+        assert "mode=0700" in tmpfs
+        assert "uid=10001" in tmpfs
+        assert "gid=10001" in tmpfs
+        assert compose_worker["environment"]["TMPDIR"] == "/tmp"
     assert worker["healthcheck"].get("disable") is not True
     assert "LEAD_EXPORT_HEARTBEAT_FILE" in " ".join(
         worker["healthcheck"]["test"]

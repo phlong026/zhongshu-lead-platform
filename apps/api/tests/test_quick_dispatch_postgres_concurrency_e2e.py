@@ -30,14 +30,90 @@ from apps.api.src.core.models import (
 )
 from apps.api.src.core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12
 from apps.api.src.core.security import encrypt_text, fingerprint_phone, hash_phone
-from apps.api.src.core.v12_enums import LeadSourceKind, LeadV12Status
+from apps.api.src.core.v12_enums import DuplicateDecision, LeadSourceKind, LeadV12Status
 from apps.api.src.routers import v12_insights as insights_router
 from apps.api.src.routers import v12_lead_supply as lead_supply_router
 from apps.api.src.schemas.v12_reports import LeadExportRequestBody
 from apps.api.src.schemas.v12_lead_supply import LeadQuickDispatchBody
 from apps.api.src.services.claim_service import claim_assignment
+from apps.api.src.services.dedup_v12 import apply_submission_decision, evaluate_phone
 from apps.api.src.services.followup_service import add_followup
 from apps.api.src.services.lead_supply_v12 import release_corrected_lead_for_redispatch
+
+
+def test_same_new_phone_is_deduplicated_across_database_sessions() -> None:
+    engine, factory = _postgres_factory()
+    suffix = uuid4().hex[:10]
+    shared_phone = f"138{int(suffix[:8], 16) % 100_000_000:08d}"
+    try:
+        with factory() as db:
+            operation = User(
+                username=f"dedup-pg-{suffix}",
+                display_name="查重并发运营",
+                status="ACTIVE",
+            )
+            db.add(operation)
+            db.flush()
+            leads = []
+            for index in range(2):
+                original_phone = f"137{index}{int(suffix[:7], 16) % 10_000_000:07d}"
+                lead = Lead(
+                    source_type=LeadSourceKind.PLATFORM_MANUAL.value,
+                    source_kind=LeadSourceKind.PLATFORM_MANUAL.value,
+                    submitter_user_id=operation.id,
+                    customer_name=f"并发查重客户{index}",
+                    phone_encrypted=encrypt_text(original_phone),
+                    phone_hash=hash_phone(original_phone),
+                    phone_fingerprint=fingerprint_phone(original_phone),
+                    consent_confirmed=True,
+                    province="上海市",
+                    city="上海市",
+                    district="浦东新区",
+                    region_code="310115",
+                    source_channel="OTHER",
+                    source_detail="并发查重回归",
+                    status=LeadV12Status.DRAFT.value,
+                    review_status="DRAFT",
+                    duplicate_status=DuplicateDecision.CLEAR.value,
+                    imported_at=datetime.now(timezone.utc),
+                    raw_payload={},
+                )
+                db.add(lead)
+                leads.append(lead)
+            db.commit()
+            lead_ids = [lead.id for lead in leads]
+
+        barrier = Barrier(2)
+
+        def correct_once(lead_id: str) -> str:
+            with factory() as db:
+                lead = db.get(Lead, lead_id)
+                assert lead is not None
+                lead.phone_encrypted = encrypt_text(shared_phone)
+                lead.phone_hash = hash_phone(shared_phone)
+                lead.phone_fingerprint = fingerprint_phone(shared_phone)
+                barrier.wait(timeout=10)
+                result = evaluate_phone(
+                    db,
+                    lead=lead,
+                    normalized_phone=shared_phone,
+                    checkpoint="POSTGRES_CONCURRENT_CORRECTION",
+                )
+                apply_submission_decision(lead, result)
+                db.commit()
+                return result.decision.value
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            decisions = list(pool.map(correct_once, lead_ids))
+
+        assert sorted(decisions) == sorted(
+            [
+                DuplicateDecision.CLEAR.value,
+                DuplicateDecision.HARD_DUPLICATE.value,
+            ]
+        )
+    finally:
+        engine.dispose()
 
 
 def _postgres_factory():

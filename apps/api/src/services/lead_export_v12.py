@@ -25,13 +25,13 @@ from ..core.models import (
     StorageCleanupOutbox,
     User,
 )
-from ..core.security import decrypt_text, mask_phone
+from ..core.security import decrypt_text, hash_phone, mask_phone, normalize_phone
 from .storage import get_storage
 from .storage_cleanup_worker import enqueue_storage_cleanup
 
 logger = logging.getLogger("zhongshu.lead_export")
-MAX_LEAD_EXPORT_ROWS = 50_000
-MAX_FOLLOWUP_EXPORT_ROWS = 250_000
+LEAD_EXPORT_ROWS_PER_FILE = 50_000
+FOLLOWUP_EXPORT_ROWS_PER_FILE = 250_000
 MAX_EXPORT_CSV_BYTES = 512 * 1024 * 1024
 MAX_EXPORT_ARCHIVE_BYTES = 512 * 1024 * 1024
 EXPORT_STREAM_BATCH_SIZE = 500
@@ -46,6 +46,10 @@ class LeadExportLimitError(RuntimeError):
 
 
 class LeadExportLeaseLostError(RuntimeError):
+    pass
+
+
+class LeadExportDataError(RuntimeError):
     pass
 
 
@@ -68,6 +72,7 @@ class LeadReportRow:
     assignment: Assignment | None
     receiver_company_name: str | None
     assigned_by_name: str | None
+    submitter_name: str | None
     supplier_company_name: str | None
 
 
@@ -81,10 +86,16 @@ def _datetime_value(value: Any) -> datetime | None:
 
 
 def normalized_lead_report_filters(filters: dict[str, Any]) -> dict[str, Any]:
+    phone = _text(filters.get("phone"))
+    phone_hash = _text(filters.get("phone_hash"))
     return {
         "created_from": _datetime_value(filters.get("created_from")),
         "created_to": _datetime_value(filters.get("created_to")),
         "source_kind": _upper(filters.get("source_kind")),
+        "submitter_user_id": _text(filters.get("submitter_user_id")),
+        "phone_hash": phone_hash
+        or (hash_phone(normalize_phone(phone)) if phone else None),
+        "region": _text(filters.get("region")),
         "receiver_company_id": _text(filters.get("receiver_company_id")),
         "lead_status": _upper(filters.get("lead_status")),
         "assignment_status": _upper(filters.get("assignment_status")),
@@ -111,6 +122,19 @@ def _conditions(filters: dict[str, Any], current_assignment) -> list[Any]:
         conditions.append(Lead.created_at < values["created_to"])
     if values["source_kind"]:
         conditions.append(Lead.source_kind == values["source_kind"])
+    if values["submitter_user_id"]:
+        conditions.append(Lead.submitter_user_id == values["submitter_user_id"])
+    if values["phone_hash"]:
+        conditions.append(Lead.phone_hash == values["phone_hash"])
+    if values["region"]:
+        conditions.append(
+            or_(
+                Lead.region_code == values["region"],
+                Lead.province == values["region"],
+                Lead.city == values["region"],
+                Lead.district == values["region"],
+            )
+        )
     if values["receiver_company_id"]:
         conditions.append(
             func.coalesce(
@@ -133,12 +157,14 @@ def _report_select(filters: dict[str, Any]):
     receiver = aliased(Company, name="current_receiver")
     supplier = aliased(Company, name="lead_supplier")
     assigned_by = aliased(User, name="assigned_by_user")
+    submitter = aliased(User, name="lead_submitter")
     statement = (
         select(
             Lead,
             current_assignment,
             receiver.name.label("receiver_company_name"),
             assigned_by.display_name.label("assigned_by_name"),
+            submitter.display_name.label("submitter_name"),
             supplier.name.label("supplier_company_name"),
         )
         .outerjoin(current_assignment, current_assignment.id == Lead.current_assignment_id)
@@ -151,6 +177,7 @@ def _report_select(filters: dict[str, Any]):
             ),
         )
         .outerjoin(assigned_by, assigned_by.id == current_assignment.assigned_by)
+        .outerjoin(submitter, submitter.id == Lead.submitter_user_id)
         .outerjoin(supplier, supplier.id == Lead.supplier_company_id)
         .where(*_conditions(filters, current_assignment))
     )
@@ -184,6 +211,7 @@ def list_lead_report_rows(
             assignment=row[1],
             receiver_company_name=row.receiver_company_name,
             assigned_by_name=row.assigned_by_name,
+            submitter_name=row.submitter_name,
             supplier_company_name=row.supplier_company_name,
         )
         for row in rows
@@ -265,6 +293,9 @@ def lead_report_to_dicts(
                 "source_channel": lead.source_channel,
                 "source_detail": lead.source_detail,
                 "source_display": source_display,
+                "submitter_user_id": lead.submitter_user_id,
+                "submitter_name": row.submitter_name,
+                "province": lead.province,
                 "city": lead.city,
                 "district": lead.district,
                 "region_code": lead.region_code,
@@ -308,8 +339,11 @@ LEAD_EXPORT_FIELDS = [
     "完整手机号",
     "来源类型",
     "来源渠道",
+    "录入人员",
+    "省份",
     "城市",
     "区县",
+    "地区编码",
     "客资状态",
     "派发状态",
     "接收加盟商",
@@ -344,6 +378,7 @@ def _iter_report_rows(db: Session, filters: dict[str, Any]):
             assignment=row[1],
             receiver_company_name=row.receiver_company_name,
             assigned_by_name=row.assigned_by_name,
+            submitter_name=row.submitter_name,
             supplier_company_name=row.supplier_company_name,
         )
 
@@ -433,37 +468,60 @@ class _BoundedCsvWriter:
         return self.output.write(value)
 
 
-def _write_csv_member(
+def _member_filename(base_filename: str, part: int, *, split: bool) -> str:
+    if not split and part == 1:
+        return base_filename
+    stem, suffix = base_filename.rsplit(".", 1)
+    return f"{stem}_{part:04d}.{suffix}"
+
+
+def _write_csv_members(
     archive: ZipFile,
     *,
-    filename: str,
+    base_filename: str,
     fieldnames: list[str],
     rows,
     heartbeat: Callable[[], None],
     budget: _CsvByteBudget,
-    max_rows: int,
+    rows_per_file: int,
+    total_rows: int,
 ) -> int:
+    iterator = iter(rows)
     count = 0
-    with archive.open(filename, "w") as binary_output:
-        with TextIOWrapper(
-            binary_output,
-            encoding="utf-8-sig",
-            newline="",
-        ) as text_output:
-            bounded_output = _BoundedCsvWriter(text_output, budget)
-            writer = csv.DictWriter(bounded_output, fieldnames=fieldnames)
-            writer.writeheader()
-            for row in rows:
-                writer.writerow(
-                    {key: _safe_csv_cell(row.get(key)) for key in fieldnames}
-                )
-                count += 1
-                if count > max_rows:
-                    raise LeadExportLimitError(
-                        f"导出记录超过 {max_rows} 条，请缩小筛选范围后分批导出"
+    part = 0
+    first_row: dict[str, Any] | None = next(iterator, None)
+    while first_row is not None or part == 0:
+        part += 1
+        filename = _member_filename(
+            base_filename,
+            part,
+            split=total_rows > rows_per_file,
+        )
+        with archive.open(filename, "w") as binary_output:
+            with TextIOWrapper(
+                binary_output,
+                encoding="utf-8-sig",
+                newline="",
+            ) as text_output:
+                bounded_output = _BoundedCsvWriter(text_output, budget)
+                writer = csv.DictWriter(bounded_output, fieldnames=fieldnames)
+                writer.writeheader()
+                if first_row is None:
+                    break
+                row = first_row
+                for row_index in range(rows_per_file):
+                    writer.writerow(
+                        {key: _safe_csv_cell(row.get(key)) for key in fieldnames}
                     )
-                if count % EXPORT_HEARTBEAT_ROW_INTERVAL == 0:
-                    heartbeat()
+                    count += 1
+                    if count % EXPORT_HEARTBEAT_ROW_INTERVAL == 0:
+                        heartbeat()
+                    if row_index + 1 == rows_per_file:
+                        break
+                    row = next(iterator, None)
+                    if row is None:
+                        break
+                first_row = next(iterator, None)
     return count
 
 
@@ -471,6 +529,9 @@ def _lead_export_row(row: LeadReportRow) -> dict[str, Any]:
     lead = row.lead
     assignment = row.assignment
     phone = decrypt_text(lead.phone_encrypted)
+    if lead.phone_encrypted and phone is None:
+        logger.error("lead export phone decrypt failed lead_id=%s", lead.id)
+        raise LeadExportDataError("完整手机号解密失败")
     source_display = (
         f"其他（{lead.source_detail}）"
         if lead.source_channel == "OTHER" and lead.source_detail
@@ -482,8 +543,11 @@ def _lead_export_row(row: LeadReportRow) -> dict[str, Any]:
         "完整手机号": phone,
         "来源类型": lead.source_kind,
         "来源渠道": source_display,
+        "录入人员": row.submitter_name,
+        "省份": lead.province,
         "城市": lead.city,
         "区县": lead.district,
+        "地区编码": lead.region_code,
         "客资状态": lead.status,
         "派发状态": assignment.status if assignment else None,
         "接收加盟商": row.receiver_company_name,
@@ -507,15 +571,7 @@ def build_lead_export_archive(
         page_no=1,
         page_size=1,
     )
-    if total > MAX_LEAD_EXPORT_ROWS:
-        raise LeadExportLimitError(
-            f"客资数超过 {MAX_LEAD_EXPORT_ROWS} 条，请缩小筛选范围后分批导出"
-        )
     followup_total = _count_export_followups(db, filters)
-    if followup_total > MAX_FOLLOWUP_EXPORT_ROWS:
-        raise LeadExportLimitError(
-            f"跟进记录超过 {MAX_FOLLOWUP_EXPORT_ROWS} 条，请缩小筛选范围后分批导出"
-        )
     temporary = NamedTemporaryFile(
         prefix="zhongshu-lead-export-",
         suffix=".zip",
@@ -527,24 +583,26 @@ def build_lead_export_archive(
         row_heartbeat = beat if db.get_bind().dialect.name == "postgresql" else (lambda: None)
         budget = _CsvByteBudget(MAX_EXPORT_CSV_BYTES)
         with ZipFile(archive_path, "w", compression=ZIP_DEFLATED) as archive:
-            lead_count = _write_csv_member(
+            lead_count = _write_csv_members(
                 archive,
-                filename="客资明细.csv",
+                base_filename="客资明细.csv",
                 fieldnames=LEAD_EXPORT_FIELDS,
                 rows=(_lead_export_row(row) for row in _iter_report_rows(db, filters)),
                 heartbeat=row_heartbeat,
                 budget=budget,
-                max_rows=MAX_LEAD_EXPORT_ROWS,
+                rows_per_file=LEAD_EXPORT_ROWS_PER_FILE,
+                total_rows=total,
             )
             beat()
-            _write_csv_member(
+            _write_csv_members(
                 archive,
-                filename="跟进记录.csv",
+                base_filename="跟进记录.csv",
                 fieldnames=FOLLOWUP_EXPORT_FIELDS,
                 rows=_iter_followup_export_rows(db, filters),
                 heartbeat=row_heartbeat,
                 budget=budget,
-                max_rows=MAX_FOLLOWUP_EXPORT_ROWS,
+                rows_per_file=FOLLOWUP_EXPORT_ROWS_PER_FILE,
+                total_rows=followup_total,
             )
         if archive_path.stat().st_size > MAX_EXPORT_ARCHIVE_BYTES:
             raise LeadExportLimitError(
@@ -897,7 +955,7 @@ def process_lead_export_tasks(
                 cleanup_intent = None
             error_message = (
                 str(exc)
-                if isinstance(exc, LeadExportLimitError)
+                if isinstance(exc, (LeadExportLimitError, LeadExportDataError))
                 else f"{type(exc).__name__}: 导出任务处理失败"
             )
             result = db.execute(

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..core.config import get_settings
@@ -116,6 +117,18 @@ def reevaluate_existing_phone_identity(
     )
 
 
+def _acquire_phone_identity_lock(db: Session, fingerprint: str) -> None:
+    """Serialize one irreversible phone identity across PostgreSQL writers."""
+
+    if db.get_bind().dialect.name != "postgresql":
+        return
+    digest = hashlib.sha256(
+        f"v12-phone-dedup:{fingerprint}".encode("ascii")
+    ).digest()
+    lock_id = int.from_bytes(digest[:8], byteorder="big", signed=True)
+    db.execute(select(func.pg_advisory_xact_lock(lock_id)))
+
+
 def _evaluate_phone_identity(
     db: Session,
     *,
@@ -125,6 +138,7 @@ def _evaluate_phone_identity(
     checkpoint: str,
     now: datetime | None,
 ) -> DedupResult:
+    _acquire_phone_identity_lock(db, fingerprint)
     now = _as_utc(now or datetime.now(timezone.utc))
     rule = resolve_supplier_reward_rule(db, as_of=now)
     cutoff = now - timedelta(days=rule.historical_suspect_days)
@@ -281,10 +295,34 @@ def override_duplicate(
         else None
     )
     post_dispatch_correction = (
-        event.checkpoint == "POST_DISPATCH_CORRECTION"
+        event.checkpoint.startswith("POST_DISPATCH_CORRECTION")
         or current_assignment is not None
     )
-    if post_dispatch_correction:
+    resume_payload = dict(lead.raw_payload or {})
+    resume_status = resume_payload.get("correction_resume_status")
+    correction_checkpoint = event.checkpoint.startswith(
+        ("UNASSIGNED_CORRECTION", "POST_DISPATCH_CORRECTION")
+    )
+    if correction_checkpoint and resume_status:
+        store_lead_correction_issues(lead, [])
+        resume_payload = dict(lead.raw_payload or {})
+        resume_review_status = resume_payload.pop(
+            "correction_resume_review_status",
+            lead.review_status,
+        )
+        resume_pending_reason = resume_payload.pop(
+            "correction_resume_pending_reason",
+            None,
+        )
+        resume_payload.pop("correction_resume_status", None)
+        lead.raw_payload = resume_payload
+        lead.status = resume_status
+        lead.review_status = resume_review_status
+        lead.pending_reason = resume_pending_reason
+        from .lead_supply_v12 import restore_unassigned_correction_workflow
+
+        restore_unassigned_correction_workflow(db, lead)
+    elif post_dispatch_correction:
         from .dispatch_v12 import existing_receiver_correction_issues
 
         issues: list[str] = []
@@ -311,5 +349,13 @@ def override_duplicate(
     else:
         lead.pending_reason = None
         lead.status = LeadV12Status.READY_DISPATCH.value
+    from .lead_supply_v12 import reconcile_supplier_rewards_after_dedup
+
+    reward_changes = reconcile_supplier_rewards_after_dedup(
+        db,
+        lead=lead,
+        dedup_result=DedupResult(decision=DuplicateDecision.OVERRIDDEN),
+    )
+    setattr(override, "reward_changes", reward_changes)
     db.flush()
     return override
