@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import event, select
+from starlette.requests import Request
 
 from apps.api.src.core.auth import Principal
 from apps.api.src.core.enums import AssignmentStatus, EvidenceType, PointsLedgerType, VerificationTaskStatus
@@ -30,8 +31,9 @@ from apps.api.src.core.v12_enums import (
     RewardStatus,
     VerificationTaskType,
 )
-from apps.api.src.services.rbac import assign_role
+from apps.api.src.routers.v12_returns import list_return_verification_tasks
 from apps.api.src.services.audit import write_audit
+from apps.api.src.services.rbac import assign_role
 from apps.api.src.services.return_v12 import (
     add_return_evidence,
     assign_return_verification_task,
@@ -576,7 +578,7 @@ def _submit_and_verify(db, setup, *, conclusion: str = "SUPPORT_RETURN"):
 
 def test_final_approve_refunds_once_closes_invalid_lead_and_cancels_reward(db) -> None:
     setup = _workflow_setup(db)
-    request, _ = _submit_and_verify(db, setup)
+    request, task = _submit_and_verify(db, setup)
     reviewer = _principal(setup["reviewer"], "return.review")
     result = final_review_return(
         db,
@@ -602,6 +604,7 @@ def test_final_approve_refunds_once_closes_invalid_lead_and_cancels_reward(db) -
     assert setup["lead"].status == LeadV12Status.CLOSED.value
     assert setup["lead"].current_assignment_id is None
     assert setup["reward"].status == RewardStatus.CANCELLED.value
+    assert task.status == VerificationTaskStatus.RELEASED.value
     assert db.get(PointsAccount, setup["account"].id).balance == 1000
     assert db.scalar(
         select(Notification).where(Notification.scene == "V12_RETURN_APPROVED")
@@ -629,7 +632,7 @@ def test_final_approve_refunds_once_closes_invalid_lead_and_cancels_reward(db) -
 
 def test_final_reject_restores_following_and_unfreezes_reward(db) -> None:
     setup = _workflow_setup(db, lead_status=LeadV12Status.FOLLOWING.value)
-    request, _ = _submit_and_verify(db, setup, conclusion="DOES_NOT_SUPPORT_RETURN")
+    request, task = _submit_and_verify(db, setup, conclusion="DOES_NOT_SUPPORT_RETURN")
     reviewer = _principal(setup["reviewer"], "return.review")
     result = final_review_return(
         db,
@@ -645,6 +648,7 @@ def test_final_reject_restores_following_and_unfreezes_reward(db) -> None:
     assert setup["assignment"].status == AssignmentStatus.FOLLOWING.value
     assert setup["lead"].status == LeadV12Status.FOLLOWING.value
     assert setup["reward"].status == RewardStatus.OBSERVING.value
+    assert task.status == VerificationTaskStatus.RELEASED.value
     assert db.get(PointsAccount, setup["account"].id).balance == 900
     assert db.scalar(
         select(Notification).where(Notification.scene == "V12_RETURN_REJECTED")
@@ -709,6 +713,7 @@ def test_need_more_allows_new_evidence_and_creates_second_verification_round(db)
         note="请补充客户沟通录音后重新核验",
     )
     assert request.status == ReturnV12Status.NEED_MORE_EVIDENCE.value
+    assert first_task.status == VerificationTaskStatus.RELEASED.value
 
     owner = _principal(setup["receiver_user"], "return.own.manage")
     _evidence(db, request, owner, EvidenceType.CALL_RECORDING.value)
@@ -729,6 +734,63 @@ def test_need_more_allows_new_evidence_and_creates_second_verification_round(db)
         .with_only_columns(__import__("sqlalchemy").func.count(VerificationTask.id))
     )
     assert task_count == 2
+
+
+def test_return_verification_task_list_defaults_to_open_tasks(db) -> None:
+    setup = _workflow_setup(db, suffix="-OPEN")
+    return_request, submitted_task = _submit_and_verify(db, setup)
+    released_task = VerificationTask(
+        lead_id=setup["lead"].id,
+        template_id=None,
+        template_version=1,
+        status=VerificationTaskStatus.RELEASED.value,
+        task_type=VerificationTaskType.RETURN_VERIFY.value,
+        return_request_id=return_request.id,
+        assignment_id=setup["assignment"].id,
+    )
+    db.add(released_task)
+
+    stale_setup = _workflow_setup(db, suffix="-CLOSED")
+    closed_return, stale_submitted_task = _submit_and_verify(db, stale_setup)
+    closed_return.status = ReturnV12Status.APPROVED.value
+    db.flush()
+
+    principal = _principal(setup["operator"], "verification.read")
+    http_request = Request({"type": "http", "method": "GET", "path": "/", "headers": []})
+    open_result = list_return_verification_tasks(
+        http_request,
+        principal,
+        db,
+        status=None,
+        mine=False,
+        page_no=1,
+        page_size=20,
+    )
+    released_result = list_return_verification_tasks(
+        http_request,
+        principal,
+        db,
+        status=VerificationTaskStatus.RELEASED.value,
+        mine=False,
+        page_no=1,
+        page_size=20,
+    )
+    submitted_result = list_return_verification_tasks(
+        http_request,
+        principal,
+        db,
+        status=VerificationTaskStatus.SUBMITTED.value,
+        mine=False,
+        page_no=1,
+        page_size=20,
+    )
+
+    assert [item["id"] for item in open_result["data"]["items"]] == [submitted_task.id]
+    assert [item["id"] for item in released_result["data"]["items"]] == [released_task.id]
+    assert {item["id"] for item in submitted_result["data"]["items"]} == {
+        submitted_task.id,
+        stale_submitted_task.id,
+    }
 
 
 def test_final_review_requires_submitted_post_call_conclusion(db) -> None:
