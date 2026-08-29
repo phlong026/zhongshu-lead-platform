@@ -33,7 +33,7 @@ class _S3Client:
         return {"Body": _Body(self.objects[Key])}
 
     def delete_object(self, *, Key: str, **_: str) -> None:
-        del self.objects[Key]
+        self.objects.pop(Key, None)
 
 
 def _storage(client: _S3Client) -> S3ObjectStorage:
@@ -107,6 +107,48 @@ def test_s3_canary_reads_then_deletes_disposable_object() -> None:
 
     assert key.startswith(".canary/zhongshu-readiness/")
     assert client.objects == {}
+
+
+def test_storage_delete_is_idempotent_for_local_and_s3(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    root = tmp_path / "private-storage"
+    monkeypatch.setattr(storage_module.settings, "object_storage_dir", str(root))
+    local = LocalObjectStorage()
+    stored = local.save(
+        b"cleanup",
+        prefix="returns/test",
+        filename="evidence.bin",
+        mime_type="application/octet-stream",
+    )
+
+    local.delete(stored.object_key)
+    local.delete(stored.object_key)
+
+    client = _S3Client()
+    client.objects["returns/test/evidence.bin"] = b"cleanup"
+    s3 = _storage(client)
+    s3.delete("returns/test/evidence.bin")
+    s3.delete("returns/test/evidence.bin")
+    assert client.objects == {}
+
+
+def test_s3_cleanup_target_changes_when_endpoint_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(storage_module.settings, "object_storage_backend", "s3")
+    monkeypatch.setattr(storage_module.settings, "s3_bucket", "same-bucket")
+    monkeypatch.setattr(storage_module.settings, "s3_region", "ap-shanghai")
+    monkeypatch.setattr(storage_module.settings, "s3_endpoint_url", "https://old.example.com/")
+    old_target = storage_module.storage_target_snapshot()
+
+    monkeypatch.setattr(storage_module.settings, "s3_endpoint_url", "https://new.example.com")
+    new_target = storage_module.storage_target_snapshot()
+
+    assert old_target != new_target
+    assert "old.example.com" in old_target[1]
+    assert "new.example.com" in new_target[1]
 
 
 def test_s3_readiness_hides_provider_error_details() -> None:

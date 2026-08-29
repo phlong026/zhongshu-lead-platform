@@ -198,6 +198,7 @@ WECHAT_DEV_MOCK=false
 
 ```bash
 python scripts/run_jobs.py outbox --limit 100
+python scripts/run_jobs.py storage-cleanup --limit 100
 ```
 
 管理员还可在“通知任务”页查看失败任务、重试发送，或调用这些已有接口：
@@ -212,6 +213,8 @@ python scripts/run_jobs.py outbox --limit 100
 - `FAILED`：暂时失败，调度器按退避时间重试。
 - `DEAD`：连续失败达到上限，需运维或管理员介入。
 - `MANUAL_ACTION_REQUIRED`：未配置模板或没有可用收件人，自动重试无法解决。
+
+以上 `DEAD` 和 `MANUAL_ACTION_REQUIRED` 只适用于消息通知 Outbox。对象存储清理任务不会进入 `DEAD`：失败时保持 `FAILED` 并持续按封顶退避重试，连续失败 5 次后记录 error 日志供运维告警。若 Bucket、Endpoint 或 Region 与入队时不一致，任务会拒绝删除，必须恢复原存储目标后再处理，避免误删同名 Bucket 中的文件。
 
 特别边界：“加盟邀请已创建”发生在被邀请人绑定微信之前，真实环境没有收件人 OpenID，因此当前仍需运营人员复制邀请链接手动发送。
 

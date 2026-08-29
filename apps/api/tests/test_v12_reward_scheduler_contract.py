@@ -86,6 +86,11 @@ def test_scheduler_cycle_reports_success_only_after_commit(monkeypatch: pytest.M
     db = _FakeSession()
     monkeypatch.setattr(scheduler, "SessionLocal", lambda: db)
     monkeypatch.setattr(scheduler, "process_outbox", lambda *_args, **_kwargs: {"sent": 0, "failed": 0})
+    monkeypatch.setattr(
+        scheduler,
+        "process_storage_cleanup",
+        lambda *_args, **_kwargs: {"deleted": 0, "failed": 0},
+    )
 
     assert scheduler.run_cycle(run_slow_jobs=False, run_hourly_jobs=False) is True
     assert db.committed is True

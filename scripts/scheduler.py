@@ -19,6 +19,7 @@ from apps.api.src.services.followup_service import run_followup_overdue
 from apps.api.src.services.notification_v12 import drain_due_supplier_reward_settlement_notified
 from apps.api.src.services.outbox_worker import process_outbox
 from apps.api.src.services.points_service import run_low_points_warnings
+from apps.api.src.services.storage_cleanup_worker import process_storage_cleanup
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("scheduler")
@@ -57,7 +58,14 @@ def run_cycle(run_slow_jobs: bool, run_hourly_jobs: bool, run_daily_jobs: bool =
             # N10：outbox 进度先落库——慢/小时任务异常回滚时不得把已发送
             # 状态一并回滚，否则下一轮会向用户重发同一条通知。
             db.commit()
-            metrics: dict[str, object] = {"outbox": outbox}
+            storage_cleanup = process_storage_cleanup(db, limit=200)
+            # 文件清理同样先单独落库：后续慢任务失败不得把
+            # 已完成的对象删除重置为待处理。
+            db.commit()
+            metrics: dict[str, object] = {
+                "outbox": outbox,
+                "storage_cleanup": storage_cleanup,
+            }
             if run_slow_jobs:
                 metrics.update(
                     {
@@ -87,7 +95,15 @@ def run_cycle(run_slow_jobs: bool, run_hourly_jobs: bool, run_daily_jobs: bool =
                         "binding integrity violations detected: %s",
                         [issue["code"] for issue in report.issues],
                     )
-            if run_slow_jobs or run_hourly_jobs or run_daily_jobs or outbox.get("sent") or outbox.get("failed"):
+            if (
+                run_slow_jobs
+                or run_hourly_jobs
+                or run_daily_jobs
+                or outbox.get("sent")
+                or outbox.get("failed")
+                or storage_cleanup.get("deleted")
+                or storage_cleanup.get("failed")
+            ):
                 logger.info("cycle metrics=%s", metrics)
             db.commit()
             return True
