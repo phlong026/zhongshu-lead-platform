@@ -36,8 +36,8 @@ const verificationTaskBadge=task=>`<span class="ops-status warn">${esc(verificat
 const qs=o=>{const p=new URLSearchParams;Object.entries(o).forEach(([k,v])=>v!==''&&v!=null&&p.set(k,v));return p.toString()?`?${p}`:''};
 async function api(path,opt={}){const h={...(opt.headers||{})};if(opt.body&&!(opt.body instanceof FormData))h['Content-Type']='application/json';const r=await fetch(API+path,{...opt,headers:h,credentials:'include'});let j={};try{j=await r.json()}catch{}if(!r.ok||j.code!=='OK'){const error=new Error(j.message||'请求失败');error.code=j.code;error.status=r.status;throw error}return j.data}
 function toast(m,e=false){toastEl.textContent=m;toastEl.className=`ops-toast show ${e?'error':''}`;clearTimeout(toast.t);toast.t=setTimeout(()=>toastEl.className='ops-toast',2400)}
-function closeModal(){modalRoot.innerHTML=''}
-function modal(title,body,bind){zsSetSafeHtml(modalRoot, `<div class="ops-overlay"><section class="ops-modal"><div class="ops-modal-head"><h2>${esc(title)}</h2><button class="ops-btn" id="modal-close">关闭</button></div>${body}</section></div>`);document.querySelector('#modal-close').onclick=closeModal;bind?.()}
+function closeModal(){modalRoot.innerHTML='';document.body.classList.remove('ops-modal-open')}
+function modal(title,body,bind){document.body.classList.add('ops-modal-open');zsSetSafeHtml(modalRoot, `<div class="ops-overlay"><section class="ops-modal"><div class="ops-modal-head"><h2>${esc(title)}</h2><button class="ops-btn" id="modal-close">关闭</button></div>${body}</section></div>`);document.querySelector('#modal-close').onclick=closeModal;bind?.()}
 function actionForm(options,onSubmit){
   const {title,message='',labelText='处理说明',value='',required=false,minLength=0,inputType='textarea',submitLabel='确认提交',danger=false,validate}=options;
   const control=inputType==='number'
@@ -566,8 +566,8 @@ async function companyDetail(company){
   const inviteHistory=inviteRows.length?`<details class="ops-company-invite-history"><summary>最近 ${inviteRows.length} 条绑定记录（最多显示 4 条）</summary>${table(['状态 / 发起时间','受邀人','有效期','操作'],inviteRows)}</details>`:'';
   const exceptions=companyRecord.exception_breakdown||{};
   const businessFacts=`<div class="ops-company-facts"><div><small>供资总数</small><b>${Number(companyRecord.provided?.total||0)}</b></div><div><small>接收总数</small><b>${Number(companyRecord.received?.total||0)}</b></div><div><small>拒绝领取</small><b>${Number(exceptions.refused_claim||0)}</b></div><div><small>发起退回 / 确认无效</small><b>${Number(exceptions.return_requested||0)} / ${Number(exceptions.confirmed_invalid||0)}</b></div></div>`;
-  const lifecycleActions=`${detail.status==='ACTIVE'?`<button class="ops-btn danger" data-company-disable="${esc(detail.id)}">停用主体</button>`:''}${detail.status==='DISABLED'?`<button class="ops-btn primary" data-company-enable="${esc(detail.id)}">重新启用</button>`:''}${detail.status==='DISABLED'&&detail.wechat_bound?`<button class="ops-btn danger" data-company-wechat-unbind="${esc(detail.id)}">解绑负责人微信</button>`:''}`;
-  modal(`${detail.name} · 加盟商信息`,`<section class="ops-company-detail ops-company-detail-compact"><div class="ops-company-facts"><div><small>主体状态</small><b>${esc(label(detail.status))}</b></div><div><small>负责人</small><b>${esc(detail.owner_name||'未填写')}</b></div><div><small>联系电话</small><b>${esc(detail.contact_phone_masked||'未填写')}</b></div><div><small>负责人微信</small><b>${detail.wechat_bound?'已绑定':'待绑定'}</b></div></div>${businessFacts}<div class="ops-company-summary-grid"><section class="ops-company-section"><div class="ops-company-section-head"><div><h3>服务区域</h3><p>已开通 ${areas.length} 个城市/区县/乡镇。</p></div><button class="ops-btn" data-company-service-areas="${esc(detail.id)}">编辑区域</button></div><div class="ops-area-chips">${areaCards}</div>${areaDetail}</section><section class="ops-company-section"><div class="ops-company-section-head"><div><h3>客资功能</h3><p>平台统一配置。</p></div></div><div class="ops-company-capabilities compact">${['LEAD_RECEIVER','LEAD_SUPPLIER'].map(code=>companyCapabilitySetting(profile.capabilities,code,true)).join('')}</div></section></div><section class="ops-company-binding-compact"><div><small>负责人绑定</small><b>${detail.wechat_bound?'已完成绑定':'等待负责人绑定'}</b><p>${esc(inviteNotice)}</p></div><div class="ops-actions">${!detail.wechat_bound&&detail.status==='ACTIVE'?`<button class="ops-btn primary" data-invite-create="${esc(detail.id)}">发起绑定</button>`:''}<button class="ops-btn" data-company-detail-accounts="${esc(detail.id)}">账号与人员</button><button class="ops-btn" data-company-detail-edit="${esc(detail.id)}">编辑资料</button></div></section>${lifecycleActions?`<section class="ops-company-binding-compact"><div><small>主体治理</small><b>停用只负责业务隔离</b><p>已流转客资和业务历史会永久保留；停用只阻断新业务，解绑只用于重新关联负责人微信。</p></div><div class="ops-actions">${lifecycleActions}</div></section>`:''}${inviteHistory}</section>`,()=>{
+  const lifecycleActions=`${detail.status==='ACTIVE'?`<button class="ops-btn danger" data-company-disable="${esc(detail.id)}">停用主体</button>`:''}${detail.status==='DISABLED'?`<button class="ops-btn primary" data-company-enable="${esc(detail.id)}">重新启用</button>`:''}${detail.status==='DISABLED'&&detail.wechat_bound?`<button class="ops-btn danger" data-company-wechat-unbind="${esc(detail.id)}">解绑负责人微信</button>`:''}${detail.status==='DISABLED'&&!detail.is_test&&isSuperAdmin()?`<button class="ops-btn danger" data-company-mark-test="${esc(detail.id)}">标记历史测试数据</button>`:''}${detail.status==='DISABLED'&&detail.is_test&&isSuperAdmin()?`<button class="ops-btn danger" data-company-test-delete="${esc(detail.id)}">删除测试主体</button>`:''}`;
+  modal(`${detail.name} · 加盟商信息`,`<section class="ops-company-detail ops-company-detail-compact"><div class="ops-company-facts"><div><small>主体状态</small><b>${esc(label(detail.status))}</b></div><div><small>负责人</small><b>${esc(detail.owner_name||'未填写')}</b></div><div><small>联系电话</small><b>${esc(detail.contact_phone_masked||'未填写')}</b></div><div><small>负责人微信</small><b>${detail.wechat_bound?'已绑定':'待绑定'}</b></div></div>${businessFacts}<div class="ops-company-summary-grid"><section class="ops-company-section"><div class="ops-company-section-head"><div><h3>服务区域</h3><p>已开通 ${areas.length} 个城市/区县/乡镇。</p></div><button class="ops-btn" data-company-service-areas="${esc(detail.id)}">编辑区域</button></div><div class="ops-area-chips">${areaCards}</div>${areaDetail}</section><section class="ops-company-section"><div class="ops-company-section-head"><div><h3>客资功能</h3><p>平台统一配置。</p></div></div><div class="ops-company-capabilities compact">${['LEAD_RECEIVER','LEAD_SUPPLIER'].map(code=>companyCapabilitySetting(profile.capabilities,code,true)).join('')}</div></section></div><section class="ops-company-binding-compact"><div><small>负责人绑定</small><b>${detail.wechat_bound?'已完成绑定':'等待负责人绑定'}</b><p>${esc(inviteNotice)}</p></div><div class="ops-actions">${!detail.wechat_bound&&detail.status==='ACTIVE'?`<button class="ops-btn primary" data-invite-create="${esc(detail.id)}">发起绑定</button>`:''}<button class="ops-btn" data-company-detail-accounts="${esc(detail.id)}">账号与人员</button><button class="ops-btn" data-company-detail-edit="${esc(detail.id)}">编辑资料</button></div></section>${lifecycleActions?`<section class="ops-company-binding-compact"><div><small>主体治理</small><b>停用只负责业务隔离</b><p>测试主体可永久清理其客资、派发、积分和业务历史，不因已产生业务或已派发而阻止删除。</p></div><div class="ops-actions">${lifecycleActions}</div></section>`:''}${inviteHistory}</section>`,()=>{
     document.querySelectorAll('[data-company-capability]').forEach(button=>button.onclick=()=>configureCompanyCapability(detail.id,button.dataset.companyCapability,button.dataset.capabilityActive!=='true',companyRecord));
     document.querySelector('[data-invite-create]')?.addEventListener('click',()=>createCompanyInvite(detail));
     document.querySelectorAll('[data-invite-revoke]').forEach(button=>button.onclick=()=>revokeCompanyInvite(button.dataset.inviteRevoke,companyRecord));
@@ -577,6 +577,8 @@ async function companyDetail(company){
     document.querySelector('[data-company-disable]')?.addEventListener('click',()=>disableCompany(detail));
     document.querySelector('[data-company-enable]')?.addEventListener('click',()=>enableCompany(detail));
     document.querySelector('[data-company-wechat-unbind]')?.addEventListener('click',()=>unbindCompanyOwnerWechat(detail));
+    document.querySelector('[data-company-mark-test]')?.addEventListener('click',()=>markCompanyAsTest(detail));
+    document.querySelector('[data-company-test-delete]')?.addEventListener('click',()=>deleteTestCompany(detail));
   });
 }
 function disableCompany(company){
@@ -593,11 +595,14 @@ function enableCompany(company){
     await companies();
   });
 }
-function companyLifecycleConfirmation({title,message,company,submitLabel},onSubmit){
-  modal(title,`<form class="ops-form" id="company-lifecycle-form"><div class="ops-notice">${esc(message)}</div><div class="ops-field"><label for="company-lifecycle-name">输入加盟商完整名称 *</label><input class="ops-input" id="company-lifecycle-name" autocomplete="off" placeholder="${esc(company.name)}"></div><div class="ops-field"><label for="company-lifecycle-reason">操作原因 *</label><textarea class="ops-textarea" id="company-lifecycle-reason" maxlength="500"></textarea></div><div class="ops-actions"><button type="button" class="ops-btn" id="company-lifecycle-cancel">取消</button><button class="ops-btn danger" id="company-lifecycle-submit">${esc(submitLabel)}</button></div></form>`,()=>{
-    const form=document.querySelector('#company-lifecycle-form'),nameInput=document.querySelector('#company-lifecycle-name'),reasonInput=document.querySelector('#company-lifecycle-reason'),submit=document.querySelector('#company-lifecycle-submit');
+function companyLifecycleConfirmation({title,message,company,submitLabel,preview=null,confirmPhrase=null},onSubmit){
+  const counts=preview?.counts||{},cross=preview?.cross_company_impact||{};
+  const previewHtml=preview?`<div class="ops-notice">影响预览：客资 ${Number(counts.leads||0)} 条、派发 ${Number(counts.assignments||0)} 条、退回 ${Number(counts.returns||0)} 条、积分流水 ${Number(counts.points_ledgers||0)} 条、证据文件 ${Number(counts.evidence_files||0)} 份；将影响其他公司 ${Number(cross.companies||0)} 家、其他积分账户 ${Number(cross.points_accounts||0)} 个。</div>`:'';
+  const phraseHtml=confirmPhrase?`<div class="ops-field"><label for="company-lifecycle-phrase">输入固定确认短语“${esc(confirmPhrase)}” *</label><input class="ops-input" id="company-lifecycle-phrase" autocomplete="off"></div>`:'';
+  modal(title,`<form class="ops-form" id="company-lifecycle-form"><div class="ops-notice">${esc(message)}</div>${previewHtml}<div class="ops-field"><label for="company-lifecycle-name">输入加盟商完整名称 *</label><input class="ops-input" id="company-lifecycle-name" autocomplete="off" placeholder="${esc(company.name)}"></div>${phraseHtml}<div class="ops-field"><label for="company-lifecycle-reason">操作原因 *</label><textarea class="ops-textarea" id="company-lifecycle-reason" maxlength="500"></textarea></div><div class="ops-actions"><button type="button" class="ops-btn" id="company-lifecycle-cancel">取消</button><button class="ops-btn danger" id="company-lifecycle-submit">${esc(submitLabel)}</button></div></form>`,()=>{
+    const form=document.querySelector('#company-lifecycle-form'),nameInput=document.querySelector('#company-lifecycle-name'),phraseInput=document.querySelector('#company-lifecycle-phrase'),reasonInput=document.querySelector('#company-lifecycle-reason'),submit=document.querySelector('#company-lifecycle-submit');
     document.querySelector('#company-lifecycle-cancel').onclick=closeModal;
-    form.onsubmit=async event=>{event.preventDefault();const confirm_name=nameInput.value.trim(),reason=reasonInput.value.trim();if(confirm_name!==company.name){toast('名称不一致，不能执行',true);nameInput.focus();return}if(reason.length<2){toast('请填写至少 2 个字的操作原因',true);reasonInput.focus();return}submit.disabled=true;try{await onSubmit({confirm_name,reason});closeModal()}catch(error){submit.disabled=false;toast(error.message,true)}};
+    form.onsubmit=async event=>{event.preventDefault();const confirm_name=nameInput.value.trim(),confirm_phrase=phraseInput?.value.trim()||'',reason=reasonInput.value.trim();if(confirm_name!==company.name){toast('名称不一致，不能执行',true);nameInput.focus();return}if(confirmPhrase&&confirm_phrase!==confirmPhrase){toast('固定确认短语不一致，请重新输入',true);phraseInput.focus();return}if(reason.length<2){toast('请填写至少 2 个字的操作原因',true);reasonInput.focus();return}submit.disabled=true;try{await onSubmit({confirm_name,reason,...(confirmPhrase?{confirm_phrase,scope_token:preview.scope_token}:{})});closeModal()}catch(error){submit.disabled=false;toast(error.message,true)}};
     nameInput.focus();
   });
 }
@@ -605,6 +610,23 @@ function unbindCompanyOwnerWechat(company){
   companyLifecycleConfirmation({title:'解绑负责人微信',message:'解绑后旧负责人微信登录会立即失效。请先确保主体已停用；之后重新启用，再发起新的负责人绑定。业务历史不会删除。',company,submitLabel:'确认解绑'},async body=>{
     await api(`/companies/${encodeURIComponent(company.id)}/wechat-binding/unbind`,{method:'POST',body:JSON.stringify(body)});
     toast('负责人微信已解绑，请重新发起绑定');
+    await companies();
+  });
+}
+async function markCompanyAsTest(company){
+  try{
+    const preview=await api(`/companies/${encodeURIComponent(company.id)}/purge-preview`);
+    companyLifecycleConfirmation({title:'标记历史测试数据',message:'标记后可删除该主体及其相关测试业务，不因已产生客资或已完成派发而阻止。',company,submitLabel:'确认标记为测试',preview,confirmPhrase:'永久删除测试数据'},async body=>{
+      await api(`/companies/${encodeURIComponent(company.id)}/mark-test`,{method:'POST',body:JSON.stringify(body)});
+      toast('已标记为测试主体，可继续执行删除');
+      await companies();
+    });
+  }catch(error){toast(error.message,true)}
+}
+function deleteTestCompany(company){
+  companyLifecycleConfirmation({title:'删除测试数据',message:'该操作会永久删除测试主体及其客资、派发、退回、跟进、奖励、业务消息、积分账户、充值与积分流水；已派给其他加盟商的测试客资也会一并清理。原成员账号会停用并解除公司与微信关联，审计记录会保留。',company,submitLabel:'确认永久删除'},async body=>{
+    await api(`/companies/${encodeURIComponent(company.id)}`,{method:'DELETE',body:JSON.stringify(body)});
+    toast('测试加盟商已删除');
     await companies();
   });
 }

@@ -40,7 +40,7 @@ def test_v12_operations_exposes_company_detail_and_platform_configuration() -> N
     assert "company.profile.review" in js
     assert "data-company-detail" in js
     assert "data-company-lifecycle" in js
-    assert "删除测试主体" not in js
+    assert "删除测试主体" in js
     assert "confirmation_code" not in js
     assert "status:enabling?'ACTIVE':'DISABLED',reason" in js
     assert "负责人绑定" in js
@@ -68,26 +68,58 @@ def test_v12_operations_exposes_company_detail_and_platform_configuration() -> N
     assert "确认无效" in js
     assert "测试主体" in js
     assert "data-company-wechat-unbind" in js
-    assert "data-company-test-delete" not in js
-    assert "data-company-mark-test" not in js
+    assert "data-company-test-delete" in js
+    assert "detail.status==='DISABLED'&&detail.is_test&&isSuperAdmin()" in js
+    assert "data-company-mark-test" in js
     assert "data-company-enable" in js
     assert "/wechat-binding/unbind" in js
-    assert "v12-operations.js?v=20260827-test-company-purge" in html
+    assert "v12-operations.js?v=20260829-test-company-full-purge-v2" in html
     assert "加盟商能力与服务区域审核申请" not in js
 
 
-def test_v12_operations_exposes_non_destructive_company_lifecycle_actions() -> None:
+def test_v12_operations_exposes_test_company_cleanup_actions() -> None:
     html = Path("apps/admin/public/v12-operations.html").read_text(encoding="utf-8")
     js = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
 
     assert "/wechat-binding/unbind" in js
-    assert "deleteTestCompany" not in js
-    assert "data-company-delete" not in js
-    assert "api(`/companies/${encodeURIComponent(company.id)}`,{method:'DELETE'" not in js
+    assert "deleteTestCompany" in js
+    assert "companyLifecycleConfirmation" in js
+    assert "/purge-preview" in js
+    assert "/mark-test" in js
+    assert "confirm_name" in js
+    assert "confirm_phrase" in js
+    assert "scope_token:preview.scope_token" in js
+    assert "影响预览" in js
+    assert "永久删除测试数据" in js
+    assert "输入加盟商完整名称" in js
     assert "停用只负责业务隔离" in js
     assert "解绑负责人微信" in js
-    assert "已流转客资和业务历史会永久保留" in js
-    assert "v12-operations.js?v=20260827-test-company-purge" in html
+    assert "删除测试数据" in js
+    assert "积分账户、充值与积分流水" in js
+    assert "不因已产生业务或已派发而阻止删除" in js
+    assert "已派给其他加盟商的测试客资也会一并清理" in js
+    assert "原成员账号会停用" in js
+    assert "确认永久删除" in js
+    delete_flow = js[js.index("function deleteTestCompany") : js.index("function configureCompanyCapability")]
+    assert delete_flow.count("method:'DELETE'") == 1
+    assert "v12-operations.js?v=20260829-test-company-full-purge-v2" in html
+
+
+def test_company_detail_modal_is_responsive_without_visible_scrollbars() -> None:
+    html = Path("apps/admin/public/v12-operations.html").read_text(encoding="utf-8")
+    css = Path("apps/admin/public/v12-operations.css").read_text(encoding="utf-8")
+    js = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
+
+    assert "document.body.classList.add('ops-modal-open')" in js
+    assert "document.body.classList.remove('ops-modal-open')" in js
+    assert ".ops-modal-open{overflow:hidden}" in css
+    assert ".ops-overlay:has(.ops-company-detail)" in css
+    assert "scrollbar-width:none" in css
+    assert ".ops-modal:has(.ops-company-detail)" in css
+    assert "overflow:visible" in css
+    assert ".ops-company-detail>*{min-width:0}" in css
+    assert ".ops-company-invite-history .ops-table{min-width:0" in css
+    assert "v12-operations.css?v=20260829-company-detail-fluid" in html
 
 
 def test_company_invitation_has_a_dedicated_h5_confirmation_page() -> None:
