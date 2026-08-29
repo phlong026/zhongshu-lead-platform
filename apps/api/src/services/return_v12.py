@@ -603,6 +603,8 @@ def final_review_return(
     if normalized_decision == "NEED_MORE":
         assert_return_transition(ReturnV12Status.REVIEWING, ReturnV12Status.NEED_MORE_EVIDENCE)
         request.status = ReturnV12Status.NEED_MORE_EVIDENCE.value
+        task.status = VerificationTaskStatus.RELEASED.value
+        task.lock_version += 1
         db.add(
             AssignmentEvent(
                 assignment_id=assignment.id,
@@ -617,6 +619,8 @@ def final_review_return(
     if normalized_decision == "REJECT":
         assert_return_transition(ReturnV12Status.REVIEWING, ReturnV12Status.REJECTED)
         request.status = ReturnV12Status.REJECTED.value
+        task.status = VerificationTaskStatus.RELEASED.value
+        task.lock_version += 1
         assignment.status = _restore_assignment_status(lead)
         if lead.status not in {LeadV12Status.CLAIMED.value, LeadV12Status.FOLLOWING.value}:
             lead.status = LeadV12Status.CLAIMED.value
@@ -663,6 +667,8 @@ def final_review_return(
     request.status = ReturnV12Status.APPROVED.value
     request.refund_points = refund_points
     request.refund_ledger_id = refund_ledger.id
+    task.status = VerificationTaskStatus.RELEASED.value
+    task.lock_version += 1
     assignment.status = AssignmentStatus.RETURNED.value
     assignment.released_at = now
     assignment.release_reason = "V12_RETURN_APPROVED"

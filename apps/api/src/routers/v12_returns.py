@@ -13,7 +13,7 @@ from ..core.enums import EvidenceType, VerificationTaskStatus
 from ..core.errors import AppError
 from ..core.models import Assignment, ReturnEvidence, ReturnRequest, VerificationTask
 from ..core.responses import ok, page
-from ..core.v12_enums import VerificationTaskType
+from ..core.v12_enums import ReturnV12Status, VerificationTaskType
 from ..schemas.v12_returns import (
     ReturnDraftV12Body,
     ReturnFinalReviewBody,
@@ -40,6 +40,17 @@ from ..services.company_assignment_v12 import require_company_assignment_access
 from ..services.storage import create_file_access_token, decode_file_access_token, get_storage
 
 router = APIRouter(prefix="/v1.2", tags=["v1.2-return-verification"])
+
+_OPEN_RETURN_TASK_STATUSES = (
+    VerificationTaskStatus.PENDING.value,
+    VerificationTaskStatus.ASSIGNED.value,
+    VerificationTaskStatus.IN_PROGRESS.value,
+    VerificationTaskStatus.SUBMITTED.value,
+)
+_OPEN_RETURN_REQUEST_STATUSES = (
+    ReturnV12Status.VERIFYING.value,
+    ReturnV12Status.REVIEWING.value,
+)
 
 IMAGE_MIME = {"image/jpeg", "image/png", "image/webp"}
 AUDIO_MIME = {
@@ -325,6 +336,13 @@ def list_return_verification_tasks(
         filters.append(VerificationTask.assignee_user_id == principal.user_id)
     if status:
         filters.append(VerificationTask.status == status.strip().upper())
+    else:
+        filters.append(VerificationTask.status.in_(_OPEN_RETURN_TASK_STATUSES))
+        filters.append(
+            VerificationTask.return_request_id.in_(
+                select(ReturnRequest.id).where(ReturnRequest.status.in_(_OPEN_RETURN_REQUEST_STATUSES))
+            )
+        )
     total = db.scalar(select(func.count(VerificationTask.id)).where(*filters)) or 0
     tasks = db.scalars(
         select(VerificationTask)
