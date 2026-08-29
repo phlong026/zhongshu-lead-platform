@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from threading import Lock
 from typing import Any
 
-from sqlalchemy import Index, and_, func, literal, or_, select
+from sqlalchemy import Index, and_, case, func, literal, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from ..core.config import get_settings
@@ -294,7 +294,27 @@ def evaluate_candidate(
     )
 
 
-def list_candidates(db: Session, *, lead: Lead) -> list[CandidateResult]:
+def count_candidates(db: Session, *, keyword: str | None = None) -> int:
+    stmt = select(func.count(Company.id))
+    normalized_keyword = (keyword or "").strip()
+    if normalized_keyword:
+        stmt = stmt.where(
+            or_(
+                Company.name.contains(normalized_keyword, autoescape=True),
+                Company.code.contains(normalized_keyword, autoescape=True),
+            )
+        )
+    return int(db.scalar(stmt) or 0)
+
+
+def list_candidates(
+    db: Session,
+    *,
+    lead: Lead,
+    keyword: str | None = None,
+    page_no: int | None = None,
+    page_size: int | None = None,
+) -> list[CandidateResult]:
     capable_companies = (
         select(CompanyLeadCapability.company_id)
         .where(
@@ -327,6 +347,48 @@ def list_candidates(db: Session, *, lead: Lead) -> list[CandidateResult]:
         .distinct()
         .subquery()
     )
+    reward_rule = resolve_supplier_reward_rule(db)
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=reward_rule.historical_suspect_days)
+    match_clauses = [Lead.phone_hash == lead.phone_hash]
+    if lead.phone_fingerprint:
+        match_clauses.insert(0, Lead.phone_fingerprint == lead.phone_fingerprint)
+    duplicate_receiver_companies = (
+        select(Assignment.company_id)
+        .join(Lead, Lead.id == Assignment.lead_id)
+        .where(
+            Assignment.status.in_(RECEIVER_HISTORY_STATUSES),
+            Assignment.claimed_at.is_not(None),
+            Assignment.claimed_at >= cutoff,
+            Assignment.lead_id != lead.id,
+            or_(*match_clauses),
+        )
+        .distinct()
+        .subquery()
+    )
+    candidate_price = (
+        select(LeadPriceRule.points_cost)
+        .where(
+            LeadPriceRule.status == "PUBLISHED",
+            or_(LeadPriceRule.effective_at.is_(None), LeadPriceRule.effective_at <= now),
+            or_(LeadPriceRule.expires_at.is_(None), LeadPriceRule.expires_at > now),
+            or_(LeadPriceRule.region_code.is_(None), LeadPriceRule.region_code == lead.region_code),
+            or_(LeadPriceRule.category_code.is_(None), LeadPriceRule.category_code == lead.category_code),
+            or_(LeadPriceRule.brand_code.is_(None), LeadPriceRule.brand_code == lead.brand_code),
+            or_(LeadPriceRule.level_code.is_(None), LeadPriceRule.level_code == Company.level_code),
+        )
+        .order_by(
+            LeadPriceRule.priority.asc(),
+            LeadPriceRule.region_code.is_(None).asc(),
+            LeadPriceRule.category_code.is_(None).asc(),
+            LeadPriceRule.brand_code.is_(None).asc(),
+            LeadPriceRule.level_code.is_(None).asc(),
+            LeadPriceRule.version.desc(),
+        )
+        .limit(1)
+        .correlate(Company)
+        .scalar_subquery()
+    )
     company_stmt = (
         select(
             Company,
@@ -334,6 +396,7 @@ def list_candidates(db: Session, *, lead: Lead) -> list[CandidateResult]:
             PointsAccount.balance.label("points_balance"),
             func.coalesce(reserved_by_company.c.points_reserved, 0).label("points_reserved"),
             returned_receiver_companies.c.company_id.label("returned_receiver_company_id"),
+            duplicate_receiver_companies.c.company_id.label("duplicate_company_id"),
         )
         .outerjoin(capable_companies, capable_companies.c.company_id == Company.id)
         .outerjoin(PointsAccount, PointsAccount.company_id == Company.id)
@@ -342,7 +405,19 @@ def list_candidates(db: Session, *, lead: Lead) -> list[CandidateResult]:
             returned_receiver_companies,
             returned_receiver_companies.c.company_id == Company.id,
         )
+        .outerjoin(
+            duplicate_receiver_companies,
+            duplicate_receiver_companies.c.company_id == Company.id,
+        )
     )
+    normalized_keyword = (keyword or "").strip()
+    if normalized_keyword:
+        company_stmt = company_stmt.where(
+            or_(
+                Company.name.contains(normalized_keyword, autoescape=True),
+                Company.code.contains(normalized_keyword, autoescape=True),
+            )
+        )
     if lead.region_code:
         region_companies = (
             select(CompanyServiceAreaV12.company_id)
@@ -357,41 +432,50 @@ def list_candidates(db: Session, *, lead: Lead) -> list[CandidateResult]:
         company_stmt = company_stmt.add_columns(
             region_companies.c.company_id.label("region_company_id")
         ).outerjoin(region_companies, region_companies.c.company_id == Company.id)
+        eligible_conditions = [
+            Company.status == "ACTIVE",
+            capable_companies.c.company_id.is_not(None),
+            returned_receiver_companies.c.company_id.is_(None),
+            duplicate_receiver_companies.c.company_id.is_(None),
+            region_companies.c.company_id.is_not(None),
+            (
+                func.coalesce(PointsAccount.balance, 0)
+                - func.coalesce(reserved_by_company.c.points_reserved, 0)
+            )
+            >= func.coalesce(candidate_price, 100),
+        ]
+        if lead.supplier_company_id:
+            eligible_conditions.append(Company.id != lead.supplier_company_id)
+        company_stmt = company_stmt.order_by(
+            region_companies.c.company_id.is_(None).asc(),
+            case((and_(*eligible_conditions), 0), else_=1).asc(),
+            func.lower(Company.name).asc(),
+            Company.name.asc(),
+            Company.id.asc(),
+        )
     else:
         company_stmt = company_stmt.add_columns(literal(None).label("region_company_id"))
-    company_rows = db.execute(company_stmt.order_by(Company.name.asc(), Company.id.asc())).all()
+        company_stmt = company_stmt.order_by(
+            func.lower(Company.name).asc(),
+            Company.name.asc(),
+            Company.id.asc(),
+        )
+    if page_no is not None and page_size is not None:
+        company_stmt = company_stmt.offset((page_no - 1) * page_size).limit(page_size)
+    company_rows = db.execute(company_stmt).all()
     companies = [row[0] for row in company_rows]
     if not companies:
         return []
-    company_ids = [company.id for company in companies]
-    reward_rule = resolve_supplier_reward_rule(db)
     capable_company_ids = {row.capable_company_id for row in company_rows if row.capable_company_id}
     region_company_ids = {row.region_company_id for row in company_rows if row.region_company_id}
-    cutoff = datetime.now(timezone.utc) - timedelta(days=reward_rule.historical_suspect_days)
-    match_clauses = [Lead.phone_hash == lead.phone_hash]
-    if lead.phone_fingerprint:
-        match_clauses.insert(0, Lead.phone_fingerprint == lead.phone_fingerprint)
-    duplicate_company_ids = set(
-        db.scalars(
-            select(Assignment.company_id)
-            .join(Lead, Lead.id == Assignment.lead_id)
-            .where(
-                Assignment.company_id.in_(company_ids),
-                Assignment.status.in_(RECEIVER_HISTORY_STATUSES),
-                Assignment.claimed_at.is_not(None),
-                Assignment.claimed_at >= cutoff,
-                Assignment.lead_id != lead.id,
-                or_(*match_clauses),
-            )
-            .distinct()
-        ).all()
-    )
+    duplicate_company_ids = {
+        row.duplicate_company_id for row in company_rows if row.duplicate_company_id
+    }
     returned_receiver_company_ids = {
         row.returned_receiver_company_id
         for row in company_rows
         if row.returned_receiver_company_id
     }
-    now = datetime.now(timezone.utc)
     price_rules = db.scalars(
         select(LeadPriceRule)
         .where(
@@ -456,15 +540,7 @@ def list_candidates(db: Session, *, lead: Lead) -> list[CandidateResult]:
                 duplicate_to_receiver=duplicate_to_receiver,
             )
         )
-    return sorted(
-        results,
-        key=lambda item: (
-            not item.region_match,
-            not item.eligible,
-            item.company_name.casefold(),
-            item.company_id,
-        ),
-    )
+    return results
 
 
 def list_dispatch_pool(

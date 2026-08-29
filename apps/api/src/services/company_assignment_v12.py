@@ -40,6 +40,23 @@ def require_company_assignment_access(principal: Principal, assignment: Assignme
     raise AppError("COMPANY_ASSIGNMENT_SCOPE_FORBIDDEN", "当前角色不能查看加盟商内部协作明细", 403)
 
 
+def require_return_request_access(
+    principal: Principal,
+    assignment: Assignment,
+    *,
+    submitted_by: str | None,
+) -> None:
+    """Keep an employee's own return accessible after internal reassignment."""
+
+    if (
+        principal.has_any_role("FRANCHISE_EMPLOYEE")
+        and submitted_by == principal.user_id
+        and principal.company_id == assignment.company_id
+    ):
+        return
+    require_company_assignment_access(principal, assignment)
+
+
 def _owner_assignment_or_raise(
     db: Session,
     *,

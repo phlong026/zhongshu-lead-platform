@@ -31,6 +31,7 @@ from ..core.models import (
 from ..core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12, SupplierLeadReward
 from ..core.responses import ok, page
 from ..core.security import decrypt_text, mask_phone
+from ..core.v12_enums import VerificationTaskType
 from ..services.return_v12 import return_request_to_dict
 from ..services.storage import create_file_access_token
 
@@ -176,22 +177,48 @@ def _management_overview(db: Session, principal: CurrentPrincipal) -> dict[str, 
         _count_subquery(Lead, Lead.status.in_(problem_lead_statuses)).label("lead_problem"),
         _count_subquery(
             VerificationTask,
+            VerificationTask.task_type == VerificationTaskType.PRE_DISPATCH_VERIFY.value,
             VerificationTask.status.in_(("PENDING", "ASSIGNED")),
         ).label("verification_pending"),
         _count_subquery(
             VerificationTask,
+            VerificationTask.task_type == VerificationTaskType.PRE_DISPATCH_VERIFY.value,
             VerificationTask.status == "IN_PROGRESS",
         ).label("verification_in_progress"),
         _count_subquery(
             VerificationTask,
+            VerificationTask.task_type == VerificationTaskType.PRE_DISPATCH_VERIFY.value,
             VerificationTask.status == "SUBMITTED",
         ).label("verification_awaiting_operation"),
         _count_subquery(
             VerificationTask,
+            VerificationTask.task_type == VerificationTaskType.PRE_DISPATCH_VERIFY.value,
             VerificationTask.status.in_(verification_open),
             VerificationTask.due_at.is_not(None),
             VerificationTask.due_at < now,
         ).label("verification_overdue"),
+        _count_subquery(
+            VerificationTask,
+            VerificationTask.task_type == VerificationTaskType.RETURN_VERIFY.value,
+            VerificationTask.status.in_(("PENDING", "ASSIGNED")),
+        ).label("return_verification_pending"),
+        _count_subquery(
+            VerificationTask,
+            VerificationTask.task_type == VerificationTaskType.RETURN_VERIFY.value,
+            VerificationTask.status == "IN_PROGRESS",
+        ).label("return_verification_in_progress"),
+        _count_subquery(
+            VerificationTask,
+            VerificationTask.task_type == VerificationTaskType.RETURN_VERIFY.value,
+            VerificationTask.status == "SUBMITTED",
+        ).label("return_verification_awaiting_operation"),
+        _count_subquery(
+            VerificationTask,
+            VerificationTask.task_type == VerificationTaskType.RETURN_VERIFY.value,
+            VerificationTask.status.in_(verification_open),
+            VerificationTask.due_at.is_not(None),
+            VerificationTask.due_at < now,
+        ).label("return_verification_overdue"),
         _count_subquery(ReturnRequest, ReturnRequest.status == "REVIEWING").label("return_final_review"),
         _count_subquery(
             CompanyLeadCapability,
@@ -227,6 +254,12 @@ def _management_overview(db: Session, principal: CurrentPrincipal) -> dict[str, 
             "in_progress": int(totals.verification_in_progress),
             "awaiting_operation": int(totals.verification_awaiting_operation),
             "overdue": int(totals.verification_overdue),
+        },
+        "return_verification": {
+            "pending": int(totals.return_verification_pending),
+            "in_progress": int(totals.return_verification_in_progress),
+            "awaiting_operation": int(totals.return_verification_awaiting_operation),
+            "overdue": int(totals.return_verification_overdue),
         },
         "exceptions": {
             "return_final_review": int(totals.return_final_review),

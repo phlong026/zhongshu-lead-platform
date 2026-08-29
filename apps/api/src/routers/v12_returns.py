@@ -4,7 +4,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import Response
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..core.auth import CurrentPrincipal, require_permissions
@@ -36,7 +36,7 @@ from ..services.return_v12 import (
     submit_return_request,
     submit_return_verification,
 )
-from ..services.company_assignment_v12 import require_company_assignment_access
+from ..services.company_assignment_v12 import require_return_request_access
 from ..services.storage import create_file_access_token, decode_file_access_token, get_storage
 
 router = APIRouter(prefix="/v1.2", tags=["v1.2-return-verification"])
@@ -74,7 +74,11 @@ def _can_read_return(db: Session, principal, item: ReturnRequest) -> bool:
     if assignment is None:
         return False
     try:
-        require_company_assignment_access(principal, assignment)
+        require_return_request_access(
+            principal,
+            assignment,
+            submitted_by=item.submitted_by,
+        )
     except AppError:
         return False
     return True
@@ -122,8 +126,14 @@ def upload_return_evidence(
     item = db.get(ReturnRequest, return_id)
     if item is None:
         raise AppError("RETURN_NOT_FOUND", "退回申请不存在", 404)
-    if not principal.company_id or item.company_id != principal.company_id:
-        raise AppError("FORBIDDEN", "无权上传该退回申请的证据", 403)
+    assignment = db.get(Assignment, item.assignment_id)
+    if assignment is None:
+        raise AppError("ASSIGNMENT_NOT_FOUND", "派发单不存在", 404)
+    require_return_request_access(
+        principal,
+        assignment,
+        submitted_by=item.submitted_by,
+    )
     content = file.file.read()
     normalized_type = evidence_type.strip().upper()
     if normalized_type == EvidenceType.CHAT_SCREENSHOT.value:
@@ -236,10 +246,13 @@ def list_returns_v12(
         filters.extend(
             [
                 ReturnRequest.company_id == principal.company_id,
-                ReturnRequest.assignment_id.in_(
-                    select(Assignment.id).where(
-                        Assignment.internal_assignee_user_id == principal.user_id
-                    )
+                or_(
+                    ReturnRequest.submitted_by == principal.user_id,
+                    ReturnRequest.assignment_id.in_(
+                        select(Assignment.id).where(
+                            Assignment.internal_assignee_user_id == principal.user_id
+                        )
+                    ),
                 ),
             ]
         )

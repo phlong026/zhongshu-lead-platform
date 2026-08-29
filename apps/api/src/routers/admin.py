@@ -49,9 +49,7 @@ def summary(request: Request, principal: CurrentPrincipal, db: Session = Depends
         for code in [
             "dashboard.business.read",
             "dashboard.operation.read",
-            "dashboard.telesales.read",
             "dashboard.finance.read",
-            "h5.home",
             "*",
         ]
     ):
@@ -98,7 +96,9 @@ def sources(request: Request, principal: CurrentPrincipal, db: Session = Depends
 
 @router.get("/dashboard/alerts")
 def alerts(request: Request, principal: CurrentPrincipal, db: Session = Depends(get_db)):
-    if principal.has_any_role("FRANCHISE_OWNER"):
+    if not any(
+        principal.can(code) for code in ["dashboard.operation.read", "*"]
+    ):
         raise AppError("FORBIDDEN", "无权查看平台预警", 403)
     return ok(request, operational_alerts(db))
 
