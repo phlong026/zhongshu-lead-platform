@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
@@ -75,9 +77,23 @@ class CompanyOwnerWechatUnbindBody(BaseModel):
         return value
 
 
+class CompanyDeleteBody(BaseModel):
+    confirm_name: str = Field(min_length=2, max_length=128)
+    reason: str = Field(min_length=2, max_length=500)
+
+    @field_validator("confirm_name", "reason")
+    @classmethod
+    def reject_surrounding_whitespace(cls, value: str) -> str:
+        if value != value.strip():
+            raise ValueError("加盟商名称和操作理由首尾不能有空格")
+        return value
+
+
 class CompanyMarkTestBody(BaseModel):
     confirm_name: str = Field(min_length=2, max_length=128)
     reason: str = Field(min_length=2, max_length=500)
+    confirm_phrase: Literal["永久删除测试数据"]
+    scope_token: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
 
     @field_validator("confirm_name", "reason")
     @classmethod

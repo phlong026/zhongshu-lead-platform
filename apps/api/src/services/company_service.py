@@ -1,15 +1,22 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
+import re
 from datetime import datetime, timezone
 from uuid import uuid4
 
 from sqlalchemy import delete, or_, select, update
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from ..core.errors import AppError
 from ..core.models import (
     Assignment,
+    AssignmentEvent,
     Company,
+    CompanyAccountRequest,
     CompanyCapability,
     CompanyServiceRegion,
     DictionaryItem,
@@ -17,28 +24,38 @@ from ..core.models import (
     InviteToken,
     Lead,
     LeadDuplicateRelation,
+    LeadImportIssue,
+    Notification,
     NotificationOutbox,
     PointsAccount,
     PointsLedger,
     Region,
+    ReturnEvidence,
     ReturnRequest,
     User,
+    VerificationSubmission,
     VerificationTask,
     WechatIdentity,
 )
 from ..core.models_v12 import (
     CompanyLeadCapability,
     CompanyServiceAreaV12,
+    DedupOverride,
     LeadDedupEvent,
     SupplierLeadReward,
 )
 from ..core.security import decrypt_text, encrypt_text, hash_phone, mask_phone
 from ..core.time import utcnow
-from ..core.v12_enums import CompanyLeadCapabilityCode
+from ..core.v12_enums import CompanyLeadCapabilityCode, LeadSourceKind, LeadV12Status
 from ..schemas.company import CompanyCreateBody, CompanySimpleCreateBody, CompanyUpdateBody
 from .china_regions import city_by_code, region_by_code
+from .dedup_v12 import reevaluate_existing_phone_identity
+from .storage_cleanup_worker import enqueue_storage_cleanup
 
 DEFAULT_RECEIVER_CATEGORIES = ("OLD_RENOVATION", "SELF_BUILD", "INTERIOR")
+TEST_COMPANY_PURGE_CONFIRM_PHRASE = "永久删除测试数据"
+PURGE_LOCK_CONFLICT_SQLSTATES = {"40P01", "55P03"}
+logger = logging.getLogger("zhongshu.company_service")
 
 
 def company_to_dict(company: Company, include_finance: bool = False) -> dict:
@@ -423,20 +440,17 @@ def unbind_company_owner_wechat(
     }
 
 
-def _test_company_isolation_scope(db: Session, company_id: str) -> dict[str, list[str]]:
+def _test_company_purge_scope(db: Session, company_id: str) -> dict[str, list[str]]:
     lead_ids = list(
-        db.scalars(select(Lead.id).where(Lead.supplier_company_id == company_id)).all()
+        db.scalars(
+            select(Lead.id)
+            .where(Lead.supplier_company_id == company_id)
+        ).all()
     )
-    lead_id_set = set(lead_ids)
-    assignment_rows = list(
-        db.execute(
-            select(
-                Assignment.id,
-                Assignment.lead_id,
-                Assignment.company_id,
-                Assignment.supplier_company_id,
-                Assignment.receiver_company_id,
-            ).where(
+    assignment_ids = list(
+        db.scalars(
+            select(Assignment.id)
+            .where(
                 or_(
                     Assignment.lead_id.in_(lead_ids),
                     Assignment.company_id == company_id,
@@ -446,26 +460,10 @@ def _test_company_isolation_scope(db: Session, company_id: str) -> dict[str, lis
             )
         ).all()
     )
-    assignment_ids = [row.id for row in assignment_rows]
-    assignment_id_set = set(assignment_ids)
-
-    external_assignments = [
-        row.id
-        for row in assignment_rows
-        if row.lead_id not in lead_id_set
-        or any(
-            linked_company_id not in {None, company_id}
-            for linked_company_id in (
-                row.company_id,
-                row.supplier_company_id,
-                row.receiver_company_id,
-            )
-        )
-    ]
-
-    followup_rows = list(
-        db.execute(
-            select(FollowUp.id, FollowUp.assignment_id, FollowUp.company_id).where(
+    followup_ids = list(
+        db.scalars(
+            select(FollowUp.id)
+            .where(
                 or_(
                     FollowUp.company_id == company_id,
                     FollowUp.assignment_id.in_(assignment_ids),
@@ -473,20 +471,10 @@ def _test_company_isolation_scope(db: Session, company_id: str) -> dict[str, lis
             )
         ).all()
     )
-    external_followups = [
-        row.id
-        for row in followup_rows
-        if row.company_id != company_id or row.assignment_id not in assignment_id_set
-    ]
-
-    return_rows = list(
-        db.execute(
-            select(
-                ReturnRequest.id,
-                ReturnRequest.assignment_id,
-                ReturnRequest.lead_id,
-                ReturnRequest.company_id,
-            ).where(
+    return_ids = list(
+        db.scalars(
+            select(ReturnRequest.id)
+            .where(
                 or_(
                     ReturnRequest.company_id == company_id,
                     ReturnRequest.assignment_id.in_(assignment_ids),
@@ -495,23 +483,10 @@ def _test_company_isolation_scope(db: Session, company_id: str) -> dict[str, lis
             )
         ).all()
     )
-    external_returns = [
-        row.id
-        for row in return_rows
-        if row.company_id != company_id
-        or row.assignment_id not in assignment_id_set
-        or row.lead_id not in lead_id_set
-    ]
-
-    reward_rows = list(
-        db.execute(
-            select(
-                SupplierLeadReward.id,
-                SupplierLeadReward.lead_id,
-                SupplierLeadReward.assignment_id,
-                SupplierLeadReward.supplier_company_id,
-                SupplierLeadReward.receiver_company_id,
-            ).where(
+    reward_ids = list(
+        db.scalars(
+            select(SupplierLeadReward.id)
+            .where(
                 or_(
                     SupplierLeadReward.lead_id.in_(lead_ids),
                     SupplierLeadReward.assignment_id.in_(assignment_ids),
@@ -521,114 +496,688 @@ def _test_company_isolation_scope(db: Session, company_id: str) -> dict[str, lis
             )
         ).all()
     )
-    external_rewards = [
-        row.id
-        for row in reward_rows
-        if row.lead_id not in lead_id_set
-        or row.assignment_id not in assignment_id_set
-        or row.supplier_company_id != company_id
-        or row.receiver_company_id != company_id
-    ]
 
-    duplicate_rows = list(
-        db.execute(
+    return {
+        "lead_ids": lead_ids,
+        "assignment_ids": assignment_ids,
+        "followup_ids": followup_ids,
+        "return_ids": return_ids,
+        "reward_ids": reward_ids,
+    }
+
+
+def _purge_lock_sqlstate(exc: DBAPIError) -> str | None:
+    sqlstate = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
+    if sqlstate:
+        return str(sqlstate)
+    return str(getattr(getattr(exc.orig, "diag", None), "sqlstate", "")) or None
+
+
+def _lock_rows_for_purge(
+    db: Session,
+    stmt,
+    *,
+    resource_type: str,
+) -> list:
+    is_postgresql = db.get_bind().dialect.name == "postgresql"
+    try:
+        return list(
+            db.scalars(
+                stmt.with_for_update(nowait=is_postgresql)
+            ).all()
+        )
+    except DBAPIError as exc:
+        if is_postgresql and _purge_lock_sqlstate(exc) in PURGE_LOCK_CONFLICT_SQLSTATES:
+            logger.warning(
+                "test_company_purge_lock_conflict",
+                extra={"resource_type": resource_type},
+            )
+            raise AppError(
+                "COMPANY_PURGE_BUSY_RETRY",
+                "测试主体业务数据正在处理，请稍后重试删除",
+                409,
+            ) from exc
+        raise
+
+
+def _lock_purge_business_scope(db: Session, company_id: str) -> dict[str, list[str]]:
+    """Serialize with claim/return/reward writers, then return a stable scope."""
+
+    locked: dict[str, set[str]] = {
+        "assignment_ids": set(),
+        "lead_ids": set(),
+        "return_ids": set(),
+        "reward_ids": set(),
+    }
+    model_by_key = {
+        "assignment_ids": Assignment,
+        "lead_ids": Lead,
+        "return_ids": ReturnRequest,
+        "reward_ids": SupplierLeadReward,
+    }
+    scope = _test_company_purge_scope(db, company_id)
+    for _ in range(3):
+        changed = False
+        for key in ("assignment_ids", "lead_ids", "return_ids", "reward_ids"):
+            new_ids = sorted(set(scope[key]) - locked[key])
+            if not new_ids:
+                continue
+            model = model_by_key[key]
+            _lock_rows_for_purge(
+                db,
+                select(model)
+                .where(model.id.in_(new_ids))
+                .order_by(model.id),
+                resource_type=model.__tablename__,
+            )
+            locked[key].update(new_ids)
+            changed = True
+        refreshed = _test_company_purge_scope(db, company_id)
+        if not changed and all(set(refreshed[key]) == set(scope[key]) for key in scope):
+            return refreshed
+        scope = refreshed
+    if any(set(scope[key]) - locked.get(key, set()) for key in locked):
+        raise AppError(
+            "COMPANY_PURGE_SCOPE_CHANGED_RETRY",
+            "测试主体业务数据正在变更，请稍后重试删除",
+            409,
+        )
+    return scope
+
+
+def _direct_purge_ledger_ids(
+    db: Session,
+    *,
+    return_ids: list[str],
+    reward_ids: list[str],
+) -> set[str]:
+    ledger_ids: set[str] = set()
+    if return_ids:
+        ledger_ids.update(
+            ledger_id
+            for ledger_id in db.scalars(
+                select(ReturnRequest.refund_ledger_id).where(ReturnRequest.id.in_(return_ids))
+            ).all()
+            if ledger_id
+        )
+    if reward_ids:
+        rewards = list(
+            db.scalars(
+                select(SupplierLeadReward).where(SupplierLeadReward.id.in_(reward_ids))
+            ).all()
+        )
+        for reward in rewards:
+            if reward.ledger_id:
+                ledger_ids.add(reward.ledger_id)
+            if reward.reversal_ledger_id:
+                ledger_ids.add(reward.reversal_ledger_id)
+    return ledger_ids
+
+
+def _discover_purge_ledgers(
+    db: Session,
+    *,
+    company_id: str,
+    business_ids: list[str],
+    direct_ledger_ids: set[str],
+    lock: bool,
+) -> dict[str, PointsLedger]:
+    filters = [PointsLedger.company_id == company_id]
+    if business_ids:
+        filters.append(PointsLedger.business_id.in_(business_ids))
+    if direct_ledger_ids:
+        filters.append(PointsLedger.id.in_(direct_ledger_ids))
+    stmt = select(PointsLedger).where(or_(*filters)).order_by(PointsLedger.id)
+    rows = (
+        _lock_rows_for_purge(db, stmt, resource_type=PointsLedger.__tablename__)
+        if lock
+        else list(db.scalars(stmt).all())
+    )
+    ledger_by_id = {ledger.id: ledger for ledger in rows}
+    while ledger_by_id:
+        known_ids = set(ledger_by_id)
+        related_ids = {
+            ledger.related_ledger_id
+            for ledger in ledger_by_id.values()
+            if ledger.related_ledger_id
+        }
+        related_filters = [PointsLedger.related_ledger_id.in_(known_ids)]
+        if related_ids:
+            related_filters.append(PointsLedger.id.in_(related_ids))
+        related_stmt = (
+            select(PointsLedger)
+            .where(or_(*related_filters))
+            .order_by(PointsLedger.id)
+        )
+        related_rows = (
+            _lock_rows_for_purge(
+                db,
+                related_stmt,
+                resource_type=PointsLedger.__tablename__,
+            )
+            if lock
+            else list(db.scalars(related_stmt).all())
+        )
+        new_rows = [
+            ledger
+            for ledger in related_rows
+            if ledger.id not in ledger_by_id
+        ]
+        if not new_rows:
+            break
+        ledger_by_id.update((ledger.id, ledger) for ledger in new_rows)
+    return ledger_by_id
+
+
+def _purge_scope_token(company_id: str, resources: dict[str, list[str]]) -> str:
+    payload = {
+        "company_id": company_id,
+        "resources": {
+            key: sorted(set(values))
+            for key, values in sorted(resources.items())
+        },
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def preview_test_company_purge(db: Session, company_id: str) -> dict[str, object]:
+    company = db.get(Company, company_id)
+    if company is None:
+        raise AppError("COMPANY_NOT_FOUND", "加盟商公司不存在", 404)
+    if company.status != "DISABLED":
+        raise AppError("COMPANY_MUST_BE_DISABLED", "请先停用加盟商，再预览测试数据清理范围", 409)
+
+    scope = _test_company_purge_scope(db, company_id)
+    verification_task_ids = list(
+        db.scalars(
+            select(VerificationTask.id).where(
+                or_(
+                    VerificationTask.lead_id.in_(scope["lead_ids"]),
+                    VerificationTask.assignment_id.in_(scope["assignment_ids"]),
+                    VerificationTask.return_request_id.in_(scope["return_ids"]),
+                )
+            )
+        ).all()
+    )
+    evidence_ids = list(
+        db.scalars(
+            select(ReturnEvidence.id).where(
+                ReturnEvidence.return_request_id.in_(scope["return_ids"])
+            )
+        ).all()
+    )
+    invite_ids = list(
+        db.scalars(select(InviteToken.id).where(InviteToken.company_id == company_id)).all()
+    )
+    account_request_ids = list(
+        db.scalars(
+            select(CompanyAccountRequest.id).where(
+                CompanyAccountRequest.company_id == company_id
+            )
+        ).all()
+    )
+    account_ids = list(
+        db.scalars(
+            select(PointsAccount.id).where(PointsAccount.company_id == company_id)
+        ).all()
+    )
+    member_ids = list(
+        db.scalars(select(User.id).where(User.company_id == company_id)).all()
+    )
+    business_ids = [
+        *scope["lead_ids"],
+        *scope["assignment_ids"],
+        *scope["return_ids"],
+        *scope["reward_ids"],
+    ]
+    ledger_by_id = _discover_purge_ledgers(
+        db,
+        company_id=company_id,
+        business_ids=business_ids,
+        direct_ledger_ids=_direct_purge_ledger_ids(
+            db,
+            return_ids=scope["return_ids"],
+            reward_ids=scope["reward_ids"],
+        ),
+        lock=False,
+    )
+    external_company_ids = {
+        ledger.company_id
+        for ledger in ledger_by_id.values()
+        if ledger.company_id != company_id
+    }
+    external_account_ids = {
+        ledger.account_id
+        for ledger in ledger_by_id.values()
+        if ledger.company_id != company_id
+    }
+    if scope["assignment_ids"]:
+        for row in db.execute(
             select(
-                LeadDuplicateRelation.id,
-                LeadDuplicateRelation.lead_id,
-                LeadDuplicateRelation.duplicate_lead_id,
-            ).where(
+                Assignment.company_id,
+                Assignment.supplier_company_id,
+                Assignment.receiver_company_id,
+            ).where(Assignment.id.in_(scope["assignment_ids"]))
+        ).all():
+            external_company_ids.update(
+                company_ref
+                for company_ref in row
+                if company_ref and company_ref != company_id
+            )
+
+    resources = {
+        **scope,
+        "verification_task_ids": verification_task_ids,
+        "evidence_ids": evidence_ids,
+        "invite_ids": invite_ids,
+        "account_request_ids": account_request_ids,
+        "account_ids": account_ids,
+        "ledger_ids": list(ledger_by_id),
+        "member_ids": member_ids,
+    }
+    return {
+        "company_id": company_id,
+        "company_name": company.name,
+        "scope_token": _purge_scope_token(company_id, resources),
+        "confirm_phrase": TEST_COMPANY_PURGE_CONFIRM_PHRASE,
+        "counts": {
+            "leads": len(scope["lead_ids"]),
+            "assignments": len(scope["assignment_ids"]),
+            "followups": len(scope["followup_ids"]),
+            "returns": len(scope["return_ids"]),
+            "verification_tasks": len(verification_task_ids),
+            "evidence_files": len(evidence_ids),
+            "supplier_rewards": len(scope["reward_ids"]),
+            "points_ledgers": len(ledger_by_id),
+            "points_accounts": len(account_ids),
+            "account_requests": len(account_request_ids),
+            "invites": len(invite_ids),
+            "members": len(member_ids),
+        },
+        "cross_company_impact": {
+            "companies": len(external_company_ids),
+            "points_accounts": len(external_account_ids),
+            "points_ledgers": sum(
+                1
+                for ledger in ledger_by_id.values()
+                if ledger.company_id != company_id
+            ),
+        },
+    }
+
+
+def _deep_link_references_resource(deep_link: str | None, resource_ids: list[str]) -> bool:
+    if not deep_link:
+        return False
+    return any(
+        re.search(
+            rf"(?<![0-9A-Za-z-]){re.escape(resource_id)}(?![0-9A-Za-z-])",
+            deep_link,
+        )
+        for resource_id in resource_ids
+    )
+
+
+def _restore_dedup_affected_lead(lead: Lead, *, blocks_dispatch: bool, decision: str) -> None:
+    if lead.current_assignment_id:
+        return
+    if blocks_dispatch:
+        if lead.status in {
+            LeadV12Status.READY_DISPATCH.value,
+            LeadV12Status.PENDING_REVIEW.value,
+            LeadV12Status.DUPLICATE.value,
+        }:
+            lead.status = LeadV12Status.DUPLICATE.value
+            lead.pending_reason = decision
+        return
+    if lead.status != LeadV12Status.DUPLICATE.value:
+        return
+    if (
+        lead.source_kind == LeadSourceKind.SUPPLIER_H5.value
+        and lead.review_status != "APPROVED"
+    ):
+        lead.status = LeadV12Status.PENDING_REVIEW.value
+        lead.review_status = "PENDING"
+    else:
+        lead.status = LeadV12Status.READY_DISPATCH.value
+        if lead.source_kind != LeadSourceKind.SUPPLIER_H5.value:
+            lead.review_status = "APPROVED"
+    lead.pending_reason = None
+
+
+def _purge_test_company_data(
+    db: Session,
+    company: Company,
+) -> dict[str, int]:
+    scope = _lock_purge_business_scope(db, company.id)
+    lead_ids = scope["lead_ids"]
+    assignment_ids = scope["assignment_ids"]
+    followup_ids = scope["followup_ids"]
+    return_ids = scope["return_ids"]
+    reward_ids = scope["reward_ids"]
+    verification_task_ids: list[str] = []
+    if lead_ids or assignment_ids or return_ids:
+        verification_task_ids = list(
+            db.scalars(
+                select(VerificationTask.id).where(
+                    or_(
+                        VerificationTask.lead_id.in_(lead_ids),
+                        VerificationTask.assignment_id.in_(assignment_ids),
+                        VerificationTask.return_request_id.in_(return_ids),
+                    )
+                )
+            ).all()
+        )
+        if verification_task_ids:
+            _lock_rows_for_purge(
+                db,
+                select(VerificationTask)
+                .where(VerificationTask.id.in_(verification_task_ids))
+                .order_by(VerificationTask.id),
+                resource_type=VerificationTask.__tablename__,
+            )
+    evidence_rows: list[ReturnEvidence] = []
+    if return_ids:
+        evidence_rows = _lock_rows_for_purge(
+            db,
+            select(ReturnEvidence)
+            .where(ReturnEvidence.return_request_id.in_(return_ids))
+            .order_by(ReturnEvidence.id),
+            resource_type=ReturnEvidence.__tablename__,
+        )
+    evidence_ids = [evidence.id for evidence in evidence_rows]
+    affected_dedup_lead_ids: set[str] = set()
+    if lead_ids or assignment_ids:
+        dedup_event_filters = []
+        if lead_ids:
+            dedup_event_filters.append(LeadDedupEvent.matched_lead_id.in_(lead_ids))
+        if assignment_ids:
+            dedup_event_filters.append(
+                LeadDedupEvent.matched_assignment_id.in_(assignment_ids)
+            )
+        affected_dedup_lead_ids.update(
+            lead_id
+            for lead_id in db.scalars(
+                select(LeadDedupEvent.lead_id).where(or_(*dedup_event_filters))
+            ).all()
+            if lead_id not in lead_ids
+        )
+    if lead_ids:
+        affected_dedup_lead_ids.update(
+            lead_id
+            for lead_id in db.scalars(
+                select(LeadDuplicateRelation.lead_id).where(
+                    LeadDuplicateRelation.duplicate_lead_id.in_(lead_ids)
+                )
+            ).all()
+            if lead_id not in lead_ids
+        )
+    invite_ids = list(
+        db.scalars(select(InviteToken.id).where(InviteToken.company_id == company.id)).all()
+    )
+    account_request_ids = list(
+        db.scalars(
+            select(CompanyAccountRequest.id).where(
+                CompanyAccountRequest.company_id == company.id
+            )
+        ).all()
+    )
+    account_ids = list(
+        db.scalars(
+            select(PointsAccount.id)
+            .where(PointsAccount.company_id == company.id)
+        ).all()
+    )
+    business_ids = [*lead_ids, *assignment_ids, *return_ids, *reward_ids]
+    direct_ledger_ids = _direct_purge_ledger_ids(
+        db,
+        return_ids=return_ids,
+        reward_ids=reward_ids,
+    )
+    provisional_ledgers = _discover_purge_ledgers(
+        db,
+        company_id=company.id,
+        business_ids=business_ids,
+        direct_ledger_ids=direct_ledger_ids,
+        lock=False,
+    )
+    test_account_id_set = set(account_ids)
+    account_lock_ids = sorted(
+        test_account_id_set
+        | {ledger.account_id for ledger in provisional_ledgers.values()}
+    )
+    locked_accounts: list[PointsAccount] = []
+    if account_lock_ids:
+        locked_accounts = _lock_rows_for_purge(
+            db,
+            select(PointsAccount)
+            .where(PointsAccount.id.in_(account_lock_ids))
+            .order_by(PointsAccount.id),
+            resource_type=PointsAccount.__tablename__,
+        )
+    ledger_by_id = _discover_purge_ledgers(
+        db,
+        company_id=company.id,
+        business_ids=business_ids,
+        direct_ledger_ids=_direct_purge_ledger_ids(
+            db,
+            return_ids=return_ids,
+            reward_ids=reward_ids,
+        ),
+        lock=True,
+    )
+    locked_account_id_set = {account.id for account in locked_accounts}
+    if any(ledger.account_id not in locked_account_id_set for ledger in ledger_by_id.values()):
+        raise AppError(
+            "COMPANY_PURGE_SCOPE_CHANGED_RETRY",
+            "测试主体积分数据正在变更，请稍后重试删除",
+            409,
+        )
+    ledger_ids = sorted(ledger_by_id)
+    adjusted_accounts = [
+        account for account in locked_accounts if account.id not in test_account_id_set
+    ]
+    for account in adjusted_accounts:
+        running = 0
+        account_ledgers = _lock_rows_for_purge(
+            db,
+            select(PointsLedger)
+            .where(PointsLedger.account_id == account.id)
+            .order_by(PointsLedger.created_at, PointsLedger.id),
+            resource_type=PointsLedger.__tablename__,
+        )
+        for ledger in account_ledgers:
+            if ledger.id in ledger_by_id:
+                continue
+            running += int(ledger.delta)
+            ledger.balance_after = running
+        account.balance = running
+        account.version += 1
+
+    resource_ids = [
+        company.id,
+        *invite_ids,
+        *account_request_ids,
+        *lead_ids,
+        *assignment_ids,
+        *return_ids,
+        *evidence_ids,
+        *verification_task_ids,
+        *reward_ids,
+        *ledger_ids,
+        *account_ids,
+    ]
+    outbox_rows = list(
+        db.scalars(
+            select(NotificationOutbox).where(
+                NotificationOutbox.aggregate_id.in_(resource_ids)
+            )
+        ).all()
+    )
+    outbox_ids = [item.id for item in outbox_rows]
+    outbox_notification_ids: set[str] = set()
+    for item in outbox_rows:
+        if not isinstance(item.payload, dict):
+            continue
+        notification_id = item.payload.get("notification_id")
+        if isinstance(notification_id, str):
+            outbox_notification_ids.add(notification_id)
+    if outbox_ids:
+        db.execute(delete(NotificationOutbox).where(NotificationOutbox.id.in_(outbox_ids)))
+
+    notification_filters = [Notification.company_id == company.id]
+    if outbox_notification_ids:
+        notification_filters.append(Notification.id.in_(outbox_notification_ids))
+    notification_id_set = set(
+        db.scalars(select(Notification.id).where(or_(*notification_filters))).all()
+    )
+    for offset in range(0, len(resource_ids), 200):
+        linked_resource_ids = resource_ids[offset : offset + 200]
+        linked_notifications = list(
+            db.scalars(
+                select(Notification).where(
+                    or_(
+                        *[
+                            Notification.deep_link.contains(resource_id)
+                            for resource_id in linked_resource_ids
+                        ]
+                    )
+                )
+            ).all()
+        )
+        notification_id_set.update(
+            notification.id
+            for notification in linked_notifications
+            if _deep_link_references_resource(
+                notification.deep_link,
+                linked_resource_ids,
+            )
+        )
+    notification_ids = list(notification_id_set)
+    if notification_ids:
+        db.execute(delete(Notification).where(Notification.id.in_(notification_ids)))
+
+    if return_ids:
+        db.execute(
+            update(ReturnRequest)
+            .where(ReturnRequest.id.in_(return_ids))
+            .values(verification_task_id=None, refund_ledger_id=None)
+        )
+    if verification_task_ids:
+        db.execute(
+            update(VerificationTask)
+            .where(VerificationTask.id.in_(verification_task_ids))
+            .values(return_request_id=None, assignment_id=None)
+        )
+        db.execute(
+            delete(VerificationSubmission).where(
+                VerificationSubmission.task_id.in_(verification_task_ids)
+            )
+        )
+    for evidence in evidence_rows:
+        enqueue_storage_cleanup(
+            db,
+            event_key=f"return-evidence:{evidence.id}:delete-object",
+            object_key=evidence.object_key,
+            source_type="return_evidence",
+            source_id=evidence.id,
+            reason=f"删除测试加盟商 {company.id}",
+        )
+    if return_ids:
+        db.execute(delete(ReturnEvidence).where(ReturnEvidence.return_request_id.in_(return_ids)))
+    if reward_ids:
+        db.execute(delete(SupplierLeadReward).where(SupplierLeadReward.id.in_(reward_ids)))
+    if return_ids:
+        db.execute(delete(ReturnRequest).where(ReturnRequest.id.in_(return_ids)))
+    if verification_task_ids:
+        db.execute(delete(VerificationTask).where(VerificationTask.id.in_(verification_task_ids)))
+    if followup_ids:
+        db.execute(delete(FollowUp).where(FollowUp.id.in_(followup_ids)))
+    if assignment_ids:
+        db.execute(
+            update(Lead)
+            .where(
+                Lead.current_assignment_id.in_(assignment_ids),
+                Lead.id.not_in(lead_ids),
+            )
+            .values(current_assignment_id=None, status=LeadV12Status.READY_DISPATCH.value)
+        )
+        db.execute(delete(AssignmentEvent).where(AssignmentEvent.assignment_id.in_(assignment_ids)))
+        db.execute(delete(Assignment).where(Assignment.id.in_(assignment_ids)))
+    if lead_ids:
+        db.execute(delete(DedupOverride).where(DedupOverride.lead_id.in_(lead_ids)))
+        db.execute(
+            delete(LeadDuplicateRelation).where(
                 or_(
                     LeadDuplicateRelation.lead_id.in_(lead_ids),
                     LeadDuplicateRelation.duplicate_lead_id.in_(lead_ids),
                 )
             )
-        ).all()
-    ) if lead_ids else []
-    external_duplicate_relations = [
-        row.id
-        for row in duplicate_rows
-        if row.lead_id not in lead_id_set or row.duplicate_lead_id not in lead_id_set
-    ]
-
-    dedup_rows = list(
+        )
+        db.execute(delete(LeadDedupEvent).where(LeadDedupEvent.lead_id.in_(lead_ids)))
+        db.execute(delete(LeadImportIssue).where(LeadImportIssue.lead_id.in_(lead_ids)))
+        db.execute(delete(Lead).where(Lead.id.in_(lead_ids)))
+        db.flush()
+    for affected_lead_id in sorted(affected_dedup_lead_ids):
+        affected_rows = _lock_rows_for_purge(
+            db,
+            select(Lead).where(Lead.id == affected_lead_id),
+            resource_type=Lead.__tablename__,
+        )
+        if not affected_rows:
+            continue
+        affected_lead = affected_rows[0]
+        result = reevaluate_existing_phone_identity(
+            db,
+            lead=affected_lead,
+            checkpoint="TEST_COMPANY_PURGE",
+        )
+        _restore_dedup_affected_lead(
+            affected_lead,
+            blocks_dispatch=result.blocks_dispatch,
+            decision=result.decision.value,
+        )
+    if ledger_ids:
         db.execute(
-            select(
-                LeadDedupEvent.id,
-                LeadDedupEvent.lead_id,
-                LeadDedupEvent.matched_lead_id,
-                LeadDedupEvent.matched_assignment_id,
-            ).where(
-                or_(
-                    LeadDedupEvent.lead_id.in_(lead_ids),
-                    LeadDedupEvent.matched_lead_id.in_(lead_ids),
-                    LeadDedupEvent.matched_assignment_id.in_(assignment_ids),
-                )
-            )
-        ).all()
-    ) if lead_ids or assignment_ids else []
-    external_dedup_events = [
-        row.id
-        for row in dedup_rows
-        if row.lead_id not in lead_id_set
-        or (row.matched_lead_id is not None and row.matched_lead_id not in lead_id_set)
-        or (
-            row.matched_assignment_id is not None
-            and row.matched_assignment_id not in assignment_id_set
+            update(PointsLedger)
+            .where(PointsLedger.related_ledger_id.in_(ledger_ids))
+            .values(related_ledger_id=None)
         )
-    ]
+        db.execute(delete(PointsLedger).where(PointsLedger.id.in_(ledger_ids)))
 
-    ledger_ids = list(
-        db.scalars(select(PointsLedger.id).where(PointsLedger.company_id == company_id)).all()
-    )
-    ledger_id_set = set(ledger_ids)
-    related_ledger_rows = list(
+    if account_request_ids:
         db.execute(
-            select(PointsLedger.id, PointsLedger.company_id, PointsLedger.related_ledger_id).where(
-                or_(
-                    PointsLedger.id.in_(ledger_ids),
-                    PointsLedger.related_ledger_id.in_(ledger_ids),
-                )
+            delete(CompanyAccountRequest).where(
+                CompanyAccountRequest.id.in_(account_request_ids)
             )
-        ).all()
-    ) if ledger_ids else []
-    external_ledgers = [
-        row.id
-        for row in related_ledger_rows
-        if row.company_id != company_id
-        or (
-            row.related_ledger_id is not None
-            and row.related_ledger_id not in ledger_id_set
         )
-    ]
-
-    external = {
-        "assignments": external_assignments,
-        "followups": external_followups,
-        "returns": external_returns,
-        "supplier_rewards": external_rewards,
-        "duplicate_relations": external_duplicate_relations,
-        "dedup_events": external_dedup_events,
-        "points_ledgers": external_ledgers,
-    }
-    external = {name: ids for name, ids in external.items() if ids}
-    if external:
-        raise AppError(
-            "COMPANY_TEST_DATA_CROSS_BUSINESS_BLOCKED",
-            "该主体与其他主体或平台业务存在关联，不能标记为独立测试数据",
-            409,
-            {
-                "blocking_tables": sorted(external),
-                "counts": {name: len(ids) for name, ids in external.items()},
-            },
-        )
+    db.execute(delete(InviteToken).where(InviteToken.company_id == company.id))
+    db.execute(delete(CompanyLeadCapability).where(CompanyLeadCapability.company_id == company.id))
+    db.execute(delete(CompanyServiceAreaV12).where(CompanyServiceAreaV12.company_id == company.id))
+    db.execute(delete(CompanyServiceRegion).where(CompanyServiceRegion.company_id == company.id))
+    db.execute(delete(CompanyCapability).where(CompanyCapability.company_id == company.id))
+    db.execute(delete(PointsAccount).where(PointsAccount.company_id == company.id))
 
     return {
-        "lead_ids": lead_ids,
-        "assignment_ids": assignment_ids,
-        "followup_ids": [row.id for row in followup_rows],
-        "return_ids": [row.id for row in return_rows],
-        "reward_ids": [row.id for row in reward_rows],
-        "ledger_ids": ledger_ids,
+        "leads": len(lead_ids),
+        "assignments": len(assignment_ids),
+        "followups": len(followup_ids),
+        "returns": len(return_ids),
+        "verification_tasks": len(verification_task_ids),
+        "supplier_rewards": len(reward_ids),
+        "points_ledgers": len(ledger_ids),
+        "points_accounts": len(account_ids),
+        "account_requests": len(account_request_ids),
+        "adjusted_external_points_accounts": len(adjusted_accounts),
+        "notifications": len(notification_ids),
+        "notification_outboxes": len(outbox_ids),
+        "storage_cleanup_jobs": len(evidence_rows),
     }
 
 
@@ -656,6 +1205,8 @@ def mark_company_as_test(
     company_id: str,
     *,
     confirm_name: str,
+    confirm_phrase: str,
+    scope_token: str,
 ) -> dict[str, object]:
     company = db.scalar(select(Company).where(Company.id == company_id).with_for_update())
     if company is None:
@@ -666,8 +1217,15 @@ def mark_company_as_test(
         raise AppError("COMPANY_ALREADY_TEST", "该加盟商已是测试主体", 409)
     if confirm_name != company.name:
         raise AppError("COMPANY_CONFIRMATION_MISMATCH", "输入的加盟商名称不匹配", 409)
-
-    _test_company_isolation_scope(db, company.id)
+    if confirm_phrase != TEST_COMPANY_PURGE_CONFIRM_PHRASE:
+        raise AppError("COMPANY_PURGE_CONFIRMATION_MISMATCH", "永久删除确认短语不匹配", 409)
+    preview = preview_test_company_purge(db, company_id)
+    if scope_token != preview["scope_token"]:
+        raise AppError(
+            "COMPANY_PURGE_PREVIEW_STALE",
+            "清理范围已变化，请重新预览后再标记测试主体",
+            409,
+        )
 
     company.is_test = True
     db.flush()
@@ -675,4 +1233,57 @@ def mark_company_as_test(
         "company_id": company.id,
         "before": {"status": company.status, "is_test": False},
         "after": {"status": company.status, "is_test": True},
+        "preview": {
+            "counts": preview["counts"],
+            "cross_company_impact": preview["cross_company_impact"],
+            "scope_token": preview["scope_token"],
+        },
     }
+
+
+def delete_test_company(
+    db: Session,
+    company_id: str,
+    *,
+    confirm_name: str,
+) -> dict[str, object]:
+    companies = _lock_rows_for_purge(
+        db,
+        select(Company).where(Company.id == company_id),
+        resource_type=Company.__tablename__,
+    )
+    if not companies:
+        raise AppError("COMPANY_NOT_FOUND", "加盟商公司不存在", 404)
+    company = companies[0]
+    if company.status != "DISABLED":
+        raise AppError("COMPANY_MUST_BE_DISABLED", "请先停用加盟商，再清理测试数据", 409)
+    if not company.is_test:
+        raise AppError("COMPANY_DELETE_TEST_ONLY", "正常加盟商只能停用，不允许删除", 409)
+    if confirm_name != company.name:
+        raise AppError("COMPANY_CONFIRMATION_MISMATCH", "输入的加盟商名称不匹配", 409)
+
+    members = list(db.scalars(select(User).where(User.company_id == company.id)).all())
+    purged = _purge_test_company_data(db, company)
+    detached_user_ids: list[str] = []
+    for user in members:
+        db.execute(delete(WechatIdentity).where(WechatIdentity.user_id == user.id))
+        user.status = "DISABLED"
+        user.session_version += 1
+        user.company_id = None
+        detached_user_ids.append(user.id)
+
+    snapshot = {
+        "id": company.id,
+        "code": company.code,
+        "name": company.name,
+        "status": company.status,
+        "is_test": company.is_test,
+        "primary_user_id": company.primary_user_id,
+        "member_count": len(members),
+        "detached_user_ids": detached_user_ids,
+        "purged": purged,
+    }
+    company.primary_user_id = None
+    db.delete(company)
+    db.flush()
+    return snapshot
