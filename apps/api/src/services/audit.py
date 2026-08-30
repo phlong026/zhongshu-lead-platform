@@ -25,8 +25,8 @@ _BEARER_PATTERN = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
 _COOKIE_TOKEN_PATTERN = re.compile(r"(?i)\b(?:access_token|token|session)=([^;\s,&]+)")
 
 
-def _sanitize_audit_text(value: str) -> str:
-    text = _PHONE_PATTERN.sub(_REDACTED, value)
+def _sanitize_audit_text(value: str, *, redact_phone: bool = True) -> str:
+    text = _PHONE_PATTERN.sub(_REDACTED, value) if redact_phone else value
     text = _JWT_PATTERN.sub(_REDACTED, text)
     text = _BEARER_PATTERN.sub(f"Bearer {_REDACTED}", text)
     text = _COOKIE_TOKEN_PATTERN.sub(lambda match: match.group(0).split("=", 1)[0] + "=" + _REDACTED, text)
@@ -55,7 +55,8 @@ def sanitize_audit_value(value: Any, *, key: str | None = None) -> Any:
     if isinstance(value, (list, tuple, set)):
         return [sanitize_audit_value(item) for item in value]
     if isinstance(value, str):
-        return _sanitize_audit_text(value)
+        identifier_key = normalized_key == "id" or normalized_key.endswith("_id")
+        return _sanitize_audit_text(value, redact_phone=not identifier_key)
     return value
 
 
