@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -70,8 +71,10 @@ def test_current_v12_delivery_documents_use_hejiameizhai_brand() -> None:
     assert 'org.opencontainers.image.title="zhongshu-lead-platform"' in dockerfile
     assert 'org.opencontainers.image.description="合家美宅客资审核、派发与积分管理平台"' in dockerfile
 
+    release_manifest = json.loads(read("RELEASE_MANIFEST.json"))
+    assert release_manifest["product"] == "合家美宅客资审核、派发与积分管理平台"
+
     package_script = read("scripts/package_release.py")
-    assert '"product": "合家美宅客资审核、派发与积分管理平台"' in package_script
     assert 'f"# 合家美宅客资平台 {version} 代码交付说明"' in package_script
     for artifact_name in (
         "完整源码.zip",

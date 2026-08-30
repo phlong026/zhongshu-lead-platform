@@ -126,6 +126,17 @@ def validate_release_docs() -> list[Path]:
     return files
 
 
+def release_manifest_template() -> dict[str, object]:
+    path = ROOT / "RELEASE_MANIFEST.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise RuntimeError("RELEASE_MANIFEST.json must contain a JSON object")
+    for field in ("product", "quality_gates", "runtime_boundaries"):
+        if not payload.get(field):
+            raise RuntimeError(f"RELEASE_MANIFEST.json missing required field: {field}")
+    return payload
+
+
 def build_source_zip(output: Path, *, version: str, dirty: bool) -> dict[str, object]:
     files = tracked_files()
     commit = str(git("rev-parse", "HEAD")).strip()
@@ -134,31 +145,18 @@ def build_source_zip(output: Path, *, version: str, dirty: bool) -> dict[str, ob
     root_name = f"zhongshu-lead-platform-{version}"
     log_text = str(git("log", "--oneline", "--decorate", "--all"))
     generated_at = dt.datetime.now(dt.timezone.utc).isoformat()
-    manifest: dict[str, object] = {
-        "product": "合家美宅客资审核、派发与积分管理平台",
-        "release": version,
-        "commit": commit,
-        "branch": branch,
-        "dirty_worktree": dirty,
-        "generated_at_utc": generated_at,
-        "tracked_file_count": len(files),
-        "source_archive_policy": "Git-tracked reviewed source plus deterministic generated OpenAPI; runtime data and secrets excluded",
-        "quality_gates": [
-            "Full pytest, dependency audit and JavaScript checks",
-            "Repository secret and Python compile checks",
-            "SQLite V1.0.1 to V1.2 migration cycle",
-            "PostgreSQL 16 historical migration, semantic reconciliation and constraints",
-            "Desktop admin and mobile H5 Chromium smoke",
-            "Comprehensive code/security review with no unresolved P0/P1/P2",
-        ],
-        "runtime_boundaries": [
-            "Manual dispatch only; no automatic, random, rotation, weighted or grab-order dispatch",
-            "Return evidence requires screenshot OR call recording",
-            "Return appeal and supplier reward observation use three workdays",
-            "No online payment, WeChat Mini Program, cloud calling or automatic H5 call recording",
-            "Real WeChat, target infrastructure, UAT, recovery drill and gray release remain production gates",
-        ],
-    }
+    manifest = release_manifest_template()
+    manifest.update(
+        {
+            "release": version,
+            "commit": commit,
+            "branch": branch,
+            "dirty_worktree": dirty,
+            "generated_at_utc": generated_at,
+            "tracked_file_count": len(files),
+            "source_archive_policy": "Git-tracked reviewed source plus deterministic generated OpenAPI; runtime data and secrets excluded",
+        }
+    )
     output.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for relative in files:

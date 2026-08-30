@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import zipfile
+from pathlib import Path
 
 from scripts.check_release_metadata import run_checks
 from scripts.package_release import (
@@ -36,8 +37,18 @@ def test_source_archive_contains_generated_v12_manifest_and_openapi(tmp_path) ->
     assert payload["release"] == "V1.2.2-test"
     assert payload["commit"] == manifest["commit"]
     assert payload["branch"] == manifest["branch"]
-    assert "PostgreSQL 16 historical migration, semantic reconciliation and constraints" in payload["quality_gates"]
+    assert (
+        "PostgreSQL 16 historical migration, semantic reconciliation and concurrency/idempotency constraints"
+        in payload["quality_gates"]
+    )
     assert "Comprehensive code/security review with no unresolved P0/P1/P2" in payload["quality_gates"]
+    source_manifest = json.loads(Path("RELEASE_MANIFEST.json").read_text(encoding="utf-8"))
+    assert payload["quality_gates"] == source_manifest["quality_gates"]
+    assert payload["runtime_boundaries"] == source_manifest["runtime_boundaries"]
+    assert (
+        "Feishu customer-view import is manual and one-way; no scheduled sync or writeback"
+        in payload["runtime_boundaries"]
+    )
     assert openapi["info"]["version"] == "1.2.2"
     assert "/api/v1/v1.2/reports/overview" in openapi["paths"]
 
