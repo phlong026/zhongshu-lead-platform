@@ -450,7 +450,7 @@ def test_rejected_supplier_lead_can_revise_and_resubmit_over_http(api_client) ->
             headers=supplier,
         )
     )
-    assert resubmitted["lead"]["status"] == "READY_DISPATCH"
+    assert resubmitted["lead"]["status"] == "PUBLIC_POOL"
     assert resubmitted["lead"]["review_status"] == "APPROVED"
     assert resubmitted["lead"]["review_note"] is None
 
@@ -651,7 +651,7 @@ def test_legacy_pending_supplier_lead_can_be_qualified_without_telesales_assignm
         )
     )
 
-    assert reviewed["lead"]["status"] == LeadV12Status.READY_DISPATCH.value
+    assert reviewed["lead"]["status"] == LeadV12Status.PUBLIC_POOL.value
     assert reviewed["lead"]["review_status"] == "APPROVED"
     assert reviewed["task"] is None
     with factory() as db:

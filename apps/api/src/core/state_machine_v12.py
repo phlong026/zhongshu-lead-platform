@@ -22,12 +22,14 @@ class UnknownLegacyStatus(ValueError):
 
 LEAD_TRANSITIONS: Mapping[LeadV12Status, Set[LeadV12Status]] = {
     LeadV12Status.DRAFT: {
+        LeadV12Status.PUBLIC_POOL,
         LeadV12Status.PENDING_REVIEW,
         LeadV12Status.PENDING_TELESALES_VERIFY,
         LeadV12Status.READY_DISPATCH,
         LeadV12Status.CLOSED,
     },
     LeadV12Status.PENDING_REVIEW: {
+        LeadV12Status.PUBLIC_POOL,
         LeadV12Status.PENDING_TELESALES_VERIFY,
         LeadV12Status.READY_DISPATCH,
         LeadV12Status.INVALID,
@@ -40,6 +42,7 @@ LEAD_TRANSITIONS: Mapping[LeadV12Status, Set[LeadV12Status]] = {
         LeadV12Status.CLOSED,
     },
     LeadV12Status.PENDING_OPERATION_DISPOSITION: {
+        LeadV12Status.PUBLIC_POOL,
         LeadV12Status.READY_DISPATCH,
         LeadV12Status.DRAFT,
         LeadV12Status.INVALID,
@@ -47,6 +50,11 @@ LEAD_TRANSITIONS: Mapping[LeadV12Status, Set[LeadV12Status]] = {
         LeadV12Status.CLOSED,
     },
     LeadV12Status.READY_DISPATCH: {LeadV12Status.DISPATCHED, LeadV12Status.DUPLICATE, LeadV12Status.CLOSED},
+    LeadV12Status.PUBLIC_POOL: {
+        LeadV12Status.READY_DISPATCH,
+        LeadV12Status.DUPLICATE,
+        LeadV12Status.CLOSED,
+    },
     LeadV12Status.DISPATCHED: {LeadV12Status.CLAIMED, LeadV12Status.READY_DISPATCH, LeadV12Status.CLOSED},
     LeadV12Status.CLAIMED: {LeadV12Status.FOLLOWING, LeadV12Status.READY_DISPATCH, LeadV12Status.CLOSED},
     LeadV12Status.FOLLOWING: {LeadV12Status.COMPLETED, LeadV12Status.READY_DISPATCH, LeadV12Status.CLOSED},

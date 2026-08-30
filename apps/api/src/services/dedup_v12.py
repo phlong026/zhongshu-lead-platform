@@ -347,8 +347,9 @@ def override_duplicate(
         lead.status = LeadV12Status.PENDING_REVIEW.value
         lead.review_status = "PENDING"
     else:
-        lead.pending_reason = None
-        lead.status = LeadV12Status.READY_DISPATCH.value
+        from .dispatch_v12 import route_approved_lead_to_pool
+
+        route_approved_lead_to_pool(db, lead)
     from .lead_supply_v12 import reconcile_supplier_rewards_after_dedup
 
     reward_changes = reconcile_supplier_rewards_after_dedup(

@@ -17,6 +17,7 @@ from ..core.security import decrypt_text, normalize_phone
 from ..core.state_machine_v12 import assert_lead_transition
 from ..core.time import as_utc
 from ..core.v12_enums import LeadSourceKind, LeadV12Status, VerificationTaskType
+from .dispatch_v12 import approved_lead_pool_target
 from .lead_correction_guard import require_correction_review_resolved
 from .verification_service import latest_published_template
 
@@ -404,9 +405,13 @@ def decide_pre_dispatch_disposition(
     if task is None or not task.verification_conclusion:
         raise AppError("PRE_DISPATCH_CONCLUSION_REQUIRED", "电销提交事实结论后才能运营处置", 409)
     if normalized_decision == "APPROVE_POOL":
-        target = LeadV12Status.READY_DISPATCH
+        target = approved_lead_pool_target(db, lead)
         lead.review_status = "APPROVED"
-        lead.pending_reason = None
+        lead.pending_reason = (
+            "PUBLIC_POOL_NO_LOCAL_RECEIVER"
+            if target is LeadV12Status.PUBLIC_POOL
+            else None
+        )
     elif normalized_decision == "RETURN_REWORK":
         target = LeadV12Status.DRAFT
         lead.review_status = "DRAFT"

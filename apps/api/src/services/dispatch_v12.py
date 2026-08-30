@@ -18,7 +18,12 @@ from ..core.models import Assignment, AssignmentEvent, Company, Lead, LeadPriceR
 from ..core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12, SupplierLeadReward
 from ..core.security import decrypt_text, mask_phone
 from ..core.time import as_utc
-from ..core.v12_enums import DuplicateDecision, LeadV12Status, RewardStatus
+from ..core.v12_enums import (
+    DuplicateDecision,
+    LeadSourceKind,
+    LeadV12Status,
+    RewardStatus,
+)
 from .company_profile_v12 import REMOVAL_REQUEST_PREFIX, has_lead_capability, require_lead_capability
 from .lead_correction_guard import require_correction_review_resolved
 from .points_service import change_points, resolve_price
@@ -206,6 +211,105 @@ def _service_area_dispatchable():
             CompanyServiceAreaV12.review_note.like(f"{REMOVAL_REQUEST_PREFIX}%"),
         ),
     )
+
+
+def has_receiver_coverage(db: Session, lead: Lead) -> bool:
+    """Check stable local coverage without transient dispatch conditions."""
+
+    if not lead.region_code:
+        return False
+    base_conditions = [
+        Company.status == "ACTIVE",
+        CompanyLeadCapability.capability_code == "LEAD_RECEIVER",
+        CompanyLeadCapability.active.is_(True),
+        CompanyLeadCapability.review_status == "APPROVED",
+    ]
+    if lead.supplier_company_id:
+        base_conditions.append(Company.id != lead.supplier_company_id)
+
+    direct = (
+        select(Company.id)
+        .join(
+            CompanyLeadCapability,
+            CompanyLeadCapability.company_id == Company.id,
+        )
+        .join(
+            CompanyServiceAreaV12,
+            CompanyServiceAreaV12.company_id == Company.id,
+        )
+        .where(
+            *base_conditions,
+            CompanyServiceAreaV12.active.is_(True),
+            _service_area_dispatchable(),
+            _service_area_region_clause(lead.region_code),
+        )
+        .limit(1)
+    )
+    if db.scalar(direct) is not None:
+        return True
+
+    lead_region = db.get(Region, lead.region_code)
+    if lead_region is None or lead_region.level != "CITY":
+        return False
+    active_district_count = int(
+        db.scalar(
+            select(func.count(Region.code)).where(
+                Region.parent_code == lead_region.code,
+                Region.level == "DISTRICT",
+                Region.active.is_(True),
+            )
+        )
+        or 0
+    )
+    if active_district_count == 0:
+        return False
+    full_city_coverage = (
+        select(Company.id)
+        .join(
+            CompanyLeadCapability,
+            CompanyLeadCapability.company_id == Company.id,
+        )
+        .join(
+            CompanyServiceAreaV12,
+            CompanyServiceAreaV12.company_id == Company.id,
+        )
+        .join(Region, Region.code == CompanyServiceAreaV12.region_code)
+        .where(
+            *base_conditions,
+            CompanyServiceAreaV12.active.is_(True),
+            _service_area_dispatchable(),
+            Region.parent_code == lead_region.code,
+            Region.level == "DISTRICT",
+            Region.active.is_(True),
+        )
+        .group_by(Company.id)
+        .having(
+            func.count(func.distinct(CompanyServiceAreaV12.region_code))
+            == active_district_count
+        )
+        .limit(1)
+    )
+    return db.scalar(full_city_coverage) is not None
+
+
+def approved_lead_pool_target(db: Session, lead: Lead) -> LeadV12Status:
+    if (
+        lead.source_kind == LeadSourceKind.SUPPLIER_H5.value
+        and not has_receiver_coverage(db, lead)
+    ):
+        return LeadV12Status.PUBLIC_POOL
+    return LeadV12Status.READY_DISPATCH
+
+
+def route_approved_lead_to_pool(db: Session, lead: Lead) -> LeadV12Status:
+    target = approved_lead_pool_target(db, lead)
+    lead.status = target.value
+    lead.pending_reason = (
+        "PUBLIC_POOL_NO_LOCAL_RECEIVER"
+        if target is LeadV12Status.PUBLIC_POOL
+        else None
+    )
+    return target
 
 
 def _points_snapshot(

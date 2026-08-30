@@ -15,6 +15,7 @@ from ..core.models_v12 import LeadDedupEvent, SupplierLeadReward
 from ..core.security import decrypt_text, encrypt_text, fingerprint_phone, hash_phone, mask_phone, normalize_phone
 from ..core.state_machine_v12 import assert_reward_transition
 from ..core.v12_enums import (
+    CustomerSource,
     DuplicateDecision,
     LeadReviewStatus,
     LeadSourceKind,
@@ -24,7 +25,10 @@ from ..core.v12_enums import (
 from .company_profile_v12 import require_lead_capability
 from .china_regions import region_by_code
 from .dedup_v12 import DedupResult, apply_submission_decision, evaluate_phone
-from .dispatch_v12 import existing_receiver_correction_issues
+from .dispatch_v12 import (
+    existing_receiver_correction_issues,
+    route_approved_lead_to_pool,
+)
 from .lead_correction_guard import (
     require_correction_review_resolved,
     store_lead_correction_issues,
@@ -1108,9 +1112,8 @@ def submit_draft(
     apply_submission_decision(lead, result)
     if not result.blocks_dispatch:
         if _has_known_location(db, lead):
-            lead.status = LeadV12Status.READY_DISPATCH.value
+            route_approved_lead_to_pool(db, lead)
             lead.review_status = LeadReviewStatus.APPROVED.value
-            lead.pending_reason = None
         else:
             lead.status = LeadV12Status.PENDING_REVIEW.value
             lead.review_status = LeadReviewStatus.PENDING.value
@@ -1190,9 +1193,8 @@ def review_supplier_lead(
         lead.status = LeadV12Status.DUPLICATE.value
         lead.pending_reason = result.decision.value
     elif _has_known_location(db, lead):
-        lead.status = LeadV12Status.READY_DISPATCH.value
+        route_approved_lead_to_pool(db, lead)
         lead.review_status = LeadReviewStatus.APPROVED.value
-        lead.pending_reason = None
     else:
         lead.status = LeadV12Status.PENDING_REVIEW.value
         db.flush()
@@ -1253,11 +1255,18 @@ def latest_dedup_event(db: Session, lead_id: str) -> LeadDedupEvent | None:
     )
 
 
+def customer_source_for_lead(lead: Lead) -> str:
+    if lead.source_kind == LeadSourceKind.SUPPLIER_H5.value:
+        return CustomerSource.FRANCHISE_SUPPLIED.value
+    return CustomerSource.OPERATION_ENTRY.value
+
+
 def lead_supply_to_dict(
     lead: Lead,
     principal: Principal | None = None,
     *,
     submitter_name: str | None = None,
+    supplier_company_name: str | None = None,
     region_name: str | None = None,
     region_level: str | None = None,
     current_assignment: dict[str, Any] | None = None,
@@ -1277,9 +1286,11 @@ def lead_supply_to_dict(
     result = {
         "id": lead.id,
         "source_kind": lead.source_kind,
+        "customer_source": customer_source_for_lead(lead),
         "submitter_user_id": lead.submitter_user_id,
         "submitter_name": submitter_name,
         "supplier_company_id": lead.supplier_company_id,
+        "supplier_company_name": supplier_company_name,
         "customer_name": lead.customer_name,
         "phone": phone if can_view_phone else None,
         "phone_masked": mask_phone(phone),
@@ -1398,6 +1409,16 @@ def lead_supply_list_to_dict(
             select(User.id, User.display_name).where(User.id.in_(submitter_ids))
         ).all()
     ) if submitter_ids else {}
+    supplier_company_ids = {
+        lead.supplier_company_id for lead in leads if lead.supplier_company_id
+    }
+    supplier_company_names = dict(
+        db.execute(
+            select(Company.id, Company.name).where(
+                Company.id.in_(supplier_company_ids)
+            )
+        ).all()
+    ) if supplier_company_ids else {}
     region_codes = {lead.region_code for lead in leads if lead.region_code}
     regions_by_code = {
         region.code: region
@@ -1474,6 +1495,9 @@ def lead_supply_list_to_dict(
             lead,
             principal,
             submitter_name=submitter_names.get(lead.submitter_user_id),
+            supplier_company_name=supplier_company_names.get(
+                lead.supplier_company_id
+            ),
             region_name=(regions_by_code.get(lead.region_code).name if regions_by_code.get(lead.region_code) else None),
             region_level=(regions_by_code.get(lead.region_code).level if regions_by_code.get(lead.region_code) else None),
             current_assignment=current_assignments.get(lead.current_assignment_id),

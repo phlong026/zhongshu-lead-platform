@@ -101,6 +101,7 @@ def test_platform_manual_submission_enters_ready_pool_without_pre_verification(d
 
     assert result.decision is DuplicateDecision.CLEAR
     assert lead.status == LeadV12Status.READY_DISPATCH.value
+    assert lead.pending_reason is None
     assert lead.review_status == "APPROVED"
     assert lead.phone_fingerprint
 
@@ -308,7 +309,7 @@ def test_old_dedup_event_cannot_override_a_new_phone_dedup_result(db) -> None:
     assert new_event.decision == DuplicateDecision.HARD_DUPLICATE.value
 
 
-def test_supplier_upload_requires_approved_capability_and_complete_lead_enters_dispatch_pool(db) -> None:
+def test_supplier_upload_requires_approved_capability_and_waits_without_receiver_coverage(db) -> None:
     db.add(Region(code="420100", name="武汉市", level="CITY", aliases=[], active=True))
     company, user = _seed_identity(db, company_code="SUP001")
     principal = _principal(user.id, company.id, "supplier.lead.manage")
@@ -328,9 +329,9 @@ def test_supplier_upload_requires_approved_capability_and_complete_lead_enters_d
     lead = create_draft(db, principal=principal, source_kind=LeadSourceKind.SUPPLIER_H5, values=_valid_values())
     result = submit_draft(db, lead=lead, principal=principal)
     assert result.decision is DuplicateDecision.CLEAR
-    assert lead.status == LeadV12Status.READY_DISPATCH.value
+    assert lead.status == LeadV12Status.PUBLIC_POOL.value
     assert lead.review_status == "APPROVED"
-    assert lead.pending_reason is None
+    assert lead.pending_reason == "PUBLIC_POOL_NO_LOCAL_RECEIVER"
     assert db.query(VerificationTask).filter_by(lead_id=lead.id).one_or_none() is None
 
 
@@ -409,7 +410,7 @@ def test_supplier_submission_cannot_bypass_telesales_verification_with_initial_r
         )
 
     assert exc_info.value.code == "LEAD_REVIEW_STATE_INVALID"
-    assert lead.status == LeadV12Status.READY_DISPATCH.value
+    assert lead.status == LeadV12Status.PUBLIC_POOL.value
 
 
 def test_supplier_can_discard_own_draft(db) -> None:
@@ -519,8 +520,9 @@ def test_rejected_supplier_lead_can_be_revised_and_resubmitted(db) -> None:
     lead.need_summary = "计划在武汉建设两层自住房，近期确认设计方案"
     submit_draft(db, lead=lead, principal=principal)
 
-    assert lead.status == LeadV12Status.READY_DISPATCH.value
+    assert lead.status == LeadV12Status.PUBLIC_POOL.value
     assert lead.review_status == "APPROVED"
+    assert lead.pending_reason == "PUBLIC_POOL_NO_LOCAL_RECEIVER"
     assert lead.review_note is None
 
 
