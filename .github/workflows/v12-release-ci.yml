@@ -3,7 +3,7 @@ name: V1.2 Release Branch CI
 on:
   push:
     branches:
-      - release/v1.2.1
+      - release/v1.2.2
 
 permissions:
   contents: read
@@ -103,7 +103,7 @@ jobs:
           fi
 
       - name: Build final reviewed V1.2 release package
-        run: python scripts/package_release.py --version V1.2.1 --output-dir dist/release
+        run: python scripts/package_release.py --version V1.2.2 --output-dir dist/release
 
       - name: Upload generated OpenAPI contract
         if: always()

@@ -94,12 +94,19 @@ def _admin_smoke(browser: Browser, base_url: str, output: Path, errors: list[str
         page.wait_for_selector(".ops-shell", timeout=15000)
         _attach_errors(page, errors)
         _assert_no_visible_error(page, (".ops-error",))
-        for view in ("overview", "leads", "companies", "finance"):
+        for view in ("overview", "leads", "publicPool", "companies", "finance"):
             if page.locator(f'.ops-menu [data-view="{view}"]').count() != 1:
                 raise AssertionError(f"super admin is missing permitted {view} navigation")
         for view in ("telesales", "dispatch", "returns", "audit"):
             if page.locator(f'.ops-menu [data-view="{view}"]').count():
                 raise AssertionError(f"super admin can see restricted {view} navigation")
+        page.locator('.ops-menu [data-view="publicPool"]').click()
+        page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=publicPool")
+        page.wait_for_selector("#public-pool-new", timeout=15000)
+        page.wait_for_selector("#public-pool-inline", timeout=15000)
+        page.wait_for_selector("#public-pool-feishu", timeout=15000)
+        page.locator('.ops-menu [data-view="overview"]').click()
+        page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=overview")
         overview_screenshot = output / "v12-admin-overview.png"
         page.screenshot(path=str(overview_screenshot), full_page=True)
         created = page.evaluate(
@@ -126,7 +133,7 @@ def _admin_smoke(browser: Browser, base_url: str, output: Path, errors: list[str
         lead_id = created["payload"]["data"]["id"]
         page.locator('.ops-menu [data-view="leads"]').click()
         page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=leads")
-        detail_button = page.locator(f'[data-platform-detail="{lead_id}"]')
+        detail_button = page.locator(f'[data-lead-detail="{lead_id}"]')
         detail_button.wait_for(timeout=15000)
         detail_button.click()
         page.wait_for_selector("#trace", timeout=15000)
@@ -200,6 +207,11 @@ def _operation_smoke(browser: Browser, base_url: str, output: Path, errors: list
         _assert_no_visible_error(page, (".ops-error",))
         if page.locator('.ops-menu [data-view="finance"]').count():
             raise AssertionError("operation user can see finance navigation")
+        page.locator('.ops-menu [data-view="publicPool"]').click()
+        page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=publicPool")
+        page.wait_for_selector("#public-pool-new", timeout=15000)
+        page.wait_for_selector("#public-pool-inline", timeout=15000)
+        page.wait_for_selector("#public-pool-feishu", timeout=15000)
         page.locator('.ops-menu [data-view="telesales"]').click()
         page.wait_for_url(f"{base_url}/admin/v12-operations.html?view=telesales")
         page.wait_for_selector(".ops-card", timeout=15000)

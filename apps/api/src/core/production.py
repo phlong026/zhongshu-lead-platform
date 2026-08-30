@@ -83,6 +83,10 @@ def validate_production_settings(settings: Settings, environ: dict[str, str] | N
         ):
             if not value:
                 errors.append(f"FEISHU_ENABLED=true 时 {name} 必须配置")
+        if settings.feishu_view_name.strip() != "客户视图":
+            errors.append("公海池一期必须设置 FEISHU_VIEW_NAME=客户视图")
+        if settings.feishu_writeback_enabled:
+            errors.append("公海池一期必须设置 FEISHU_WRITEBACK_ENABLED=false，禁止向飞书回写")
     elif any(
         (
             settings.feishu_app_id,

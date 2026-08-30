@@ -1,4 +1,4 @@
-# 合家美宅客资平台 V1.2.1 生产上线检查表
+# 合家美宅客资平台 V1.2.2 生产上线检查表
 
 所有 P0 项必须有证据并由责任人签字。任何一项失败均为 `NO-GO`。
 
@@ -6,10 +6,10 @@
 
 ## A. 版本和质量
 
-- [ ] 上线提交来自 `release/v1.2.1`，对应受保护的 V1.2.1 tag；
+- [ ] 上线提交来自 `release/v1.2.2`，对应受保护的 V1.2.2 tag；
 - [ ] PR 与 Release CI 的全量测试、PostgreSQL 迁移和 Chromium 浏览器任务全部通过；
 - [ ] PR 无未解决的 Critical/High/P1/P2 评审问题；
-- [ ] `APP_VERSION=1.2.1`，Dockerfile 默认 `APP_VERSION=1.2.1`；
+- [ ] `APP_VERSION=1.2.2`，Dockerfile 默认 `APP_VERSION=1.2.2`；
 - [ ] `APP_IMAGE` 采用 `repo:APP_VERSION@sha256:digest`，显式 tag 与 `APP_VERSION` 完全一致；
 - [ ] `docker image inspect` 的 OCI `org.opencontainers.image.version` 与 `APP_VERSION` 完全一致；
 - [ ] README、部署、迁移、回滚、UAT、测试、安全审计和发布说明均为 V1.2；
@@ -42,7 +42,7 @@
 - [ ] `AUTO_CREATE_SCHEMA=false`、`SEED_DEMO=false`、`RUN_DB_MIGRATIONS=false`；
 - [ ] `WECHAT_DEV_MOCK=false`、`FEISHU_DEV_MOCK=false`；
 - [ ] `CORS_ORIGINS`、`TRUSTED_HOSTS` 仅包含正式域名；
-- [ ] 飞书启用状态与凭据一致；不启用时 `FEISHU_ENABLED=false`；
+- [ ] 飞书启用状态与凭据一致；启用时锁定“客户视图”且 `FEISHU_WRITEBACK_ENABLED=false`，不配置定时同步；不启用时 `FEISHU_ENABLED=false`；
 - [ ] 正式环境没有演示账号、演示数据和默认密码。
 
 ## D. 数据迁移和对账

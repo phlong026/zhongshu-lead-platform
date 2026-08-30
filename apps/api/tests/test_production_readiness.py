@@ -13,7 +13,7 @@ def _secret(prefix: str, length: int = 40) -> str:
 def production_settings(**overrides) -> Settings:
     values = {
         "app_env": "production",
-        "app_version": "1.2.1",
+        "app_version": "1.2.2",
         "app_base_url": "https://app.zhongshu.example.cn",
         "database_url": "postgresql+psycopg://zhongshu:secret@db:5432/zhongshu",
         "jwt_secret": "J" * 48,
@@ -161,6 +161,24 @@ def test_production_validation_requires_feishu_credentials_when_enabled():
     assert result.valid is False
     assert any("FEISHU_APP_TOKEN" in error for error in result.errors)
     assert any("FEISHU_TABLE_ID" in error for error in result.errors)
+
+
+def test_production_validation_rejects_feishu_writeback_for_phase_one():
+    result = validate_production_settings(
+        production_settings(feishu_writeback_enabled=True),
+        _production_env(),
+    )
+    assert result.valid is False
+    assert any("FEISHU_WRITEBACK_ENABLED=false" in error for error in result.errors)
+
+
+def test_production_validation_requires_exact_customer_view_name():
+    result = validate_production_settings(
+        production_settings(feishu_view_name="客户资料"),
+        _production_env(),
+    )
+    assert result.valid is False
+    assert any("FEISHU_VIEW_NAME=客户视图" in error for error in result.errors)
 
 
 def test_production_validation_rejects_shared_phone_secrets():

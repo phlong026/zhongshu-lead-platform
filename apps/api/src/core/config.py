@@ -12,7 +12,7 @@ class Settings(BaseSettings):
 
     app_env: str = "development"
     app_name: str = "合家美宅客资平台"
-    app_version: str = "1.2.1"
+    app_version: str = "1.2.2"
     log_level: str = "INFO"
     log_json: bool = True
     app_base_url: str = "http://localhost:8000"
@@ -45,11 +45,13 @@ class Settings(BaseSettings):
     feishu_app_secret: str = ""
     feishu_app_token: str = ""
     feishu_table_id: str = ""
+    feishu_view_id: str = ""
+    feishu_view_name: str = "客户视图"
     feishu_dev_mock: bool = True
     feishu_field_mapping_json: str = ""
     feishu_sync_page_size: int = 200
     feishu_sync_max_pages: int = 100
-    feishu_writeback_enabled: bool = True
+    feishu_writeback_enabled: bool = False
     object_storage_backend: str = "local"
     object_storage_dir: str = "./storage"
     lead_export_active_per_user_limit: int = 2

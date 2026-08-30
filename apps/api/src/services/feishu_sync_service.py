@@ -24,10 +24,12 @@ DEFAULT_FIELD_MAPPING = {
     "category_code": "业务类目",
     "brand_code": "品牌",
     "source_channel": "来源渠道",
+    "source_detail": "具体来源",
     "need_summary": "客户需求",
     "budget_min": "预算下限",
     "budget_max": "预算上限",
     "acquisition_cost": "获客成本",
+    "consent_confirmed": "已获客户授权",
 }
 
 

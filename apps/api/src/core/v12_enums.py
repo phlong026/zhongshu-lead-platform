@@ -21,6 +21,7 @@ class LeadV12Status(StrEnum):
 class LeadSourceKind(StrEnum):
     PLATFORM_MANUAL = "PLATFORM_MANUAL"
     SUPPLIER_H5 = "SUPPLIER_H5"
+    FEISHU_IMPORT = "FEISHU_IMPORT"
     FEISHU_LEGACY = "FEISHU_LEGACY"
 
 

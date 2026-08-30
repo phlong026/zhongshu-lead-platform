@@ -1309,6 +1309,9 @@ def lead_supply_to_dict(
         "duplicate_status": lead.duplicate_status,
         "pending_reason": lead.pending_reason,
         "correction_issues": list((lead.raw_payload or {}).get("correction_issues") or []),
+        "public_pool_validation_errors": dict(
+            (lead.raw_payload or {}).get("public_pool_validation_errors") or {}
+        ),
         "current_assignment_id": lead.current_assignment_id,
         "current_assignment_status": (
             current_assignment.get("status") if current_assignment else None

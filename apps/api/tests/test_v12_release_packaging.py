@@ -19,7 +19,7 @@ def test_active_release_metadata_is_consistent() -> None:
 
 def test_source_archive_contains_generated_v12_manifest_and_openapi(tmp_path) -> None:
     archive_path = tmp_path / "v12-source.zip"
-    manifest = build_source_zip(archive_path, version="V1.2.1-test", dirty=False)
+    manifest = build_source_zip(archive_path, version="V1.2.2-test", dirty=False)
 
     with zipfile.ZipFile(archive_path) as archive:
         names = archive.namelist()
@@ -33,12 +33,12 @@ def test_source_archive_contains_generated_v12_manifest_and_openapi(tmp_path) ->
         payload = json.loads(archive.read(manifest_names[0]).decode("utf-8"))
         openapi = json.loads(archive.read(openapi_names[0]).decode("utf-8"))
 
-    assert payload["release"] == "V1.2.1-test"
+    assert payload["release"] == "V1.2.2-test"
     assert payload["commit"] == manifest["commit"]
     assert payload["branch"] == manifest["branch"]
     assert "PostgreSQL 16 historical migration, semantic reconciliation and constraints" in payload["quality_gates"]
     assert "Comprehensive code/security review with no unresolved P0/P1/P2" in payload["quality_gates"]
-    assert openapi["info"]["version"] == "1.2.1"
+    assert openapi["info"]["version"] == "1.2.2"
     assert "/api/v1/v1.2/reports/overview" in openapi["paths"]
 
 
@@ -62,7 +62,7 @@ def test_required_v12_delivery_documents_and_generated_openapi_exist(tmp_path) -
     expected = sorted([*delivery_names, "docs__api__openapi.json"])
     assert copied == expected
     openapi = json.loads((target / "docs__api__openapi.json").read_text(encoding="utf-8"))
-    assert openapi["info"]["version"] == "1.2.1"
+    assert openapi["info"]["version"] == "1.2.2"
     assert any("SECURITY_AUDIT.md" in name for name in copied)
     assert any("INDEX_V1.2.md" in name for name in copied)
     assert any("53-v1.2-sprint6-comprehensive-final-review.md" in name for name in copied)

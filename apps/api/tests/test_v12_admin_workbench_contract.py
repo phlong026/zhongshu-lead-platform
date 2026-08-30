@@ -12,8 +12,8 @@ def test_desktop_workbench_uses_role_specific_navigation_and_lower_left_entrypoi
     source = WORKBENCH.read_text(encoding="utf-8")
 
     assert "ADMIN_VIEW_CONTRACT" in source
-    assert "SUPER_ADMIN:['overview','leads','companies','finance']" in source
-    assert "OPERATION:['overview','leads','telesales','dispatch','companies']" in source
+    assert "SUPER_ADMIN:['overview','leads','publicPool','companies','finance']" in source
+    assert "OPERATION:['overview','leads','publicPool','telesales','dispatch','companies']" in source
     assert 'data-account-center' in source
     assert 'data-account-tool' in source
     assert 'data-account-settings' not in source
@@ -55,9 +55,9 @@ def test_design_navigation_terms_match_the_compact_desktop_sidebar() -> None:
         design.index("### Telesales information architecture")
     ]
 
-    for label in ("1. 首页", "2. 客资", "3. 加盟商", "4. 资金"):
+    for label in ("1. 首页", "2. 客资", "3. 公海池", "4. 加盟商", "5. 资金"):
         assert label in super_admin
-    for label in ("1. 首页", "2. 客资", "3. 电销", "4. 派发", "5. 加盟商"):
+    for label in ("1. 首页", "2. 客资", "3. 公海池", "4. 电销", "5. 派发", "6. 加盟商"):
         assert label in operation
     for stale_label in ("客资总览", "今日待办", "客资中心", "电销核验协同", "派发中心", "加盟商审核"):
         assert stale_label not in super_admin + operation
