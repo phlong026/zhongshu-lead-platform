@@ -24,6 +24,7 @@ ROLE_PERMISSION_MATRIX: dict[str, tuple[str, list[str]]] = {
             "lead.supplier.review",
             "lead.dedup.override",
             "lead.dispatch",
+            "lead.phone.export",
             "assignment.read",
             "assignment.release",
             "company.read_eligibility",
@@ -84,6 +85,7 @@ SENSITIVE_PERMISSION_CODES = frozenset(
     {
         "*",
         "lead.phone.read",
+        "lead.phone.export",
         "points.recharge",
         "points.reverse",
         "lead.dedup.override",

@@ -11,6 +11,7 @@ from ..core.models import Assignment, AssignmentEvent, Lead
 from ..core.time import as_utc
 from ..core.v12_enums import LeadV12Status
 from .claim_service import run_assignment_timeouts as run_assignment_timeouts_legacy
+from .lead_correction_guard import lead_requires_correction_review
 from .notification_service import create_station_message, enqueue_outbox
 
 settings = get_settings()
@@ -70,6 +71,8 @@ def run_assignment_timeouts_v12(db: Session, *, now: datetime | None = None) -> 
             or lead.current_assignment_id != assignment.id
             or lead.status != LeadV12Status.DISPATCHED.value
         ):
+            continue
+        if lead_requires_correction_review(lead):
             continue
 
         assigned_at = as_utc(assignment.assigned_at) or current

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query, Request, Response
-from sqlalchemy import func, select
+from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..core.auth import require_permissions
@@ -24,6 +24,77 @@ def regions(request: Request, db: Session = Depends(get_db), parent_code: str | 
         stmt = stmt.where(Region.level == level)
     items = db.scalars(stmt.order_by(Region.code)).all()
     return ok(request, [{"code": x.code, "name": x.name, "level": x.level, "parent_code": x.parent_code, "aliases": x.aliases} for x in items])
+
+
+def _region_path(
+    regions_by_code: dict[str, Region],
+    region: Region,
+) -> list[dict[str, str]]:
+    path: list[dict[str, str]] = []
+    current: Region | None = region
+    visited: set[str] = set()
+    while current is not None and current.code not in visited:
+        visited.add(current.code)
+        path.append({"code": current.code, "name": current.name, "level": current.level})
+        current = regions_by_code.get(current.parent_code or "")
+    return list(reversed(path))
+
+
+@router.get("/regions/search")
+def search_regions(
+    request: Request,
+    db: Session = Depends(get_db),
+    keyword: str = Query(min_length=1, max_length=64),
+    limit: int = Query(default=20, ge=1, le=100),
+):
+    normalized = keyword.strip()
+    if not normalized:
+        return ok(request, [])
+    rows = db.scalars(
+        select(Region)
+        .where(
+            Region.active.is_(True),
+            or_(
+                Region.name.contains(normalized),
+                cast(Region.aliases, String).contains(normalized),
+            ),
+        )
+        .order_by(Region.level, Region.code)
+        .limit(limit)
+    ).all()
+    regions_by_code = {region.code: region for region in rows}
+    unresolved_parent_codes = {
+        region.parent_code
+        for region in rows
+        if region.parent_code and region.parent_code not in regions_by_code
+    }
+    while unresolved_parent_codes:
+        parents = db.scalars(
+            select(Region).where(Region.code.in_(unresolved_parent_codes))
+        ).all()
+        if not parents:
+            break
+        regions_by_code.update({region.code: region for region in parents})
+        unresolved_parent_codes = {
+            region.parent_code
+            for region in parents
+            if region.parent_code and region.parent_code not in regions_by_code
+        }
+    items = []
+    for region in rows:
+        path = _region_path(regions_by_code, region)
+        items.append(
+            {
+                "code": region.code,
+                "name": region.name,
+                "level": region.level,
+                "parent_code": region.parent_code,
+                "path": path,
+                "path_codes": [item["code"] for item in path],
+                "path_label": " · ".join(item["name"] for item in path),
+            }
+        )
+    return ok(request, items)
 
 
 @router.get("/region-tree")

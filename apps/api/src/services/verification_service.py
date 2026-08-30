@@ -11,6 +11,24 @@ from ..core.enums import LeadStatus, VerificationResult, VerificationTaskStatus
 from ..core.errors import AppError
 from ..core.models import Lead, User, VerificationSubmission, VerificationTask, VerificationTemplate
 from ..core.security import decrypt_text, mask_phone
+from ..core.v12_enums import VerificationTaskType
+
+
+def _require_legacy_verification_task(task: VerificationTask) -> None:
+    if task.task_type in {
+        VerificationTaskType.PRE_DISPATCH_VERIFY.value,
+        VerificationTaskType.RETURN_VERIFY.value,
+    }:
+        task_label = (
+            "前置电销核验"
+            if task.task_type == VerificationTaskType.PRE_DISPATCH_VERIFY.value
+            else "退回电销核验"
+        )
+        raise AppError(
+            "PRE_DISPATCH_V12_API_REQUIRED",
+            f"{task_label}任务请使用 V1.2 专用入口",
+            409,
+        )
 
 
 def latest_published_template(db: Session, code: str) -> VerificationTemplate:
@@ -77,6 +95,7 @@ def create_tasks(
             assignee_user_id=assignee_user_id,
             assigned_by=assigned_by,
             assigned_at=datetime.now(timezone.utc),
+            task_type=VerificationTaskType.LEAD_VERIFY_LEGACY.value,
         )
         lead.status = LeadStatus.VERIFYING
         lead.pending_reason = None
@@ -87,6 +106,7 @@ def create_tasks(
 
 
 def assign_task(db: Session, task: VerificationTask, assignee_user_id: str, assigned_by: str) -> VerificationTask:
+    _require_legacy_verification_task(task)
     if task.status not in {VerificationTaskStatus.PENDING, VerificationTaskStatus.ASSIGNED}:
         raise AppError("VERIFICATION_TASK_NOT_ASSIGNABLE", "任务当前不可分配", 409)
     assignee = db.scalar(select(User).where(User.id == assignee_user_id))
@@ -103,6 +123,7 @@ def assign_task(db: Session, task: VerificationTask, assignee_user_id: str, assi
 
 
 def reclaim_task(db: Session, task: VerificationTask) -> VerificationTask:
+    _require_legacy_verification_task(task)
     if task.status not in {VerificationTaskStatus.PENDING, VerificationTaskStatus.ASSIGNED}:
         raise AppError("VERIFICATION_TASK_NOT_RECLAIMABLE", "任务当前不可回收", 409)
     task.assignee_user_id = None
@@ -114,6 +135,7 @@ def reclaim_task(db: Session, task: VerificationTask) -> VerificationTask:
 
 
 def claim_task(db: Session, task: VerificationTask, principal: Principal) -> VerificationTask:
+    _require_legacy_verification_task(task)
     if task.status not in {VerificationTaskStatus.PENDING, VerificationTaskStatus.ASSIGNED}:
         if task.assignee_user_id == principal.user_id and task.status == VerificationTaskStatus.IN_PROGRESS:
             return task
@@ -157,6 +179,7 @@ def task_to_dict(db: Session, task: VerificationTask, principal: Principal, *, i
 
 
 def submit_verification(db: Session, task: VerificationTask, principal: Principal, payload: dict[str, Any]) -> VerificationSubmission:
+    _require_legacy_verification_task(task)
     if task.status != VerificationTaskStatus.IN_PROGRESS or task.assignee_user_id != principal.user_id:
         raise AppError("VERIFICATION_TASK_NOT_OWNED", "任务不属于当前人员或状态已变化", 409)
     lead = db.get(Lead, task.lead_id)

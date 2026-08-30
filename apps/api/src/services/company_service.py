@@ -50,6 +50,7 @@ from ..core.v12_enums import CompanyLeadCapabilityCode, LeadSourceKind, LeadV12S
 from ..schemas.company import CompanyCreateBody, CompanySimpleCreateBody, CompanyUpdateBody
 from .china_regions import city_by_code, region_by_code
 from .dedup_v12 import reevaluate_existing_phone_identity
+from .lead_correction_guard import lead_requires_correction_review
 from .storage_cleanup_worker import enqueue_storage_cleanup
 
 DEFAULT_RECEIVER_CATEGORIES = ("OLD_RENOVATION", "SELF_BUILD", "INTERIOR")
@@ -114,7 +115,7 @@ def _next_company_code(db: Session) -> str:
 
 def _simple_region_codes(db: Session, body: CompanySimpleCreateBody) -> dict[str, Region]:
     _materialize_selected_regions(db, body)
-    requested = [body.primary_city_code, *body.district_codes, *body.region_codes]
+    requested = [*body.district_codes, *body.region_codes]
     if body.serve_all_districts:
         district_codes = db.scalars(
             select(Region.code).where(
@@ -136,7 +137,7 @@ def _simple_region_codes(db: Session, body: CompanySimpleCreateBody) -> dict[str
     missing = sorted(set(cleaned) - set(regions))
     if missing:
         raise AppError("REGION_NOT_FOUND", "存在无效或停用的地区", 422, {"region_codes": missing})
-    primary = regions.get(body.primary_city_code)
+    primary = db.get(Region, body.primary_city_code)
     if primary is None or primary.level != "CITY":
         raise AppError("PRIMARY_CITY_LEVEL_INVALID", "服务城市必须选择城市级地区", 422)
     invalid_legacy_districts = [
@@ -164,6 +165,8 @@ def _simple_region_codes(db: Session, body: CompanySimpleCreateBody) -> dict[str
             422,
             {"region_codes": sorted(invalid)},
         )
+    if not any(service_region_city_code(db, region) == body.primary_city_code for region in regions.values()):
+        raise AppError("PRIMARY_CITY_INVALID", "主要城市必须与至少一个已选服务区域一致", 422)
     return regions
 
 
@@ -184,6 +187,20 @@ def _valid_service_region(db: Session, region: Region) -> bool:
             and grandparent.level == "CITY"
         )
     return False
+
+
+def service_region_city_code(db: Session, region: Region) -> str | None:
+    """Return the containing city without treating that city as service coverage."""
+
+    if region.level == "CITY":
+        return region.code
+    parent = db.get(Region, region.parent_code) if region.parent_code else None
+    if region.level == "DISTRICT":
+        return parent.code if parent and parent.active and parent.level == "CITY" else None
+    if region.level == "TOWNSHIP" and parent and parent.active and parent.level == "DISTRICT":
+        city = db.get(Region, parent.parent_code) if parent.parent_code else None
+        return city.code if city and city.active and city.level == "CITY" else None
+    return None
 
 
 def _materialize_selected_regions(db: Session, body: CompanySimpleCreateBody) -> None:
@@ -262,6 +279,15 @@ def create_simple_company(
     db.add(PointsAccount(company_id=company.id, balance=0, version=1))
 
     region_codes = sorted(regions)
+    primary_marker_code = (
+        body.primary_city_code
+        if body.primary_city_code in regions
+        else next(
+            code
+            for code in region_codes
+            if service_region_city_code(db, regions[code]) == body.primary_city_code
+        )
+    )
     approved_at = datetime.now(timezone.utc)
     db.add(
         CompanyLeadCapability(
@@ -281,7 +307,7 @@ def create_simple_company(
                 company_id=company.id,
                 region_code=code,
                 region_level=region.level,
-                is_primary_city=code == body.primary_city_code,
+                is_primary_city=code == primary_marker_code,
                 active=True,
                 review_status="APPROVED",
                 reviewed_by=approved_by,
@@ -825,7 +851,7 @@ def _deep_link_references_resource(deep_link: str | None, resource_ids: list[str
 
 
 def _restore_dedup_affected_lead(lead: Lead, *, blocks_dispatch: bool, decision: str) -> None:
-    if lead.current_assignment_id:
+    if lead.current_assignment_id or lead_requires_correction_review(lead):
         return
     if blocks_dispatch:
         if lead.status in {

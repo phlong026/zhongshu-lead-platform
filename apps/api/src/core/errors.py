@@ -16,6 +16,7 @@ class AppError(Exception):
     message: str
     status_code: int = 400
     details: Any = None
+    headers: dict[str, str] | None = None
 
 
 def error_payload(code: str, message: str, request_id: str | None, details: Any = None) -> dict[str, Any]:
@@ -53,6 +54,7 @@ def register_error_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=exc.status_code,
             content=error_payload(exc.code, exc.message, getattr(request.state, "request_id", None), exc.details),
+            headers=exc.headers,
         )
 
     @app.exception_handler(IntegrityError)

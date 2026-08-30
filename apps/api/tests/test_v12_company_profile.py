@@ -59,6 +59,27 @@ def test_primary_service_area_must_be_city(db) -> None:
     assert exc_info.value.code == "PRIMARY_CITY_LEVEL_INVALID"
 
 
+def test_district_only_service_area_does_not_expand_to_whole_city(db) -> None:
+    db.add_all(
+        [
+            Region(code="420100", name="武汉市", level="CITY", aliases=[], active=True),
+            Region(code="420106", name="武昌区", level="DISTRICT", parent_code="420100", aliases=[], active=True),
+            Region(code="420111", name="洪山区", level="DISTRICT", parent_code="420100", aliases=[], active=True),
+        ]
+    )
+    company, _ = _identity(db, "AREA-DISTRICT-ONLY")
+
+    items = replace_service_areas(
+        db,
+        company_id=company.id,
+        region_codes=["420106"],
+        primary_city_code="420100",
+    )
+
+    assert [item.region_code for item in items] == ["420106"]
+    assert items[0].is_primary_city is True
+
+
 def test_service_areas_can_span_multiple_cities(db) -> None:
     db.add_all(
         [

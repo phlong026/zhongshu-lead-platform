@@ -79,6 +79,37 @@ services:
       retries: 5
       start_period: 60s
 
+  lead-export-worker:
+    build: .
+    restart: unless-stopped
+    entrypoint: ["/app/docker/lead-export-worker-entrypoint.sh"]
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-zhongshu}
+      POSTGRES_USER: ${POSTGRES_USER:-zhongshu}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-this-database-password}
+      DATABASE_POOL_SIZE: ${LEAD_EXPORT_DATABASE_POOL_SIZE:-2}
+      DATABASE_MAX_OVERFLOW: ${LEAD_EXPORT_DATABASE_MAX_OVERFLOW:-0}
+      DATABASE_POOL_TIMEOUT_SECONDS: ${LEAD_EXPORT_DATABASE_POOL_TIMEOUT_SECONDS:-30}
+      OBJECT_STORAGE_DIR: /app/storage
+      TMPDIR: /tmp
+      LEAD_EXPORT_POLL_SECONDS: ${LEAD_EXPORT_POLL_SECONDS:-5}
+      LEAD_EXPORT_HEARTBEAT_FILE: /tmp/zhongshu-lead-export-heartbeat
+      LEAD_EXPORT_HEARTBEAT_MAX_AGE_SECONDS: "90"
+    volumes:
+      - private_storage:/app/storage
+    tmpfs:
+      - /tmp:size=640m,mode=0700,uid=10001,gid=10001
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,time; from pathlib import Path; p=Path(os.environ['LEAD_EXPORT_HEARTBEAT_FILE']); age=time.time()-p.stat().st_mtime if p.is_file() else -1; raise SystemExit(0 if 0 <= age <= float(os.environ['LEAD_EXPORT_HEARTBEAT_MAX_AGE_SECONDS']) else 1)"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 60s
+
   nginx:
     image: nginx:1.27-alpine
     restart: unless-stopped

@@ -9,7 +9,11 @@ from ..core.errors import AppError
 from ..core.models import Company, CompanyCapability, CompanyServiceRegion, Region
 from ..core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12
 from ..core.v12_enums import CompanyLeadCapabilityCode
-from .company_service import default_receiver_categories, materialize_nationwide_regions
+from .company_service import (
+    default_receiver_categories,
+    materialize_nationwide_regions,
+    service_region_city_code,
+)
 
 
 VALID_CAPABILITIES = {item.value for item in CompanyLeadCapabilityCode}
@@ -270,8 +274,8 @@ def list_service_areas(db: Session, company_id: str) -> list[CompanyServiceAreaV
 
 
 def _validate_region_hierarchy(db: Session, regions: dict[str, Region], primary_city_code: str) -> None:
-    primary = regions[primary_city_code]
-    if primary.level != "CITY":
+    primary = db.get(Region, primary_city_code)
+    if primary is None or not primary.active or primary.level != "CITY":
         raise AppError("PRIMARY_CITY_LEVEL_INVALID", "主要城市必须选择城市级地区", 422)
     invalid_codes: list[str] = []
     for code, region in regions.items():
@@ -328,9 +332,7 @@ def replace_service_areas(
         raise AppError("SERVICE_AREA_REQUIRED", "至少配置一个服务区域", 422)
     if not primary_city_code:
         raise AppError("PRIMARY_CITY_REQUIRED", "必须配置一个主要城市", 422)
-    if primary_city_code not in cleaned:
-        raise AppError("PRIMARY_CITY_INVALID", "主要城市必须包含在服务区域中", 422)
-    materialize_nationwide_regions(db, cleaned)
+    materialize_nationwide_regions(db, [primary_city_code, *cleaned])
     db.flush()
     regions = {
         region.code: region
@@ -340,6 +342,20 @@ def replace_service_areas(
     if missing:
         raise AppError("REGION_NOT_FOUND", "存在无效或停用的地区编码", 422, {"region_codes": missing})
     _validate_region_hierarchy(db, regions, primary_city_code)
+    primary_marker_code = (
+        primary_city_code
+        if primary_city_code in regions
+        else next(
+            (
+                code
+                for code in cleaned
+                if service_region_city_code(db, regions[code]) == primary_city_code
+            ),
+            None,
+        )
+    )
+    if primary_marker_code is None:
+        raise AppError("PRIMARY_CITY_INVALID", "主要城市必须与至少一个已选服务区域一致", 422)
 
     existing_items = list(
         db.scalars(
@@ -358,14 +374,14 @@ def replace_service_areas(
                 company_id=company_id,
                 region_code=code,
                 region_level=region.level,
-                is_primary_city=code == primary_city_code,
+                is_primary_city=code == primary_marker_code,
                 active=False,
                 review_status="PENDING",
             )
             db.add(item)
         else:
             item.region_level = region.level
-            item.is_primary_city = code == primary_city_code
+            item.is_primary_city = code == primary_marker_code
             removal_pending = bool(item.review_note and item.review_note.startswith(REMOVAL_REQUEST_PREFIX))
             if removal_pending and item.active:
                 item.review_status = "APPROVED"

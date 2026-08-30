@@ -47,9 +47,9 @@ def test_unified_operations_lead_ui_distinguishes_platform_and_supplier_flow() -
     assert "data-platform-pre-dispatch" in js
     assert "请先补充客户联系电话，再派发电话核验" in js
     assert "平台补充资料后再处理" in js
-    assert "platformLeadPage" in js
-    assert "supplierLeadPage" in js
-    assert "leadQueuePager" in js
+    assert "/v1.2/reports/leads" in js
+    assert "leadReportFilters" in js
+    assert "assignmentStatusFilter" in js
     assert "加盟商来源才可退回加盟商补正" in js
 
 
@@ -65,7 +65,7 @@ def test_platform_lead_district_options_use_dom_nodes_not_html_injection() -> No
 def test_supplier_submission_routes_only_missing_location_to_telesales() -> None:
     source = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
     supplier_queue = source[
-        source.index("const supplierRows") : source.index("const sourceOptions")
+        source.index("const rows=leads.map") : source.index("const sourceOptions")
     ]
 
     for decision in (
@@ -192,12 +192,13 @@ def test_candidate_company_picker_uses_actionable_cards_instead_of_a_wide_table(
     assert ".ops-candidate-card" in css
 
 
-def test_operations_review_exposes_bounded_lead_csv_export() -> None:
+def test_operations_review_exposes_audited_background_full_phone_export() -> None:
     admin = Path("apps/admin/public/v12-operations.js").read_text(encoding="utf-8")
 
-    assert "/v1.2/reports/leads/export.csv?period=month&limit=2000" in admin
-    assert "source_kind=${encodeURIComponent(source)}" in admin
-    assert "导出近 30 天客资" in admin
+    assert "/v1.2/reports/leads/exports" in admin
+    assert "lead.phone.export" in admin
+    assert "后台导出完整手机号" in admin
+    assert "系统记录导出人和全部筛选条件" in admin
 
 
 def test_operations_workbench_exposes_backup_password_and_return_record_fields() -> None:

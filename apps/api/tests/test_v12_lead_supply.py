@@ -5,7 +5,7 @@ import pytest
 from apps.api.src.core.auth import Principal
 from apps.api.src.core.errors import AppError
 from apps.api.src.core.models import Assignment, Company, Lead, Region, User, VerificationTask
-from apps.api.src.core.models_v12 import CompanyLeadCapability
+from apps.api.src.core.models_v12 import CompanyLeadCapability, LeadDedupEvent
 from apps.api.src.core.security import fingerprint_phone
 from apps.api.src.core.v12_enums import DuplicateDecision, LeadSourceKind, LeadV12Status
 from apps.api.src.services.company_profile_v12 import (
@@ -255,6 +255,57 @@ def test_recent_duplicate_is_blocked_and_can_be_audited_override(db) -> None:
     assert item.dedup_event_id == result.event_id
     assert second.status == LeadV12Status.READY_DISPATCH.value
     assert second.duplicate_status == DuplicateDecision.OVERRIDDEN.value
+
+
+def test_old_dedup_event_cannot_override_a_new_phone_dedup_result(db) -> None:
+    db.add(Region(code="420100", name="武汉市", level="CITY", aliases=[], active=True))
+    _, user = _seed_identity(db, company_code="STALE-DEDUP")
+    principal = _principal(user.id, None, "lead.manual.manage")
+    existing = create_draft(
+        db,
+        principal=principal,
+        source_kind=LeadSourceKind.PLATFORM_MANUAL,
+        values=_valid_values("13800138123"),
+    )
+    submit_draft(db, lead=existing, principal=principal)
+    db.commit()
+
+    lead = create_draft(
+        db,
+        principal=principal,
+        source_kind=LeadSourceKind.PLATFORM_MANUAL,
+        values=_valid_values("13800138123"),
+    )
+    old_result = submit_draft(db, lead=lead, principal=principal)
+    assert old_result.decision is DuplicateDecision.HARD_DUPLICATE
+    old_event_id = old_result.event_id
+
+    new_fingerprint = fingerprint_phone("13900139123")
+    lead.phone_fingerprint = new_fingerprint
+    lead.duplicate_status = DuplicateDecision.HARD_DUPLICATE.value
+    new_event = LeadDedupEvent(
+        lead_id=lead.id,
+        phone_fingerprint=new_fingerprint,
+        checkpoint="POST_DISPATCH_CORRECTION",
+        decision=DuplicateDecision.HARD_DUPLICATE.value,
+        details_json={},
+    )
+    db.add(new_event)
+    db.flush()
+
+    with pytest.raises(AppError) as exc_info:
+        override_duplicate(
+            db,
+            lead=lead,
+            event_id=old_event_id,
+            reason="旧的去重事件不得解除新号码阻断",
+            approved_by=user.id,
+        )
+
+    assert exc_info.value.code == "DEDUP_OVERRIDE_STALE"
+    assert exc_info.value.status_code == 409
+    assert lead.duplicate_status == DuplicateDecision.HARD_DUPLICATE.value
+    assert new_event.decision == DuplicateDecision.HARD_DUPLICATE.value
 
 
 def test_supplier_upload_requires_approved_capability_and_complete_lead_enters_dispatch_pool(db) -> None:

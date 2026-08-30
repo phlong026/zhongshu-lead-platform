@@ -16,7 +16,7 @@ settings = get_settings()
 
 class RequestContextMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        request.state.request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+        request.state.request_id = str(uuid.uuid4())
         started = time.perf_counter()
         status_code = 500
         try:

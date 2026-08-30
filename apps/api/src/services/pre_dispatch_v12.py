@@ -17,6 +17,7 @@ from ..core.security import decrypt_text, normalize_phone
 from ..core.state_machine_v12 import assert_lead_transition
 from ..core.time import as_utc
 from ..core.v12_enums import LeadSourceKind, LeadV12Status, VerificationTaskType
+from .lead_correction_guard import require_correction_review_resolved
 from .verification_service import latest_published_template
 
 
@@ -59,10 +60,60 @@ def require_pre_dispatch_task_not_overdue(task: VerificationTask) -> None:
     _require_not_overdue(task)
 
 
+def restart_pre_dispatch_after_correction(
+    db: Session,
+    *,
+    lead: Lead,
+) -> VerificationTask:
+    """Invalidate verification of changed facts and queue a fresh task."""
+
+    if lead.status not in {
+        LeadV12Status.PENDING_TELESALES_VERIFY.value,
+        LeadV12Status.PENDING_OPERATION_DISPOSITION.value,
+    }:
+        raise AppError(
+            "PRE_DISPATCH_RESTART_STATE_INVALID",
+            "当前客资不在可重新核验的阶段",
+            409,
+        )
+    tasks = list(
+        db.scalars(
+            select(VerificationTask)
+            .where(
+                VerificationTask.lead_id == lead.id,
+                VerificationTask.task_type
+                == VerificationTaskType.PRE_DISPATCH_VERIFY.value,
+                VerificationTask.status.in_(
+                    {*_ACTIVE_TASK_STATUSES, VerificationTaskStatus.SUBMITTED.value}
+                ),
+            )
+            .order_by(VerificationTask.created_at.asc(), VerificationTask.id.asc())
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
+    )
+    for task in tasks:
+        task.status = VerificationTaskStatus.RELEASED.value
+        task.lock_version += 1
+    if lead.status == LeadV12Status.PENDING_OPERATION_DISPOSITION.value:
+        assert_lead_transition(lead.status, LeadV12Status.DRAFT)
+        lead.status = LeadV12Status.DRAFT.value
+        assert_lead_transition(lead.status, LeadV12Status.PENDING_REVIEW)
+        lead.status = LeadV12Status.PENDING_REVIEW.value
+    lead.review_status = "PENDING"
+    lead.pending_reason = None
+    db.flush()
+    return queue_pre_dispatch_task(
+        db,
+        lead_id=lead.id,
+        reason="CORRECTION_REVERIFY_REQUIRED",
+    )
+
+
 def _lead_or_raise(db: Session, lead_id: str, *, lock: bool = False) -> Lead:
     stmt = select(Lead).where(Lead.id == lead_id)
     if lock:
-        stmt = stmt.with_for_update()
+        stmt = stmt.with_for_update().execution_options(populate_existing=True)
     lead = db.scalar(stmt)
     if lead is None:
         raise AppError("LEAD_NOT_FOUND", "客资不存在", 404)
@@ -86,11 +137,32 @@ def _task_or_raise(db: Session, task_id: str, *, lock: bool = False) -> Verifica
         VerificationTask.task_type == VerificationTaskType.PRE_DISPATCH_VERIFY.value,
     )
     if lock:
-        stmt = stmt.with_for_update()
+        stmt = stmt.with_for_update().execution_options(populate_existing=True)
     task = db.scalar(stmt)
     if task is None:
         raise AppError("PRE_DISPATCH_TASK_NOT_FOUND", "前置电销核验任务不存在", 404)
     return task
+
+
+def _lead_then_task_for_update(
+    db: Session,
+    task_id: str,
+) -> tuple[Lead, VerificationTask]:
+    """Lock every pre-dispatch mutation in the same Lead -> Task order."""
+
+    lead_id = db.scalar(
+        select(VerificationTask.lead_id).where(
+            VerificationTask.id == task_id,
+            VerificationTask.task_type == VerificationTaskType.PRE_DISPATCH_VERIFY.value,
+        )
+    )
+    if lead_id is None:
+        raise AppError("PRE_DISPATCH_TASK_NOT_FOUND", "前置电销核验任务不存在", 404)
+    lead = _lead_or_raise(db, lead_id, lock=True)
+    task = _task_or_raise(db, task_id, lock=True)
+    if task.lead_id != lead.id:
+        raise AppError("PRE_DISPATCH_TASK_CONFLICT", "前置电销核验任务关联客资已变化", 409)
+    return lead, task
 
 
 def _assignment_snapshot(task: VerificationTask) -> dict[str, Any]:
@@ -119,6 +191,7 @@ def queue_pre_dispatch_task(
     if not normalized_reason:
         raise AppError("PRE_DISPATCH_REASON_REQUIRED", "派发前置核验必须填写原因", 422)
     lead = _lead_or_raise(db, lead_id, lock=True)
+    require_correction_review_resolved(lead)
     if lead.status == LeadV12Status.PENDING_TELESALES_VERIFY.value:
         existing = db.scalar(
             select(VerificationTask)
@@ -141,8 +214,9 @@ def queue_pre_dispatch_task(
         status=VerificationTaskStatus.PENDING.value,
     )
     db.add(task)
-    assert_lead_transition(lead.status, LeadV12Status.PENDING_TELESALES_VERIFY)
-    lead.status = LeadV12Status.PENDING_TELESALES_VERIFY.value
+    if lead.status != LeadV12Status.PENDING_TELESALES_VERIFY.value:
+        assert_lead_transition(lead.status, LeadV12Status.PENDING_TELESALES_VERIFY)
+        lead.status = LeadV12Status.PENDING_TELESALES_VERIFY.value
     lead.pending_reason = normalized_reason
     db.flush()
     return task
@@ -161,6 +235,7 @@ def assign_pre_dispatch_task(
     if not normalized_reason:
         raise AppError("PRE_DISPATCH_REASON_REQUIRED", "派发前置核验必须填写原因", 422)
     lead = _lead_or_raise(db, lead_id, lock=True)
+    require_correction_review_resolved(lead)
     allowed_statuses = {
         LeadV12Status.PENDING_REVIEW.value,
         LeadV12Status.PENDING_TELESALES_VERIFY.value,
@@ -230,7 +305,8 @@ def assign_pre_dispatch_task(
 
 
 def start_pre_dispatch_task(db: Session, *, task_id: str, principal: Principal) -> VerificationTask:
-    task = _task_or_raise(db, task_id, lock=True)
+    lead, task = _lead_then_task_for_update(db, task_id)
+    require_correction_review_resolved(lead)
     _require_not_overdue(task)
     if task.status == VerificationTaskStatus.IN_PROGRESS.value and task.assignee_user_id == principal.user_id:
         return task
@@ -254,7 +330,7 @@ def submit_pre_dispatch_verification(
     conclusion: str,
     note: str,
 ) -> VerificationSubmission:
-    task = _task_or_raise(db, task_id, lock=True)
+    lead, task = _lead_then_task_for_update(db, task_id)
     normalized_conclusion = conclusion.strip().upper()
     normalized_note = note.strip()
     if normalized_conclusion not in _CONCLUSIONS:
@@ -272,7 +348,7 @@ def submit_pre_dispatch_verification(
     _require_not_overdue(task)
     if task.status != VerificationTaskStatus.IN_PROGRESS.value or task.assignee_user_id != principal.user_id:
         raise AppError("PRE_DISPATCH_TASK_NOT_OWNED", "任务不属于当前电销人员或尚未开始", 409)
-    lead = _lead_or_raise(db, task.lead_id, lock=True)
+    require_correction_review_resolved(lead)
     if lead.status != LeadV12Status.PENDING_TELESALES_VERIFY.value:
         raise AppError("PRE_DISPATCH_LEAD_STATE_INVALID", "客资当前不在前置电销核验阶段", 409)
     task.contact_result = contact_result.strip().upper()
@@ -312,6 +388,7 @@ def decide_pre_dispatch_disposition(
     if not normalized_note:
         raise AppError("PRE_DISPATCH_NOTE_REQUIRED", "运营处置必须填写说明", 422)
     lead = _lead_or_raise(db, lead_id, lock=True)
+    require_correction_review_resolved(lead)
     if lead.status != LeadV12Status.PENDING_OPERATION_DISPOSITION.value:
         raise AppError("PRE_DISPATCH_LEAD_STATE_INVALID", "当前客资不在待运营处置阶段", 409)
     task = db.scalar(

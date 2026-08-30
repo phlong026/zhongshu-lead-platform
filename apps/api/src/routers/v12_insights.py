@@ -1,17 +1,26 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 import csv
+import hashlib
 from io import StringIO
 from datetime import datetime, timedelta, timezone
+from threading import Lock
 from typing import Any
+from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi.responses import StreamingResponse
 from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
 
 from ..core import models_v12 as _models_v12  # noqa: F401
 from ..core import reward_models_v12 as _reward_models_v12  # noqa: F401
 from ..core.auth import CurrentPrincipal, require_permissions
+from ..core.config import get_settings
 from ..core.database import get_db
 from ..core.errors import AppError
 from ..core.models import (
@@ -20,6 +29,7 @@ from ..core.models import (
     Company,
     FollowUp,
     Lead,
+    LeadExportTask,
     Notification,
     NotificationOutbox,
     PointsAccount,
@@ -31,15 +41,189 @@ from ..core.models import (
 from ..core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12, SupplierLeadReward
 from ..core.responses import ok, page
 from ..core.security import decrypt_text, mask_phone
+from ..core.time import as_utc
 from ..core.v12_enums import VerificationTaskType
+from ..schemas.v12_reports import LeadExportRequestBody, LeadReportSearchBody
+from ..services.audit import write_audit
+from ..services.lead_export_v12 import lead_report_to_dicts, list_lead_report_rows
 from ..services.return_v12 import return_request_to_dict
-from ..services.storage import create_file_access_token
+from ..services.storage import create_file_access_token, get_storage
 
 router = APIRouter(prefix="/v1.2", tags=["v1.2-reports-audit"])
 
 VERIFICATION_PENDING_LEAD_STATUSES = (
     "PENDING_REVIEW",
     "PENDING_TELESALES_VERIFY",
+)
+LEAD_EXPORT_ACTIVE_STATUSES = ("PENDING", "RUNNING")
+_lead_export_queue_lock = Lock()
+
+
+@contextmanager
+def _lead_export_queue_guard() -> Iterator[None]:
+    with _lead_export_queue_lock:
+        yield
+
+
+def _acquire_lead_export_queue_lock(db: Session) -> None:
+    if db.get_bind().dialect.name != "postgresql":
+        return
+    digest = hashlib.sha256(b"v12-lead-export-queue").digest()
+    lock_id = int.from_bytes(digest[:8], byteorder="big", signed=True)
+    db.execute(select(func.pg_advisory_xact_lock(lock_id)))
+
+
+def _enforce_lead_export_queue_limits(
+    db: Session,
+    *,
+    requested_by: str,
+    now: datetime,
+) -> None:
+    settings = get_settings()
+    requester_active = int(
+        db.scalar(
+            select(func.count(LeadExportTask.id)).where(
+                LeadExportTask.requested_by == requested_by,
+                LeadExportTask.status.in_(LEAD_EXPORT_ACTIVE_STATUSES),
+            )
+        )
+        or 0
+    )
+    if requester_active >= settings.lead_export_active_per_user_limit:
+        raise AppError(
+            "LEAD_EXPORT_ACTIVE_LIMIT",
+            "当前账号已有过多导出任务在处理，请完成后再试",
+            409,
+            {
+                "scope": "REQUESTER",
+                "active": requester_active,
+                "limit": settings.lead_export_active_per_user_limit,
+            },
+        )
+
+    global_active = int(
+        db.scalar(
+            select(func.count(LeadExportTask.id)).where(
+                LeadExportTask.status.in_(LEAD_EXPORT_ACTIVE_STATUSES)
+            )
+        )
+        or 0
+    )
+    if global_active >= settings.lead_export_active_global_limit:
+        raise AppError(
+            "LEAD_EXPORT_ACTIVE_LIMIT",
+            "导出队列已满，请稍后再试",
+            409,
+            {
+                "scope": "GLOBAL",
+                "active": global_active,
+                "limit": settings.lead_export_active_global_limit,
+            },
+        )
+
+    rolling_start = now - timedelta(hours=24)
+    requester_24h = int(
+        db.scalar(
+            select(func.count(LeadExportTask.id)).where(
+                LeadExportTask.requested_by == requested_by,
+                LeadExportTask.created_at >= rolling_start,
+            )
+        )
+        or 0
+    )
+    if requester_24h < settings.lead_export_rolling_24h_per_user_limit:
+        return
+    earliest = db.scalar(
+        select(func.min(LeadExportTask.created_at)).where(
+            LeadExportTask.requested_by == requested_by,
+            LeadExportTask.created_at >= rolling_start,
+        )
+    )
+    retry_at = (as_utc(earliest) or now) + timedelta(hours=24)
+    retry_after = max(1, int((retry_at - now).total_seconds()) + 1)
+    raise AppError(
+        "LEAD_EXPORT_RATE_LIMIT",
+        "24 小时内导出次数已达上限",
+        429,
+        {
+            "scope": "REQUESTER_24H",
+            "count": requester_24h,
+            "limit": settings.lead_export_rolling_24h_per_user_limit,
+            "retry_after_seconds": retry_after,
+        },
+        {"Retry-After": str(retry_after)},
+    )
+
+OPERATION_PROCESSED_ACTIONS_BY_PERMISSION = {
+    "lead.edit": frozenset({"LEAD_STAGING_UPDATE", "LEAD_DUPLICATE_DECISION"}),
+    "lead.manual.manage": frozenset(
+        {
+            "V12_PLATFORM_LEAD_DRAFT_CREATE",
+            "V12_PLATFORM_LEAD_DRAFT_UPDATE",
+            "V12_PLATFORM_LEAD_FACT_CORRECTION",
+            "V12_PLATFORM_LEAD_CORRECTION_RECHECK",
+            "V12_PLATFORM_LEAD_CORRECTION_REDISPATCH",
+            "V12_PLATFORM_LEAD_SUBMIT",
+        }
+    ),
+    "lead.supplier.review": frozenset(
+        {
+            "V12_SUPPLIER_LEAD_REVIEW",
+            "V12_PRE_DISPATCH_DISPOSITION",
+        }
+    ),
+    "lead.dedup.override": frozenset({"V12_DEDUP_OVERRIDE"}),
+    "lead.dispatch": frozenset({"LEAD_DISPATCH", "V12_MANUAL_DISPATCH"}),
+    "assignment.release": frozenset({"ASSIGNMENT_RELEASE"}),
+    "return.review": frozenset({"RETURN_REVIEW", "V12_RETURN_FINAL_REVIEW"}),
+    "verification.read": frozenset(
+        {
+            "VERIFICATION_TASK_CREATE",
+            "VERIFICATION_TASK_ASSIGN",
+            "VERIFICATION_TASK_RECLAIM",
+            "V12_PRE_DISPATCH_VERIFY_ASSIGN",
+            "V12_RETURN_VERIFY_ASSIGN",
+        }
+    ),
+    "company.profile.review": frozenset(
+        {
+            "COMPANY_CREATE",
+            "COMPANY_SIMPLE_CREATE",
+            "COMPANY_UPDATE",
+            "V12_COMPANY_PROFILE_BULK_APPROVE",
+            "V12_COMPANY_CAPABILITY_REVIEW",
+            "V12_COMPANY_SERVICE_AREA_REVIEW",
+            "V12_COMPANY_CAPABILITY_CONFIGURE",
+            "V12_COMPANY_SERVICE_AREAS_CONFIGURE",
+        }
+    ),
+    "company.account.manage": frozenset(
+        {
+            "COMPANY_WECHAT_UNBIND",
+            "INVITE_CREATE",
+            "INVITE_REVOKE",
+            "COMPANY_ACCOUNT_REQUEST_APPROVE",
+            "COMPANY_ACCOUNT_REQUEST_REJECT",
+            "COMPANY_ACCOUNT_CREATE",
+            "COMPANY_ACCOUNT_ENABLE",
+            "COMPANY_ACCOUNT_DISABLE",
+            "COMPANY_ACCOUNT_PASSWORD_RESET",
+        }
+    ),
+}
+
+OPERATION_PROCESSED_ACTION_PRIORITY = {
+    action: 10
+    for actions in OPERATION_PROCESSED_ACTIONS_BY_PERMISSION.values()
+    for action in actions
+}
+OPERATION_PROCESSED_ACTION_PRIORITY.update(
+    {
+        "V12_MANUAL_DISPATCH": 1,
+        "V12_COMPANY_PROFILE_BULK_APPROVE": 1,
+        "V12_PRE_DISPATCH_VERIFY_ASSIGN": 20,
+        "V12_RETURN_VERIFY_ASSIGN": 20,
+    }
 )
 
 
@@ -70,6 +254,24 @@ def _latest_datetime(*values: datetime | None) -> datetime | None:
 
 def _time(column, start: datetime | None, end: datetime | None) -> list[Any]:
     return ([column >= start] if start else []) + ([column <= end] if end else [])
+
+
+def _validated_query_time_range(
+    start: datetime | None,
+    end: datetime | None,
+) -> tuple[datetime | None, datetime | None]:
+    for value in (start, end):
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise AppError(
+                "DATE_TIMEZONE_REQUIRED",
+                "日期时间必须包含时区，例如 +08:00",
+                422,
+            )
+    normalized_start = start.astimezone(timezone.utc) if start else None
+    normalized_end = end.astimezone(timezone.utc) if end else None
+    if normalized_start and normalized_end and normalized_start > normalized_end:
+        raise AppError("DATE_RANGE_INVALID", "起始时间不能晚于结束时间", 422)
+    return normalized_start, normalized_end
 
 
 def _period_window(period: str | None) -> tuple[str, datetime, datetime]:
@@ -916,6 +1118,314 @@ def own_report(
     })
 
 
+def _lead_export_task_dict(task: LeadExportTask) -> dict[str, Any]:
+    return {
+        "id": task.id,
+        "requested_by_user_id": task.requested_by,
+        "requested_by_name": task.requested_by_name,
+        "status": task.status,
+        "filters": task.filters_json,
+        "include_full_phone": task.include_full_phone,
+        "row_count": task.row_count,
+        "file_name": task.file_name,
+        "file_size": task.file_size,
+        "error_message": task.error_message,
+        "started_at": _iso(task.started_at),
+        "completed_at": _iso(task.completed_at),
+        "expires_at": _iso(task.expires_at),
+        "created_at": _iso(task.created_at),
+    }
+
+
+def _owned_lead_export_task(
+    db: Session,
+    *,
+    task_id: str,
+    principal: CurrentPrincipal,
+) -> LeadExportTask:
+    task = db.get(LeadExportTask, task_id)
+    if task is None:
+        raise AppError("LEAD_EXPORT_NOT_FOUND", "导出任务不存在", 404)
+    if not principal.can("*") and task.requested_by != principal.user_id:
+        raise AppError("FORBIDDEN", "无权查看其他人的导出任务", 403)
+    return task
+
+
+def _existing_lead_export_task(
+    db: Session,
+    *,
+    idempotency_key: str,
+    requested_by: str,
+    filters: dict[str, Any],
+) -> LeadExportTask | None:
+    existing = db.scalar(
+        select(LeadExportTask).where(
+            LeadExportTask.idempotency_key == idempotency_key
+        )
+    )
+    if existing is None:
+        return None
+    if existing.requested_by != requested_by or existing.filters_json != filters:
+        raise AppError("IDEMPOTENCY_CONFLICT", "幂等键已被其他导出请求使用", 409)
+    return existing
+
+
+@router.get("/reports/leads/filter-options")
+def lead_report_filter_options(
+    request: Request,
+    _principal=Depends(require_permissions("lead.read")),
+    db: Session = Depends(get_db),
+):
+    submitters = db.execute(
+        select(User.id, User.display_name)
+        .join(Lead, Lead.submitter_user_id == User.id)
+        .where(Lead.source_kind.is_not(None))
+        .distinct()
+        .order_by(User.display_name.asc(), User.id.asc())
+    ).all()
+    receiver_companies = db.execute(
+        select(Company.id, Company.name, Company.status).order_by(
+            Company.name.asc(),
+            Company.id.asc(),
+        )
+    ).all()
+    assigners = db.execute(
+        select(User.id, User.display_name, User.status)
+        .join(Assignment, Assignment.assigned_by == User.id)
+        .join(Lead, Lead.id == Assignment.lead_id)
+        .where(Lead.source_kind.is_not(None))
+        .distinct()
+        .order_by(User.display_name.asc(), User.id.asc())
+    ).all()
+    return ok(
+        request,
+        {
+            "submitters": [
+                {"id": item.id, "name": item.display_name} for item in submitters
+            ],
+            "receiver_companies": [
+                {"id": item.id, "name": item.name, "status": item.status}
+                for item in receiver_companies
+            ],
+            "assigners": [
+                {"id": item.id, "name": item.display_name, "status": item.status}
+                for item in assigners
+            ],
+        },
+    )
+
+
+@router.get("/reports/leads")
+def lead_report_list(
+    request: Request,
+    principal=Depends(require_permissions("lead.read")),
+    db: Session = Depends(get_db),
+    created_from: datetime | None = Query(default=None),
+    created_to: datetime | None = Query(default=None),
+    source_kind: str | None = Query(default=None),
+    submitter_user_id: str | None = Query(default=None),
+    region: str | None = Query(default=None, max_length=64),
+    receiver_company_id: str | None = Query(default=None),
+    lead_status: str | None = Query(default=None),
+    assignment_status: str | None = Query(default=None),
+    assigned_by_user_id: str | None = Query(default=None),
+    page_no: int = Query(default=1, alias="page", ge=1),
+    page_size: int = Query(default=20, ge=1, le=200),
+):
+    created_from, created_to = _validated_query_time_range(
+        created_from,
+        created_to,
+    )
+    filters = {
+        "created_from": created_from,
+        "created_to": created_to,
+        "source_kind": source_kind,
+        "submitter_user_id": submitter_user_id,
+        "phone_hash": None,
+        "region": region,
+        "receiver_company_id": receiver_company_id,
+        "lead_status": lead_status,
+        "assignment_status": assignment_status,
+        "assigned_by_user_id": assigned_by_user_id,
+    }
+    rows, total = list_lead_report_rows(
+        db,
+        filters=filters,
+        page_no=page_no,
+        page_size=page_size,
+    )
+    return ok(
+        request,
+        page(lead_report_to_dicts(db, rows), total, page_no, page_size),
+    )
+
+
+@router.post("/reports/leads/search")
+def search_lead_report(
+    body: LeadReportSearchBody,
+    request: Request,
+    principal=Depends(require_permissions("lead.read")),
+    db: Session = Depends(get_db),
+):
+    if body.phone and not principal.can("lead.phone.export"):
+        raise AppError("FORBIDDEN", "无权按完整手机号筛选", 403)
+    filters = body.filters()
+    rows, total = list_lead_report_rows(
+        db,
+        filters=filters,
+        page_no=body.page,
+        page_size=body.page_size,
+    )
+    return ok(
+        request,
+        page(lead_report_to_dicts(db, rows), total, body.page, body.page_size),
+    )
+
+
+@router.post("/reports/leads/exports")
+def request_lead_export(
+    body: LeadExportRequestBody,
+    request: Request,
+    principal=Depends(require_permissions("lead.phone.export")),
+    db: Session = Depends(get_db),
+):
+    filters = body.filters()
+    with _lead_export_queue_guard():
+        _acquire_lead_export_queue_lock(db)
+        existing = _existing_lead_export_task(
+            db,
+            idempotency_key=body.idempotency_key,
+            requested_by=principal.user_id,
+            filters=filters,
+        )
+        if existing is not None:
+            return ok(request, _lead_export_task_dict(existing), "导出任务已创建")
+        _enforce_lead_export_queue_limits(
+            db,
+            requested_by=principal.user_id,
+            now=datetime.now(timezone.utc),
+        )
+        task = LeadExportTask(
+            requested_by=principal.user_id,
+            requested_by_name=principal.display_name,
+            status="PENDING",
+            filters_json=filters,
+            include_full_phone=True,
+            idempotency_key=body.idempotency_key,
+            row_count=0,
+        )
+        try:
+            db.add(task)
+            db.flush()
+            write_audit(
+                db,
+                principal=principal,
+                action="V12_LEAD_EXPORT_REQUESTED",
+                resource_type="lead_export_task",
+                resource_id=task.id,
+                after={"status": task.status, "include_full_phone": True},
+                metadata={"filters": filters},
+                request_id=request.state.request_id,
+            )
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            existing = _existing_lead_export_task(
+                db,
+                idempotency_key=body.idempotency_key,
+                requested_by=principal.user_id,
+                filters=filters,
+            )
+            if existing is None:
+                raise
+            return ok(request, _lead_export_task_dict(existing), "导出任务已创建")
+        return ok(request, _lead_export_task_dict(task), "完整手机号导出任务已提交")
+
+
+@router.get("/reports/leads/exports")
+def list_lead_exports(
+    request: Request,
+    principal=Depends(require_permissions("lead.phone.export")),
+    db: Session = Depends(get_db),
+    page_no: int = Query(default=1, alias="page", ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+):
+    filters = [] if principal.can("*") else [LeadExportTask.requested_by == principal.user_id]
+    total = int(db.scalar(select(func.count(LeadExportTask.id)).where(*filters)) or 0)
+    items = list(
+        db.scalars(
+            select(LeadExportTask)
+            .where(*filters)
+            .order_by(LeadExportTask.created_at.desc())
+            .offset((page_no - 1) * page_size)
+            .limit(page_size)
+        ).all()
+    )
+    return ok(
+        request,
+        page(
+            [_lead_export_task_dict(task) for task in items],
+            total,
+            page_no,
+            page_size,
+        ),
+    )
+
+
+@router.get("/reports/leads/exports/{task_id}")
+def get_lead_export(
+    task_id: str,
+    request: Request,
+    principal=Depends(require_permissions("lead.phone.export")),
+    db: Session = Depends(get_db),
+):
+    task = _owned_lead_export_task(db, task_id=task_id, principal=principal)
+    return ok(request, _lead_export_task_dict(task))
+
+
+@router.get("/reports/leads/exports/{task_id}/download")
+def download_lead_export(
+    task_id: str,
+    request: Request,
+    principal=Depends(require_permissions("lead.phone.export")),
+    db: Session = Depends(get_db),
+):
+    task = _owned_lead_export_task(db, task_id=task_id, principal=principal)
+    if task.status != "COMPLETED" or not task.object_key:
+        raise AppError("LEAD_EXPORT_NOT_READY", "导出文件尚未生成", 409)
+    if task.expires_at and as_utc(task.expires_at) < datetime.now(timezone.utc):
+        raise AppError("LEAD_EXPORT_EXPIRED", "导出文件已过期，请重新导出", 410)
+    storage = get_storage()
+    filename = task.file_name or "lead-export.zip"
+    headers = {
+        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+        "Cache-Control": "private, no-store",
+    }
+    if task.file_size is not None:
+        headers["Content-Length"] = str(task.file_size)
+    write_audit(
+        db,
+        principal=principal,
+        action="V12_LEAD_EXPORT_DOWNLOADED",
+        resource_type="lead_export_task",
+        resource_id=task.id,
+        after={"status": task.status, "file_name": filename},
+        metadata={
+            "owner_user_id": task.requested_by,
+            "filters": task.filters_json,
+            "file_sha256": task.sha256,
+            "file_size": task.file_size,
+        },
+        request_id=request.state.request_id,
+    )
+    db.commit()
+    return StreamingResponse(
+        storage.iter_read(task.object_key),
+        media_type=task.mime_type or "application/zip",
+        headers=headers,
+    )
+
+
 @router.get("/reports/leads/export.csv")
 def export_leads_csv(
     _principal=Depends(require_permissions("lead.read")),
@@ -1121,6 +1631,95 @@ def _display_name(user: User | None) -> str | None:
     if user is None:
         return None
     return user.display_name or user.username
+
+
+@router.get("/operations/my-processed")
+def my_processed_operations(
+    request: Request,
+    principal=Depends(
+        require_permissions("dashboard.operation.read", "audit.read")
+    ),
+    db: Session = Depends(get_db),
+    created_from: datetime | None = Query(default=None),
+    created_to: datetime | None = Query(default=None),
+    page_no: int = Query(default=1, alias="page", ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+):
+    created_from, created_to = _validated_query_time_range(
+        created_from,
+        created_to,
+    )
+    if created_from is None and created_to is None:
+        local_now = datetime.now(ZoneInfo("Asia/Shanghai"))
+        local_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        created_from = local_start.astimezone(timezone.utc)
+        created_to = (local_start + timedelta(days=1)).astimezone(timezone.utc)
+        time_filters = [
+            AuditLog.created_at >= created_from,
+            AuditLog.created_at < created_to,
+        ]
+    else:
+        time_filters = (
+            ([AuditLog.created_at >= created_from] if created_from else [])
+            + ([AuditLog.created_at < created_to] if created_to else [])
+        )
+
+    priority = case(
+        *[
+            (AuditLog.action == action, value)
+            for action, value in OPERATION_PROCESSED_ACTION_PRIORITY.items()
+        ],
+        else_=99,
+    )
+    ranked = (
+        select(
+            AuditLog.id.label("audit_id"),
+            func.row_number()
+            .over(
+                partition_by=func.coalesce(AuditLog.request_id, AuditLog.id),
+                order_by=(priority.asc(), AuditLog.created_at.desc(), AuditLog.id.desc()),
+            )
+            .label("row_number"),
+        )
+        .where(
+            AuditLog.actor_user_id == principal.user_id,
+            AuditLog.action.in_(tuple(OPERATION_PROCESSED_ACTION_PRIORITY)),
+            *time_filters,
+        )
+        .subquery()
+    )
+    total = int(
+        db.scalar(
+            select(func.count()).select_from(ranked).where(ranked.c.row_number == 1)
+        )
+        or 0
+    )
+    items = list(
+        db.scalars(
+            select(AuditLog)
+            .join(ranked, ranked.c.audit_id == AuditLog.id)
+            .where(ranked.c.row_number == 1)
+            .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+            .offset((page_no - 1) * page_size)
+            .limit(page_size)
+        ).all()
+    )
+    data = page(
+        [
+            _audit(item, actor_name=principal.display_name)
+            for item in items
+        ],
+        total,
+        page_no,
+        page_size,
+    )
+    data["scope"] = {
+        "actor_user_id": principal.user_id,
+        "created_from": _iso(created_from),
+        "created_to": _iso(created_to),
+        "timezone": "Asia/Shanghai",
+    }
+    return ok(request, data)
 
 
 def _trace(db: Session, business_id: str, *, evidence_user_id: str | None = None) -> dict[str, Any]:

@@ -13,6 +13,7 @@ class LeadDraftBody(BaseModel):
     category_code: str | None = Field(default=None, max_length=64)
     brand_code: str | None = Field(default=None, max_length=64)
     source_channel: str | None = Field(default=None, max_length=64)
+    source_detail: str | None = Field(default=None, max_length=128)
     need_summary: str | None = Field(default=None, max_length=2000)
     budget_min: int | None = Field(default=None, ge=0)
     budget_max: int | None = Field(default=None, ge=0)
@@ -36,11 +37,67 @@ class LeadDraftUpdateBody(BaseModel):
     category_code: str | None = Field(default=None, max_length=64)
     brand_code: str | None = Field(default=None, max_length=64)
     source_channel: str | None = Field(default=None, max_length=64)
+    source_detail: str | None = Field(default=None, max_length=128)
     need_summary: str | None = Field(default=None, max_length=2000)
     budget_min: int | None = Field(default=None, ge=0)
     budget_max: int | None = Field(default=None, ge=0)
     acquisition_cost_cents: int | None = Field(default=None, ge=0)
     consent_confirmed: bool | None = None
+
+
+class LeadQuickDispatchBody(LeadDraftBody):
+    company_id: str = Field(min_length=1, max_length=36)
+    idempotency_key: str = Field(min_length=8, max_length=64)
+    note: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("company_id", "idempotency_key")
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("必填字段不能为空")
+        return normalized
+
+    @field_validator("note")
+    @classmethod
+    def normalize_note(cls, value: str | None) -> str | None:
+        return value.strip() if value and value.strip() else None
+
+
+class LeadCorrectionBody(LeadDraftUpdateBody):
+    reason: str | None = Field(default=None, max_length=1000)
+    expected_snapshot_version: int | None = Field(default=None, ge=1)
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, value: str | None) -> str | None:
+        return value.strip() if value and value.strip() else None
+
+
+class LeadCorrectionRecheckBody(BaseModel):
+    reason: str = Field(min_length=5, max_length=1000)
+    expected_snapshot_version: int = Field(ge=1)
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, value: str) -> str:
+        normalized = value.strip()
+        if len(normalized) < 5:
+            raise ValueError("重新检查原因至少 5 个字符")
+        return normalized
+
+
+class LeadCorrectionRedispatchBody(BaseModel):
+    reason: str = Field(min_length=5, max_length=1000)
+    expected_snapshot_version: int = Field(ge=1)
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, value: str) -> str:
+        normalized = value.strip()
+        if len(normalized) < 5:
+            raise ValueError("解除派发原因至少 5 个字符")
+        return normalized
 
 
 class SupplierReviewBody(BaseModel):

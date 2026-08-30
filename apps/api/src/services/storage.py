@@ -6,6 +6,7 @@ import mimetypes
 import os
 import pathlib
 import uuid
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
@@ -23,6 +24,19 @@ settings = get_settings()
 COS_CLIENT_CONFIG = Config(s3={"addressing_style": "virtual"})
 
 
+def _validated_object_key(value: str) -> str:
+    object_key = value.strip()
+    parts = pathlib.PurePosixPath(object_key).parts
+    if (
+        not object_key
+        or object_key.startswith("/")
+        or "\\" in object_key
+        or any(part in {"", ".", ".."} for part in parts)
+    ):
+        raise AppError("STORAGE_PATH_INVALID", "文件路径非法", 400)
+    return object_key
+
+
 @dataclass(frozen=True)
 class StoredObject:
     object_key: str
@@ -36,6 +50,21 @@ class ObjectStorage:
         raise NotImplementedError
 
     def read(self, object_key: str) -> bytes:
+        raise NotImplementedError
+
+    def save_file(
+        self,
+        source: pathlib.Path,
+        *,
+        prefix: str,
+        filename: str,
+        mime_type: str,
+        object_key: str | None = None,
+        progress_callback: Callable[[], None] | None = None,
+    ) -> StoredObject:
+        raise NotImplementedError
+
+    def iter_read(self, object_key: str, *, chunk_size: int = 1024 * 1024) -> Iterator[bytes]:
         raise NotImplementedError
 
     def delete(self, object_key: str) -> None:
@@ -71,6 +100,58 @@ class LocalObjectStorage(ObjectStorage):
         if self.root not in target.parents or not target.exists():
             raise AppError("FILE_NOT_FOUND", "文件不存在", 404)
         return target.read_bytes()
+
+    def save_file(
+        self,
+        source: pathlib.Path,
+        *,
+        prefix: str,
+        filename: str,
+        mime_type: str,
+        object_key: str | None = None,
+        progress_callback: Callable[[], None] | None = None,
+    ) -> StoredObject:
+        suffix = pathlib.Path(filename).suffix.lower() or mimetypes.guess_extension(mime_type) or ".bin"
+        object_key = _validated_object_key(
+            object_key or f"{prefix.strip('/')}/{uuid.uuid4().hex}{suffix}"
+        )
+        target = (self.root / object_key).resolve()
+        if self.root not in target.parents:
+            raise AppError("STORAGE_PATH_INVALID", "文件路径非法", 400)
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        target.parent.chmod(0o700)
+        digest = hashlib.sha256()
+        size = 0
+        try:
+            with source.open("rb") as input_file, target.open("xb") as output_file:
+                target.chmod(0o600)
+                while chunk := input_file.read(1024 * 1024):
+                    output_file.write(chunk)
+                    digest.update(chunk)
+                    size += len(chunk)
+                    if progress_callback is not None:
+                        progress_callback()
+        except Exception:
+            target.unlink(missing_ok=True)
+            raise
+        return StoredObject(
+            object_key=object_key,
+            size=size,
+            sha256=digest.hexdigest(),
+            mime_type=mime_type,
+        )
+
+    def iter_read(self, object_key: str, *, chunk_size: int = 1024 * 1024) -> Iterator[bytes]:
+        target = (self.root / object_key).resolve()
+        if self.root not in target.parents or not target.exists():
+            raise AppError("FILE_NOT_FOUND", "文件不存在", 404)
+
+        def chunks() -> Iterator[bytes]:
+            with target.open("rb") as file:
+                while chunk := file.read(chunk_size):
+                    yield chunk
+
+        return chunks()
 
     def delete(self, object_key: str) -> None:
         target = (self.root / object_key).resolve()
@@ -133,6 +214,62 @@ class S3ObjectStorage(ObjectStorage):
     def read(self, object_key: str) -> bytes:
         response = self.client.get_object(Bucket=settings.s3_bucket, Key=object_key)
         return response["Body"].read()
+
+    def save_file(
+        self,
+        source: pathlib.Path,
+        *,
+        prefix: str,
+        filename: str,
+        mime_type: str,
+        object_key: str | None = None,
+        progress_callback: Callable[[], None] | None = None,
+    ) -> StoredObject:
+        suffix = pathlib.Path(filename).suffix.lower() or mimetypes.guess_extension(mime_type) or ".bin"
+        object_key = _validated_object_key(
+            object_key or f"{prefix.strip('/')}/{uuid.uuid4().hex}{suffix}"
+        )
+        digest = hashlib.sha256()
+        with source.open("rb") as file:
+            while chunk := file.read(1024 * 1024):
+                digest.update(chunk)
+                if progress_callback is not None:
+                    progress_callback()
+        sha256 = digest.hexdigest()
+        upload_options: dict[str, object] = {
+            "ExtraArgs": {
+                "ContentType": mime_type,
+                "Metadata": {"sha256": sha256},
+                "ServerSideEncryption": "AES256",
+            },
+        }
+        if progress_callback is not None:
+            upload_options["Callback"] = lambda _bytes_transferred: progress_callback()
+        self.client.upload_file(
+            str(source),
+            settings.s3_bucket,
+            object_key,
+            **upload_options,
+        )
+        return StoredObject(
+            object_key=object_key,
+            size=source.stat().st_size,
+            sha256=sha256,
+            mime_type=mime_type,
+        )
+
+    def iter_read(self, object_key: str, *, chunk_size: int = 1024 * 1024) -> Iterator[bytes]:
+        response = self.client.get_object(Bucket=settings.s3_bucket, Key=object_key)
+        body = response["Body"]
+
+        def chunks() -> Iterator[bytes]:
+            try:
+                while chunk := body.read(chunk_size):
+                    yield chunk
+            finally:
+                body.close()
+
+        return chunks()
 
     def delete(self, object_key: str) -> None:
         self.client.delete_object(Bucket=settings.s3_bucket, Key=object_key)

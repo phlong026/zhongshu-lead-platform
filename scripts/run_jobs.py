@@ -15,6 +15,7 @@ from apps.api.src.core.database import SessionLocal, init_database
 from apps.api.src.services.assignment_timeout_v12 import run_assignment_timeouts_active
 from apps.api.src.services.followup_service import run_followup_overdue
 from apps.api.src.services.feishu_sync_service import fetch_and_import_feishu, writeback_feishu_results
+from apps.api.src.services.lead_export_v12 import process_lead_export_tasks
 from apps.api.src.services.notification_v12 import drain_due_supplier_reward_settlement_notified
 from apps.api.src.services.outbox_worker import process_outbox
 from apps.api.src.services.points_service import run_low_points_warnings
@@ -31,6 +32,7 @@ def main() -> int:
             "low-points",
             "outbox",
             "storage-cleanup",
+            "lead-exports",
             "feishu-sync",
             "supplier-rewards",
             "all",
@@ -52,6 +54,8 @@ def main() -> int:
             output["outbox"] = process_outbox(db, limit=args.limit)
         if args.job in {"storage-cleanup", "all"}:
             output["storage_cleanup"] = process_storage_cleanup(db, limit=args.limit)
+        if args.job == "lead-exports":
+            output["lead_exports"] = process_lead_export_tasks(db, limit=1)
         if args.job in {"supplier-rewards", "all"}:
             output["supplier_rewards"] = drain_due_supplier_reward_settlement_notified(
                 db,

@@ -139,7 +139,7 @@ python -m json.tool dist/v12-reconciliation.json >/dev/null
 
 ```bash
 docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml up -d api
-docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml up -d scheduler nginx
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml up -d scheduler lead-export-worker nginx
 ```
 
 检查：

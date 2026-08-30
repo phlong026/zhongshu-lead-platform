@@ -274,3 +274,82 @@ def test_storage_cleanup_downgrade_refuses_to_drop_unfinished_jobs(tmp_path: Pat
         )
     _alembic(database_url, "downgrade", "0013_internal_user_test")
     assert "storage_cleanup_outbox" not in set(inspect(engine).get_table_names())
+
+
+def test_feedback_migration_downgrade_refuses_to_drop_business_data(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "feedback-downgrade.db"
+    database_url = f"sqlite:///{database}"
+    _alembic(database_url, "upgrade", "head")
+    engine = create_engine(database_url)
+    metadata = sa.MetaData()
+    metadata.reflect(engine, only=["leads", "lead_export_tasks"])
+    leads = metadata.tables["leads"]
+    export_tasks = metadata.tables["lead_export_tasks"]
+    lead_id = str(uuid.uuid4())
+    with engine.begin() as connection:
+        connection.execute(
+            leads.insert().values(
+                **_required_row(
+                    leads,
+                    id=lead_id,
+                    source_type="PLATFORM_MANUAL",
+                    source_kind="PLATFORM_MANUAL",
+                    customer_name="迁移回滚测试客户",
+                    phone_encrypted="encrypted",
+                    phone_hash=f"hash-{lead_id}",
+                    phone_fingerprint=f"fingerprint-{lead_id}",
+                    consent_confirmed=True,
+                    source_detail="老客户转介绍",
+                    status="DRAFT",
+                    review_status="PENDING",
+                    duplicate_status="PENDING",
+                    raw_payload={},
+                )
+            )
+        )
+
+    with pytest.raises(subprocess.CalledProcessError) as exc_info:
+        _alembic(database_url, "downgrade", "0014_storage_cleanup")
+    assert "lead source details exist" in exc_info.value.stderr
+    inspector = inspect(engine)
+    assert "lead_export_tasks" in set(inspector.get_table_names())
+    assert "source_detail" in {
+        column["name"] for column in inspector.get_columns("leads")
+    }
+
+    export_id = str(uuid.uuid4())
+    with engine.begin() as connection:
+        connection.execute(
+            leads.update().where(leads.c.id == lead_id).values(source_detail=None)
+        )
+        connection.execute(
+            export_tasks.insert().values(
+                **_required_row(
+                    export_tasks,
+                    id=export_id,
+                    requested_by=None,
+                    requested_by_name="迁移回滚测试运营",
+                    status="COMPLETED",
+                    filters_json={},
+                    include_full_phone=True,
+                    idempotency_key=f"migration-{export_id}",
+                    row_count=1,
+                )
+            )
+        )
+
+    with pytest.raises(subprocess.CalledProcessError) as exc_info:
+        _alembic(database_url, "downgrade", "0014_storage_cleanup")
+    assert "lead export tasks exist" in exc_info.value.stderr
+    assert "lead_export_tasks" in set(inspect(engine).get_table_names())
+
+    with engine.begin() as connection:
+        connection.execute(export_tasks.delete())
+    _alembic(database_url, "downgrade", "0014_storage_cleanup")
+    inspector = inspect(engine)
+    assert "lead_export_tasks" not in set(inspector.get_table_names())
+    assert "source_detail" not in {
+        column["name"] for column in inspector.get_columns("leads")
+    }

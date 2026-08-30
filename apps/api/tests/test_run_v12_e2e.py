@@ -43,6 +43,7 @@ def test_explicit_database_url_runs_lifecycle_pytest_without_docker(
     assert len(calls) == 1
     command, env = calls[0]
     assert "apps/api/tests/test_v12_production_lifecycle_e2e.py" in command
+    assert "apps/api/tests/test_quick_dispatch_postgres_concurrency_e2e.py" in command
     assert "apps/api/tests/test_internal_user_postgres_concurrency_e2e.py" in command
     assert env["V12_E2E_DATABASE_URL"].endswith("/zhongshu_e2e")
     assert env["APP_ENV"] == "test"
@@ -105,6 +106,7 @@ def test_missing_database_url_uses_disposable_docker_postgres(
     assert any(command[:2] == ["docker", "stop"] for command in commands)
     pytest_command = commands[-2]
     assert "apps/api/tests/test_v12_production_lifecycle_e2e.py" in pytest_command
+    assert "apps/api/tests/test_quick_dispatch_postgres_concurrency_e2e.py" in pytest_command
     assert "apps/api/tests/test_internal_user_postgres_concurrency_e2e.py" in pytest_command
 
 

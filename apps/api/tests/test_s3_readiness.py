@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from io import BytesIO
+from pathlib import Path
+import stat
+
 import pytest
 
 from apps.api.src.services import storage as storage_module
@@ -9,16 +13,20 @@ from apps.api.src.services.storage import LocalObjectStorage, S3ObjectStorage
 
 class _Body:
     def __init__(self, content: bytes) -> None:
-        self.content = content
+        self.content = BytesIO(content)
 
-    def read(self) -> bytes:
-        return self.content
+    def read(self, size: int = -1) -> bytes:
+        return self.content.read(size)
+
+    def close(self) -> None:
+        self.content.close()
 
 
 class _S3Client:
     def __init__(self) -> None:
         self.objects: dict[str, bytes] = {}
         self.head_bucket_calls = 0
+        self.upload_extra_args: dict[str, object] = {}
 
     def head_bucket(self, **_: str) -> None:
         self.head_bucket_calls += 1
@@ -34,6 +42,21 @@ class _S3Client:
 
     def delete_object(self, *, Key: str, **_: str) -> None:
         self.objects.pop(Key, None)
+
+    def upload_file(
+        self,
+        filename: str,
+        _bucket: str,
+        key: str,
+        *,
+        ExtraArgs: dict[str, object],
+        Callback=None,
+    ) -> None:
+        content = Path(filename).read_bytes()
+        self.objects[key] = content
+        self.upload_extra_args = ExtraArgs
+        if Callback is not None:
+            Callback(len(content))
 
 
 def _storage(client: _S3Client) -> S3ObjectStorage:
@@ -132,6 +155,83 @@ def test_storage_delete_is_idempotent_for_local_and_s3(
     s3.delete("returns/test/evidence.bin")
     s3.delete("returns/test/evidence.bin")
     assert client.objects == {}
+
+
+def test_local_save_file_is_private_and_reads_in_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    root = tmp_path / "private-storage"
+    source = tmp_path / "sensitive.zip"
+    source.write_bytes(b"complete-phone-export")
+    monkeypatch.setattr(storage_module.settings, "object_storage_dir", str(root))
+
+    local = LocalObjectStorage()
+    stored = local.save_file(
+        source,
+        prefix="lead-exports/test",
+        filename="export.zip",
+        mime_type="application/zip",
+    )
+
+    target = root / stored.object_key
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert stat.S_IMODE(target.parent.stat().st_mode) == 0o700
+    assert b"".join(local.iter_read(stored.object_key, chunk_size=3)) == source.read_bytes()
+
+
+def test_local_save_file_reports_copy_progress(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    root = tmp_path / "private-storage"
+    source = tmp_path / "sensitive.zip"
+    source.write_bytes(b"complete-phone-export")
+    monkeypatch.setattr(storage_module.settings, "object_storage_dir", str(root))
+    progress_events: list[bool] = []
+
+    LocalObjectStorage().save_file(
+        source,
+        prefix="lead-exports/test",
+        filename="export.zip",
+        mime_type="application/zip",
+        progress_callback=lambda: progress_events.append(True),
+    )
+
+    assert progress_events
+
+
+def test_s3_save_file_requests_server_side_encryption(tmp_path) -> None:
+    source = tmp_path / "sensitive.zip"
+    source.write_bytes(b"complete-phone-export")
+    client = _S3Client()
+
+    stored = _storage(client).save_file(
+        source,
+        prefix="lead-exports/test",
+        filename="export.zip",
+        mime_type="application/zip",
+    )
+
+    assert client.objects[stored.object_key] == source.read_bytes()
+    assert client.upload_extra_args["ServerSideEncryption"] == "AES256"
+    assert client.upload_extra_args["ContentType"] == "application/zip"
+
+
+def test_s3_save_file_reports_upload_progress(tmp_path) -> None:
+    source = tmp_path / "sensitive.zip"
+    source.write_bytes(b"complete-phone-export")
+    progress_events: list[bool] = []
+
+    _storage(_S3Client()).save_file(
+        source,
+        prefix="lead-exports/test",
+        filename="export.zip",
+        mime_type="application/zip",
+        progress_callback=lambda: progress_events.append(True),
+    )
+
+    assert progress_events
 
 
 def test_s3_cleanup_target_changes_when_endpoint_changes(
