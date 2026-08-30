@@ -3,7 +3,7 @@
 ## Source of truth
 
 - Status: Active.
-- Last refreshed: 2026-08-26.
+- Last refreshed: 2026-08-30.
 - Primary product surfaces: platform operations desktop (`/admin/`), platform mobile workbench (`/h5/admin/`), franchise workbench (`/h5/`), and telesales console (`/h5/call/`).
 - Evidence reviewed:
   - `apps/admin/public/v12-operations.js` and `v12-operations.css`
@@ -75,18 +75,20 @@
 
 1. 首页
 2. 客资
-3. 加盟商
-4. 资金
-5. 身份卡片入口（安全、平台设置、异常与日志）
+3. 公海池
+4. 加盟商
+5. 资金
+6. 身份卡片入口（安全、平台设置、异常与日志）
 
 ### Operations-admin information architecture
 
 1. 首页
 2. 客资
-3. 电销
-4. 派发
-5. 加盟商
-6. 身份卡片入口（安全、异常与日志）
+3. 公海池
+4. 电销
+5. 派发
+6. 加盟商
+7. 身份卡片入口（安全、异常与日志）
 
 侧边栏使用上述简称；进入页面后再用“经营总览”“今日运营”等完整标题说明当前任务边界。
 
@@ -123,6 +125,7 @@
 | Page | Primary content | Primary actions | Must not distract with |
 |---|---|---|---|
 | 系统总览 | 高风险审计、异常通知、账户/公司停用、资金异常、积压告警 | Drill into risk, assign governance follow-up | Normal lead review queues |
+| 公海池 | 后台新增及飞书客户视图导入的待完善客资 | 补充资料、转入派发池、查看导入批次 | 加盟商侧客资和自动同步配置 |
 | 账号与组织 | Internal accounts, franchise account lifecycle, role/status history | Create, invite, enable, disable, bind company accounts; record reasoned franchise-account actions | Customer details |
 | 加盟商治理 | Company status, service districts, receive/supply switches, owner binding state | View details, configure switches, create/revoke owner invitation, emergency suspend | Daily dispatch actions |
 | 积分与资金 | Prominent recharge entry, remaining points, recharge records, balance exception, price rules, rewards, immutable ledger | Recharge, adjustment, reversal, publish rule | Operations-owned review controls |
@@ -137,6 +140,7 @@ Home metrics: new leads, pending verification, ready dispatch, claimed, effectiv
 |---|---|---|---|
 | 今日待办 | Counts and priority list: initial review, telesales conclusions, pending dispatch, return final review, company review, overdue items | Assign telesales, enter work item | A named item moves to its next owner/state |
 | 客资中心 | Unified source-aware lead list with queue tabs | Initial review, dedup decision, send to telesales, return to supplier, close invalid, approve to pool | Lead enters verification, pool, rework, duplicate, or closed state |
+| 公海池 | 运营与管理共享的后台新增、逐行录入和飞书导入客资 | 补充资料、处理查重、复核后转入派发池 | 加盟商不可见；一期不含自动同步或飞书回写 |
 | 电销核验协同 | Pre-dispatch verification and return verification are distinct tabs | Assign/reassign, view conclusion, send back for clarification | Operations decision queue or return final review |
 | 派发中心 | Ready-dispatch pool, candidate eligibility, claimed/unclaimed status | Manual dispatch, release expired assignment | Assignment created or lead remains actionable |
 | 加盟商 | Company list and company detail | Create company, configure service/receive/supply switches, create owner invitation | Franchise-side applications or duplicated approval queues |

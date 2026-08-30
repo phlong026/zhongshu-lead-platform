@@ -1,6 +1,6 @@
-# 合家美宅客资平台 V1.2.1
+# 合家美宅客资平台 V1.2.2
 
-合家美宅 V1.2.1 是客资供给、审核、人工派发、加盟商领取、退回申诉、供应奖励、通知、报表与审计的一体化生产候选版本。
+合家美宅 V1.2.2 是客资供给、审核、人工派发、加盟商领取、退回申诉、供应奖励、通知、报表与审计的一体化生产候选版本。
 
 > 交付状态分为 `代码完成`、`自动化通过`、`真实环境验收`。前两项不能替代真实微信、目标基础设施、生产数据、业务 UAT、灾备和灰度验收。
 
@@ -77,7 +77,7 @@ uvicorn apps.api.src.main:app --host 0.0.0.0 --port 8000 --reload
 
 ## 自动质量门禁
 
-面向 `release/v1.2.1` 的 PR 和发布分支执行：
+面向 `release/v1.2.2` 的 PR 和发布分支执行：
 
 1. 全量 Python 测试、JavaScript 检查、密钥扫描、编译和空白检查；
 2. SQLite V1.0.1 → V1.2 升降级循环；
@@ -113,7 +113,7 @@ python scripts/preflight_v12.py \
 
 当 `.env` 只配置 `POSTGRES_*` 时，配置校验会推导与 Compose 一致的内部 PostgreSQL URL；真正的 Alembic revision 和 V1.2 数据对账由 `--compose-database` 通过 API 一次性容器在生产 Compose 网络执行，避免宿主机误连 SQLite。
 
-飞书是显式可选集成：启用时设置 `FEISHU_ENABLED=true` 并配置全部凭据；不启用时不得保留无效生产凭据。
+飞书是显式可选集成：启用时设置 `FEISHU_ENABLED=true`，配置应用、数据表和“客户视图”，并保持 `FEISHU_WRITEBACK_ENABLED=false`。一期仅允许运营在公海池手动触发单向导入，不执行定时同步或飞书回写；不启用时不得保留无效生产凭据。
 
 完整手机号报表仅允许有导出权限的后台运营人员创建。`lead-export-worker` 每次只处理 1 个任务，记录导出人、筛选条件、文件摘要和到期清理任务；上传前先持久化清理意图，进程中断后也能删除孤儿敏感文件。
 
@@ -136,7 +136,7 @@ python scripts/preflight_v12.py \
 
 ```bash
 python scripts/check_release_metadata.py
-python scripts/package_release.py --version V1.2.1 --output-dir dist/release
+python scripts/package_release.py --version V1.2.2 --output-dir dist/release
 ```
 
 源码包只包含 Git 已跟踪文件；`.env`、数据库、证据文件、备份和真实密钥不会进入交付包。

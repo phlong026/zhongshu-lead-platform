@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -11,12 +12,19 @@ from ..core.config import get_settings
 from ..core.errors import AppError
 
 settings = get_settings()
+logger = logging.getLogger("zhongshu.feishu")
 
 
 @dataclass(frozen=True)
 class FeishuRecord:
     record_id: str
     fields: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class FeishuView:
+    view_id: str
+    view_name: str
 
 
 class FeishuClient:
@@ -32,6 +40,9 @@ class FeishuClient:
             "dev_mock": settings.feishu_dev_mock,
             "app_token_configured": bool(settings.feishu_app_token),
             "table_id_configured": bool(settings.feishu_table_id),
+            "view_configured": bool(settings.feishu_view_id or settings.feishu_view_name),
+            "view_name": settings.feishu_view_name or None,
+            "writeback_enabled": bool(settings.feishu_writeback_enabled),
         }
 
     @staticmethod
@@ -64,7 +75,17 @@ class FeishuClient:
                 last_error = exc
                 if attempt + 1 < retry:
                     time.sleep(0.2 * (2**attempt))
-        raise AppError("FEISHU_UNAVAILABLE", "飞书接口暂时不可用", 502, {"error": str(last_error)}) from last_error
+        logger.error(
+            "feishu request failed method=%s error_type=%s",
+            method,
+            type(last_error).__name__ if last_error else "unknown",
+        )
+        raise AppError(
+            "FEISHU_UNAVAILABLE",
+            "飞书接口暂时不可用",
+            502,
+            {"error_type": type(last_error).__name__ if last_error else "unknown"},
+        ) from last_error
 
     def _tenant_token(self) -> str:
         self.ensure_enabled()
@@ -83,7 +104,58 @@ class FeishuClient:
         self._token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=int(payload.get("expire", 7200)))
         return self._token
 
-    def list_records(self, page_token: str | None = None, page_size: int = 200) -> tuple[list[FeishuRecord], str | None, bool]:
+    def list_views(
+        self,
+        page_token: str | None = None,
+        page_size: int = 100,
+    ) -> tuple[list[FeishuView], str | None, bool]:
+        self.ensure_enabled()
+        if not settings.feishu_app_token or not settings.feishu_table_id:
+            raise AppError("FEISHU_TABLE_NOT_CONFIGURED", "飞书多维表格尚未配置", 503)
+        params: dict[str, Any] = {"page_size": min(max(page_size, 1), 100)}
+        if page_token:
+            params["page_token"] = page_token
+        url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{settings.feishu_app_token}/tables/{settings.feishu_table_id}/views"
+        payload = self._request("GET", url, auth=True, params=params)
+        if payload.get("code") != 0:
+            raise AppError("FEISHU_VIEW_LIST_FAILED", "读取飞书视图失败", 502, payload)
+        data = payload.get("data") or {}
+        views = [
+            FeishuView(view_id=str(item["view_id"]), view_name=str(item.get("view_name") or ""))
+            for item in data.get("items") or []
+            if item.get("view_id")
+        ]
+        return views, data.get("page_token"), bool(data.get("has_more"))
+
+    def resolve_view_id(self, view_name: str, *, max_pages: int = 20) -> str:
+        expected = view_name.strip()
+        if not expected:
+            raise AppError("FEISHU_VIEW_NOT_CONFIGURED", "飞书客户视图尚未配置", 503)
+        page_token: str | None = None
+        seen_tokens: set[str] = set()
+        matches: list[FeishuView] = []
+        for _ in range(max_pages):
+            views, next_token, has_more = self.list_views(page_token)
+            matches.extend(view for view in views if view.view_name.strip() == expected)
+            if not has_more:
+                break
+            if not next_token or next_token in seen_tokens:
+                raise AppError("FEISHU_PAGINATION_INVALID", "飞书视图分页游标异常", 502)
+            seen_tokens.add(next_token)
+            page_token = next_token
+        if not matches:
+            raise AppError("FEISHU_VIEW_NOT_FOUND", f"未找到飞书视图：{expected}", 409)
+        if len(matches) > 1:
+            raise AppError("FEISHU_VIEW_AMBIGUOUS", f"存在多个同名飞书视图：{expected}", 409)
+        return matches[0].view_id
+
+    def list_records(
+        self,
+        page_token: str | None = None,
+        page_size: int = 200,
+        *,
+        view_id: str | None = None,
+    ) -> tuple[list[FeishuRecord], str | None, bool]:
         self.ensure_enabled()
         if settings.feishu_dev_mock:
             return [], None, False
@@ -92,6 +164,8 @@ class FeishuClient:
         params: dict[str, Any] = {"page_size": min(max(page_size, 1), 500)}
         if page_token:
             params["page_token"] = page_token
+        if view_id:
+            params["view_id"] = view_id
         url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{settings.feishu_app_token}/tables/{settings.feishu_table_id}/records"
         payload = self._request("GET", url, auth=True, params=params)
         if payload.get("code") != 0:
@@ -104,12 +178,22 @@ class FeishuClient:
         ]
         return records, data.get("page_token"), bool(data.get("has_more"))
 
-    def iter_records(self, *, page_size: int = 200, max_pages: int = 100) -> Iterator[FeishuRecord]:
+    def iter_records(
+        self,
+        *,
+        page_size: int = 200,
+        max_pages: int = 100,
+        view_id: str | None = None,
+    ) -> Iterator[FeishuRecord]:
         self.ensure_enabled()
         page_token: str | None = None
         seen_tokens: set[str] = set()
         for _ in range(max_pages):
-            records, next_token, has_more = self.list_records(page_token, page_size)
+            records, next_token, has_more = self.list_records(
+                page_token,
+                page_size,
+                view_id=view_id,
+            )
             yield from records
             if not has_more:
                 return

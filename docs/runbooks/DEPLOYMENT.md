@@ -1,10 +1,10 @@
-# 合家美宅客资平台 V1.2.1 生产部署手册
+# 合家美宅客资平台 V1.2.2 生产部署手册
 
 > 本手册分别记录 `代码完成`、`自动化通过` 与 `真实环境验收`。代码或自动门禁通过只允许进入目标环境验证，不能直接标记生产上线。
 
 ## 1. 适用范围
 
-本手册用于将已评审的 V1.2.1 镜像部署到生产环境。真实服务号联调、业务 UAT 和灰度批准必须另行完成，代码通过不等于业务可以全量开放。
+本手册用于将已评审的 V1.2.2 镜像部署到生产环境。真实服务号联调、业务 UAT 和灰度批准必须另行完成，代码通过不等于业务可以全量开放。
 
 ## 2. 生产拓扑
 
@@ -18,8 +18,8 @@
 
 ## 3. 生产前提
 
-1. `release/v1.2.1` 最新 CI 全绿，PR 无 Critical/High/P1/P2 未解决项；
-2. `APP_IMAGE` 使用 `仓库:APP_VERSION@sha256:digest` 形式，例如 `registry.example.com/zhongshu-lead-platform:1.2.1@sha256:...`；
+1. `release/v1.2.2` 最新 CI 全绿，PR 无 Critical/High/P1/P2 未解决项；
+2. `APP_IMAGE` 使用 `仓库:APP_VERSION@sha256:digest` 形式，例如 `registry.example.com/zhongshu-lead-platform:1.2.2@sha256:...`；
 3. 镜像 OCI `org.opencontainers.image.version` 与 `APP_VERSION` 完全一致；
 4. 正式域名、TLS、服务号授权域名和 OAuth 回调已配置；
 5. PostgreSQL、对象存储、日志、告警和备份已验收；
@@ -47,9 +47,10 @@ python scripts/verify_production.py --env-file .env
 
 飞书为显式可选能力：
 
-- 启用：`FEISHU_ENABLED=true`，并配置 App、Token、Table 和字段映射；
+- 启用：`FEISHU_ENABLED=true`，并配置 App、Token、Table、`FEISHU_VIEW_ID`（或精确的 `FEISHU_VIEW_NAME=客户视图`）和字段映射；
 - 不启用：`FEISHU_ENABLED=false`，不保留无效凭据；
-- 无论是否启用，生产均要求 `FEISHU_DEV_MOCK=false`。
+- 无论是否启用，生产均要求 `FEISHU_DEV_MOCK=false`；
+- 公海池一期必须保持 `FEISHU_WRITEBACK_ENABLED=false`。导入仅由运营在后台手动触发，不配置计划任务，不向飞书写回任何字段。
 
 ## 5. 拉取不可变镜像并启动数据库
 
@@ -98,7 +99,7 @@ docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml 
 
 docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml \
   run --rm -T -e RUN_DB_MIGRATIONS=false api \
-  python scripts/sync_rbac.py --apply --source release_v1.2.1 \
+  python scripts/sync_rbac.py --apply --source release_v1.2.2 \
   > dist/v12-rbac-apply.json
 
 docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml \

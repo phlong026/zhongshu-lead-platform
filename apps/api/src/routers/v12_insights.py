@@ -614,7 +614,11 @@ def management_dashboard(
         for item in trend_rows.values()
     ]
 
-    source_names = {"PLATFORM_MANUAL": "平台录入", "SUPPLIER_H5": "加盟商提供"}
+    source_names = {
+        "PLATFORM_MANUAL": "平台录入",
+        "FEISHU_IMPORT": "飞书导入",
+        "SUPPLIER_H5": "加盟商提供",
+    }
 
     def grouped_distribution(key_expression) -> list[Any]:
         lead_count = func.count(Lead.id)

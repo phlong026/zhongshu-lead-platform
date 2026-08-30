@@ -12,6 +12,7 @@ TRACEABILITY_DOCUMENTS = (
 CURRENT_BRAND_DOCUMENTS = (
     "README.md",
     "docs/requirements/v1.2-prd.md",
+    "docs/release/RELEASE_NOTES_V1.2.2.md",
     "docs/release/RELEASE_NOTES_V1.2.1.md",
     "docs/release/RELEASE_NOTES_V1.2.0.md",
     "docs/quality/TEST_REPORT.md",
@@ -100,5 +101,5 @@ def test_runtime_app_name_and_api_title_use_current_brand() -> None:
     config = read("apps/api/src/core/config.py")
     main = read("apps/api/src/main.py")
     assert 'app_name: str = "合家美宅客资平台"' in config
-    assert 'app_version: str = "1.2.1"' in config
+    assert 'app_version: str = "1.2.2"' in config
     assert 'title="合家美宅客资审核、派发与积分管理平台 API"' in main

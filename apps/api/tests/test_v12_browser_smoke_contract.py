@@ -35,7 +35,13 @@ def test_browser_smoke_covers_only_the_formal_role_workbenches() -> None:
     assert "franchise owner H5 bottom navigation must stay on one row" in script
     assert "telesales H5 bottom navigation must stay on one row" in script
     assert "telesales primary action must keep contrast" in script
-    assert 'for view in ("overview", "leads", "companies", "finance"):' in script
+    assert 'for view in ("overview", "leads", "publicPool", "companies", "finance"):' in script
+    assert 'page.locator(\'.ops-menu [data-view="publicPool"]\').click()' in script
+    assert 'page.wait_for_selector("#public-pool-new"' in script
+    assert 'page.wait_for_selector("#public-pool-inline"' in script
+    assert 'page.wait_for_selector("#public-pool-feishu"' in script
+    assert 'page.locator(f\'[data-lead-detail="{lead_id}"]\')' in script
+    assert "data-platform-detail" not in script
     assert "super admin is missing permitted {view} navigation" in script
     assert "super admin can see restricted {view} navigation" in script
     assert 'page.wait_for_selector("#company-filter-form"' in script

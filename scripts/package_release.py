@@ -43,6 +43,7 @@ REQUIRED_RELEASE_DOCS = (
     "docs/quality/TEST_REPORT.md",
     "docs/quality/SECURITY_AUDIT.md",
     "docs/traceability/IMPLEMENTATION_MATRIX.md",
+    "docs/release/RELEASE_NOTES_V1.2.2.md",
     "docs/release/RELEASE_NOTES_V1.2.1.md",
     "docs/reviews/INDEX.md",
     "docs/reviews/INDEX_V1.2.md",
@@ -292,7 +293,7 @@ def package_release(output_dir: Path, *, version: str, allow_dirty: bool = False
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Package reviewed V1.2 source and full Git history")
-    parser.add_argument("--version", default="V1.2.1")
+    parser.add_argument("--version", default="V1.2.2")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "dist" / "release")
     parser.add_argument("--allow-dirty", action="store_true", help="only for package-script tests")
     args = parser.parse_args()

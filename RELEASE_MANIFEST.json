@@ -1,8 +1,8 @@
 {
   "product": "合家美宅客资审核、派发与积分管理平台",
-  "release": "V1.2.1",
+  "release": "V1.2.2",
   "commit": "generated-by-scripts/package_release.py",
-  "branch": "release/v1.2.1",
+  "branch": "release/v1.2.2",
   "dirty_worktree": false,
   "generated_at_utc": "generated-at-package-time",
   "tracked_file_count": null,
@@ -17,6 +17,7 @@
   ],
   "runtime_boundaries": [
     "Manual dispatch only; no automatic, random, rotation, weighted or grab-order dispatch",
+    "Feishu customer-view import is manual and one-way; no scheduled sync or writeback",
     "Return evidence requires screenshot OR call recording",
     "Return appeal and supplier reward observation use three workdays",
     "No online payment, WeChat Mini Program, cloud calling or automatic H5 call recording",

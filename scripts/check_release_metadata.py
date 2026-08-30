@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_VERSION = "1.2.1"
+EXPECTED_VERSION = "1.2.2"
 EXPECTED_RELEASE = f"V{EXPECTED_VERSION}"
 EXPECTED_BRANCH = f"release/v{EXPECTED_VERSION}"
 EXPECTED_PRODUCT = "合家美宅客资审核、派发与积分管理平台"
@@ -154,7 +154,7 @@ def run_checks() -> list[str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Verify active V1.2.1 release metadata consistency")
+    parser = argparse.ArgumentParser(description="Verify active V1.2.2 release metadata consistency")
     parser.parse_args()
     errors = run_checks()
     if errors:

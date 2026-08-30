@@ -47,6 +47,7 @@ from .routers import (
     v12_insights,
     v12_lead_supply,
     v12_pre_dispatch,
+    v12_public_pool,
     v12_returns,
     v12_rewards,
     v12_supplier_review,
@@ -123,6 +124,7 @@ app.include_router(master_data.router, prefix=api_prefix)
 app.include_router(v12_admin.router, prefix=api_prefix)
 app.include_router(v12_lead_supply.router, prefix=api_prefix)
 app.include_router(v12_pre_dispatch.router, prefix=api_prefix)
+app.include_router(v12_public_pool.router, prefix=api_prefix)
 app.include_router(v12_supplier_review.router, prefix=api_prefix)
 app.include_router(v12_dispatch.router, prefix=api_prefix)
 app.include_router(v12_returns.router, prefix=api_prefix)

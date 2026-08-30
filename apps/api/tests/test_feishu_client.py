@@ -29,9 +29,48 @@ def test_feishu_client_paginates_and_caches_token(monkeypatch):
         return httpx.Response(200, json={"code": 0, "data": {"items": [{"record_id": "r2", "fields": {}}], "has_more": False}})
 
     client = FeishuClient(transport=httpx.MockTransport(handler))
-    records = list(client.iter_records(page_size=100))
+    records = list(client.iter_records(page_size=100, view_id="view-customer"))
     assert [item.record_id for item in records] == ["r1", "r2"]
     assert token_calls == 1
+
+
+def test_feishu_client_limits_records_to_the_named_customer_view(monkeypatch):
+    import apps.api.src.integrations.feishu as module
+
+    monkeypatch.setattr(module.settings, "feishu_enabled", True)
+    monkeypatch.setattr(module.settings, "feishu_dev_mock", False)
+    monkeypatch.setattr(module.settings, "feishu_app_id", "app-id")
+    monkeypatch.setattr(module.settings, "feishu_app_secret", "secret")
+    monkeypatch.setattr(module.settings, "feishu_app_token", "bitable-app")
+    monkeypatch.setattr(module.settings, "feishu_table_id", "table")
+    record_view_ids: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("tenant_access_token/internal"):
+            return httpx.Response(200, json={"code": 0, "tenant_access_token": "tenant-token", "expire": 7200})
+        if request.url.path.endswith("/views"):
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "data": {
+                        "items": [
+                            {"view_id": "view-other", "view_name": "其他视图"},
+                            {"view_id": "view-customer", "view_name": "客户视图"},
+                        ],
+                        "has_more": False,
+                    },
+                },
+            )
+        record_view_ids.append(request.url.params.get("view_id"))
+        return httpx.Response(200, json={"code": 0, "data": {"items": [], "has_more": False}})
+
+    client = FeishuClient(transport=httpx.MockTransport(handler))
+    view_id = client.resolve_view_id("客户视图")
+    list(client.iter_records(view_id=view_id))
+
+    assert view_id == "view-customer"
+    assert record_view_ids == ["view-customer"]
 
 
 def test_feishu_client_blocks_reads_and_writes_when_disabled(monkeypatch):
@@ -63,3 +102,30 @@ def test_feishu_diagnostics_exposes_enable_state_without_secrets(monkeypatch):
     assert data["enabled"] is False
     assert data["configured"] is True
     assert "secret" not in data
+
+
+def test_feishu_failure_details_do_not_reflect_table_identifiers(monkeypatch):
+    import apps.api.src.integrations.feishu as module
+
+    monkeypatch.setattr(module.settings, "feishu_enabled", True)
+    monkeypatch.setattr(module.settings, "feishu_dev_mock", False)
+    monkeypatch.setattr(module.settings, "feishu_app_id", "app-id")
+    monkeypatch.setattr(module.settings, "feishu_app_secret", "secret")
+    monkeypatch.setattr(module.settings, "feishu_app_token", "private-base-token")
+    monkeypatch.setattr(module.settings, "feishu_table_id", "private-table-id")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("tenant_access_token/internal"):
+            return httpx.Response(
+                200,
+                json={"code": 0, "tenant_access_token": "tenant-token", "expire": 7200},
+            )
+        return httpx.Response(500, json={"code": 999})
+
+    client = FeishuClient(transport=httpx.MockTransport(handler))
+    with pytest.raises(AppError) as error:
+        list(client.iter_records())
+
+    assert error.value.code == "FEISHU_UNAVAILABLE"
+    assert "private-base-token" not in str(error.value.details)
+    assert "private-table-id" not in str(error.value.details)

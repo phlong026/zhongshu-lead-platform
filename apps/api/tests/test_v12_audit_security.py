@@ -18,3 +18,17 @@ def test_audit_sanitizer_redacts_plaintext_phone_and_secrets() -> None:
     assert value["nested"]["contact_phone_encrypted"] == "[REDACTED]"
     assert value["nested"]["access_token"] == "[REDACTED]"
     assert value["nested"]["ordinary"] == "kept"
+
+
+def test_audit_sanitizer_preserves_phone_like_sequences_inside_identifiers() -> None:
+    invite_id = "db794b86-f50c-4d39-87b9-e16456268304"
+
+    value = sanitize_audit_value(
+        {
+            "invite_id": invite_id,
+            "note": "客户手机号 16456268304 需要核对",
+        }
+    )
+
+    assert value["invite_id"] == invite_id
+    assert value["note"] == "客户手机号 [REDACTED] 需要核对"
