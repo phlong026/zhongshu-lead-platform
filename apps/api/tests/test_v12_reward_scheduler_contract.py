@@ -74,6 +74,12 @@ def test_large_lead_exports_run_in_an_isolated_worker() -> None:
     assert ". /app/docker/prepare-env.sh" in worker_entrypoint
     assert production["services"]["lead-export-worker"]["read_only"] is True
     worker = base["services"]["lead-export-worker"]
+    assert worker["environment"]["SYNC_THREADPOOL_TOKENS"] == (
+        "${LEAD_EXPORT_SYNC_THREADPOOL_TOKENS:-2}"
+    )
+    assert worker["environment"]["MAX_IN_FLIGHT_REQUESTS"] == (
+        "${LEAD_EXPORT_MAX_IN_FLIGHT_REQUESTS:-2}"
+    )
     for compose_worker in (worker, production["services"]["lead-export-worker"]):
         tmpfs = " ".join(compose_worker["tmpfs"])
         assert "640m" in tmpfs
