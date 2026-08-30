@@ -130,7 +130,8 @@ def test_pre_dispatch_http_flow_never_allows_telesales_to_self_assign(api_client
             json={"decision": "APPROVE_POOL", "note": "运营确认转入派发池。"},
         )
     )
-    assert disposition["status"] == LeadV12Status.READY_DISPATCH.value
+    assert disposition["status"] == LeadV12Status.PUBLIC_POOL.value
+    assert disposition["pending_reason"] == "PUBLIC_POOL_NO_LOCAL_RECEIVER"
     assert other_id != telesales_id
 
 

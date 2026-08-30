@@ -117,7 +117,8 @@ def test_pre_dispatch_verification_returns_control_to_operations(db) -> None:
         decision="APPROVE_POOL",
         note="运营确认客户需求真实，转入待派发池",
     )
-    assert lead.status == LeadV12Status.READY_DISPATCH.value
+    assert lead.status == LeadV12Status.PUBLIC_POOL.value
+    assert lead.pending_reason == "PUBLIC_POOL_NO_LOCAL_RECEIVER"
     assert lead.review_status == "APPROVED"
 
 

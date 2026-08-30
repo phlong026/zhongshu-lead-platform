@@ -8,6 +8,7 @@ from ..core.auth import require_permissions
 from ..core.database import get_db
 from ..core.models import Lead
 from ..core.responses import ok, page
+from ..core.v12_enums import CustomerSource
 from ..integrations.feishu import FeishuClient
 from ..schemas.v12_lead_supply import LeadDraftBody, LeadDraftUpdateBody
 from ..schemas.v12_public_pool import PublicPoolFeishuImportBody
@@ -33,6 +34,7 @@ def public_pool_list(
     principal=Depends(require_permissions("lead.manual.manage")),
     db: Session = Depends(get_db),
     keyword: str | None = Query(default=None, max_length=128),
+    customer_source: CustomerSource | None = Query(default=None),
     source_kind: str | None = Query(default=None, max_length=32),
     completeness: str | None = Query(default=None, max_length=32),
     duplicate_status: str | None = Query(default=None, max_length=32),
@@ -42,6 +44,7 @@ def public_pool_list(
     items, total = list_public_pool_leads(
         db,
         keyword=keyword,
+        customer_source=customer_source.value if customer_source else None,
         source_kind=source_kind,
         completeness=completeness,
         duplicate_status=duplicate_status,
@@ -141,6 +144,11 @@ def public_pool_transfer(
         before=before,
         after=after,
         metadata={
+            "result": "TRANSFERRED" if result.transferred else "BLOCKED",
+            "customer_source": after["customer_source"],
+            "region_code": lead.region_code,
+            "supplier_company_id": lead.supplier_company_id,
+            "pending_reason": lead.pending_reason,
             "validation_errors": result.validation_errors,
             "dedup_decision": result.dedup.decision.value if result.dedup else None,
         },

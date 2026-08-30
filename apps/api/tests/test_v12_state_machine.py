@@ -22,6 +22,16 @@ def test_supplier_lead_review_flow_is_supported() -> None:
     assert_lead_transition(LeadV12Status.PENDING_REVIEW, LeadV12Status.READY_DISPATCH)
 
 
+def test_supplier_can_wait_in_public_pool_until_receiver_coverage_exists() -> None:
+    assert_lead_transition(LeadV12Status.DRAFT, LeadV12Status.PUBLIC_POOL)
+    assert_lead_transition(LeadV12Status.PENDING_REVIEW, LeadV12Status.PUBLIC_POOL)
+    assert_lead_transition(
+        LeadV12Status.PENDING_OPERATION_DISPOSITION,
+        LeadV12Status.PUBLIC_POOL,
+    )
+    assert_lead_transition(LeadV12Status.PUBLIC_POOL, LeadV12Status.READY_DISPATCH)
+
+
 def test_invalid_lead_transition_is_blocked() -> None:
     with pytest.raises(InvalidStateTransition):
         assert_lead_transition(LeadV12Status.DRAFT, LeadV12Status.CLAIMED)

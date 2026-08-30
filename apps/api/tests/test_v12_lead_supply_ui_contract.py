@@ -79,7 +79,7 @@ def test_supplier_submission_routes_only_missing_location_to_telesales() -> None
     assert "pre_dispatch_reason" not in source
     assert "data-review=" not in source
     assert "信息不全并派发电销" in source
-    assert "资料完整的加盟商客资直接进入待派发池" in source
+    assert "加盟商客资在当地暂无其他合格接收方时先进入公海池" in source
     assert "加盟商来源会直接进入待电销核实" not in source
 
 
@@ -95,6 +95,9 @@ def test_supplier_h5_supports_capability_upload_list_and_detail() -> None:
     assert "上传第一条客资" in js
     assert "客户知晓其联系方式和需求将用于业务对接" in js
     assert "请根据运营说明补正资料后重新提交" in js
+    assert "PUBLIC_POOL:'等待当地接收方'" in js
+    assert "当地暂时没有其他可接收加盟商" in js
+    assert "'PUBLIC_POOL','READY_DISPATCH'" in js
     assert "HMAC" not in js
     assert "90/180/365" not in js
     assert "/verification/tasks" not in js

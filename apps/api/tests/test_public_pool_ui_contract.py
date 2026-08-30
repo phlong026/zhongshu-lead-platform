@@ -30,6 +30,19 @@ def test_public_pool_page_exposes_all_phase_one_entry_and_transfer_actions() -> 
     assert "飞书回写" not in source
 
 
+def test_public_pool_distinguishes_customer_source_and_supplier_coverage() -> None:
+    source = WORKBENCH.read_text(encoding="utf-8")
+
+    assert "客户来源" in source
+    assert "OPERATION_ENTRY" in source
+    assert "FRANCHISE_SUPPLIED" in source
+    assert "运营录入" in source
+    assert "加盟商提供" in source
+    assert "提供加盟商" in source
+    assert "customer_source" in source
+    assert "重新匹配并转入派发池" in source
+
+
 def test_public_pool_audit_actions_have_human_readable_labels() -> None:
     source = WORKBENCH.read_text(encoding="utf-8")
 

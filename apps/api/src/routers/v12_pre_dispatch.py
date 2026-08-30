@@ -297,4 +297,13 @@ def decide_pre_dispatch_lead(
         request_id=request.state.request_id,
     )
     db.commit()
-    return ok(request, {"lead_id": lead.id, "status": lead.status, "review_status": lead.review_status}, "运营处置已完成")
+    return ok(
+        request,
+        {
+            "lead_id": lead.id,
+            "status": lead.status,
+            "review_status": lead.review_status,
+            "pending_reason": lead.pending_reason,
+        },
+        "运营处置已完成",
+    )

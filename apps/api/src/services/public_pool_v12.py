@@ -15,10 +15,16 @@ from ..core.config import get_settings
 from ..core.errors import AppError
 from ..core.models import Lead, LeadImportIssue, Region, SyncBatch
 from ..core.security import decrypt_text, normalize_phone
-from ..core.v12_enums import DuplicateDecision, LeadSourceKind, LeadV12Status
+from ..core.v12_enums import (
+    CustomerSource,
+    DuplicateDecision,
+    LeadSourceKind,
+    LeadV12Status,
+)
 from ..integrations.feishu import FeishuClient, FeishuRecord
 from .china_regions import region_by_code
 from .dedup_v12 import DedupResult, evaluate_phone
+from .dispatch_v12 import has_receiver_coverage
 from .feishu_sync_service import configured_mapping
 from .lead_service import _field, _resolve_region_code
 from .lead_supply_v12 import create_draft, submit_draft, update_draft
@@ -27,13 +33,13 @@ from .lead_supply_v12 import create_draft, submit_draft, update_draft
 settings = get_settings()
 logger = logging.getLogger("zhongshu.public_pool")
 
-PUBLIC_POOL_SOURCE_KINDS = frozenset(
+PUBLIC_POOL_OPERATION_SOURCE_KINDS = frozenset(
     {
         LeadSourceKind.PLATFORM_MANUAL.value,
         LeadSourceKind.FEISHU_IMPORT.value,
     }
 )
-PUBLIC_POOL_STATUSES = frozenset(
+PUBLIC_POOL_OPERATION_STATUSES = frozenset(
     {
         LeadV12Status.DRAFT.value,
         LeadV12Status.DUPLICATE.value,
@@ -170,10 +176,11 @@ def public_pool_validation_errors(db: Session, lead: Lead) -> dict[str, str]:
         )
         if active_region is None and region_by_code(lead.region_code) is None:
             errors["region_code"] = "标准地区无效或已停用"
-    if not _clean_text(lead.source_channel):
-        errors["source_channel"] = "必须选择客资来源"
-    elif lead.source_channel == "OTHER" and not _clean_text(lead.source_detail):
-        errors["source_detail"] = "来源选择其他时必须填写具体来源"
+    if lead.source_kind != LeadSourceKind.SUPPLIER_H5.value:
+        if not _clean_text(lead.source_channel):
+            errors["source_channel"] = "必须选择客资来源"
+        elif lead.source_channel == "OTHER" and not _clean_text(lead.source_detail):
+            errors["source_detail"] = "来源选择其他时必须填写具体来源"
     if not lead.consent_confirmed:
         errors["consent_confirmed"] = "必须确认已获得客户信息授权"
     if (
@@ -182,6 +189,11 @@ def public_pool_validation_errors(db: Session, lead: Lead) -> dict[str, str]:
         and lead.budget_min > lead.budget_max
     ):
         errors["budget_max"] = "预算上限不能低于预算下限"
+    if (
+        lead.source_kind == LeadSourceKind.SUPPLIER_H5.value
+        and not has_receiver_coverage(db, lead)
+    ):
+        errors["receiver_coverage"] = "当地暂无可接收加盟商"
     return errors
 
 
@@ -237,7 +249,15 @@ def update_public_pool_lead(
 def require_public_pool_lead(lead: Lead | None) -> Lead:
     if lead is None:
         raise AppError("LEAD_NOT_FOUND", "客资不存在", 404)
-    if lead.source_kind not in PUBLIC_POOL_SOURCE_KINDS or lead.status not in PUBLIC_POOL_STATUSES:
+    operation_entry = (
+        lead.source_kind in PUBLIC_POOL_OPERATION_SOURCE_KINDS
+        and lead.status in PUBLIC_POOL_OPERATION_STATUSES
+    )
+    supplier_waiting = (
+        lead.source_kind == LeadSourceKind.SUPPLIER_H5.value
+        and lead.status == LeadV12Status.PUBLIC_POOL.value
+    )
+    if not operation_entry and not supplier_waiting:
         raise AppError("LEAD_NOT_IN_PUBLIC_POOL", "客资当前不在公海池", 409)
     return lead
 
@@ -249,6 +269,51 @@ def transfer_public_pool_lead(
     principal: Principal,
 ) -> PublicPoolTransferResult:
     require_public_pool_lead(lead)
+    if lead.source_kind == LeadSourceKind.SUPPLIER_H5.value:
+        errors = public_pool_validation_errors(db, lead)
+        _store_validation_errors(lead, errors)
+        if errors:
+            lead.pending_reason = (
+                "PUBLIC_POOL_NO_LOCAL_RECEIVER"
+                if "receiver_coverage" in errors
+                else "PUBLIC_POOL_INCOMPLETE"
+            )
+            db.flush()
+            return PublicPoolTransferResult(
+                lead=lead,
+                transferred=False,
+                validation_errors=errors,
+            )
+        dedup = _check_draft_duplicate(
+            db,
+            lead,
+            checkpoint="PUBLIC_POOL_SUPPLIER_RECHECK",
+        )
+        if dedup and dedup.decision in {
+            DuplicateDecision.HARD_DUPLICATE,
+            DuplicateDecision.HISTORICAL_SUSPECT,
+        }:
+            lead.pending_reason = dedup.decision.value
+            db.flush()
+            return PublicPoolTransferResult(
+                lead=lead,
+                transferred=False,
+                validation_errors={
+                    "duplicate_status": "手机号查重结论阻止进入派发池"
+                },
+                dedup=dedup,
+            )
+        lead.status = LeadV12Status.READY_DISPATCH.value
+        lead.review_status = "APPROVED"
+        lead.pending_reason = None
+        _store_validation_errors(lead, {})
+        db.flush()
+        return PublicPoolTransferResult(
+            lead=lead,
+            transferred=True,
+            validation_errors={},
+            dedup=dedup,
+        )
     if lead.status != LeadV12Status.DRAFT.value:
         return PublicPoolTransferResult(
             lead=lead,
@@ -491,6 +556,7 @@ def list_public_pool_leads(
     db: Session,
     *,
     keyword: str | None = None,
+    customer_source: str | None = None,
     source_kind: str | None = None,
     completeness: str | None = None,
     duplicate_status: str | None = None,
@@ -502,11 +568,16 @@ def list_public_pool_leads(
         Lead.phone_fingerprint.is_(None),
         Lead.region_code.is_(None),
         Lead.region_code == "",
-        Lead.source_channel.is_(None),
-        Lead.source_channel == "",
         and_(
-            Lead.source_channel == "OTHER",
-            or_(Lead.source_detail.is_(None), Lead.source_detail == ""),
+            Lead.source_kind != LeadSourceKind.SUPPLIER_H5.value,
+            or_(
+                Lead.source_channel.is_(None),
+                Lead.source_channel == "",
+                and_(
+                    Lead.source_channel == "OTHER",
+                    or_(Lead.source_detail.is_(None), Lead.source_detail == ""),
+                ),
+            ),
         ),
         Lead.consent_confirmed.is_not(True),
         and_(
@@ -519,9 +590,18 @@ def list_public_pool_leads(
             Lead.pending_reason == "PUBLIC_POOL_INCOMPLETE",
         ),
     )
+    public_pool_membership = or_(
+        and_(
+            Lead.source_kind.in_(PUBLIC_POOL_OPERATION_SOURCE_KINDS),
+            Lead.status.in_(PUBLIC_POOL_OPERATION_STATUSES),
+        ),
+        and_(
+            Lead.source_kind == LeadSourceKind.SUPPLIER_H5.value,
+            Lead.status == LeadV12Status.PUBLIC_POOL.value,
+        ),
+    )
     filters = [
-        Lead.source_kind.in_(PUBLIC_POOL_SOURCE_KINDS),
-        Lead.status.in_(PUBLIC_POOL_STATUSES),
+        public_pool_membership,
         Lead.current_assignment_id.is_(None),
     ]
     normalized_keyword = (keyword or "").strip()
@@ -537,6 +617,11 @@ def list_public_pool_leads(
     normalized_source = (source_kind or "").strip().upper()
     if normalized_source:
         filters.append(Lead.source_kind == normalized_source)
+    normalized_customer_source = (customer_source or "").strip().upper()
+    if normalized_customer_source == CustomerSource.OPERATION_ENTRY.value:
+        filters.append(Lead.source_kind.in_(PUBLIC_POOL_OPERATION_SOURCE_KINDS))
+    elif normalized_customer_source == CustomerSource.FRANCHISE_SUPPLIED.value:
+        filters.append(Lead.source_kind == LeadSourceKind.SUPPLIER_H5.value)
     normalized_completeness = (completeness or "").strip().upper()
     if normalized_completeness == "INCOMPLETE":
         filters.append(incomplete_condition)

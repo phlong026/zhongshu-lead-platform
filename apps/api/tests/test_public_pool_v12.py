@@ -5,10 +5,23 @@ from sqlalchemy import func, select
 
 from apps.api.src.core.auth import Principal
 from apps.api.src.core.errors import AppError
-from apps.api.src.core.models import AuditLog, Lead, Region, User
-from apps.api.src.core.v12_enums import DuplicateDecision, LeadSourceKind, LeadV12Status
+from apps.api.src.core.models import AuditLog, Company, Lead, Region, User
+from apps.api.src.core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12
+from apps.api.src.core.v12_enums import (
+    CustomerSource,
+    DuplicateDecision,
+    LeadSourceKind,
+    LeadV12Status,
+)
 from apps.api.src.integrations.feishu import FeishuRecord
-from apps.api.src.services.lead_supply_v12 import create_draft, submit_draft
+from apps.api.src.services.dispatch_v12 import has_receiver_coverage
+from apps.api.src.services.lead_supply_v12 import (
+    create_draft,
+    lead_supply_list_to_dict,
+    lead_supply_to_dict,
+    submit_draft,
+    update_draft,
+)
 from apps.api.src.services.public_pool_v12 import (
     PublicPoolTarget,
     create_public_pool_lead,
@@ -35,6 +48,62 @@ def _operation(db) -> tuple[User, Principal]:
     db.add(user)
     db.flush()
     return user, _principal(user.id, "lead.manual.manage")
+
+
+def _supplier(db) -> tuple[Company, User, Principal]:
+    company = Company(code="SUP-PUBLIC", name="客资提供加盟商", status="ACTIVE")
+    db.add(company)
+    db.flush()
+    user = User(
+        display_name="供客负责人",
+        status="ACTIVE",
+        company_id=company.id,
+    )
+    db.add(user)
+    db.add(
+        CompanyLeadCapability(
+            company_id=company.id,
+            capability_code="LEAD_SUPPLIER",
+            active=True,
+            review_status="APPROVED",
+        )
+    )
+    db.flush()
+    principal = Principal(
+        user_id=user.id,
+        display_name=user.display_name,
+        company_id=company.id,
+        role_codes=frozenset({"FRANCHISE_OWNER"}),
+        permission_codes=frozenset({"supplier.lead.manage"}),
+        session_version=1,
+    )
+    return company, user, principal
+
+
+def _receiver(db, *, region_code: str = "420100") -> Company:
+    company = Company(code="REC-PUBLIC", name="当地接收加盟商", status="ACTIVE")
+    db.add(company)
+    db.flush()
+    db.add_all(
+        [
+            CompanyLeadCapability(
+                company_id=company.id,
+                capability_code="LEAD_RECEIVER",
+                active=True,
+                review_status="APPROVED",
+            ),
+            CompanyServiceAreaV12(
+                company_id=company.id,
+                region_code=region_code,
+                region_level="CITY",
+                is_primary_city=True,
+                active=True,
+                review_status="APPROVED",
+            ),
+        ]
+    )
+    db.flush()
+    return company
 
 
 def _seed_region(db) -> None:
@@ -167,6 +236,155 @@ def test_public_pool_completeness_filter_recognizes_preexisting_manual_drafts(db
 
     assert incomplete_total == 1
     assert [item.id for item in incomplete] == [legacy_draft.id]
+
+
+def test_customer_source_is_system_derived_and_cannot_be_overwritten(db) -> None:
+    _seed_region(db)
+    _, operation = _operation(db)
+    platform = create_public_pool_lead(
+        db,
+        principal=operation,
+        values={
+            **_complete_values("13800138020"),
+            "customer_source": "FRANCHISE_SUPPLIED",
+        },
+    )
+    update_draft(
+        db,
+        lead=platform,
+        principal=operation,
+        values={"customer_source": "FRANCHISE_SUPPLIED"},
+    )
+
+    supplier_company, _, supplier = _supplier(db)
+    supplied = create_draft(
+        db,
+        principal=supplier,
+        source_kind=LeadSourceKind.SUPPLIER_H5,
+        values=_complete_values("13800138021"),
+    )
+
+    assert (
+        lead_supply_to_dict(platform, operation)["customer_source"]
+        == CustomerSource.OPERATION_ENTRY.value
+    )
+    assert (
+        lead_supply_to_dict(supplied, supplier)["customer_source"]
+        == CustomerSource.FRANCHISE_SUPPLIED.value
+    )
+    assert supplied.supplier_company_id == supplier_company.id
+
+
+def test_supplier_without_local_receiver_waits_in_public_pool_then_rechecks(db) -> None:
+    _seed_region(db)
+    supplier_company, _, supplier = _supplier(db)
+    _, operation = _operation(db)
+    supplied = create_draft(
+        db,
+        principal=supplier,
+        source_kind=LeadSourceKind.SUPPLIER_H5,
+        values=_complete_values("13800138022"),
+    )
+
+    submitted = submit_draft(db, lead=supplied, principal=supplier)
+
+    assert submitted.decision is DuplicateDecision.CLEAR
+    assert supplied.status == LeadV12Status.PUBLIC_POOL.value
+    assert supplied.pending_reason == "PUBLIC_POOL_NO_LOCAL_RECEIVER"
+    assert has_receiver_coverage(db, supplied) is False
+
+    franchise_items, franchise_total = list_public_pool_leads(
+        db,
+        customer_source=CustomerSource.FRANCHISE_SUPPLIED.value,
+    )
+    assert franchise_total == 1
+    assert [item.id for item in franchise_items] == [supplied.id]
+    serialized = lead_supply_list_to_dict(db, franchise_items, operation)[0]
+    assert serialized["customer_source"] == CustomerSource.FRANCHISE_SUPPLIED.value
+    assert serialized["supplier_company_id"] == supplier_company.id
+    assert serialized["supplier_company_name"] == supplier_company.name
+
+    blocked = transfer_public_pool_lead(
+        db,
+        lead=supplied,
+        principal=operation,
+    )
+    assert blocked.transferred is False
+    assert blocked.validation_errors == {
+        "receiver_coverage": "当地暂无可接收加盟商"
+    }
+    assert supplied.status == LeadV12Status.PUBLIC_POOL.value
+
+    receiver = _receiver(db)
+    assert receiver.id != supplier_company.id
+    assert has_receiver_coverage(db, supplied) is True
+
+    transferred = transfer_public_pool_lead(
+        db,
+        lead=supplied,
+        principal=operation,
+    )
+    assert transferred.transferred is True
+    assert transferred.validation_errors == {}
+    assert supplied.status == LeadV12Status.READY_DISPATCH.value
+    assert supplied.pending_reason is None
+
+
+def test_source_supplier_never_counts_as_its_own_local_receiver(db) -> None:
+    _seed_region(db)
+    supplier_company, _, supplier = _supplier(db)
+    db.add_all(
+        [
+            CompanyLeadCapability(
+                company_id=supplier_company.id,
+                capability_code="LEAD_RECEIVER",
+                active=True,
+                review_status="APPROVED",
+            ),
+            CompanyServiceAreaV12(
+                company_id=supplier_company.id,
+                region_code="420100",
+                region_level="CITY",
+                is_primary_city=True,
+                active=True,
+                review_status="APPROVED",
+            ),
+        ]
+    )
+    supplied = create_draft(
+        db,
+        principal=supplier,
+        source_kind=LeadSourceKind.SUPPLIER_H5,
+        values=_complete_values("13800138023"),
+    )
+    submit_draft(db, lead=supplied, principal=supplier)
+
+    assert has_receiver_coverage(db, supplied) is False
+    assert supplied.status == LeadV12Status.PUBLIC_POOL.value
+
+
+def test_supplier_with_other_approved_local_receiver_enters_dispatch_pool(db) -> None:
+    _seed_region(db)
+    supplier_company, _, supplier = _supplier(db)
+    receiver = _receiver(db)
+    supplied = create_draft(
+        db,
+        principal=supplier,
+        source_kind=LeadSourceKind.SUPPLIER_H5,
+        values=_complete_values("13800138024"),
+    )
+
+    submit_draft(db, lead=supplied, principal=supplier)
+
+    assert receiver.id != supplier_company.id
+    assert has_receiver_coverage(db, supplied) is True
+    assert supplied.status == LeadV12Status.READY_DISPATCH.value
+    assert supplied.pending_reason is None
+    _, public_pool_total = list_public_pool_leads(
+        db,
+        customer_source=CustomerSource.FRANCHISE_SUPPLIED.value,
+    )
+    assert public_pool_total == 0
 
 
 def test_feishu_dispatch_target_retains_incomplete_rows_and_is_idempotent(db, monkeypatch) -> None:
@@ -368,6 +586,13 @@ def test_public_pool_http_is_shared_by_admin_and_operation_but_forbidden_to_fran
     assert transferred.json()["data"]["transferred"] is True
 
     with factory() as session:
+        transfer_audit = session.scalar(
+            select(AuditLog)
+            .where(
+                AuditLog.resource_id == lead_id,
+                AuditLog.action == "V12_PUBLIC_POOL_TRANSFER",
+            )
+        )
         actions = list(
             session.scalars(
                 select(AuditLog.action)
@@ -376,6 +601,17 @@ def test_public_pool_http_is_shared_by_admin_and_operation_but_forbidden_to_fran
             ).all()
         )
     assert actions == ["V12_PUBLIC_POOL_LEAD_CREATE", "V12_PUBLIC_POOL_TRANSFER"]
+    assert transfer_audit is not None
+    assert transfer_audit.actor_user_id is not None
+    assert transfer_audit.metadata_json == {
+        "result": "TRANSFERRED",
+        "customer_source": CustomerSource.OPERATION_ENTRY.value,
+        "region_code": "310000",
+        "supplier_company_id": None,
+        "pending_reason": None,
+        "validation_errors": {},
+        "dedup_decision": DuplicateDecision.CLEAR.value,
+    }
 
     import apps.api.src.services.public_pool_v12 as module
 
