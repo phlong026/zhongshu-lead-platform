@@ -12,7 +12,7 @@ class Settings(BaseSettings):
 
     app_env: str = "development"
     app_name: str = "合家美宅客资平台"
-    app_version: str = "1.2.2"
+    app_version: str = "1.2.3"
     log_level: str = "INFO"
     log_json: bool = True
     app_base_url: str = "http://localhost:8000"

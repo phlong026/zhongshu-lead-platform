@@ -49,7 +49,7 @@ def test_source_archive_contains_generated_v12_manifest_and_openapi(tmp_path) ->
         "Feishu customer-view import is manual and one-way; no scheduled sync or writeback"
         in payload["runtime_boundaries"]
     )
-    assert openapi["info"]["version"] == "1.2.2"
+    assert openapi["info"]["version"] == "1.2.3"
     assert "/api/v1/v1.2/reports/overview" in openapi["paths"]
 
 
@@ -73,7 +73,7 @@ def test_required_v12_delivery_documents_and_generated_openapi_exist(tmp_path) -
     expected = sorted([*delivery_names, "docs__api__openapi.json"])
     assert copied == expected
     openapi = json.loads((target / "docs__api__openapi.json").read_text(encoding="utf-8"))
-    assert openapi["info"]["version"] == "1.2.2"
+    assert openapi["info"]["version"] == "1.2.3"
     assert any("SECURITY_AUDIT.md" in name for name in copied)
     assert any("INDEX_V1.2.md" in name for name in copied)
     assert any("53-v1.2-sprint6-comprehensive-final-review.md" in name for name in copied)

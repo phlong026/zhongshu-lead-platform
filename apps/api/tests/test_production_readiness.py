@@ -13,7 +13,7 @@ def _secret(prefix: str, length: int = 40) -> str:
 def production_settings(**overrides) -> Settings:
     values = {
         "app_env": "production",
-        "app_version": "1.2.2",
+        "app_version": "1.2.3",
         "app_base_url": "https://app.zhongshu.example.cn",
         "database_url": "postgresql+psycopg://zhongshu:secret@db:5432/zhongshu",
         "jwt_secret": "J" * 48,

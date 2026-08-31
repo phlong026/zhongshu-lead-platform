@@ -1,4 +1,4 @@
-# 合家美宅客资平台 V1.2.2 生产上线检查表
+# 合家美宅客资平台 V1.2.3 生产上线检查表
 
 所有 P0 项必须有证据并由责任人签字。任何一项失败均为 `NO-GO`。
 
@@ -6,10 +6,10 @@
 
 ## A. 版本和质量
 
-- [ ] 上线提交来自 `release/v1.2.2`，对应受保护的 V1.2.2 tag；
+- [ ] 上线提交来自 `release/v1.2.3`，对应受保护的 V1.2.3 tag；
 - [ ] PR 与 Release CI 的全量测试、PostgreSQL 迁移和 Chromium 浏览器任务全部通过；
 - [ ] PR 无未解决的 Critical/High/P1/P2 评审问题；
-- [ ] `APP_VERSION=1.2.2`，Dockerfile 默认 `APP_VERSION=1.2.2`；
+- [ ] `APP_VERSION=1.2.3`，Dockerfile 默认 `APP_VERSION=1.2.3`；
 - [ ] `APP_IMAGE` 采用 `repo:APP_VERSION@sha256:digest`，显式 tag 与 `APP_VERSION` 完全一致；
 - [ ] `docker image inspect` 的 OCI `org.opencontainers.image.version` 与 `APP_VERSION` 完全一致；
 - [ ] README、部署、迁移、回滚、UAT、测试、安全审计和发布说明均为 V1.2；

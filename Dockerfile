@@ -1,5 +1,5 @@
 FROM python:3.12-slim-bookworm@sha256:72d3d75f2639ab82b34b29390ad3d6e0827c775befee94edda8e9976818f488d
-ARG APP_VERSION=1.2.2
+ARG APP_VERSION=1.2.3
 LABEL org.opencontainers.image.title="zhongshu-lead-platform" \
       org.opencontainers.image.version="${APP_VERSION}" \
       org.opencontainers.image.description="合家美宅客资审核、派发与积分管理平台"
