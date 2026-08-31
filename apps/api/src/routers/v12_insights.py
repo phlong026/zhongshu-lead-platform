@@ -7,12 +7,13 @@ import hashlib
 from io import StringIO
 from datetime import datetime, timedelta, timezone
 from threading import Lock
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import StreamingResponse
+from pydantic import Field, field_validator
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
@@ -57,6 +58,44 @@ VERIFICATION_PENDING_LEAD_STATUSES = (
 )
 LEAD_EXPORT_ACTIVE_STATUSES = ("PENDING", "RUNNING")
 _lead_export_queue_lock = Lock()
+
+
+class ScopedLeadExportRequestBody(LeadExportRequestBody):
+    scope: Literal["ALL_LEADS", "PUBLIC_POOL"] = "ALL_LEADS"
+    keyword: str | None = Field(default=None, max_length=128)
+    customer_source: Literal["OPERATION_ENTRY", "FRANCHISE_SUPPLIED"] | None = None
+    completeness: Literal["COMPLETE", "INCOMPLETE"] | None = None
+    duplicate_status: str | None = Field(default=None, max_length=32)
+
+    @field_validator("customer_source", "completeness", mode="before")
+    @classmethod
+    def normalize_public_pool_choice(cls, value: Any) -> Any:
+        return value.strip().upper() if isinstance(value, str) and value.strip() else None
+
+    @field_validator("keyword", "duplicate_status")
+    @classmethod
+    def normalize_public_pool_text(cls, value: str | None) -> str | None:
+        return value.strip() if value and value.strip() else None
+
+    @field_validator("duplicate_status")
+    @classmethod
+    def normalize_public_pool_code(cls, value: str | None) -> str | None:
+        return value.upper() if value else None
+
+    def filters(self) -> dict[str, Any]:
+        if self.scope == "PUBLIC_POOL":
+            return {
+                "scope": self.scope,
+                "created_from": self.created_from.isoformat() if self.created_from else None,
+                "created_to": self.created_to.isoformat() if self.created_to else None,
+                "submitter_user_id": self.submitter_user_id,
+                "keyword": self.keyword,
+                "customer_source": self.customer_source,
+                "source_kind": self.source_kind,
+                "completeness": self.completeness,
+                "duplicate_status": self.duplicate_status,
+            }
+        return {"scope": self.scope, **super().filters()}
 
 
 @contextmanager
@@ -1288,11 +1327,13 @@ def search_lead_report(
 
 @router.post("/reports/leads/exports")
 def request_lead_export(
-    body: LeadExportRequestBody,
+    body: ScopedLeadExportRequestBody,
     request: Request,
     principal=Depends(require_permissions("lead.phone.export")),
     db: Session = Depends(get_db),
 ):
+    if body.scope == "PUBLIC_POOL" and not principal.can("lead.manual.manage"):
+        raise AppError("FORBIDDEN", "无权导出公海池客资", 403)
     filters = body.filters()
     with _lead_export_queue_guard():
         _acquire_lead_export_queue_lock(db)
@@ -1343,7 +1384,7 @@ def request_lead_export(
             if existing is None:
                 raise
             return ok(request, _lead_export_task_dict(existing), "导出任务已创建")
-        return ok(request, _lead_export_task_dict(task), "完整手机号导出任务已提交")
+        return ok(request, _lead_export_task_dict(task), "客资完整信息导出任务已提交")
 
 
 @router.get("/reports/leads/exports")

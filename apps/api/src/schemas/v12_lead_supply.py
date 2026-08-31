@@ -27,6 +27,10 @@ class LeadDraftBody(BaseModel):
         return self
 
 
+class PlatformLeadDraftBody(LeadDraftBody):
+    is_test: bool = False
+
+
 class LeadDraftUpdateBody(BaseModel):
     customer_name: str | None = Field(default=None, max_length=64)
     phone: str | None = Field(default=None, max_length=32)
@@ -45,7 +49,7 @@ class LeadDraftUpdateBody(BaseModel):
     consent_confirmed: bool | None = None
 
 
-class LeadQuickDispatchBody(LeadDraftBody):
+class LeadQuickDispatchBody(PlatformLeadDraftBody):
     company_id: str = Field(min_length=1, max_length=36)
     idempotency_key: str = Field(min_length=8, max_length=64)
     note: str | None = Field(default=None, max_length=1000)
@@ -97,6 +101,20 @@ class LeadCorrectionRedispatchBody(BaseModel):
         normalized = value.strip()
         if len(normalized) < 5:
             raise ValueError("解除派发原因至少 5 个字符")
+        return normalized
+
+
+class TestLeadDeleteBody(BaseModel):
+    confirmed_lead_id: str = Field(min_length=1, max_length=36)
+    confirmed_customer_name: str = Field(min_length=1, max_length=64)
+    reason: str = Field(min_length=5, max_length=1000)
+
+    @field_validator("confirmed_lead_id", "confirmed_customer_name", "reason")
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("必填字段不能为空")
         return normalized
 
 

@@ -22,6 +22,7 @@ from ..schemas.v12_lead_supply import (
     CompanyProfileBulkApproveBody,
     DedupOverrideBody,
     LeadDraftBody,
+    PlatformLeadDraftBody,
     LeadCorrectionBody,
     LeadCorrectionRedispatchBody,
     LeadCorrectionRecheckBody,
@@ -30,6 +31,7 @@ from ..schemas.v12_lead_supply import (
     ServiceAreaReplaceBody,
     ServiceAreaReviewBody,
     SupplierReviewBody,
+    TestLeadDeleteBody,
 )
 from ..services.audit import write_audit
 from ..services.company_profile_v12 import (
@@ -57,13 +59,16 @@ from ..services.dispatch_v12 import (
 from ..services.lead_supply_v12 import (
     create_draft,
     correct_platform_lead,
+    delete_test_lead_permanently,
     discard_draft,
     get_lead_or_404,
     lead_supply_list_to_dict,
     lead_supply_to_dict,
     list_supplier_leads,
+    preview_test_lead_delete,
     recheck_platform_lead_correction,
     release_corrected_lead_for_redispatch,
+    release_misdispatched_lead_for_redispatch,
     reopen_platform_lead_for_correction,
     reopen_rejected_supplier_lead,
     review_supplier_lead,
@@ -237,7 +242,7 @@ def _lead_detail_dict(db: Session, lead: Lead, principal) -> dict:
 
 @router.post("/platform/leads")
 def create_platform_lead(
-    body: LeadDraftBody,
+    body: PlatformLeadDraftBody,
     request: Request,
     principal=Depends(require_permissions("lead.manual.manage")),
     db: Session = Depends(get_db),
@@ -263,7 +268,7 @@ def create_platform_lead(
 
 @router.post("/platform/leads/quick-dispatch/candidates")
 def preview_platform_lead_quick_dispatch_candidates(
-    body: LeadDraftBody,
+    body: PlatformLeadDraftBody,
     request: Request,
     principal=Depends(require_permissions("lead.manual.manage", "lead.dispatch")),
     db: Session = Depends(get_db),
@@ -678,6 +683,100 @@ def release_platform_lead_correction_for_redispatch(
     )
     db.commit()
     return ok(request, response_data, "原派发已解除，客资已重新进入待派发池")
+
+
+@router.post("/platform/leads/{lead_id}/misdispatch/release-for-redispatch")
+def release_platform_lead_misdispatch_for_redispatch(
+    lead_id: str,
+    body: LeadCorrectionRedispatchBody,
+    request: Request,
+    principal=Depends(require_permissions("lead.manual.manage")),
+    db: Session = Depends(get_db),
+):
+    result = release_misdispatched_lead_for_redispatch(
+        db,
+        lead_id=lead_id,
+        principal=principal,
+        reason=body.reason,
+        expected_snapshot_version=body.expected_snapshot_version,
+    )
+    response_data = {
+        "lead": _lead_detail_dict(db, result.lead, principal),
+        "assignment": _quick_assignment_dict(result.assignment),
+        "refund_ledger": (
+            ledger_to_dict(result.refund_ledger) if result.refund_ledger else None
+        ),
+    }
+    write_audit(
+        db,
+        principal=principal,
+        action="V12_PLATFORM_LEAD_MISDISPATCH_REDISPATCH",
+        resource_type="lead",
+        resource_id=result.lead.id,
+        company_id=result.assignment.company_id,
+        before=result.before,
+        after=result.after,
+        metadata={
+            "assignment_id": result.assignment.id,
+            "assignment_status_before": result.assignment_status_before,
+            "assignment_status_after": result.assignment.status,
+            "refund_ledger_id": (
+                result.refund_ledger.id if result.refund_ledger else None
+            ),
+            "refund_points": (
+                int(result.refund_ledger.delta) if result.refund_ledger else 0
+            ),
+            "expired_return_request_id": result.expired_return_request_id,
+        },
+        reason=body.reason,
+        request_id=request.state.request_id,
+    )
+    db.commit()
+    return ok(request, response_data, "错误派发已撤回，客资已重新进入待派发池")
+
+
+@router.delete("/platform/leads/{lead_id}/test-record")
+def delete_platform_test_lead(
+    lead_id: str,
+    body: TestLeadDeleteBody,
+    request: Request,
+    principal=Depends(require_permissions("lead.manual.manage")),
+    db: Session = Depends(get_db),
+):
+    snapshot = delete_test_lead_permanently(
+        db,
+        lead_id=lead_id,
+        principal=principal,
+        confirmed_lead_id=body.confirmed_lead_id,
+        confirmed_customer_name=body.confirmed_customer_name,
+        reason=body.reason,
+    )
+    write_audit(
+        db,
+        principal=principal,
+        action="V12_TEST_LEAD_PERMANENT_DELETE",
+        resource_type="lead",
+        resource_id=lead_id,
+        before=snapshot,
+        after={"deleted": True},
+        reason=body.reason,
+        request_id=request.state.request_id,
+    )
+    db.commit()
+    return ok(request, snapshot, "测试客资已永久删除")
+
+
+@router.get("/platform/leads/{lead_id}/test-record/impact")
+def preview_platform_test_lead_delete(
+    lead_id: str,
+    request: Request,
+    principal=Depends(require_permissions("lead.manual.manage")),
+    db: Session = Depends(get_db),
+):
+    return ok(
+        request,
+        preview_test_lead_delete(db, lead_id=lead_id, principal=principal),
+    )
 
 
 @router.post("/platform/leads/{lead_id}/submit")

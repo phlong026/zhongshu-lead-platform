@@ -13,7 +13,7 @@ from time import monotonic
 from typing import Any, Callable
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import Session, aliased
 
 from ..core.models import (
@@ -22,10 +22,13 @@ from ..core.models import (
     FollowUp,
     Lead,
     LeadExportTask,
+    Role,
     StorageCleanupOutbox,
     User,
+    UserRole,
 )
 from ..core.security import decrypt_text, hash_phone, mask_phone, normalize_phone
+from .public_pool_v12 import public_pool_lead_conditions
 from .storage import get_storage
 from .storage_cleanup_worker import enqueue_storage_cleanup
 
@@ -74,6 +77,13 @@ class LeadReportRow:
     assigned_by_name: str | None
     submitter_name: str | None
     supplier_company_name: str | None
+    internal_assignee_name: str | None
+    internal_assignee_role_code: str | None
+    latest_followup_status: str | None
+    latest_followup_note: str | None
+    latest_followup_next_at: datetime | None
+    latest_followup_by_name: str | None
+    latest_followup_at: datetime | None
 
 
 def _datetime_value(value: Any) -> datetime | None:
@@ -152,21 +162,32 @@ def _conditions(filters: dict[str, Any], current_assignment) -> list[Any]:
     return conditions
 
 
-def _report_select(filters: dict[str, Any]):
+def _report_select(
+    filters: dict[str, Any],
+    *,
+    lead_ids: list[str] | None = None,
+    include_latest_followup: bool = False,
+):
     current_assignment = aliased(Assignment, name="current_assignment")
     receiver = aliased(Company, name="current_receiver")
     supplier = aliased(Company, name="lead_supplier")
     assigned_by = aliased(User, name="assigned_by_user")
     submitter = aliased(User, name="lead_submitter")
+    internal_assignee = aliased(User, name="internal_assignee")
+    internal_user_role = aliased(UserRole, name="internal_user_role")
+    internal_role = aliased(Role, name="internal_assignee_role")
+    selected = [
+        Lead,
+        current_assignment,
+        receiver.name.label("receiver_company_name"),
+        assigned_by.display_name.label("assigned_by_name"),
+        submitter.display_name.label("submitter_name"),
+        supplier.name.label("supplier_company_name"),
+        internal_assignee.display_name.label("internal_assignee_name"),
+        internal_role.code.label("internal_assignee_role_code"),
+    ]
     statement = (
-        select(
-            Lead,
-            current_assignment,
-            receiver.name.label("receiver_company_name"),
-            assigned_by.display_name.label("assigned_by_name"),
-            submitter.display_name.label("submitter_name"),
-            supplier.name.label("supplier_company_name"),
-        )
+        select(*selected)
         .outerjoin(current_assignment, current_assignment.id == Lead.current_assignment_id)
         .outerjoin(
             receiver,
@@ -179,9 +200,85 @@ def _report_select(filters: dict[str, Any]):
         .outerjoin(assigned_by, assigned_by.id == current_assignment.assigned_by)
         .outerjoin(submitter, submitter.id == Lead.submitter_user_id)
         .outerjoin(supplier, supplier.id == Lead.supplier_company_id)
+        .outerjoin(
+            internal_assignee,
+            internal_assignee.id == current_assignment.internal_assignee_user_id,
+        )
+        .outerjoin(
+            internal_user_role,
+            internal_user_role.user_id == internal_assignee.id,
+        )
+        .outerjoin(internal_role, internal_role.id == internal_user_role.role_id)
         .where(*_conditions(filters, current_assignment))
     )
+    if include_latest_followup:
+        latest_followup_creator = aliased(User, name="latest_followup_creator")
+        ranked_followups = (
+            select(
+                FollowUp.assignment_id.label("assignment_id"),
+                FollowUp.status.label("status"),
+                FollowUp.note.label("note"),
+                FollowUp.next_followup_at.label("next_followup_at"),
+                FollowUp.created_by.label("created_by"),
+                FollowUp.created_at.label("created_at"),
+                func.row_number()
+                .over(
+                    partition_by=FollowUp.assignment_id,
+                    order_by=(FollowUp.created_at.desc(), FollowUp.id.desc()),
+                )
+                .label("row_number"),
+            )
+            .subquery("ranked_latest_followup")
+        )
+        statement = (
+            statement.add_columns(
+                ranked_followups.c.status.label("latest_followup_status"),
+                ranked_followups.c.note.label("latest_followup_note"),
+                ranked_followups.c.next_followup_at.label("latest_followup_next_at"),
+                latest_followup_creator.display_name.label("latest_followup_by_name"),
+                ranked_followups.c.created_at.label("latest_followup_at"),
+            )
+            .outerjoin(
+                ranked_followups,
+                and_(
+                    ranked_followups.c.assignment_id == current_assignment.id,
+                    ranked_followups.c.row_number == 1,
+                ),
+            )
+            .outerjoin(
+                latest_followup_creator,
+                latest_followup_creator.id == ranked_followups.c.created_by,
+            )
+        )
+    if lead_ids is not None:
+        statement = statement.where(Lead.id.in_(lead_ids))
     return statement, current_assignment
+
+
+def _lead_report_row(row: Any) -> LeadReportRow:
+    return LeadReportRow(
+        lead=row[0],
+        assignment=row[1],
+        receiver_company_name=row.receiver_company_name,
+        assigned_by_name=row.assigned_by_name,
+        submitter_name=row.submitter_name,
+        supplier_company_name=row.supplier_company_name,
+        internal_assignee_name=row.internal_assignee_name,
+        internal_assignee_role_code=row.internal_assignee_role_code,
+        latest_followup_status=getattr(row, "latest_followup_status", None),
+        latest_followup_note=getattr(row, "latest_followup_note", None),
+        latest_followup_next_at=getattr(row, "latest_followup_next_at", None),
+        latest_followup_by_name=getattr(row, "latest_followup_by_name", None),
+        latest_followup_at=getattr(row, "latest_followup_at", None),
+    )
+
+
+def _franchise_handler(row: LeadReportRow) -> tuple[str | None, str | None]:
+    if row.internal_assignee_role_code == "FRANCHISE_EMPLOYEE":
+        return row.internal_assignee_name, "FRANCHISE_EMPLOYEE"
+    if row.receiver_company_name:
+        return row.receiver_company_name, "FRANCHISE_COMPANY"
+    return None, None
 
 
 def list_lead_report_rows(
@@ -205,17 +302,7 @@ def list_lead_report_rows(
         .offset((page_no - 1) * page_size)
         .limit(page_size)
     ).all()
-    return [
-        LeadReportRow(
-            lead=row[0],
-            assignment=row[1],
-            receiver_company_name=row.receiver_company_name,
-            assigned_by_name=row.assigned_by_name,
-            submitter_name=row.submitter_name,
-            supplier_company_name=row.supplier_company_name,
-        )
-        for row in rows
-    ], total
+    return [_lead_report_row(row) for row in rows], total
 
 
 def _followup_dict(item: FollowUp, *, created_by_name: str | None = None) -> dict[str, Any]:
@@ -277,6 +364,7 @@ def lead_report_to_dicts(
     for row in rows:
         lead = row.lead
         assignment = row.assignment
+        franchise_handler_name, franchise_handler_kind = _franchise_handler(row)
         phone = decrypt_text(lead.phone_encrypted)
         source_display = (
             f"其他（{lead.source_detail}）"
@@ -286,6 +374,7 @@ def lead_report_to_dicts(
         result.append(
             {
                 "id": lead.id,
+                "is_test": bool(getattr(lead, "is_test", False)),
                 "customer_name": lead.customer_name,
                 "phone": phone if include_full_phone else None,
                 "phone_masked": mask_phone(phone),
@@ -321,6 +410,15 @@ def lead_report_to_dicts(
                 "assigned_by_user_id": assignment.assigned_by if assignment else None,
                 "assigned_by_name": row.assigned_by_name,
                 "assigned_at": assignment.assigned_at.isoformat() if assignment else None,
+                "franchise_handler_name": franchise_handler_name,
+                "franchise_handler_kind": franchise_handler_kind,
+                "internal_assigned_at": (
+                    assignment.internal_assigned_at.isoformat()
+                    if assignment
+                    and assignment.internal_assigned_at
+                    and franchise_handler_kind == "FRANCHISE_EMPLOYEE"
+                    else None
+                ),
                 "latest_followup": latest_followups.get(assignment.id) if assignment else None,
                 "created_at": lead.created_at.isoformat(),
             }
@@ -344,11 +442,24 @@ LEAD_EXPORT_FIELDS = [
     "城市",
     "区县",
     "地区编码",
+    "咨询类别",
+    "品牌",
+    "客户需求",
+    "预算下限",
+    "预算上限",
     "客资状态",
+    "当前跟进状态",
     "派发状态",
     "接收加盟商",
+    "加盟商跟进人",
+    "内部分配时间",
     "派发运营人员",
     "派发时间",
+    "最新跟进状态",
+    "最新跟进内容",
+    "下次跟进时间",
+    "最新跟进人",
+    "最新跟进时间",
     "创建时间",
 ]
 
@@ -366,21 +477,50 @@ FOLLOWUP_EXPORT_FIELDS = [
 
 
 def _iter_report_rows(db: Session, filters: dict[str, Any]):
-    statement, _current_assignment = _report_select(filters)
+    statement, _current_assignment = _report_select(
+        filters,
+        include_latest_followup=True,
+    )
     rows = db.execute(
         statement.order_by(Lead.created_at.desc(), Lead.id.desc()).execution_options(
             yield_per=EXPORT_STREAM_BATCH_SIZE
         )
     )
     for row in rows:
-        yield LeadReportRow(
-            lead=row[0],
-            assignment=row[1],
-            receiver_company_name=row.receiver_company_name,
-            assigned_by_name=row.assigned_by_name,
-            submitter_name=row.submitter_name,
-            supplier_company_name=row.supplier_company_name,
-        )
+        yield _lead_report_row(row)
+
+
+def _public_pool_values(filters: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "created_from": _datetime_value(filters.get("created_from")),
+        "created_to": _datetime_value(filters.get("created_to")),
+        "submitter_user_id": _text(filters.get("submitter_user_id")),
+        "keyword": _text(filters.get("keyword")),
+        "customer_source": _upper(filters.get("customer_source")),
+        "source_kind": _upper(filters.get("source_kind")),
+        "completeness": _upper(filters.get("completeness")),
+        "duplicate_status": _upper(filters.get("duplicate_status")),
+    }
+
+
+def _iter_public_pool_report_rows(db: Session, filters: dict[str, Any]):
+    conditions = public_pool_lead_conditions(**_public_pool_values(filters))
+    statement, _current_assignment = _report_select({}, include_latest_followup=False)
+    rows = db.execute(
+        statement.where(*conditions)
+        .order_by(Lead.created_at.desc(), Lead.id.desc())
+        .execution_options(yield_per=EXPORT_STREAM_BATCH_SIZE)
+    )
+    for row in rows:
+        yield _lead_report_row(row)
+
+
+def _count_public_pool_report_rows(db: Session, filters: dict[str, Any]) -> int:
+    conditions = public_pool_lead_conditions(**_public_pool_values(filters))
+    return int(
+        db.scalar(select(func.count(Lead.id)).where(*conditions))
+        or 0
+    )
 
 
 def _followup_export_statement(filters: dict[str, Any]):
@@ -537,6 +677,7 @@ def _lead_export_row(row: LeadReportRow) -> dict[str, Any]:
         if lead.source_channel == "OTHER" and lead.source_detail
         else lead.source_channel
     )
+    franchise_handler_name, franchise_handler_kind = _franchise_handler(row)
     return {
         "客资编号": lead.id,
         "客户姓名": lead.customer_name,
@@ -548,11 +689,36 @@ def _lead_export_row(row: LeadReportRow) -> dict[str, Any]:
         "城市": lead.city,
         "区县": lead.district,
         "地区编码": lead.region_code,
+        "咨询类别": lead.category_code,
+        "品牌": lead.brand_code,
+        "客户需求": lead.need_summary,
+        "预算下限": lead.budget_min,
+        "预算上限": lead.budget_max,
         "客资状态": lead.status,
+        "当前跟进状态": lead.current_follow_status,
         "派发状态": assignment.status if assignment else None,
         "接收加盟商": row.receiver_company_name,
+        "加盟商跟进人": franchise_handler_name,
+        "内部分配时间": (
+            assignment.internal_assigned_at.isoformat()
+            if assignment
+            and assignment.internal_assigned_at
+            and franchise_handler_kind == "FRANCHISE_EMPLOYEE"
+            else None
+        ),
         "派发运营人员": row.assigned_by_name,
         "派发时间": assignment.assigned_at.isoformat() if assignment else None,
+        "最新跟进状态": row.latest_followup_status,
+        "最新跟进内容": row.latest_followup_note,
+        "下次跟进时间": (
+            row.latest_followup_next_at.isoformat()
+            if row.latest_followup_next_at
+            else None
+        ),
+        "最新跟进人": row.latest_followup_by_name,
+        "最新跟进时间": (
+            row.latest_followup_at.isoformat() if row.latest_followup_at else None
+        ),
         "创建时间": lead.created_at.isoformat(),
     }
 
@@ -565,13 +731,22 @@ def build_lead_export_archive(
 ) -> tuple[Path, int]:
     beat = heartbeat or (lambda: None)
     beat()
-    _sample, total = list_lead_report_rows(
-        db,
-        filters=filters,
-        page_no=1,
-        page_size=1,
-    )
-    followup_total = _count_export_followups(db, filters)
+    public_pool_scope = _upper(filters.get("scope")) == "PUBLIC_POOL"
+    if public_pool_scope:
+        total = _count_public_pool_report_rows(db, filters)
+        report_rows = _iter_public_pool_report_rows(db, filters)
+        followup_total = 0
+        followup_rows = ()
+    else:
+        _sample, total = list_lead_report_rows(
+            db,
+            filters=filters,
+            page_no=1,
+            page_size=1,
+        )
+        report_rows = _iter_report_rows(db, filters)
+        followup_total = _count_export_followups(db, filters)
+        followup_rows = _iter_followup_export_rows(db, filters)
     temporary = NamedTemporaryFile(
         prefix="zhongshu-lead-export-",
         suffix=".zip",
@@ -587,7 +762,7 @@ def build_lead_export_archive(
                 archive,
                 base_filename="客资明细.csv",
                 fieldnames=LEAD_EXPORT_FIELDS,
-                rows=(_lead_export_row(row) for row in _iter_report_rows(db, filters)),
+                rows=(_lead_export_row(row) for row in report_rows),
                 heartbeat=row_heartbeat,
                 budget=budget,
                 rows_per_file=LEAD_EXPORT_ROWS_PER_FILE,
@@ -598,7 +773,7 @@ def build_lead_export_archive(
                 archive,
                 base_filename="跟进记录.csv",
                 fieldnames=FOLLOWUP_EXPORT_FIELDS,
-                rows=_iter_followup_export_rows(db, filters),
+                rows=followup_rows,
                 heartbeat=row_heartbeat,
                 budget=budget,
                 rows_per_file=FOLLOWUP_EXPORT_ROWS_PER_FILE,

@@ -28,6 +28,7 @@ from ..services.return_v12 import (
     claim_return_verification_task,
     create_or_update_return_draft,
     final_review_return,
+    prepare_return_evidence_upload,
     return_request_list_to_dict,
     return_request_to_dict,
     return_verification_task_list_to_dict,
@@ -133,6 +134,11 @@ def upload_return_evidence(
         principal,
         assignment,
         submitted_by=item.submitted_by,
+    )
+    item = prepare_return_evidence_upload(
+        db,
+        request=item,
+        principal=principal,
     )
     content = file.file.read()
     normalized_type = evidence_type.strip().upper()

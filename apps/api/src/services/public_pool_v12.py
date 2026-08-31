@@ -552,17 +552,17 @@ def import_feishu_customer_view(
     )
 
 
-def list_public_pool_leads(
-    db: Session,
+def public_pool_lead_conditions(
     *,
     keyword: str | None = None,
     customer_source: str | None = None,
     source_kind: str | None = None,
     completeness: str | None = None,
     duplicate_status: str | None = None,
-    page_no: int = 1,
-    page_size: int = 20,
-) -> tuple[list[Lead], int]:
+    created_from: datetime | None = None,
+    created_to: datetime | None = None,
+    submitter_user_id: str | None = None,
+) -> list[Any]:
     incomplete_condition = or_(
         Lead.customer_name == "未填写",
         Lead.phone_fingerprint.is_(None),
@@ -630,13 +630,47 @@ def list_public_pool_leads(
     normalized_duplicate = (duplicate_status or "").strip().upper()
     if normalized_duplicate:
         filters.append(Lead.duplicate_status == normalized_duplicate)
+    if created_from:
+        filters.append(Lead.created_at >= created_from)
+    if created_to:
+        filters.append(Lead.created_at < created_to)
+    normalized_submitter = (submitter_user_id or "").strip()
+    if normalized_submitter:
+        filters.append(Lead.submitter_user_id == normalized_submitter)
+    return filters
+
+
+def list_public_pool_leads(
+    db: Session,
+    *,
+    keyword: str | None = None,
+    customer_source: str | None = None,
+    source_kind: str | None = None,
+    completeness: str | None = None,
+    duplicate_status: str | None = None,
+    created_from: datetime | None = None,
+    created_to: datetime | None = None,
+    submitter_user_id: str | None = None,
+    page_no: int = 1,
+    page_size: int = 20,
+) -> tuple[list[Lead], int]:
+    filters = public_pool_lead_conditions(
+        keyword=keyword,
+        customer_source=customer_source,
+        source_kind=source_kind,
+        completeness=completeness,
+        duplicate_status=duplicate_status,
+        created_from=created_from,
+        created_to=created_to,
+        submitter_user_id=submitter_user_id,
+    )
 
     stmt = select(Lead).where(*filters)
     count_stmt = select(func.count(Lead.id)).where(*filters)
     total = int(db.scalar(count_stmt) or 0)
     items = list(
         db.scalars(
-            stmt.order_by(Lead.created_at.desc())
+            stmt.order_by(Lead.created_at.desc(), Lead.id.desc())
             .offset((page_no - 1) * page_size)
             .limit(page_size)
         ).all()

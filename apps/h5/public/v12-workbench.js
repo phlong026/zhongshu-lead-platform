@@ -431,37 +431,68 @@ async function manageInternalAssignment(assignmentId){
 }
 function followupDraft(assignmentId){openSheet('新增跟进',`<form class="wb-form" id="followup-form"><div class="wb-field"><label>跟进状态</label><select class="wb-select" name="status"><option value="CONTACTED">已联系</option><option value="INTERESTED">有意向</option><option value="NOT_INTERESTED">无意向</option><option value="DEAL">${esc(readableLabel('DEAL'))}</option><option value="INVALID">无效客资</option><option value="UNCONTACTED">未联系</option></select><small class="wb-muted">无效客资必须进入正式退回申诉，不能只保存为跟进标签。</small></div><div class="wb-field"><label>跟进备注</label><textarea class="wb-textarea" name="note" maxlength="500" placeholder="填写沟通结果或后续安排"></textarea></div><div class="wb-field"><label>下次跟进时间</label><input class="wb-input" type="datetime-local" name="next_followup_at"><small class="wb-muted">选择方便再次联系客户的时间。</small></div><button class="wb-btn primary" id="followup-submit">保存跟进</button></form>`,()=>{const form=document.querySelector('#followup-form'),submitButton=document.querySelector('#followup-submit'),statusField=form.elements.status;const syncSubmitLabel=()=>{submitButton.textContent=statusField.value==='INVALID'?'下一步：发起退回':'保存跟进'};statusField.onchange=syncSubmitLabel;syncSubmitLabel();let submitting=false;form.onsubmit=async e=>{e.preventDefault();if(submitting)return;const fields=Object.fromEntries(new FormData(form));if(fields.status==='INVALID'){closeSheet();returnDraft(assignmentId,String(fields.note||'').trim());return}submitting=true;submitButton.disabled=true;const nextFollowupAt=String(fields.next_followup_at||'').trim();let nextFollowupAtIso=null;if(nextFollowupAt){const parsed=new Date(nextFollowupAt);if(Number.isNaN(parsed.getTime())){submitting=false;submitButton.disabled=false;toast('下次跟进时间格式不正确',true);return}nextFollowupAtIso=new Date(nextFollowupAt).toISOString()}try{await api(`/followups/assignments/${assignmentId}`,{method:'POST',body:JSON.stringify({status:fields.status,note:String(fields.note||'').trim()||null,next_followup_at:nextFollowupAtIso})})}catch(err){submitting=false;submitButton.disabled=false;if(err.code==='FOLLOWUP_INVALID_REQUIRES_RETURN'){closeSheet();returnDraft(assignmentId,String(fields.note||'').trim());return}toast(err.message,true);return}toast('跟进已保存');try{await assignmentDetail(assignmentId)}catch{closeSheet();toast('跟进已保存，请刷新查看',true)}}})}
 function returnDraft(assignmentId,initialDescription=''){openSheet('发起退回申诉',`<form class="wb-form" id="return-form"><div class="wb-field"><label>退回原因</label><select class="wb-select" name="reason_code"><option value="EMPTY_NUMBER">空号/停机</option><option value="OUT_OF_SERVICE_REGION">超出服务区域</option><option value="DUPLICATE_TO_RECEIVER">接收方重复客户</option><option value="NON_HOUSING_CONSULTATION">非建房咨询</option></select></div><div class="wb-field"><label>事实说明</label><textarea class="wb-textarea" name="description" required minlength="5" placeholder="请说明联系次数、沟通结果和申请退回的事实依据">${esc(initialDescription)}</textarea></div><button class="wb-btn primary">下一步：上传证据</button></form>`,()=>{document.querySelector('#return-form').onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);try{const x=await api(`/v1.2/returns/assignments/${assignmentId}/draft`,{method:'POST',body:JSON.stringify(Object.fromEntries(f))});closeSheet();evidence(x.id,x.evidence_summary||{})}catch(err){toast(err.message,true)}}})}
+async function uploadEvidenceBatch(files,uploadFile,onUploaded){
+  const succeeded=[];
+  const failed=[];
+  const results=[];
+  let uploaded=0;
+  for(const entry of files){
+    try{
+      await uploadFile(entry.file,entry.type);
+      uploaded+=1;
+      succeeded.push(entry);
+      results.push({...entry,status:'SUCCESS'});
+      onUploaded?.(entry.file,entry.type);
+    }catch(error){const failedEntry={...entry,error};failed.push(failedEntry);results.push({...failedEntry,status:'FAILED'})}
+  }
+  return {uploaded,succeeded,failed,results};
+}
+function syncEvidenceSubmitButton(button,uploadedTypes,uploading){button.disabled=uploading||uploadedTypes.size===0}
+function renderEvidenceFileResults(root,results){zsSetSafeHtml(root,(results||[]).map(item=>`<div class="wb-notice"><b>${esc(item.file.name)}</b><br>${item.status==='SUCCESS'?'上传成功':`上传失败：${esc(item.error?.message||'请检查文件后重试')}`}</div>`).join(''))}
 function evidence(returnId,summary={}){
   const uploadedTypes=new Set();
   if(Number(summary.CHAT_SCREENSHOT||0)>0)uploadedTypes.add('CHAT_SCREENSHOT');
   if(Number(summary.CALL_RECORDING||0)>0)uploadedTypes.add('CALL_RECORDING');
-  openSheet('上传证据并提交',`<div class="wb-notice"><b>截图或录音任一类型满足即可。</b><br>截图用于确认沟通内容，录音用于后续电销和审核人员核实事实。</div><form class="wb-form" id="evidence-form"><div class="wb-field"><label>沟通截图</label><input class="wb-input" type="file" name="chat_screenshots" accept="image/jpeg,image/png,image/webp" multiple><small class="wb-muted">支持 JPG、PNG、WEBP，可选择多张。</small></div><div class="wb-field"><label>电话录音</label><input class="wb-input" type="file" name="call_recording" accept="audio/mpeg,audio/wav,audio/mp4,audio/aac"><small class="wb-muted">支持 MP3、WAV、M4A、AAC，最大 20MB。</small></div><button class="wb-btn" id="upload-evidence" type="submit">上传证据</button></form><p class="wb-muted" id="evidence-progress" role="status">${uploadedTypes.size>0?'已有证据，可以提交退回申请。':'请至少上传一种证据。'}</p><button class="wb-btn primary" id="submit-return" style="margin-top:12px" ${uploadedTypes.size>0?'':'disabled'}>提交退回申请</button>`,()=>{
+  openSheet('上传证据并提交',`<div class="wb-notice"><b>截图或录音任一类型满足即可。</b><br>截图用于确认沟通内容，录音用于后续电销和审核人员核实事实。</div><form class="wb-form" id="evidence-form"><div class="wb-field"><label>沟通截图</label><input class="wb-input" type="file" name="chat_screenshots" accept="image/jpeg,image/png,image/webp" multiple><small class="wb-muted">支持 JPG、PNG、WEBP，可选择多张。</small></div><div class="wb-field"><label>电话录音</label><input class="wb-input" type="file" name="call_recording" accept="audio/mpeg,audio/wav,audio/mp4,audio/aac"><small class="wb-muted">支持 MP3、WAV、M4A、AAC，最大 20MB。</small></div><button class="wb-btn" id="upload-evidence" type="submit">上传证据</button></form><p class="wb-muted" id="evidence-progress" role="status">${uploadedTypes.size>0?'已有证据，可以提交退回申请。':'请至少上传一种证据。'}</p><div class="wb-form" id="evidence-file-results" aria-live="polite"></div><button class="wb-btn primary" id="submit-return" style="margin-top:12px" ${uploadedTypes.size>0?'':'disabled'}>提交退回申请</button>`,()=>{
     const form=document.querySelector('#evidence-form');
     const uploadButton=document.querySelector('#upload-evidence');
     const submitButton=document.querySelector('#submit-return');
     const progress=document.querySelector('#evidence-progress');
+    const fileResults=document.querySelector('#evidence-file-results');
+    const uploadHistory=[];
+    let uploading=false;
     const uploadFile=async(file,type)=>{const body=new FormData();body.append('file',file);body.append('evidence_type',type);await api(`/v1.2/returns/${returnId}/evidence`,{method:'POST',body})};
     form.onsubmit=async event=>{
       event.preventDefault();
+      if(uploading)return;
       const screenshots=Array.from(form.elements.chat_screenshots.files||[]);
       const recording=form.elements.call_recording.files?.[0];
       if(uploadedTypes.size===0&&!screenshots.length&&!recording){toast('请至少上传沟通截图或电话录音',true);return}
+      uploading=true;
       uploadButton.disabled=true;
+      syncEvidenceSubmitButton(submitButton,uploadedTypes,uploading);
       progress.textContent='正在上传证据，请不要关闭页面…';
-      try{
-        if(screenshots.length){for(const file of screenshots)await uploadFile(file,'CHAT_SCREENSHOT');uploadedTypes.add('CHAT_SCREENSHOT')}
-        if(recording){await uploadFile(recording,'CALL_RECORDING');uploadedTypes.add('CALL_RECORDING')}
-        submitButton.disabled=uploadedTypes.size===0;
+      const files=[...screenshots.map(file=>({file,type:'CHAT_SCREENSHOT'})),...(recording?[{file:recording,type:'CALL_RECORDING'}]:[])];
+      const result=await uploadEvidenceBatch(files,uploadFile,(file,type)=>{
+        uploadedTypes.add(type);
+        progress.textContent=`${file.name}上传成功，已有证据，可以提交退回申请。`;
+      });
+      uploadHistory.push(...result.results);
+      renderEvidenceFileResults(fileResults,uploadHistory);
+      uploading=false;
+      syncEvidenceSubmitButton(submitButton,uploadedTypes,uploading);
+      if(result.failed.length===0){
         progress.textContent='已有证据，可以提交退回申请。';
         uploadButton.textContent='证据已上传';
         toast('证据已上传');
-      }catch(err){
+      }else{
         uploadButton.disabled=false;
-        progress.textContent='部分证据未上传成功，请检查文件后重试。';
-        toast(err.message,true);
+        const failures=result.failed.map(({file,error})=>`${file.name}：${error.message||'上传失败'}`).join('；');
+        progress.textContent=result.uploaded>0?`已成功上传 ${result.uploaded} 个文件；${result.failed.length} 个失败（${failures}）。已有证据，仍可提交退回申请。`:`上传失败：${failures}。请检查文件后重试。`;
+        toast(result.uploaded>0?'部分证据上传成功，可继续提交':'证据上传失败',result.uploaded===0&&uploadedTypes.size===0);
       }
     };
-    submitButton.onclick=async()=>{if(uploadedTypes.size===0){toast('请先上传沟通截图或电话录音',true);return}submitButton.disabled=true;try{await api(`/v1.2/returns/${returnId}/submit`,{method:'POST'});toast('退回申请已提交，等待电销核验');closeSheet();go('returns')}catch(err){submitButton.disabled=false;toast(err.message,true)}};
+    submitButton.onclick=async()=>{if(uploading){toast('证据仍在上传，请稍候',true);return}if(uploadedTypes.size===0){toast('请先上传沟通截图或电话录音',true);return}submitButton.disabled=true;try{await api(`/v1.2/returns/${returnId}/submit`,{method:'POST'});toast('退回申请已提交，等待电销核验');closeSheet();go('returns')}catch(err){syncEvidenceSubmitButton(submitButton,uploadedTypes,uploading);toast(err.message,true)}};
   });
 }
 async function businessReport(){

@@ -4,22 +4,37 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from ..core.auth import Principal
 from ..core.enums import AssignmentStatus, PointsLedgerType
 from ..core.errors import AppError
-from ..core.models import Assignment, AssignmentEvent, Company, FollowUp, Lead, PointsLedger, Region, User
-from ..core.models_v12 import LeadDedupEvent, SupplierLeadReward
+from ..core.models import (
+    Assignment,
+    AssignmentEvent,
+    Company,
+    FollowUp,
+    Lead,
+    LeadDuplicateRelation,
+    LeadImportIssue,
+    PointsLedger,
+    Region,
+    ReturnRequest,
+    User,
+    VerificationSubmission,
+    VerificationTask,
+)
+from ..core.models_v12 import DedupOverride, LeadDedupEvent, SupplierLeadReward
 from ..core.security import decrypt_text, encrypt_text, fingerprint_phone, hash_phone, mask_phone, normalize_phone
-from ..core.state_machine_v12 import assert_reward_transition
+from ..core.state_machine_v12 import assert_return_transition, assert_reward_transition
 from ..core.v12_enums import (
     CustomerSource,
     DuplicateDecision,
     LeadReviewStatus,
     LeadSourceKind,
     LeadV12Status,
+    ReturnV12Status,
     RewardStatus,
 )
 from .company_profile_v12 import require_lead_capability
@@ -77,6 +92,7 @@ class LeadCorrectionRedispatchResult:
     refund_ledger: PointsLedger | None
     before: dict[str, Any]
     after: dict[str, Any]
+    expired_return_request_id: str | None = None
 
 
 def _clean_text(value: Any, *, empty_to_none: bool = True) -> str | None:
@@ -113,9 +129,12 @@ def create_draft(
     values: dict[str, Any],
 ) -> Lead:
     supplier_company_id: str | None = None
+    is_test = False
     if source_kind is LeadSourceKind.SUPPLIER_H5:
         require_lead_capability(db, principal.company_id, "LEAD_SUPPLIER")
         supplier_company_id = principal.company_id
+    elif source_kind is LeadSourceKind.PLATFORM_MANUAL:
+        is_test = values.get("is_test") is True
     placeholder_phone = ""
     lead = Lead(
         source_type=source_kind.value,
@@ -127,6 +146,7 @@ def create_draft(
         phone_hash=hash_phone(placeholder_phone),
         phone_fingerprint=None,
         consent_confirmed=False,
+        is_test=is_test,
         status=LeadV12Status.DRAFT.value,
         review_status=LeadReviewStatus.DRAFT.value,
         duplicate_status=None,
@@ -366,6 +386,147 @@ def discard_draft(
     _assert_draft(lead)
     db.delete(lead)
     db.flush()
+
+
+def _test_lead_delete_impact(db: Session, lead: Lead) -> dict[str, int]:
+    return {
+        "assignment_history": int(
+            db.scalar(select(func.count(Assignment.id)).where(Assignment.lead_id == lead.id))
+            or 0
+        ),
+        "import_issues": int(
+            db.scalar(select(func.count(LeadImportIssue.id)).where(LeadImportIssue.lead_id == lead.id))
+            or 0
+        ),
+        "duplicate_relations": int(
+            db.scalar(
+                select(func.count(LeadDuplicateRelation.id)).where(
+                    or_(
+                        LeadDuplicateRelation.lead_id == lead.id,
+                        LeadDuplicateRelation.duplicate_lead_id == lead.id,
+                    )
+                )
+            )
+            or 0
+        ),
+        "verification_tasks": int(
+            db.scalar(select(func.count(VerificationTask.id)).where(VerificationTask.lead_id == lead.id))
+            or 0
+        ),
+        "verification_submissions": int(
+            db.scalar(
+                select(func.count(VerificationSubmission.id)).where(
+                    VerificationSubmission.lead_id == lead.id
+                )
+            )
+            or 0
+        ),
+        "dedup_events": int(
+            db.scalar(
+                select(func.count(LeadDedupEvent.id)).where(
+                    or_(
+                        LeadDedupEvent.lead_id == lead.id,
+                        LeadDedupEvent.matched_lead_id == lead.id,
+                    )
+                )
+            )
+            or 0
+        ),
+        "dedup_overrides": int(
+            db.scalar(select(func.count(DedupOverride.id)).where(DedupOverride.lead_id == lead.id))
+            or 0
+        ),
+    }
+
+
+def _test_lead_delete_preview(db: Session, lead: Lead) -> dict[str, Any]:
+    impact = _test_lead_delete_impact(db, lead)
+    blockers: list[str] = []
+    if not lead.is_test:
+        blockers.append("NOT_TEST_LEAD")
+    if lead.current_assignment_id or impact["assignment_history"]:
+        blockers.append("DISPATCH_HISTORY_EXISTS")
+    return {
+        "lead_id": lead.id,
+        "customer_name": lead.customer_name,
+        "source_kind": lead.source_kind,
+        "status": lead.status,
+        "is_test": bool(lead.is_test),
+        "deletable": not blockers,
+        "blockers": blockers,
+        "impact": impact,
+    }
+
+
+def preview_test_lead_delete(
+    db: Session,
+    *,
+    lead_id: str,
+    principal: Principal,
+) -> dict[str, Any]:
+    if not principal.has_any_role("SUPER_ADMIN"):
+        raise AppError("FORBIDDEN", "仅超级管理员可查看测试客资删除影响", 403)
+    lead = db.scalar(select(Lead).where(Lead.id == lead_id))
+    if lead is None:
+        raise AppError("LEAD_NOT_FOUND", "客资不存在", 404)
+    return _test_lead_delete_preview(db, lead)
+
+
+def delete_test_lead_permanently(
+    db: Session,
+    *,
+    lead_id: str,
+    principal: Principal,
+    confirmed_lead_id: str,
+    confirmed_customer_name: str,
+    reason: str,
+) -> dict[str, Any]:
+    if not principal.has_any_role("SUPER_ADMIN"):
+        raise AppError("FORBIDDEN", "仅超级管理员可永久删除测试客资", 403)
+    normalized_reason = reason.strip()
+    if len(normalized_reason) < 5:
+        raise AppError("TEST_LEAD_DELETE_REASON_REQUIRED", "永久删除必须填写原因", 422)
+    lead = db.scalar(
+        select(Lead)
+        .where(Lead.id == lead_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if lead is None:
+        raise AppError("LEAD_NOT_FOUND", "客资不存在", 404)
+    if confirmed_lead_id.strip() != lead.id:
+        raise AppError(
+            "TEST_LEAD_ID_CONFIRMATION_MISMATCH",
+            "请输入完整客资 ID 确认删除",
+            422,
+        )
+    if confirmed_customer_name.strip() != lead.customer_name:
+        raise AppError(
+            "TEST_LEAD_CONFIRMATION_MISMATCH",
+            "请输入完整客户名称确认删除",
+            422,
+        )
+    preview = _test_lead_delete_preview(db, lead)
+    if not lead.is_test:
+        raise AppError("TEST_LEAD_REQUIRED", "正式客资不允许永久删除", 409)
+    if lead.current_assignment_id or preview["impact"]["assignment_history"]:
+        raise AppError(
+            "TEST_LEAD_DISPATCH_HISTORY_EXISTS",
+            "已进入派发流转的测试客资不允许永久删除",
+            409,
+        )
+    snapshot = {
+        "id": lead.id,
+        "customer_name": lead.customer_name,
+        "source_kind": lead.source_kind,
+        "status": lead.status,
+        "is_test": True,
+        "impact": preview["impact"],
+        "reason": normalized_reason,
+    }
+    db.delete(lead)
+    db.flush()
+    return snapshot
 
 
 def reopen_rejected_supplier_lead(
@@ -756,6 +917,182 @@ def recheck_platform_lead_correction(
     )
 
 
+def _lock_current_assignment(db: Session, lead_id: str) -> tuple[Lead, Assignment]:
+    # Claiming and follow-up both lock Assignment before Lead. Keep the same
+    # order here so a cross-process race cannot deadlock or revive a release.
+    observed_lead = db.scalar(
+        select(Lead)
+        .where(Lead.id == lead_id)
+        .execution_options(populate_existing=True)
+    )
+    if observed_lead is None:
+        raise AppError("LEAD_NOT_FOUND", "客资不存在", 404)
+    if not observed_lead.current_assignment_id:
+        raise AppError("LEAD_ASSIGNMENT_CONFLICT", "客资当前没有可解除的派发单", 409)
+    assignment = db.scalar(
+        select(Assignment)
+        .where(Assignment.id == observed_lead.current_assignment_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if assignment is None:
+        raise AppError("LEAD_ASSIGNMENT_CONFLICT", "客资当前派发单已变更", 409)
+    lead = db.scalar(
+        select(Lead)
+        .where(Lead.id == lead_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if lead is None:
+        raise AppError("LEAD_NOT_FOUND", "客资不存在", 404)
+    if lead.current_assignment_id != assignment.id or assignment.lead_id != lead.id:
+        raise AppError("LEAD_ASSIGNMENT_CONFLICT", "客资与当前派发单不一致", 409)
+    return lead, assignment
+
+
+def _release_assignment_for_redispatch(
+    db: Session,
+    *,
+    lead: Lead,
+    assignment: Assignment,
+    principal: Principal,
+    reason: str,
+    release_code: str,
+    event_type: str,
+    refund_business_type: str,
+    idempotency_prefix: str,
+    notification_scene: str,
+    notification_reason: str,
+    settled_reward_error_code: str,
+    event_metadata: dict[str, Any] | None = None,
+) -> LeadCorrectionRedispatchResult:
+    before = _correction_audit_snapshot(lead)
+    assignment_status_before = assignment.status
+    now = datetime.now(timezone.utc)
+    reward = db.scalar(
+        select(SupplierLeadReward)
+        .where(SupplierLeadReward.assignment_id == assignment.id)
+        .with_for_update()
+    )
+    if reward is not None and reward.status == RewardStatus.SETTLED.value:
+        raise AppError(
+            settled_reward_error_code,
+            "供客奖励已结算，请先完成奖励冲正再解除派发",
+            409,
+            {"reward_id": reward.id},
+        )
+
+    refund_ledger: PointsLedger | None = None
+    metadata = dict(event_metadata or {})
+    if assignment.status in {
+        AssignmentStatus.CLAIMED.value,
+        AssignmentStatus.FOLLOWING.value,
+    }:
+        claim_ledger = db.scalar(
+            select(PointsLedger)
+            .where(
+                PointsLedger.company_id == assignment.company_id,
+                PointsLedger.ledger_type == PointsLedgerType.CLAIM.value,
+                PointsLedger.business_id == assignment.id,
+                PointsLedger.business_type.in_(("V12_ASSIGNMENT_CLAIM", "ASSIGNMENT")),
+            )
+            .order_by(PointsLedger.created_at.desc())
+            .with_for_update()
+        )
+        if claim_ledger is None or int(claim_ledger.delta) >= 0:
+            raise AppError("CLAIM_LEDGER_MISSING", "派发单已领取但原扣分流水缺失", 500)
+        refund_ledger = change_points(
+            db,
+            company_id=assignment.company_id,
+            delta=abs(int(claim_ledger.delta)),
+            ledger_type=PointsLedgerType.RETURN.value,
+            business_type=refund_business_type,
+            business_id=assignment.id,
+            idempotency_key=f"{idempotency_prefix}:{assignment.id}:redispatch-refund",
+            related_ledger_id=claim_ledger.id,
+            created_by=principal.user_id,
+            metadata={
+                "lead_id": lead.id,
+                "assignment_id": assignment.id,
+                "reason": reason,
+                **metadata,
+            },
+        )
+
+    if reward is not None and reward.status in {
+        RewardStatus.WAITING_CLAIM.value,
+        RewardStatus.OBSERVING.value,
+        RewardStatus.FROZEN.value,
+    }:
+        reward.status = RewardStatus.CANCELLED.value
+        reward.cancelled_at = now
+        reward.exception_reason = release_code
+
+    assignment.status = AssignmentStatus.RELEASED.value
+    assignment.released_at = now
+    assignment.release_reason = release_code
+    lead.current_assignment_id = None
+    lead.status = LeadV12Status.READY_DISPATCH.value
+    lead.current_follow_status = None
+    store_lead_correction_issues(lead, [])
+    restore_unassigned_correction_workflow(db, lead)
+    lead.snapshot_version += 1
+    db.add(
+        AssignmentEvent(
+            assignment_id=assignment.id,
+            event_type=event_type,
+            actor_user_id=principal.user_id,
+            payload={
+                "lead_id": lead.id,
+                "refund_ledger_id": refund_ledger.id if refund_ledger else None,
+                "refund_points": int(refund_ledger.delta) if refund_ledger else 0,
+                "reward_id": reward.id if reward else None,
+                "reason": reason,
+                **metadata,
+            },
+        )
+    )
+    notification_body = (
+        f"平台因{notification_reason}已撤回该客资，{int(refund_ledger.delta)} 积分已全额退回。"
+        if refund_ledger is not None
+        else f"平台因{notification_reason}已撤回该待领取客资。"
+    )
+    notification = create_station_message(
+        db,
+        user_id=None,
+        company_id=assignment.company_id,
+        scene=notification_scene,
+        title="客资已由平台撤回",
+        body=notification_body,
+        deep_link=f"/h5/v12-workbench.html?view=assignments&id={assignment.id}",
+    )
+    enqueue_outbox(
+        db,
+        event_key=f"{idempotency_prefix}:{assignment.id}:redispatch-notification",
+        event_type=notification_scene,
+        aggregate_type="assignment",
+        aggregate_id=assignment.id,
+        payload={
+            "notification_id": notification.id,
+            "company_id": assignment.company_id,
+            "assignment_id": assignment.id,
+            "lead_id": lead.id,
+            "deep_link": notification.deep_link,
+            "refund_points": int(refund_ledger.delta) if refund_ledger else 0,
+        },
+    )
+    db.flush()
+    return LeadCorrectionRedispatchResult(
+        lead=lead,
+        assignment=assignment,
+        assignment_status_before=assignment_status_before,
+        refund_ledger=refund_ledger,
+        before=before,
+        after=_correction_audit_snapshot(lead),
+        expired_return_request_id=metadata.get("expired_return_request_id"),
+    )
+
+
 def release_corrected_lead_for_redispatch(
     db: Session,
     *,
@@ -772,37 +1109,7 @@ def release_corrected_lead_for_redispatch(
     if len(normalized_reason) < 5:
         raise AppError("LEAD_CORRECTION_REASON_REQUIRED", "解除派发必须填写原因", 422)
 
-    # Claiming and follow-up both lock Assignment before Lead. Keep the same
-    # order here so a cross-process race cannot deadlock or revive a release.
-    observed_lead = db.scalar(
-        select(Lead)
-        .where(Lead.id == lead_id)
-        .execution_options(populate_existing=True)
-    )
-    if observed_lead is None:
-        raise AppError("LEAD_NOT_FOUND", "客资不存在", 404)
-    observed_assignment_id = observed_lead.current_assignment_id
-    if not observed_assignment_id:
-        raise AppError("LEAD_ASSIGNMENT_CONFLICT", "客资当前没有可解除的派发单", 409)
-
-    assignment = db.scalar(
-        select(Assignment)
-        .where(Assignment.id == observed_assignment_id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )
-    if assignment is None:
-        raise AppError("LEAD_ASSIGNMENT_CONFLICT", "客资当前派发单已变更", 409)
-    lead = db.scalar(
-        select(Lead)
-        .where(Lead.id == lead_id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )
-    if lead is None:
-        raise AppError("LEAD_NOT_FOUND", "客资不存在", 404)
-    if lead.current_assignment_id != assignment.id or assignment.lead_id != lead.id:
-        raise AppError("LEAD_ASSIGNMENT_CONFLICT", "客资与当前派发单不一致", 409)
+    lead, assignment = _lock_current_assignment(db, lead_id)
     if expected_snapshot_version != lead.snapshot_version:
         raise AppError(
             "LEAD_VERSION_CONFLICT",
@@ -845,129 +1152,116 @@ def release_corrected_lead_for_redispatch(
             {"assignment_status": assignment.status},
         )
 
-    before = _correction_audit_snapshot(lead)
-    assignment_status_before = assignment.status
-    now = datetime.now(timezone.utc)
-    refund_ledger: PointsLedger | None = None
-    reward = db.scalar(
-        select(SupplierLeadReward)
-        .where(SupplierLeadReward.assignment_id == assignment.id)
-        .with_for_update()
+    return _release_assignment_for_redispatch(
+        db,
+        lead=lead,
+        assignment=assignment,
+        principal=principal,
+        reason=normalized_reason,
+        release_code="CORRECTION_REDISPATCH",
+        event_type="V12_CORRECTION_REDISPATCH_RELEASE",
+        refund_business_type="V12_CORRECTION_REDISPATCH_REFUND",
+        idempotency_prefix="v12-correction",
+        notification_scene="V12_CORRECTION_REDISPATCH",
+        notification_reason="客资事实更正",
+        settled_reward_error_code="LEAD_CORRECTION_REWARD_SETTLED",
+        event_metadata={"correction_issues": correction_issues},
     )
-    if reward is not None and reward.status == RewardStatus.SETTLED.value:
-        raise AppError(
-            "LEAD_CORRECTION_REWARD_SETTLED",
-            "供客奖励已结算，请先完成奖励冲正再解除派发",
-            409,
-            {"reward_id": reward.id},
-        )
 
-    if assignment.status in {
+
+def release_misdispatched_lead_for_redispatch(
+    db: Session,
+    *,
+    lead_id: str,
+    principal: Principal,
+    reason: str,
+    expected_snapshot_version: int,
+) -> LeadCorrectionRedispatchResult:
+    if not (principal.can("*") or principal.can("lead.manual.manage")):
+        raise AppError("FORBIDDEN", "无权撤回错误派发", 403)
+    normalized_reason = reason.strip()
+    if len(normalized_reason) < 5:
+        raise AppError("MISDISPATCH_REASON_REQUIRED", "撤回错派必须填写原因", 422)
+    lead, assignment = _lock_current_assignment(db, lead_id)
+    if expected_snapshot_version != lead.snapshot_version:
+        raise AppError(
+            "LEAD_VERSION_CONFLICT",
+            "客资已被其他人更新，请刷新后重试",
+            409,
+            {
+                "expected_snapshot_version": expected_snapshot_version,
+                "current_snapshot_version": lead.snapshot_version,
+            },
+        )
+    if lead.pending_reason == "CORRECTION_REVIEW_REQUIRED" or (
+        lead.raw_payload or {}
+    ).get("correction_issues"):
+        raise AppError(
+            "MISDISPATCH_CORRECTION_IN_PROGRESS",
+            "当前客资正在处理事实更正，请使用更正流程解除原派发",
+            409,
+        )
+    if assignment.status == AssignmentStatus.RETURN_PENDING.value:
+        raise AppError(
+            "MISDISPATCH_RETURN_IN_PROGRESS",
+            "当前派发单正在退回处理，请先完成退回终审",
+            409,
+        )
+    if assignment.status not in {
+        AssignmentStatus.PENDING_CLAIM.value,
         AssignmentStatus.CLAIMED.value,
         AssignmentStatus.FOLLOWING.value,
     }:
-        claim_ledger = db.scalar(
-            select(PointsLedger)
-            .where(
-                PointsLedger.company_id == assignment.company_id,
-                PointsLedger.ledger_type == PointsLedgerType.CLAIM.value,
-                PointsLedger.business_id == assignment.id,
-                PointsLedger.business_type.in_(("V12_ASSIGNMENT_CLAIM", "ASSIGNMENT")),
+        raise AppError(
+            "MISDISPATCH_ASSIGNMENT_NOT_RELEASABLE",
+            "当前派发状态不允许撤回错派",
+            409,
+            {"assignment_status": assignment.status},
+        )
+    return_request = db.scalar(
+        select(ReturnRequest)
+        .where(ReturnRequest.assignment_id == assignment.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    expired_return_request_id: str | None = None
+    if return_request is not None:
+        active_return_statuses = {
+            ReturnV12Status.SUBMITTED.value,
+            ReturnV12Status.VERIFYING.value,
+            ReturnV12Status.NEED_MORE_EVIDENCE.value,
+            ReturnV12Status.REVIEWING.value,
+        }
+        if return_request.status in active_return_statuses:
+            raise AppError(
+                "MISDISPATCH_RETURN_REQUEST_CONFLICT",
+                "该派发单已有非草稿退回申请，请先完成退回流程",
+                409,
+                {"return_status": return_request.status},
             )
-            .order_by(PointsLedger.created_at.desc())
-            .with_for_update()
-        )
-        if claim_ledger is None or int(claim_ledger.delta) >= 0:
-            raise AppError("CLAIM_LEDGER_MISSING", "派发单已领取但原扣分流水缺失", 500)
-        refund_points = abs(int(claim_ledger.delta))
-        refund_ledger = change_points(
-            db,
-            company_id=assignment.company_id,
-            delta=refund_points,
-            ledger_type=PointsLedgerType.RETURN.value,
-            business_type="V12_CORRECTION_REDISPATCH_REFUND",
-            business_id=assignment.id,
-            idempotency_key=f"v12-correction:{assignment.id}:redispatch-refund",
-            related_ledger_id=claim_ledger.id,
-            created_by=principal.user_id,
-            metadata={
-                "lead_id": lead.id,
-                "assignment_id": assignment.id,
-                "correction_issues": correction_issues,
-                "reason": normalized_reason,
-            },
-        )
-
-    if reward is not None and reward.status in {
-        RewardStatus.WAITING_CLAIM.value,
-        RewardStatus.OBSERVING.value,
-        RewardStatus.FROZEN.value,
-    }:
-        reward.status = RewardStatus.CANCELLED.value
-        reward.cancelled_at = now
-        reward.exception_reason = "CORRECTION_REDISPATCH"
-
-    assignment.status = AssignmentStatus.RELEASED.value
-    assignment.released_at = now
-    assignment.release_reason = "CORRECTION_REDISPATCH"
-    lead.current_assignment_id = None
-    lead.status = LeadV12Status.READY_DISPATCH.value
-    lead.current_follow_status = None
-    store_lead_correction_issues(lead, [])
-    restore_unassigned_correction_workflow(db, lead)
-    lead.snapshot_version += 1
-    db.add(
-        AssignmentEvent(
-            assignment_id=assignment.id,
-            event_type="V12_CORRECTION_REDISPATCH_RELEASE",
-            actor_user_id=principal.user_id,
-            payload={
-                "lead_id": lead.id,
-                "correction_issues": correction_issues,
-                "refund_ledger_id": refund_ledger.id if refund_ledger else None,
-                "refund_points": int(refund_ledger.delta) if refund_ledger else 0,
-                "reward_id": reward.id if reward else None,
-                "reason": normalized_reason,
-            },
-        )
-    )
-    notification_body = (
-        f"平台因客资事实更正已撤回该客资，{int(refund_ledger.delta)} 积分已全额退回。"
-        if refund_ledger is not None
-        else "平台因客资事实更正已撤回该待领取客资。"
-    )
-    notification = create_station_message(
+        if return_request.status == ReturnV12Status.DRAFT.value:
+            assert_return_transition(ReturnV12Status.DRAFT, ReturnV12Status.EXPIRED)
+            return_request.status = ReturnV12Status.EXPIRED.value
+            return_request.reviewed_by = principal.user_id
+            return_request.reviewed_at = datetime.now(timezone.utc)
+            return_request.review_note = "平台错派撤回，未提交的退回草稿同步关闭"
+            expired_return_request_id = return_request.id
+    return _release_assignment_for_redispatch(
         db,
-        user_id=None,
-        company_id=assignment.company_id,
-        scene="V12_CORRECTION_REDISPATCH",
-        title="客资已由平台撤回",
-        body=notification_body,
-        deep_link=f"/h5/v12-workbench.html?view=assignments&id={assignment.id}",
-    )
-    enqueue_outbox(
-        db,
-        event_key=f"v12-correction:{assignment.id}:redispatch-notification",
-        event_type="V12_CORRECTION_REDISPATCH",
-        aggregate_type="assignment",
-        aggregate_id=assignment.id,
-        payload={
-            "notification_id": notification.id,
-            "company_id": assignment.company_id,
-            "assignment_id": assignment.id,
-            "lead_id": lead.id,
-            "deep_link": notification.deep_link,
-            "refund_points": int(refund_ledger.delta) if refund_ledger else 0,
-        },
-    )
-    db.flush()
-    return LeadCorrectionRedispatchResult(
         lead=lead,
         assignment=assignment,
-        assignment_status_before=assignment_status_before,
-        refund_ledger=refund_ledger,
-        before=before,
-        after=_correction_audit_snapshot(lead),
+        principal=principal,
+        reason=normalized_reason,
+        release_code="MISDISPATCH_REDISPATCH",
+        event_type="V12_MISDISPATCH_REDISPATCH_RELEASE",
+        refund_business_type="V12_MISDISPATCH_REDISPATCH_REFUND",
+        idempotency_prefix="v12-misdispatch",
+        notification_scene="V12_MISDISPATCH_REDISPATCH",
+        notification_reason="运营错误派发",
+        settled_reward_error_code="MISDISPATCH_REWARD_SETTLED",
+        event_metadata={
+            "expired_return_request_id": expired_return_request_id,
+        },
     )
 
 
@@ -1313,6 +1607,7 @@ def lead_supply_to_dict(
         "budget_min": lead.budget_min,
         "budget_max": lead.budget_max,
         "acquisition_cost_cents": lead.acquisition_cost_cents,
+        "is_test": lead.is_test,
         "consent_confirmed": lead.consent_confirmed,
         "status": lead.status,
         "review_status": lead.review_status,

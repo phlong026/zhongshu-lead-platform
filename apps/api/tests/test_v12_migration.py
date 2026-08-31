@@ -195,6 +195,7 @@ def test_v12_migration_upgrades_and_downgrades_from_v101(tmp_path: Path) -> None
     assert "calendar_days" in tables
     assert "supplier_lead_rewards" in tables
     assert "phone_fingerprint" in {column["name"] for column in inspector.get_columns("leads")}
+    assert "is_test" in {column["name"] for column in inspector.get_columns("leads")}
     assert "appeal_deadline_at" in {column["name"] for column in inspector.get_columns("assignments")}
     assert "rule_snapshot_json" in {
         column["name"] for column in inspector.get_columns("supplier_lead_rewards")
@@ -223,6 +224,7 @@ def test_v12_migration_upgrades_and_downgrades_from_v101(tmp_path: Path) -> None
     inspector = inspect(engine)
     assert "calendar_days" not in set(inspector.get_table_names())
     assert "phone_fingerprint" not in {column["name"] for column in inspector.get_columns("leads")}
+    assert "is_test" not in {column["name"] for column in inspector.get_columns("leads")}
     assert "uq_assignments_active_lead_v12" not in {
         item["name"] for item in inspector.get_indexes("assignments")
     }
@@ -233,6 +235,7 @@ def test_v12_migration_upgrades_and_downgrades_from_v101(tmp_path: Path) -> None
     inspector = inspect(engine)
     assignment_columns = {column["name"] for column in inspector.get_columns("assignments")}
     assert {"internal_assignee_user_id", "internal_assigned_by", "internal_assigned_at"} <= assignment_columns
+    assert "is_test" in {column["name"] for column in inspector.get_columns("leads")}
 
 
 def test_storage_cleanup_downgrade_refuses_to_drop_unfinished_jobs(tmp_path: Path) -> None:
@@ -274,6 +277,42 @@ def test_storage_cleanup_downgrade_refuses_to_drop_unfinished_jobs(tmp_path: Pat
         )
     _alembic(database_url, "downgrade", "0013_internal_user_test")
     assert "storage_cleanup_outbox" not in set(inspect(engine).get_table_names())
+
+
+def test_lead_test_flag_migration_defaults_false_and_is_reversible(tmp_path: Path) -> None:
+    database = tmp_path / "lead-test-flag.db"
+    database_url = f"sqlite:///{database}"
+    _alembic(database_url, "upgrade", "head")
+    engine = create_engine(database_url)
+    metadata = sa.MetaData()
+    metadata.reflect(engine, only=["leads"])
+    leads = metadata.tables["leads"]
+    lead_id = str(uuid.uuid4())
+    with engine.begin() as connection:
+        connection.execute(
+            leads.insert().values(
+                **_required_row(
+                    leads,
+                    id=lead_id,
+                    customer_name="默认正式客资",
+                    phone_encrypted="encrypted",
+                    phone_hash=f"hash-{lead_id}",
+                    raw_payload={},
+                )
+            )
+        )
+        assert connection.execute(
+            sa.select(leads.c.is_test).where(leads.c.id == lead_id)
+        ).scalar_one() is False
+
+    _alembic(database_url, "downgrade", "0015_customer_feedback_829")
+    assert "is_test" not in {
+        column["name"] for column in inspect(engine).get_columns("leads")
+    }
+    _alembic(database_url, "upgrade", "head")
+    assert "is_test" in {
+        column["name"] for column in inspect(engine).get_columns("leads")
+    }
 
 
 def test_feedback_migration_downgrade_refuses_to_drop_business_data(

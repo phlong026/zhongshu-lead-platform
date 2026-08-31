@@ -215,6 +215,47 @@ def create_or_update_return_draft(
     return item
 
 
+def prepare_return_evidence_upload(
+    db: Session,
+    *,
+    request: ReturnRequest,
+    principal: Principal,
+) -> ReturnRequest:
+    assignment = _get_assignment(db, request.assignment_id, lock=True)
+    locked_request = _get_return(db, request.id, lock=True)
+    require_return_request_access(
+        principal,
+        assignment,
+        submitted_by=locked_request.submitted_by,
+    )
+    if locked_request.status not in {
+        ReturnV12Status.DRAFT.value,
+        ReturnV12Status.NEED_MORE_EVIDENCE.value,
+    }:
+        raise AppError("RETURN_EVIDENCE_LOCKED", "当前状态不能上传证据", 409)
+    allowed_assignment_statuses = {
+        ReturnV12Status.DRAFT.value: {
+            AssignmentStatus.CLAIMED.value,
+            AssignmentStatus.FOLLOWING.value,
+        },
+        ReturnV12Status.NEED_MORE_EVIDENCE.value: {
+            AssignmentStatus.RETURN_PENDING.value,
+        },
+    }
+    if assignment.status not in allowed_assignment_statuses[locked_request.status]:
+        raise AppError(
+            "RETURN_EVIDENCE_ASSIGNMENT_STATE_INVALID",
+            "派发单状态已变化，不能继续上传退回证据",
+            409,
+            {"assignment_status": assignment.status},
+        )
+    if locked_request.submitted_at is None:
+        deadline = as_utc(locked_request.appeal_deadline_at or locked_request.due_at)
+        if deadline and utcnow() > deadline:
+            raise AppError("RETURN_WINDOW_EXPIRED", "已超过 3 个工作日退回申诉期", 409)
+    return locked_request
+
+
 def add_return_evidence(
     db: Session,
     *,
@@ -228,24 +269,14 @@ def add_return_evidence(
     sha256: str,
     duration_seconds: int | None,
 ) -> ReturnEvidence:
-    assignment = _get_assignment(db, request.assignment_id, lock=True)
-    require_return_request_access(
-        principal,
-        assignment,
-        submitted_by=request.submitted_by,
+    request = prepare_return_evidence_upload(
+        db,
+        request=request,
+        principal=principal,
     )
-    if request.status not in {
-        ReturnV12Status.DRAFT.value,
-        ReturnV12Status.NEED_MORE_EVIDENCE.value,
-    }:
-        raise AppError("RETURN_EVIDENCE_LOCKED", "当前状态不能上传证据", 409)
     normalized_type = evidence_type.strip().upper()
     if normalized_type not in RETURN_EVIDENCE_TYPES:
         raise AppError("EVIDENCE_TYPE_INVALID", "证据类型无效", 422)
-    if request.submitted_at is None:
-        deadline = as_utc(request.appeal_deadline_at or request.due_at)
-        if deadline and utcnow() > deadline:
-            raise AppError("RETURN_WINDOW_EXPIRED", "已超过 3 个工作日退回申诉期", 409)
     evidence = ReturnEvidence(
         return_request_id=request.id,
         evidence_type=normalized_type,

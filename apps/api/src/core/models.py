@@ -298,6 +298,7 @@ class Lead(Base, TimestampMixin):
     budget_min: Mapped[int | None] = mapped_column(Integer)
     budget_max: Mapped[int | None] = mapped_column(Integer)
     acquisition_cost_cents: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    is_test: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(32), default="IMPORTED", nullable=False, index=True)
     pending_reason: Mapped[str | None] = mapped_column(String(64), index=True)
     current_assignment_id: Mapped[str | None] = mapped_column(String(36), index=True)

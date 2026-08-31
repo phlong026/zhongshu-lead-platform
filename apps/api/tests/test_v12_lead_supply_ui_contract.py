@@ -200,7 +200,7 @@ def test_operations_review_exposes_audited_background_full_phone_export() -> Non
 
     assert "/v1.2/reports/leads/exports" in admin
     assert "lead.phone.export" in admin
-    assert "后台导出完整手机号" in admin
+    assert "导出客资完整信息" in admin
     assert "系统记录导出人和全部筛选条件" in admin
 
 

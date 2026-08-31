@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.orm import Session
@@ -10,7 +12,7 @@ from ..core.models import DictionaryItem, Region
 from ..core.responses import ok, page
 from ..schemas.company import DictionaryItemBody
 from ..services.audit import write_audit
-from ..services.china_regions import region_tree
+from ..services.china_regions import region_tree, search_region_tree
 
 router = APIRouter(prefix="/master-data", tags=["master-data"])
 
@@ -80,7 +82,7 @@ def search_regions(
             for region in parents
             if region.parent_code and region.parent_code not in regions_by_code
         }
-    items = []
+    items = search_region_tree(normalized, limit=limit)
     for region in rows:
         path = _region_path(regions_by_code, region)
         items.append(
@@ -94,7 +96,23 @@ def search_regions(
                 "path_label": " · ".join(item["name"] for item in path),
             }
         )
-    return ok(request, items)
+    deduplicated: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in items:
+        key = (item["code"], item["level"])
+        existing = deduplicated.get(key)
+        if existing is None or len(item["path"]) > len(existing["path"]):
+            deduplicated[key] = item
+    merged = list(deduplicated.values())
+    merged.sort(
+        key=lambda item: (
+            item["name"].casefold() != normalized.casefold(),
+            not item["name"].casefold().startswith(normalized.casefold()),
+            len(item["name"]),
+            item["level"],
+            item["code"],
+        )
+    )
+    return ok(request, merged[:limit])
 
 
 @router.get("/region-tree")

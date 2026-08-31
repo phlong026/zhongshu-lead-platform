@@ -24,6 +24,16 @@
     {
       "scanner": "semgrep",
       "id": "dangerous-subprocess-use-audit",
+      "scope": "apps/api/tests/test_customer_feedback_831_return_evidence.py",
+      "occurrence": "L53:C5-L58:C6",
+      "reason": "The UI regression test executes Node with a fixed argv list and an in-memory scenario assembled only from the repository JavaScript helper. It never enables a shell or accepts user-controlled command arguments.",
+      "owner": "platform-security",
+      "created_on": "2026-08-31",
+      "expires_on": "2026-09-30"
+    },
+    {
+      "scanner": "semgrep",
+      "id": "dangerous-subprocess-use-audit",
       "scope": "scripts/preflight_v12.py",
       "occurrence": "L99:C18-L99:C92",
       "reason": "The production preflight runner accepts only command arrays assembled by this script from fixed Docker Compose and Python entrypoints. subprocess receives an argv list with shell disabled; sensitive values are separately redacted from evidence.",

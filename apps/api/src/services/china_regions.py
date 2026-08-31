@@ -438,6 +438,79 @@ def region_by_code(code: str) -> dict[str, str | None] | None:
     return region_index().get(code)
 
 
+@lru_cache(maxsize=1)
+def _searchable_regions() -> tuple[dict[str, Any], ...]:
+    """Flatten the nationwide city/district snapshot for keyword lookup."""
+
+    items: list[dict[str, Any]] = []
+    for province in region_tree()["provinces"]:
+        province_path = [
+            {"code": province["code"], "name": province["name"], "level": "PROVINCE"}
+        ]
+        for city in province["cities"]:
+            city_path = [
+                *province_path,
+                {"code": city["code"], "name": city["name"], "level": "CITY"},
+            ]
+            items.append(
+                {
+                    "code": city["code"],
+                    "name": city["name"],
+                    "level": "CITY",
+                    "parent_code": province["code"],
+                    "path": city_path,
+                    "path_codes": [entry["code"] for entry in city_path],
+                    "path_label": " · ".join(entry["name"] for entry in city_path),
+                }
+            )
+            for district in city["districts"]:
+                district_path = [
+                    *city_path,
+                    {
+                        "code": district["code"],
+                        "name": district["name"],
+                        "level": "DISTRICT",
+                    },
+                ]
+                items.append(
+                    {
+                        "code": district["code"],
+                        "name": district["name"],
+                        "level": "DISTRICT",
+                        "parent_code": city["code"],
+                        "path": district_path,
+                        "path_codes": [entry["code"] for entry in district_path],
+                        "path_label": " · ".join(
+                            entry["name"] for entry in district_path
+                        ),
+                    }
+                )
+    return tuple(items)
+
+
+def search_region_tree(keyword: str, *, limit: int) -> list[dict[str, Any]]:
+    """Search nationwide city/district names without requiring DB materialization."""
+
+    normalized = keyword.strip().casefold()
+    if not normalized:
+        return []
+    matches = [
+        item
+        for item in _searchable_regions()
+        if normalized in str(item["name"]).casefold()
+    ]
+    matches.sort(
+        key=lambda item: (
+            str(item["name"]).casefold() != normalized,
+            not str(item["name"]).casefold().startswith(normalized),
+            len(str(item["name"])),
+            str(item["level"]),
+            str(item["code"]),
+        )
+    )
+    return [dict(item) for item in matches[:limit]]
+
+
 def district_by_code(city: dict[str, Any], code: str) -> dict[str, str] | None:
     return next(
         (district for district in city["districts"] if district["code"] == code),
