@@ -56,6 +56,38 @@ def _required_row(table: sa.Table, **overrides) -> dict:
     return row
 
 
+def test_v101_raw_fixture_insert_uses_lead_test_server_default(tmp_path: Path) -> None:
+    database = tmp_path / "v101-raw-fixture.db"
+    database_url = f"sqlite:///{database}"
+    _alembic(database_url, "upgrade", "0001_initial")
+    engine = create_engine(database_url)
+    lead_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                """
+                INSERT INTO leads (
+                    id, source_type, customer_name, phone_encrypted, phone_hash,
+                    acquisition_cost_cents, status, imported_at, snapshot_version,
+                    raw_payload, created_at, updated_at
+                ) VALUES (
+                    :id, 'MANUAL', 'V1.0.1 migration fixture', 'encrypted', :phone_hash,
+                    0, 'QUALIFIED', :now, 1, '{}', :now, :now
+                )
+                """
+            ),
+            {"id": lead_id, "phone_hash": f"hash-{lead_id}", "now": now},
+        )
+        is_test = connection.execute(
+            sa.text("SELECT is_test FROM leads WHERE id = :id"),
+            {"id": lead_id},
+        ).scalar_one()
+
+    assert is_test in (False, 0)
+
+
 def _seed_legacy_reward_before_snapshot_migration(engine) -> str:
     metadata = sa.MetaData()
     metadata.reflect(engine)

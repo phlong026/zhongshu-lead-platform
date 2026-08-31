@@ -33,7 +33,6 @@ from apps.api.src.core.security import encrypt_text, fingerprint_phone, hash_pho
 from apps.api.src.core.v12_enums import DuplicateDecision, LeadSourceKind, LeadV12Status
 from apps.api.src.routers import v12_insights as insights_router
 from apps.api.src.routers import v12_lead_supply as lead_supply_router
-from apps.api.src.schemas.v12_reports import LeadExportRequestBody
 from apps.api.src.schemas.v12_lead_supply import LeadQuickDispatchBody
 from apps.api.src.services.claim_service import claim_assignment
 from apps.api.src.services.dedup_v12 import apply_submission_decision, evaluate_phone
@@ -607,7 +606,7 @@ def test_lead_export_queue_limit_is_serialized_across_database_sessions(
                 barrier.wait(timeout=10)
                 try:
                     response = insights_router.request_lead_export(
-                        body=LeadExportRequestBody(
+                        body=insights_router.ScopedLeadExportRequestBody(
                             idempotency_key=f"export-pg-new-{suffix}-{index}"
                         ),
                         request=SimpleNamespace(
