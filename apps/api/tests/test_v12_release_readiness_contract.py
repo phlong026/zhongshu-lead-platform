@@ -40,7 +40,7 @@ def test_production_compose_requires_reviewed_image_and_disables_implicit_migrat
     assert "DATABASE_URL: postgresql" not in base_compose
     assert "POSTGRES_PASSWORD:" in base_compose
     assert "quote(os.environ" in prepare_env
-    assert "ARG APP_VERSION=1.2.3" in dockerfile
+    assert "ARG APP_VERSION=1.2.4" in dockerfile
     assert "apt-get purge -y libsqlite3-0" in dockerfile
 
 
@@ -172,7 +172,7 @@ def test_preflight_runs_binding_integrity_for_local_and_compose_database(monkeyp
 
 
 def test_image_reference_parser_requires_exact_version_tag() -> None:
-    assert image_tag("registry.example.com/app:1.2.3@sha256:" + "a" * 64) == "1.2.3"
+    assert image_tag("registry.example.com/app:1.2.4@sha256:" + "a" * 64) == "1.2.4"
     assert image_tag("registry.example.com:5000/team/app:1.2.9") == "1.2.9"
     assert image_tag("registry.example.com:5000/team/app@sha256:" + "a" * 64) is None
 
@@ -194,7 +194,7 @@ def test_scan_subject_image_id_is_strict_and_inspect_uses_docker_identity(
         stdout = json.dumps(
             {
                 "Id": expected,
-                "Config": {"Labels": {"org.opencontainers.image.version": "1.2.3"}},
+                "Config": {"Labels": {"org.opencontainers.image.version": "1.2.4"}},
             }
         )
         stderr = ""
@@ -209,10 +209,10 @@ def test_scan_subject_image_id_is_strict_and_inspect_uses_docker_identity(
 
     monkeypatch.setattr("scripts.verify_production.subprocess.run", fake_run)
     version, actual, descriptor, config, error = inspect_image_metadata(
-        "docker", "registry.example.com/app:1.2.3@sha256:digest"
+        "docker", "registry.example.com/app:1.2.4@sha256:digest"
     )
     assert error is None
-    assert version == "1.2.3"
+    assert version == "1.2.4"
     assert actual == expected
     assert descriptor is None
     assert config is None
@@ -224,7 +224,7 @@ def test_scan_subject_image_id_is_strict_and_inspect_uses_docker_identity(
 
     monkeypatch.setattr("scripts.verify_production.subprocess.run", invalid_utf8)
     version, actual, descriptor, config, error = inspect_image_metadata(
-        "docker", "registry.example.com/app:1.2.3"
+        "docker", "registry.example.com/app:1.2.4"
     )
     assert version is None and actual is None and descriptor is None and config is None
     assert error and "invalid UTF-8" in error
@@ -241,7 +241,7 @@ def test_docker29_inspect_uses_config_descriptor_identity(monkeypatch: pytest.Mo
                 "Id": manifest_digest,
                 "Descriptor": {"digest": manifest_digest},
                 "ConfigDescriptor": {"digest": config_digest},
-                "Config": {"Labels": {"org.opencontainers.image.version": "1.2.3"}},
+                "Config": {"Labels": {"org.opencontainers.image.version": "1.2.4"}},
             }
         )
         stderr = ""
@@ -249,11 +249,11 @@ def test_docker29_inspect_uses_config_descriptor_identity(monkeypatch: pytest.Mo
     monkeypatch.setattr("scripts.verify_production.subprocess.run", lambda *_, **__: Result())
 
     version, actual, descriptor, config, error = inspect_image_metadata(
-        "docker", "registry.example.com/app:1.2.3@sha256:digest"
+        "docker", "registry.example.com/app:1.2.4@sha256:digest"
     )
 
     assert error is None
-    assert version == "1.2.3"
+    assert version == "1.2.4"
     assert actual == manifest_digest
     assert descriptor == manifest_digest
     assert config == config_digest
@@ -361,7 +361,7 @@ def test_sprint6_runbooks_and_release_documents_exist() -> None:
         "docs/runbooks/V1.2_GO_NO_GO.md",
         "docs/runbooks/V1.2_ROLLBACK.md",
         "docs/runbooks/V1.2_POST_LAUNCH.md",
-        "docs/release/RELEASE_NOTES_V1.2.3.md",
+        "docs/release/RELEASE_NOTES_V1.2.4.md",
         "docs/release/RELEASE_NOTES_V1.2.2.md",
         "docs/release/RELEASE_NOTES_V1.2.1.md",
         "docs/release/RELEASE_NOTES_V1.2.0.md",
@@ -404,8 +404,8 @@ def test_ci_contains_postgres_browser_dependency_evidence_and_packaging_gates() 
         assert "dist/quality/migration-output.txt" in workflow
         assert "> pytest-output.txt" not in workflow
         assert "> migration-output.txt" not in workflow
-    assert "--version V1.2.3-rc" in pr_workflow
-    assert "--version V1.2.3" in release_workflow
+    assert "--version V1.2.4-rc" in pr_workflow
+    assert "--version V1.2.4" in release_workflow
 
 
 def test_postgres_ci_contract_runs_h04_dataset_integration() -> None:

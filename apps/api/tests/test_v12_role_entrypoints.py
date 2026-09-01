@@ -68,7 +68,7 @@ def test_platform_lead_work_is_migrated_into_operations_without_legacy_page() ->
 
     assert "/v1.2/platform/leads" in operations_source
     assert "data-platform-pre-dispatch" in operations_source
-    assert "平台补充资料后再处理" in operations_source
+    assert "运营补充资料后再处理" in operations_source
     assert "async function openLeadDetail(id)" in operations_source
     assert "await platformDetail(id)" in operations_source
     assert "await reviewDetail(id)" in operations_source

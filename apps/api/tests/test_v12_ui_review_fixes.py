@@ -75,7 +75,7 @@ def test_unified_operations_workspace_keeps_source_specific_lead_actions() -> No
     assert "data-platform-pre-dispatch" in js
     assert "data-pre-assign" in js
     assert "data-review-info" not in js
-    assert "平台补充资料后再处理" in js
+    assert "运营补充资料后再处理" in js
 
 
 def test_supplier_h5_has_real_pagination_controls() -> None:

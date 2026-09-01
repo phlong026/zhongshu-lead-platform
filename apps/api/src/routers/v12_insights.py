@@ -1441,7 +1441,7 @@ def download_lead_export(
     if task.expires_at and as_utc(task.expires_at) < datetime.now(timezone.utc):
         raise AppError("LEAD_EXPORT_EXPIRED", "导出文件已过期，请重新导出", 410)
     storage = get_storage()
-    filename = task.file_name or "lead-export.zip"
+    filename = task.file_name or "lead-export.xlsx"
     headers = {
         "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
         "Cache-Control": "private, no-store",
@@ -1466,7 +1466,10 @@ def download_lead_export(
     db.commit()
     return StreamingResponse(
         storage.iter_read(task.object_key),
-        media_type=task.mime_type or "application/zip",
+        media_type=(
+            task.mime_type
+            or "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
         headers=headers,
     )
 

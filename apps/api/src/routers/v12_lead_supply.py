@@ -11,10 +11,10 @@ from sqlalchemy.orm import Session
 from ..core.auth import CurrentPrincipal, require_permissions
 from ..core.database import get_db
 from ..core.errors import AppError
-from ..core.models import Assignment, Company, Lead, Region
+from ..core.models import Assignment, Company, Lead, Region, VerificationTask
 from ..core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12
 from ..core.responses import ok, page
-from ..core.v12_enums import LeadSourceKind
+from ..core.v12_enums import LeadSourceKind, VerificationTaskType
 from ..schemas.v12_lead_supply import (
     CapabilityRequestBody,
     CapabilityReviewBody,
@@ -23,6 +23,7 @@ from ..schemas.v12_lead_supply import (
     DedupOverrideBody,
     LeadDraftBody,
     PlatformLeadDraftBody,
+    PlatformLeadPreDispatchBody,
     LeadCorrectionBody,
     LeadCorrectionRedispatchBody,
     LeadCorrectionRecheckBody,
@@ -81,6 +82,10 @@ from ..services.points_service import ledger_to_dict
 router = APIRouter(prefix="/v1.2", tags=["v1.2-lead-supply"])
 
 QUICK_DISPATCH_HASH_KEY = "quick_dispatch_request_hash"
+PRE_DISPATCH_CREATE_HASH_KEY = "pre_dispatch_create_request_hash"
+PRE_DISPATCH_CREATE_TASK_KEY = "pre_dispatch_create_task_id"
+PRE_DISPATCH_CREATE_SOURCE_APP = "zhongshu-internal"
+PRE_DISPATCH_CREATE_SOURCE_TABLE = "platform-pre-dispatch"
 
 
 def _dedup_dict(result) -> dict | None:
@@ -101,6 +106,51 @@ def _quick_dispatch_hash(body: LeadQuickDispatchBody) -> str:
     payload = body.model_dump(exclude={"idempotency_key"}, mode="json")
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _pre_dispatch_create_hash(body: PlatformLeadPreDispatchBody) -> str:
+    payload = body.model_dump(exclude={"idempotency_key"}, mode="json")
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _pre_dispatch_create_record_id(user_id: str, idempotency_key: str) -> str:
+    return hashlib.sha256(f"{user_id}:{idempotency_key}".encode("utf-8")).hexdigest()
+
+
+def _existing_pre_dispatch_create(
+    db: Session,
+    *,
+    user_id: str,
+    body: PlatformLeadPreDispatchBody,
+    request_hash: str,
+) -> tuple[Lead, VerificationTask] | None:
+    lead = db.scalar(
+        select(Lead).where(
+            Lead.source_app_token == PRE_DISPATCH_CREATE_SOURCE_APP,
+            Lead.source_table_id == PRE_DISPATCH_CREATE_SOURCE_TABLE,
+            Lead.source_record_id
+            == _pre_dispatch_create_record_id(user_id, body.idempotency_key),
+        )
+    )
+    if lead is None:
+        return None
+    raw_payload = lead.raw_payload or {}
+    if raw_payload.get(PRE_DISPATCH_CREATE_HASH_KEY) != request_hash:
+        raise AppError("IDEMPOTENCY_CONFLICT", "幂等键已被其他直派电销请求使用", 409)
+    task_id = raw_payload.get(PRE_DISPATCH_CREATE_TASK_KEY)
+    task = db.get(VerificationTask, task_id) if task_id else None
+    if (
+        task is None
+        or task.lead_id != lead.id
+        or task.task_type != VerificationTaskType.PRE_DISPATCH_VERIFY.value
+    ):
+        raise AppError(
+            "IDEMPOTENCY_STATE_INVALID",
+            "直派电销请求已存在但任务状态不完整，请联系管理员处理",
+            409,
+        )
+    return lead, task
 
 
 def _quick_assignment_dict(assignment) -> dict:
@@ -264,6 +314,132 @@ def create_platform_lead(
     )
     db.commit()
     return ok(request, lead_supply_to_dict(lead, principal), "客资草稿已创建")
+
+
+@router.post("/platform/leads/pre-dispatch-verification")
+def create_platform_lead_for_pre_dispatch(
+    body: PlatformLeadPreDispatchBody,
+    request: Request,
+    principal=Depends(
+        require_permissions("lead.manual.manage", "lead.supplier.review")
+    ),
+    db: Session = Depends(get_db),
+):
+    request_hash = _pre_dispatch_create_hash(body)
+    idempotency_scope = (
+        f"platform-pre-dispatch:{principal.user_id}:{body.idempotency_key}"
+    )
+    try:
+        with manual_dispatch_idempotency_guard(idempotency_scope):
+            acquire_manual_dispatch_idempotency_lock(db, idempotency_scope)
+            replay = _existing_pre_dispatch_create(
+                db,
+                user_id=principal.user_id,
+                body=body,
+                request_hash=request_hash,
+            )
+            if replay is not None:
+                lead, task = replay
+                return ok(
+                    request,
+                    {
+                        "lead": lead_supply_to_dict(lead, principal),
+                        "task": _pre_dispatch_task_dict(task),
+                        "idempotent": True,
+                    },
+                    "客资已保存并派发电销核验",
+                )
+
+            lead_values = body.model_dump(
+                exclude={"assignee_user_id", "reason", "idempotency_key"},
+                exclude_none=True,
+            )
+            lead = create_draft(
+                db,
+                principal=principal,
+                source_kind=LeadSourceKind.PLATFORM_MANUAL,
+                values=lead_values,
+            )
+            lead.source_app_token = PRE_DISPATCH_CREATE_SOURCE_APP
+            lead.source_table_id = PRE_DISPATCH_CREATE_SOURCE_TABLE
+            lead.source_record_id = _pre_dispatch_create_record_id(
+                principal.user_id,
+                body.idempotency_key,
+            )
+            lead.raw_payload = {
+                **(lead.raw_payload or {}),
+                PRE_DISPATCH_CREATE_HASH_KEY: request_hash,
+            }
+            db.flush()
+            write_audit(
+                db,
+                principal=principal,
+                action="V12_PLATFORM_LEAD_DRAFT_CREATE",
+                resource_type="lead",
+                resource_id=lead.id,
+                after={
+                    "status": lead.status,
+                    "source_kind": lead.source_kind,
+                    "pre_dispatch": True,
+                },
+                request_id=request.state.request_id,
+            )
+            assignment = assign_pre_dispatch_task(
+                db,
+                lead_id=lead.id,
+                assignee_user_id=body.assignee_user_id,
+                assigned_by=principal.user_id,
+                reason=body.reason,
+            )
+            task = assignment.task
+            lead.raw_payload = {
+                **(lead.raw_payload or {}),
+                PRE_DISPATCH_CREATE_TASK_KEY: task.id,
+            }
+            write_audit(
+                db,
+                principal=principal,
+                action="V12_PRE_DISPATCH_VERIFY_ASSIGN",
+                resource_type="verification_task",
+                resource_id=task.id,
+                before=assignment.before,
+                after=assignment.after,
+                reason=body.reason,
+                request_id=request.state.request_id,
+            )
+            db.commit()
+            return ok(
+                request,
+                {
+                    "lead": lead_supply_to_dict(lead, principal),
+                    "task": _pre_dispatch_task_dict(task),
+                    "idempotent": False,
+                },
+                "客资已保存并派发电销核验",
+            )
+    except IntegrityError:
+        db.rollback()
+        replay = _existing_pre_dispatch_create(
+            db,
+            user_id=principal.user_id,
+            body=body,
+            request_hash=request_hash,
+        )
+        if replay is None:
+            raise
+        lead, task = replay
+        return ok(
+            request,
+            {
+                "lead": lead_supply_to_dict(lead, principal),
+                "task": _pre_dispatch_task_dict(task),
+                "idempotent": True,
+            },
+            "客资已保存并派发电销核验",
+        )
+    except Exception:
+        db.rollback()
+        raise
 
 
 @router.post("/platform/leads/quick-dispatch/candidates")

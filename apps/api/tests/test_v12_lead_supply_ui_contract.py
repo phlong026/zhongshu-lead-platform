@@ -45,8 +45,8 @@ def test_unified_operations_lead_ui_distinguishes_platform_and_supplier_flow() -
     assert "/master-data/region-tree" in js
     assert "READY_DISPATCH" in js
     assert "data-platform-pre-dispatch" in js
-    assert "请先补充客户联系电话，再派发电话核验" in js
-    assert "平台补充资料后再处理" in js
+    assert "手机号必填且必须为 11 位有效号码" in js
+    assert "运营补充资料后再处理" in js
     assert "/v1.2/reports/leads" in js
     assert "leadReportFilters" in js
     assert "assignmentStatusFilter" in js
@@ -78,7 +78,7 @@ def test_supplier_submission_routes_only_missing_location_to_telesales() -> None
     assert "/admin/leads/${encodeURIComponent(leadId)}/pre-dispatch-verification" in source
     assert "pre_dispatch_reason" not in source
     assert "data-review=" not in source
-    assert "信息不全并派发电销" in source
+    assert "分配电销核验" in source
     assert "加盟商客资在当地暂无其他合格接收方时先进入公海池" in source
     assert "加盟商来源会直接进入待电销核实" not in source
 

@@ -3,7 +3,7 @@ name: V1.2 Pull Request CI
 on:
   pull_request:
     branches:
-      - release/v1.2.3
+      - release/v1.2.4
     types:
       - opened
       - synchronize
@@ -109,7 +109,7 @@ jobs:
           fi
 
       - name: Build reviewed V1.2 release candidate package
-        run: python scripts/package_release.py --version V1.2.3-rc --output-dir dist/release
+        run: python scripts/package_release.py --version V1.2.4-rc --output-dir dist/release
 
       - name: Upload generated OpenAPI contract
         if: always()

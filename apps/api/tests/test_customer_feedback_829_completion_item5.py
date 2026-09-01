@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import csv
 from datetime import datetime, timedelta, timezone
-from io import StringIO
-from zipfile import ZipFile
 
 import pytest
 from sqlalchemy import func, select
@@ -30,6 +27,7 @@ from apps.api.src.core.v12_enums import (
 )
 from apps.api.src.services.company_service import _restore_dedup_affected_lead
 from apps.api.src.services.dedup_v12 import DedupResult
+from apps.api.tests.xlsx_reader import read_xlsx
 
 
 def _login(client) -> None:
@@ -345,22 +343,15 @@ def test_dispatched_supplier_lead_requires_reason_and_rechecks_current_receiver(
     assert report_row["province"] == "北京市"
     assert report_row["city"] == "北京市"
 
-    from apps.api.src.services.lead_export_v12 import build_lead_export_archive
+    from apps.api.src.services.lead_export_v12 import build_lead_export_workbook
 
     with factory() as db:
-        archive_path, _row_count = build_lead_export_archive(
+        archive_path, _row_count = build_lead_export_workbook(
             db,
             {"region": "北京市"},
         )
     try:
-        with ZipFile(archive_path) as archive:
-            rows = list(
-                csv.DictReader(
-                    StringIO(
-                        archive.read("客资明细.csv").decode("utf-8-sig")
-                    )
-                )
-            )
+        rows = read_xlsx(archive_path)["客资明细"]
         export_row = next(row for row in rows if row["客资编号"] == lead_id)
         assert export_row["省份"] == "北京市"
         assert export_row["城市"] == "北京市"

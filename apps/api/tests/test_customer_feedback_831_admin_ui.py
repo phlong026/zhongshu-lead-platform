@@ -149,3 +149,39 @@ def test_complete_lead_and_public_pool_exports_are_available() -> None:
     assert "created_from" in source
     assert "created_to" in source
     assert "submitter_user_id" in source
+    assert "下载 Excel" in public_pool
+    assert "下载 ZIP" not in public_pool
+
+
+def test_new_lead_defaults_to_draft_and_can_be_sent_directly_to_telesales() -> None:
+    source = WORKBENCH.read_text(encoding="utf-8")
+    lead_form = _slice(
+        source,
+        "async function openPlatformLeadForm",
+        "async function openQuickDispatchCandidates",
+    )
+
+    assert 'id="platform-lead-next-action"' in lead_form
+    assert '<option value="DRAFT" selected>仅保存草稿</option>' in lead_form
+    assert 'value="TELESALES"' in lead_form
+    assert "保存并派发电销核验" in lead_form
+    assert 'id="platform-lead-telesales-assignee"' in lead_form
+    assert 'id="platform-lead-telesales-reason"' in lead_form
+    assert "saveAndAssignNewLeadToTelesales" in lead_form
+    assert "手机号必填且必须为 11 位有效号码" in lead_form
+    assert "/v1.2/platform/leads/pre-dispatch-verification" in lead_form
+    assert "idempotency_key" in lead_form
+    assert "submit.disabled=true" in lead_form
+
+
+def test_public_pool_has_single_row_telesales_assignment_for_eligible_sources() -> None:
+    source = WORKBENCH.read_text(encoding="utf-8")
+    public_pool = _slice(source, "async function publicPool()", "async function review()")
+
+    assert "publicPoolTelesalesBlockReason" in source
+    assert "['PLATFORM_MANUAL','FEISHU_IMPORT']" in source
+    assert "data-public-pool-telesales" in public_pool
+    assert "批量派发电销" not in public_pool
+    assert "assignPublicPoolPreDispatch" in public_pool
+    disposition = _slice(source, "function disposePreDispatch", "function companyQueuePager")
+    assert "['PLATFORM_MANUAL','FEISHU_IMPORT'].includes(sourceKind)" in disposition

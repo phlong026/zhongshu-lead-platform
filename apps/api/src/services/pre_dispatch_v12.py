@@ -29,6 +29,10 @@ _ACTIVE_TASK_STATUSES = {
 }
 _CONCLUSIONS = {"QUALIFIED", "INFO_INCOMPLETE", "UNVERIFIABLE", "INVALID", "DUPLICATE"}
 _DISPOSITIONS = {"APPROVE_POOL", "RETURN_REWORK", "DUPLICATE", "CLOSE"}
+_OPERATION_DRAFT_SOURCE_KINDS = {
+    LeadSourceKind.PLATFORM_MANUAL.value,
+    LeadSourceKind.FEISHU_IMPORT.value,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,12 +246,27 @@ def assign_pre_dispatch_task(
         LeadV12Status.PENDING_TELESALES_VERIFY.value,
     }
     if lead.status == LeadV12Status.DRAFT.value:
-        if lead.source_kind != LeadSourceKind.PLATFORM_MANUAL.value:
-            raise AppError("PRE_DISPATCH_LEAD_STATE_INVALID", "加盟商草稿须先提交后进入电销核实", 409)
+        if lead.source_kind not in _OPERATION_DRAFT_SOURCE_KINDS:
+            raise AppError(
+                "PRE_DISPATCH_LEAD_STATE_INVALID",
+                "只有运营录入或飞书导入的公海池草稿可直接进入电销核实",
+                409,
+            )
     elif lead.status not in allowed_statuses:
         raise AppError("PRE_DISPATCH_LEAD_STATE_INVALID", "当前客资不可派发前置电销核验", 409)
-    if not normalize_phone(decrypt_text(lead.phone_encrypted) or ""):
-        raise AppError("PRE_DISPATCH_PHONE_REQUIRED", "前置电话核验需要客户联系电话", 422)
+    phone = normalize_phone(decrypt_text(lead.phone_encrypted) or "")
+    if len(phone) != 11 or not phone.startswith("1"):
+        raise AppError(
+            "PRE_DISPATCH_PHONE_REQUIRED",
+            "手机号必填且必须为 11 位有效号码",
+            422,
+        )
+    if lead.duplicate_status not in {None, "", "CLEAR"}:
+        raise AppError(
+            "PRE_DISPATCH_DUPLICATE_UNRESOLVED",
+            "手机号查重结论尚未处理，不能派发电销核验",
+            409,
+        )
     _telesales_or_raise(db, assignee_user_id)
     active = db.scalar(
         select(VerificationTask)

@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from io import BytesIO
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from zipfile import ZipFile
 
 import pytest
 from sqlalchemy import delete, func, select, update
@@ -38,6 +36,7 @@ from apps.api.src.core.security import encrypt_text, fingerprint_phone, hash_pho
 from apps.api.src.core.v12_enums import LeadSourceKind, LeadV12Status
 from apps.api.src.services.lead_supply_v12 import correct_platform_lead
 from apps.api.src.services.assignment_timeout_v12 import run_assignment_timeouts_v12
+from apps.api.tests.xlsx_reader import read_xlsx
 
 
 ADMIN_WORKBENCH = Path("apps/admin/public/v12-operations.js")
@@ -1786,17 +1785,26 @@ def test_item_8_full_phone_export_runs_as_audited_background_task(api_client) ->
         f"/api/v1/v1.2/reports/leads/exports/{task_id}/download"
     )
     assert download.status_code == 200, download.text
-    with ZipFile(BytesIO(download.content)) as archive:
-        assert set(archive.namelist()) == {"客资明细.csv", "跟进记录.csv"}
-        lead_csv = archive.read("客资明细.csv").decode("utf-8-sig")
-        followup_csv = archive.read("跟进记录.csv").decode("utf-8-sig")
-    assert lead_id in lead_csv
-    assert "13900139811" in lead_csv
-    assert "加盟商已与客户约好量房" in followup_csv
+    assert download.headers["content-type"].startswith(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    assert ".xlsx" in download.headers["content-disposition"]
+    workbook = read_xlsx(download.content)
+    assert set(workbook) == {"客资明细", "跟进记录"}
+    assert any(row["客资编号"] == lead_id for row in workbook["客资明细"])
+    assert any(row["完整手机号"] == "13900139811" for row in workbook["客资明细"])
+    assert any(
+        row["跟进内容"] == "加盟商已与客户约好量房"
+        for row in workbook["跟进记录"]
+    )
 
     with factory() as db:
         task = db.get(LeadExportTask, task_id)
         assert task is not None
+        assert task.file_name is not None and task.file_name.endswith(".xlsx")
+        assert task.mime_type == (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
         assert task.requested_by == operation_id
         assert task.filters_json["lead_status"] == LeadV12Status.FOLLOWING.value
         audit = db.scalar(
@@ -2184,7 +2192,7 @@ def test_item_8_export_worker_does_not_overwrite_a_newer_lease(
     monkeypatch.setattr(lead_export_v12, "get_storage", lambda: FakeStorage())
     monkeypatch.setattr(
         lead_export_v12,
-        "build_lead_export_archive",
+        "build_lead_export_workbook",
         simulate_takeover,
     )
     with factory() as db:
@@ -2192,7 +2200,7 @@ def test_item_8_export_worker_does_not_overwrite_a_newer_lease(
     assert result == {"claimed": 1, "completed": 0, "failed": 0, "superseded": 1}
     assert len(deleted) == 1
     assert deleted[0].startswith(f"lead-exports/")
-    assert deleted[0].endswith(".zip")
+    assert deleted[0].endswith(".xlsx")
     assert not archive_path.exists()
     with factory() as db:
         task = db.get(LeadExportTask, task_id)
@@ -2256,7 +2264,7 @@ def test_item_8_lost_lease_persists_cleanup_when_immediate_delete_fails(
         return archive_path, 1
 
     monkeypatch.setattr(lead_export_v12, "get_storage", lambda: FailingDeleteStorage())
-    monkeypatch.setattr(lead_export_v12, "build_lead_export_archive", simulate_takeover)
+    monkeypatch.setattr(lead_export_v12, "build_lead_export_workbook", simulate_takeover)
     with factory() as db:
         result = lead_export_v12.process_lead_export_tasks(db, limit=1)
     assert result["superseded"] == 1
@@ -2329,12 +2337,12 @@ def test_item_8_upload_crash_leaves_cleanup_intent_for_stale_worker_takeover(
 
     def build_archive(_db, _filters, *, heartbeat=None):
         archive_counter["value"] += 1
-        archive = tmp_path / f"crash-attempt-{archive_counter['value']}.zip"
+        archive = tmp_path / f"crash-attempt-{archive_counter['value']}.xlsx"
         archive.write_bytes(b"sensitive-archive")
         return archive, 1
 
     monkeypatch.setattr(lead_export_v12, "get_storage", lambda: storage)
-    monkeypatch.setattr(lead_export_v12, "build_lead_export_archive", build_archive)
+    monkeypatch.setattr(lead_export_v12, "build_lead_export_workbook", build_archive)
     with factory() as db, pytest.raises(KeyboardInterrupt):
         lead_export_v12.process_lead_export_tasks(db, limit=1)
 

@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from io import BytesIO
 from pathlib import Path
-from zipfile import ZipFile
 
 from sqlalchemy import select
 
@@ -21,6 +19,7 @@ from apps.api.src.core.models import (
 )
 from apps.api.src.core.security import encrypt_text, fingerprint_phone, hash_phone
 from apps.api.src.core.v12_enums import LeadSourceKind, LeadV12Status
+from apps.api.tests.xlsx_reader import read_xlsx
 
 
 def _login(client, username: str = "operation", password: str = "Operation123!") -> None:
@@ -341,19 +340,19 @@ def test_item_8_export_splits_all_matches_into_one_zip_without_row_limit_failure
 
         monkeypatch.setattr(lead_export_v12, "LEAD_EXPORT_ROWS_PER_FILE", 2)
         monkeypatch.setattr(lead_export_v12, "list_lead_report_rows", undercount)
-        archive_path, row_count = lead_export_v12.build_lead_export_archive(db, {})
+        archive_path, row_count = lead_export_v12.build_lead_export_workbook(db, {})
 
     try:
         assert row_count >= 5
-        with ZipFile(BytesIO(archive_path.read_bytes())) as archive:
-            lead_members = sorted(
-                name for name in archive.namelist() if name.startswith("客资明细")
-            )
-            assert len(lead_members) >= 3
-            assert len(lead_members) == len(set(lead_members))
-            exported = "".join(
-                archive.read(name).decode("utf-8-sig") for name in lead_members
-            )
+        workbook = read_xlsx(archive_path)
+        lead_members = sorted(name for name in workbook if name.startswith("客资明细"))
+        assert len(lead_members) >= 3
+        assert len(lead_members) == len(set(lead_members))
+        exported = "".join(
+            row["客户姓名"]
+            for name in lead_members
+            for row in workbook[name]
+        )
         for index in range(5):
             assert f"分片客户{index}" in exported
     finally:

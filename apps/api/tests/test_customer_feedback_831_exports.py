@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import csv
 from datetime import datetime, timezone
-from io import StringIO
-from zipfile import ZipFile
 
 from sqlalchemy import event, select
 
@@ -14,12 +11,13 @@ from apps.api.src.core.security import encrypt_text, fingerprint_phone, hash_pho
 from apps.api.src.core.v12_enums import LeadSourceKind, LeadV12Status
 from apps.api.src.services.lead_export_v12 import (
     LeadReportRow,
-    build_lead_export_archive,
+    build_lead_export_workbook,
     lead_report_to_dicts,
     list_lead_report_rows,
 )
 from apps.api.src.services.public_pool_v12 import list_public_pool_leads
 from apps.api.src.services.rbac import assign_role
+from apps.api.tests.xlsx_reader import read_xlsx
 
 
 def _lead(*, submitter_id: str, phone: str, source_kind: str, status: str) -> Lead:
@@ -53,9 +51,9 @@ def _lead(*, submitter_id: str, phone: str, source_kind: str, status: str) -> Le
 
 
 def _read_lead_rows(path) -> list[dict[str, str]]:
-    with ZipFile(path) as archive:
-        content = archive.read("客资明细.csv").decode("utf-8-sig")
-    return list(csv.DictReader(StringIO(content)))
+    workbook = read_xlsx(path)
+    sheet_name = "公海池明细" if "公海池明细" in workbook else "客资明细"
+    return workbook[sheet_name]
 
 
 def test_full_lead_export_contains_business_dispatch_and_current_followup_fields(db) -> None:
@@ -140,8 +138,10 @@ def test_full_lead_export_contains_business_dispatch_and_current_followup_fields
     assert owner_handled["franchise_handler_kind"] == "FRANCHISE_COMPANY"
     assert owner_handled["internal_assigned_at"] is None
 
-    archive_path, count = build_lead_export_archive(db, {"scope": "ALL_LEADS"})
+    archive_path, count = build_lead_export_workbook(db, {"scope": "ALL_LEADS"})
     try:
+        assert archive_path.suffix == ".xlsx"
+        assert set(read_xlsx(archive_path)) == {"客资明细", "跟进记录"}
         rows = _read_lead_rows(archive_path)
     finally:
         archive_path.unlink(missing_ok=True)
@@ -232,11 +232,13 @@ def test_public_pool_export_reuses_membership_and_current_filters(db) -> None:
     assert total == 1
     assert [item.id for item in listed] == [matching.id]
 
-    archive_path, count = build_lead_export_archive(
+    archive_path, count = build_lead_export_workbook(
         db,
         filters,
     )
     try:
+        assert archive_path.suffix == ".xlsx"
+        assert set(read_xlsx(archive_path)) == {"公海池明细"}
         rows = _read_lead_rows(archive_path)
     finally:
         archive_path.unlink(missing_ok=True)
@@ -244,7 +246,7 @@ def test_public_pool_export_reuses_membership_and_current_filters(db) -> None:
     assert count == 1
     assert [row["客资编号"] for row in rows] == [matching.id]
 
-    all_archive_path, all_count = build_lead_export_archive(
+    all_archive_path, all_count = build_lead_export_workbook(
         db,
         {"scope": "PUBLIC_POOL"},
     )
@@ -338,7 +340,7 @@ def test_public_pool_export_streams_one_stable_result_set(db) -> None:
     event.listen(db.get_bind(), "before_cursor_execute", count_selects)
     archive_path = None
     try:
-        archive_path, count = build_lead_export_archive(
+        archive_path, count = build_lead_export_workbook(
             db,
             {"scope": "PUBLIC_POOL"},
         )

@@ -31,6 +31,20 @@ class PlatformLeadDraftBody(LeadDraftBody):
     is_test: bool = False
 
 
+class PlatformLeadPreDispatchBody(PlatformLeadDraftBody):
+    assignee_user_id: str = Field(min_length=1, max_length=36)
+    reason: str = Field(min_length=1, max_length=500)
+    idempotency_key: str = Field(min_length=8, max_length=64)
+
+    @field_validator("assignee_user_id", "reason", "idempotency_key")
+    @classmethod
+    def normalize_pre_dispatch_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("必填字段不能为空")
+        return normalized
+
+
 class LeadDraftUpdateBody(BaseModel):
     customer_name: str | None = Field(default=None, max_length=64)
     phone: str | None = Field(default=None, max_length=32)

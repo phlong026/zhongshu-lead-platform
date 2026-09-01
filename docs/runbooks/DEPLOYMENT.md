@@ -1,10 +1,10 @@
-# 合家美宅客资平台 V1.2.3 生产部署手册
+# 合家美宅客资平台 V1.2.4 生产部署手册
 
 > 本手册分别记录 `代码完成`、`自动化通过` 与 `真实环境验收`。代码或自动门禁通过只允许进入目标环境验证，不能直接标记生产上线。
 
 ## 1. 适用范围
 
-本手册用于将已评审的 V1.2.3 镜像部署到生产环境。真实服务号联调、业务 UAT 和灰度批准必须另行完成，代码通过不等于业务可以全量开放。
+本手册用于将已评审的 V1.2.4 镜像部署到生产环境。真实服务号联调、业务 UAT 和灰度批准必须另行完成，代码通过不等于业务可以全量开放。
 
 ## 2. 生产拓扑
 
@@ -18,8 +18,8 @@
 
 ## 3. 生产前提
 
-1. `release/v1.2.3` 最新 CI 全绿，PR 无 Critical/High/P1/P2 未解决项；
-2. `APP_IMAGE` 使用 `仓库:APP_VERSION@sha256:digest` 形式，例如 `registry.example.com/zhongshu-lead-platform:1.2.3@sha256:...`；
+1. `release/v1.2.4` 最新 CI 全绿，PR 无 Critical/High/P1/P2 未解决项；
+2. `APP_IMAGE` 使用 `仓库:APP_VERSION@sha256:digest` 形式，例如 `registry.example.com/zhongshu-lead-platform:1.2.4@sha256:...`；
 3. 镜像 OCI `org.opencontainers.image.version` 与 `APP_VERSION` 完全一致；
 4. 正式域名、TLS、服务号授权域名和 OAuth 回调已配置；
 5. PostgreSQL、对象存储、日志、告警和备份已验收；
@@ -99,7 +99,7 @@ docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml 
 
 docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml \
   run --rm -T -e RUN_DB_MIGRATIONS=false api \
-  python scripts/sync_rbac.py --apply --source release_v1.2.3 \
+  python scripts/sync_rbac.py --apply --source release_v1.2.4 \
   > dist/v12-rbac-apply.json
 
 docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml \

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from apps.api.src.core.models import (
     AuditLog,
@@ -8,12 +8,15 @@ from apps.api.src.core.models import (
     Lead,
     Notification,
     NotificationOutbox,
+    Permission,
     Region,
+    Role,
+    RolePermission,
     User,
     VerificationTask,
 )
 from apps.api.src.core.models_v12 import CompanyLeadCapability
-from apps.api.src.core.security import encrypt_text, hash_phone
+from apps.api.src.core.security import encrypt_text, fingerprint_phone, hash_phone
 from apps.api.src.core.v12_enums import LeadSourceKind, LeadV12Status, VerificationTaskType
 from apps.api.src.services.auth_service import create_internal_user
 from apps.api.src.services.verification_service import publish_template
@@ -859,6 +862,294 @@ def test_platform_draft_without_phone_cannot_enter_telesales_verification(api_cl
 
     assert blocked.status_code == 422
     assert blocked.json()["code"] == "PRE_DISPATCH_PHONE_REQUIRED"
+
+
+def test_platform_create_and_telesales_assignment_is_atomic_and_idempotent(api_client) -> None:
+    client, factory = api_client
+    with factory() as db:
+        telesales = db.scalar(select(User).where(User.username == "telesales"))
+        assert telesales is not None
+        publish_template(
+            db,
+            code="PRE_DISPATCH",
+            name="前置事实核验",
+            schema={"fields": []},
+        )
+        db.commit()
+        telesales_id = telesales.id
+
+    operation = _login(client, "operation", "Operation123!")
+    payload = {
+        "customer_name": "幂等直派电销客户",
+        "phone": "13900139035",
+        "assignee_user_id": telesales_id,
+        "reason": "确认客户需求和服务区域",
+        "idempotency_key": "feedback-91-direct-telesales",
+    }
+
+    first = _data(
+        client.post(
+            "/api/v1/v1.2/platform/leads/pre-dispatch-verification",
+            headers=operation,
+            json=payload,
+        )
+    )
+    replay = _data(
+        client.post(
+            "/api/v1/v1.2/platform/leads/pre-dispatch-verification",
+            headers=operation,
+            json=payload,
+        )
+    )
+
+    assert first["idempotent"] is False
+    assert replay["idempotent"] is True
+    assert replay["lead"]["id"] == first["lead"]["id"]
+    assert replay["task"]["id"] == first["task"]["id"]
+    with factory() as db:
+        leads = db.scalars(
+            select(Lead).where(Lead.phone_hash == hash_phone(payload["phone"]))
+        ).all()
+        tasks = db.scalars(
+            select(VerificationTask).where(
+                VerificationTask.lead_id == first["lead"]["id"],
+                VerificationTask.task_type
+                == VerificationTaskType.PRE_DISPATCH_VERIFY.value,
+            )
+        ).all()
+        assert len(leads) == 1
+        assert len(tasks) == 1
+
+    conflict = client.post(
+        "/api/v1/v1.2/platform/leads/pre-dispatch-verification",
+        headers=operation,
+        json={**payload, "customer_name": "冲突请求"},
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["code"] == "IDEMPOTENCY_CONFLICT"
+
+
+def test_platform_create_and_telesales_assignment_rolls_back_when_assignment_fails(api_client) -> None:
+    client, factory = api_client
+    operation = _login(client, "operation", "Operation123!")
+    phone = "13900139034"
+
+    blocked = client.post(
+        "/api/v1/v1.2/platform/leads/pre-dispatch-verification",
+        headers=operation,
+        json={
+            "customer_name": "派发失败不应留草稿",
+            "phone": phone,
+            "assignee_user_id": "missing-telesales-user",
+            "reason": "确认客户需求和服务区域",
+            "idempotency_key": "feedback-91-atomic-rollback",
+        },
+    )
+
+    assert blocked.status_code == 422
+    with factory() as db:
+        assert (
+            db.scalar(select(Lead).where(Lead.phone_hash == hash_phone(phone)))
+            is None
+        )
+
+
+def test_platform_create_and_telesales_assignment_requires_dispatch_review_permission(api_client) -> None:
+    client, factory = api_client
+    with factory() as db:
+        operation_role = db.scalar(select(Role).where(Role.code == "OPERATION"))
+        permission = db.scalar(
+            select(Permission).where(Permission.code == "lead.supplier.review")
+        )
+        telesales = db.scalar(select(User).where(User.username == "telesales"))
+        assert operation_role is not None and permission is not None and telesales is not None
+        mapping = db.get(RolePermission, (operation_role.id, permission.id))
+        assert mapping is not None
+        db.delete(mapping)
+        db.commit()
+        telesales_id = telesales.id
+
+    operation = _login(client, "operation", "Operation123!")
+    with factory() as db:
+        before = (
+            int(db.scalar(select(func.count(Lead.id))) or 0),
+            int(db.scalar(select(func.count(VerificationTask.id))) or 0),
+            int(db.scalar(select(func.count(AuditLog.id))) or 0),
+        )
+
+    blocked = client.post(
+        "/api/v1/v1.2/platform/leads/pre-dispatch-verification",
+        headers=operation,
+        json={
+            "customer_name": "无派发权限客户",
+            "phone": "13900139033",
+            "assignee_user_id": telesales_id,
+            "reason": "尝试绕过派发权限",
+            "idempotency_key": "feedback-91-permission-boundary",
+        },
+    )
+
+    assert blocked.status_code == 403
+    with factory() as db:
+        after = (
+            int(db.scalar(select(func.count(Lead.id))) or 0),
+            int(db.scalar(select(func.count(VerificationTask.id))) or 0),
+            int(db.scalar(select(func.count(AuditLog.id))) or 0),
+        )
+    assert after == before
+
+
+def test_feishu_public_pool_draft_with_valid_phone_can_enter_telesales_verification(api_client) -> None:
+    client, factory = api_client
+    with factory() as db:
+        telesales = db.scalar(select(User).where(User.username == "telesales"))
+        operation_user = db.scalar(select(User).where(User.username == "operation"))
+        assert telesales is not None and operation_user is not None
+        publish_template(
+            db,
+            code="PRE_DISPATCH",
+            name="前置事实核验",
+            schema={"fields": []},
+        )
+        phone = "13900139036"
+        lead = Lead(
+            source_type=LeadSourceKind.FEISHU_IMPORT.value,
+            source_kind=LeadSourceKind.FEISHU_IMPORT.value,
+            submitter_user_id=operation_user.id,
+            customer_name="飞书导入待核验客户",
+            phone_encrypted=encrypt_text(phone),
+            phone_hash=hash_phone(phone),
+            phone_fingerprint=fingerprint_phone(phone),
+            consent_confirmed=False,
+            status=LeadV12Status.DRAFT.value,
+            review_status="DRAFT",
+            duplicate_status="CLEAR",
+            raw_payload={},
+        )
+        db.add(lead)
+        db.commit()
+        lead_id = lead.id
+        telesales_id = telesales.id
+
+    operation = _login(client, "operation", "Operation123!")
+    telesales_headers = _login(client, "telesales", "Telesales123!")
+    assigned = _data(
+        client.post(
+            f"/api/v1/v1.2/admin/leads/{lead_id}/pre-dispatch-verification",
+            headers=operation,
+            json={
+                "assignee_user_id": telesales_id,
+                "reason": "先电话补充客户需求和授权信息",
+            },
+        )
+    )
+
+    assert assigned["lead"]["status"] == LeadV12Status.PENDING_TELESALES_VERIFY.value
+    assert assigned["lead"]["source_kind"] == LeadSourceKind.FEISHU_IMPORT.value
+    _data(
+        client.post(
+            f"/api/v1/v1.2/pre-dispatch-verifications/tasks/{assigned['id']}/start",
+            headers=telesales_headers,
+        )
+    )
+    _data(
+        client.post(
+            f"/api/v1/v1.2/pre-dispatch-verifications/tasks/{assigned['id']}/submit",
+            headers=telesales_headers,
+            json={
+                "contact_result": "CONNECTED",
+                "conclusion": "INFO_INCOMPLETE",
+                "note": "客户已接通，但需求和授权仍需运营补充",
+            },
+        )
+    )
+    disposition = _data(
+        client.post(
+            f"/api/v1/v1.2/admin/leads/{lead_id}/pre-dispatch-disposition",
+            headers=operation,
+            json={"decision": "RETURN_REWORK", "note": "由运营继续补充资料"},
+        )
+    )
+    assert disposition["status"] == LeadV12Status.DRAFT.value
+    with factory() as db:
+        rework = db.get(Lead, lead_id)
+        assert rework is not None
+        assert rework.source_kind == LeadSourceKind.FEISHU_IMPORT.value
+        assert rework.supplier_company_id is None
+
+
+def test_public_pool_draft_with_invalid_phone_cannot_enter_telesales_verification(api_client) -> None:
+    client, factory = api_client
+    with factory() as db:
+        telesales = db.scalar(select(User).where(User.username == "telesales"))
+        operation_user = db.scalar(select(User).where(User.username == "operation"))
+        assert telesales is not None and operation_user is not None
+        phone = "12345"
+        lead = Lead(
+            source_type=LeadSourceKind.FEISHU_IMPORT.value,
+            source_kind=LeadSourceKind.FEISHU_IMPORT.value,
+            submitter_user_id=operation_user.id,
+            customer_name="手机号无效的导入客户",
+            phone_encrypted=encrypt_text(phone),
+            phone_hash=hash_phone(phone),
+            phone_fingerprint=fingerprint_phone(phone),
+            consent_confirmed=False,
+            status=LeadV12Status.DRAFT.value,
+            review_status="DRAFT",
+            duplicate_status="CLEAR",
+            raw_payload={},
+        )
+        db.add(lead)
+        db.commit()
+        lead_id = lead.id
+        telesales_id = telesales.id
+
+    operation = _login(client, "operation", "Operation123!")
+    blocked = client.post(
+        f"/api/v1/v1.2/admin/leads/{lead_id}/pre-dispatch-verification",
+        headers=operation,
+        json={"assignee_user_id": telesales_id, "reason": "尝试核验无效号码"},
+    )
+
+    assert blocked.status_code == 422
+    assert blocked.json()["code"] == "PRE_DISPATCH_PHONE_REQUIRED"
+
+
+def test_public_pool_draft_with_unresolved_duplicate_cannot_enter_telesales_verification(api_client) -> None:
+    client, factory = api_client
+    with factory() as db:
+        telesales = db.scalar(select(User).where(User.username == "telesales"))
+        operation_user = db.scalar(select(User).where(User.username == "operation"))
+        assert telesales is not None and operation_user is not None
+        phone = "13900139037"
+        lead = Lead(
+            source_type=LeadSourceKind.FEISHU_IMPORT.value,
+            source_kind=LeadSourceKind.FEISHU_IMPORT.value,
+            submitter_user_id=operation_user.id,
+            customer_name="重复状态待处理的导入客户",
+            phone_encrypted=encrypt_text(phone),
+            phone_hash=hash_phone(phone),
+            phone_fingerprint=fingerprint_phone(phone),
+            consent_confirmed=False,
+            status=LeadV12Status.DRAFT.value,
+            review_status="DRAFT",
+            duplicate_status="HISTORICAL_SUSPECT",
+            raw_payload={},
+        )
+        db.add(lead)
+        db.commit()
+        lead_id = lead.id
+        telesales_id = telesales.id
+
+    operation = _login(client, "operation", "Operation123!")
+    blocked = client.post(
+        f"/api/v1/v1.2/admin/leads/{lead_id}/pre-dispatch-verification",
+        headers=operation,
+        json={"assignee_user_id": telesales_id, "reason": "尝试绕过未决查重"},
+    )
+
+    assert blocked.status_code == 409
+    assert blocked.json()["code"] == "PRE_DISPATCH_DUPLICATE_UNRESOLVED"
 
 
 def test_supplier_draft_cannot_bypass_initial_review_into_telesales_verification(api_client) -> None:

@@ -1,17 +1,14 @@
 from __future__ import annotations
 
-import csv
 import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from io import TextIOWrapper
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from threading import Lock
 from time import monotonic
 from typing import Any, Callable
-from zipfile import ZIP_DEFLATED, ZipFile
 
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import Session, aliased
@@ -31,12 +28,13 @@ from ..core.security import decrypt_text, hash_phone, mask_phone, normalize_phon
 from .public_pool_v12 import public_pool_lead_conditions
 from .storage import get_storage
 from .storage_cleanup_worker import enqueue_storage_cleanup
+from .xlsx_writer import WorksheetSpec, XlsxSizeLimitError, write_xlsx
 
 logger = logging.getLogger("zhongshu.lead_export")
 LEAD_EXPORT_ROWS_PER_FILE = 50_000
 FOLLOWUP_EXPORT_ROWS_PER_FILE = 250_000
-MAX_EXPORT_CSV_BYTES = 512 * 1024 * 1024
-MAX_EXPORT_ARCHIVE_BYTES = 512 * 1024 * 1024
+MAX_EXPORT_XML_BYTES = 512 * 1024 * 1024
+MAX_EXPORT_WORKBOOK_BYTES = 512 * 1024 * 1024
 EXPORT_STREAM_BATCH_SIZE = 500
 EXPORT_HEARTBEAT_ROW_INTERVAL = 1_000
 LEAD_EXPORT_UPLOAD_LEASE_RENEW_SECONDS = 60
@@ -54,19 +52,6 @@ class LeadExportLeaseLostError(RuntimeError):
 
 class LeadExportDataError(RuntimeError):
     pass
-
-
-@dataclass(slots=True)
-class _CsvByteBudget:
-    limit: int
-    used: int = 0
-
-    def consume(self, value: str) -> None:
-        self.used += len(value.encode("utf-8"))
-        if self.used > self.limit:
-            raise LeadExportLimitError(
-                "导出文件超过安全大小，请缩小筛选范围后分批导出"
-            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -426,11 +411,6 @@ def lead_report_to_dicts(
     return result
 
 
-def _safe_csv_cell(value: Any) -> str:
-    text = "" if value is None else str(value)
-    return f"'{text}" if text.startswith(("=", "+", "-", "@", "\t", "\r", "\n")) else text
-
-
 LEAD_EXPORT_FIELDS = [
     "客资编号",
     "客户姓名",
@@ -598,73 +578,6 @@ def _count_export_followups(db: Session, filters: dict[str, Any]) -> int:
     )
 
 
-class _BoundedCsvWriter:
-    def __init__(self, output: TextIOWrapper, budget: _CsvByteBudget) -> None:
-        self.output = output
-        self.budget = budget
-
-    def write(self, value: str) -> int:
-        self.budget.consume(value)
-        return self.output.write(value)
-
-
-def _member_filename(base_filename: str, part: int, *, split: bool) -> str:
-    if not split and part == 1:
-        return base_filename
-    stem, suffix = base_filename.rsplit(".", 1)
-    return f"{stem}_{part:04d}.{suffix}"
-
-
-def _write_csv_members(
-    archive: ZipFile,
-    *,
-    base_filename: str,
-    fieldnames: list[str],
-    rows,
-    heartbeat: Callable[[], None],
-    budget: _CsvByteBudget,
-    rows_per_file: int,
-    total_rows: int,
-) -> int:
-    iterator = iter(rows)
-    count = 0
-    part = 0
-    first_row: dict[str, Any] | None = next(iterator, None)
-    while first_row is not None or part == 0:
-        part += 1
-        filename = _member_filename(
-            base_filename,
-            part,
-            split=total_rows > rows_per_file,
-        )
-        with archive.open(filename, "w") as binary_output:
-            with TextIOWrapper(
-                binary_output,
-                encoding="utf-8-sig",
-                newline="",
-            ) as text_output:
-                bounded_output = _BoundedCsvWriter(text_output, budget)
-                writer = csv.DictWriter(bounded_output, fieldnames=fieldnames)
-                writer.writeheader()
-                if first_row is None:
-                    break
-                row = first_row
-                for row_index in range(rows_per_file):
-                    writer.writerow(
-                        {key: _safe_csv_cell(row.get(key)) for key in fieldnames}
-                    )
-                    count += 1
-                    if count % EXPORT_HEARTBEAT_ROW_INTERVAL == 0:
-                        heartbeat()
-                    if row_index + 1 == rows_per_file:
-                        break
-                    row = next(iterator, None)
-                    if row is None:
-                        break
-                first_row = next(iterator, None)
-    return count
-
-
 def _lead_export_row(row: LeadReportRow) -> dict[str, Any]:
     lead = row.lead
     assignment = row.assignment
@@ -723,7 +636,7 @@ def _lead_export_row(row: LeadReportRow) -> dict[str, Any]:
     }
 
 
-def build_lead_export_archive(
+def build_lead_export_workbook(
     db: Session,
     filters: dict[str, Any],
     *,
@@ -749,44 +662,50 @@ def build_lead_export_archive(
         followup_rows = _iter_followup_export_rows(db, filters)
     temporary = NamedTemporaryFile(
         prefix="zhongshu-lead-export-",
-        suffix=".zip",
+        suffix=".xlsx",
         delete=False,
     )
-    archive_path = Path(temporary.name)
+    workbook_path = Path(temporary.name)
     temporary.close()
     try:
         row_heartbeat = beat if db.get_bind().dialect.name == "postgresql" else (lambda: None)
-        budget = _CsvByteBudget(MAX_EXPORT_CSV_BYTES)
-        with ZipFile(archive_path, "w", compression=ZIP_DEFLATED) as archive:
-            lead_count = _write_csv_members(
-                archive,
-                base_filename="客资明细.csv",
+        worksheets = [
+            WorksheetSpec(
+                name="公海池明细" if public_pool_scope else "客资明细",
                 fieldnames=LEAD_EXPORT_FIELDS,
                 rows=(_lead_export_row(row) for row in report_rows),
-                heartbeat=row_heartbeat,
-                budget=budget,
-                rows_per_file=LEAD_EXPORT_ROWS_PER_FILE,
+                rows_per_sheet=LEAD_EXPORT_ROWS_PER_FILE,
                 total_rows=total,
             )
-            beat()
-            _write_csv_members(
-                archive,
-                base_filename="跟进记录.csv",
-                fieldnames=FOLLOWUP_EXPORT_FIELDS,
-                rows=followup_rows,
-                heartbeat=row_heartbeat,
-                budget=budget,
-                rows_per_file=FOLLOWUP_EXPORT_ROWS_PER_FILE,
-                total_rows=followup_total,
+        ]
+        if not public_pool_scope:
+            worksheets.append(
+                WorksheetSpec(
+                    name="跟进记录",
+                    fieldnames=FOLLOWUP_EXPORT_FIELDS,
+                    rows=followup_rows,
+                    rows_per_sheet=FOLLOWUP_EXPORT_ROWS_PER_FILE,
+                    total_rows=followup_total,
+                )
             )
-        if archive_path.stat().st_size > MAX_EXPORT_ARCHIVE_BYTES:
+        try:
+            row_counts = write_xlsx(
+                workbook_path,
+                worksheets,
+                heartbeat=row_heartbeat,
+                heartbeat_row_interval=EXPORT_HEARTBEAT_ROW_INTERVAL,
+                max_uncompressed_bytes=MAX_EXPORT_XML_BYTES,
+            )
+        except XlsxSizeLimitError as exc:
+            raise LeadExportLimitError(str(exc)) from exc
+        if workbook_path.stat().st_size > MAX_EXPORT_WORKBOOK_BYTES:
             raise LeadExportLimitError(
-                "压缩后的导出文件超过安全大小，请缩小筛选范围后分批导出"
+                "导出的 Excel 文件超过安全大小，请缩小筛选范围后分批导出"
             )
         beat()
-        return archive_path, lead_count
+        return workbook_path, row_counts[worksheets[0].name]
     except Exception:
-        archive_path.unlink(missing_ok=True)
+        workbook_path.unlink(missing_ok=True)
         raise
 
 
@@ -926,7 +845,7 @@ def _attempt_object_key(
     attempt_token: str,
     created_at: datetime,
 ) -> str:
-    return f"lead-exports/{created_at:%Y/%m}/{task_id}/{attempt_token}.zip"
+    return f"lead-exports/{created_at:%Y/%m}/{task_id}/{attempt_token}.xlsx"
 
 
 def _persist_attempt_cleanup_intent(
@@ -1023,7 +942,7 @@ def process_lead_export_tasks(
         report_progress()
         attempt_object_key: str | None = None
         cleanup_intent: StorageCleanupOutbox | None = None
-        archive_path: Path | None = None
+        workbook_path: Path | None = None
         try:
             task = db.get(LeadExportTask, task_id)
             if task is None or task.attempt_token != attempt_token:
@@ -1038,14 +957,14 @@ def process_lead_export_tasks(
                 )
                 report_progress()
 
-            archive_path, row_count = build_lead_export_archive(
+            workbook_path, row_count = build_lead_export_workbook(
                 db,
                 task.filters_json,
                 heartbeat=renew_lease_and_report_progress,
             )
             completed_at = datetime.now(timezone.utc)
             expires_at = completed_at + timedelta(days=7)
-            file_name = f"客资完整导出_{completed_at:%Y%m%d_%H%M%S}.zip"
+            file_name = f"客资完整导出_{completed_at:%Y%m%d_%H%M%S}.xlsx"
             attempt_object_key = _attempt_object_key(
                 task_id=task_id,
                 attempt_token=attempt_token,
@@ -1065,16 +984,16 @@ def process_lead_export_tasks(
                 report_progress=report_progress,
             )
             stored = storage.save_file(
-                archive_path,
+                workbook_path,
                 prefix=f"lead-exports/{completed_at:%Y/%m}/{task.id}",
                 filename=file_name,
-                mime_type="application/zip",
+                mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 object_key=attempt_object_key,
                 progress_callback=upload_progress,
             )
             renew_lease_and_report_progress()
-            archive_path.unlink()
-            archive_path = None
+            workbook_path.unlink()
+            workbook_path = None
             result = db.execute(
                 update(LeadExportTask)
                 .where(
@@ -1155,14 +1074,14 @@ def process_lead_export_tasks(
                 superseded += 1
             logger.exception("lead export task failed task_id=%s", task_id)
         finally:
-            if archive_path is not None:
+            if workbook_path is not None:
                 try:
-                    archive_path.unlink(missing_ok=True)
+                    workbook_path.unlink(missing_ok=True)
                 except OSError:
                     logger.error(
-                        "lead export temporary archive cleanup failed task_id=%s path=%s",
+                        "lead export temporary workbook cleanup failed task_id=%s path=%s",
                         task_id,
-                        archive_path,
+                        workbook_path,
                         exc_info=True,
                     )
     return {
