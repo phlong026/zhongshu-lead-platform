@@ -1,7 +1,19 @@
+from pathlib import Path
 from zipfile import ZipFile
 
 from apps.api.src.services.xlsx_writer import WorksheetSpec, write_xlsx
 from apps.api.tests.xlsx_reader import read_xlsx
+
+
+def test_xlsx_helpers_do_not_import_native_xml_package() -> None:
+    paths = (
+        Path("apps/api/src/services/xlsx_writer.py"),
+        Path("apps/api/tests/xlsx_reader.py"),
+    )
+    for path in paths:
+        source = path.read_text(encoding="utf-8")
+        assert "from xml" not in source
+        assert "import xml" not in source
 
 
 def test_xlsx_writer_keeps_formula_prefixes_as_plain_text(tmp_path) -> None:

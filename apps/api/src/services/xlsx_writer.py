@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from html import escape
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
-from xml.sax.saxutils import escape
 from zipfile import ZIP_DEFLATED, ZipFile
 
 
@@ -151,7 +151,7 @@ def _write_row(output, row_number: int, values: Iterable[Any], *, header: bool, 
         text = _cell_text(value)
         cells.append(
             f'<c r="{reference}" t="inlineStr"{style}><is>'
-            f'<t xml:space="preserve">{escape(text)}</t></is></c>'
+            f'<t xml:space="preserve">{escape(text, quote=False)}</t></is></c>'
         )
     _write(output, f'<row r="{row_number}">{"".join(cells)}</row>', budget)
 
@@ -245,7 +245,7 @@ def _write_workbook_parts(workbook: ZipFile, sheets: list[_WrittenSheet]) -> Non
 
 
 def _attribute(value: str) -> str:
-    return escape(value, {'"': "&quot;"})
+    return escape(value, quote=True)
 
 
 def _styles_xml() -> str:

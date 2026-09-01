@@ -1,37 +1,28 @@
 from __future__ import annotations
 
+from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path
 from typing import BinaryIO
-from xml.etree import ElementTree
 from zipfile import ZipFile
-
-
-_MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
-_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-_PACKAGE_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 
 
 def read_xlsx(source: Path | bytes | BinaryIO) -> dict[str, list[dict[str, str]]]:
     stream = BytesIO(source) if isinstance(source, bytes) else source
     with ZipFile(stream) as workbook:
-        workbook_xml = ElementTree.fromstring(workbook.read("xl/workbook.xml"))
-        relationships_xml = ElementTree.fromstring(
-            workbook.read("xl/_rels/workbook.xml.rels")
+        workbook_parser = _WorkbookParser()
+        workbook_parser.feed(workbook.read("xl/workbook.xml").decode("utf-8"))
+        relationships_parser = _RelationshipsParser()
+        relationships_parser.feed(
+            workbook.read("xl/_rels/workbook.xml.rels").decode("utf-8")
         )
-        targets = {
-            relationship.attrib["Id"]: relationship.attrib["Target"]
-            for relationship in relationships_xml.findall(
-                f"{{{_PACKAGE_REL_NS}}}Relationship"
-            )
-        }
         sheets: dict[str, list[dict[str, str]]] = {}
-        for sheet in workbook_xml.findall(f".//{{{_MAIN_NS}}}sheet"):
-            name = sheet.attrib["name"]
-            target = targets[sheet.attrib[f"{{{_REL_NS}}}id"]]
-            sheet_path = f"xl/{target.lstrip('/')}"
-            sheet_xml = ElementTree.fromstring(workbook.read(sheet_path))
-            values = [_row_values(row) for row in sheet_xml.findall(f".//{{{_MAIN_NS}}}row")]
+        for name, relationship_id in workbook_parser.sheets:
+            target = relationships_parser.targets[relationship_id].lstrip("/")
+            sheet_path = target if target.startswith("xl/") else f"xl/{target}"
+            worksheet_parser = _WorksheetParser()
+            worksheet_parser.feed(workbook.read(sheet_path).decode("utf-8"))
+            values = worksheet_parser.rows
             headers = values[0] if values else []
             sheets[name] = [
                 {header: row[index] if index < len(row) else "" for index, header in enumerate(headers)}
@@ -40,21 +31,78 @@ def read_xlsx(source: Path | bytes | BinaryIO) -> dict[str, list[dict[str, str]]
         return sheets
 
 
-def _row_values(row: ElementTree.Element) -> list[str]:
-    result: list[str] = []
-    for cell in row.findall(f"{{{_MAIN_NS}}}c"):
-        column = _column_index(cell.attrib["r"])
-        while len(result) < column - 1:
-            result.append("")
-        if cell.attrib.get("t") == "inlineStr":
-            value = "".join(
-                node.text or "" for node in cell.findall(f".//{{{_MAIN_NS}}}t")
-            )
-        else:
-            node = cell.find(f"{{{_MAIN_NS}}}v")
-            value = node.text if node is not None and node.text is not None else ""
-        result.append(value)
-    return result
+class _WorkbookParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.sheets: list[tuple[str, str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag != "sheet":
+            return
+        values = dict(attrs)
+        name = values.get("name")
+        relationship_id = values.get("r:id")
+        if name is not None and relationship_id is not None:
+            self.sheets.append((name, relationship_id))
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+
+
+class _RelationshipsParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.targets: dict[str, str] = {}
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag != "relationship":
+            return
+        values = dict(attrs)
+        relationship_id = values.get("id")
+        target = values.get("target")
+        if relationship_id is not None and target is not None:
+            self.targets[relationship_id] = target
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+
+
+class _WorksheetParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.rows: list[list[str]] = []
+        self._row: list[str] | None = None
+        self._cell_reference: str | None = None
+        self._capture_tag: str | None = None
+        self._cell_parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = dict(attrs)
+        if tag == "row":
+            self._row = []
+        elif tag == "c" and self._row is not None:
+            self._cell_reference = values.get("r")
+            self._cell_parts = []
+        elif tag in {"t", "v"} and self._cell_reference is not None:
+            self._capture_tag = tag
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"t", "v"}:
+            self._capture_tag = None
+        elif tag == "c" and self._row is not None and self._cell_reference is not None:
+            column = _column_index(self._cell_reference)
+            while len(self._row) < column - 1:
+                self._row.append("")
+            self._row.append("".join(self._cell_parts))
+            self._cell_reference = None
+            self._cell_parts = []
+        elif tag == "row" and self._row is not None:
+            self.rows.append(self._row)
+            self._row = None
+
+    def handle_data(self, data: str) -> None:
+        if self._capture_tag is not None and self._cell_reference is not None:
+            self._cell_parts.append(data)
 
 
 def _column_index(reference: str) -> int:
