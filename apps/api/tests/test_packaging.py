@@ -34,7 +34,7 @@ def test_release_package_contains_generated_openapi_source_history_and_quality_d
         assert any(name.endswith("/GIT_HISTORY.txt") for name in names)
         openapi_name = next(name for name in names if name.endswith("/docs/api/openapi.json"))
         openapi = json.loads(archive.read(openapi_name).decode("utf-8"))
-        assert openapi["info"]["version"] == "1.2.4"
+        assert openapi["info"]["version"] == "1.2.5"
         assert "/api/v1/v1.2/reports/overview" in openapi["paths"]
         assert not any(name.endswith(("/.env", ".db", ".sqlite3", ".pyc")) for name in names)
 

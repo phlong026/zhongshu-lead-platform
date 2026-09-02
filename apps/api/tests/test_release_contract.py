@@ -10,6 +10,7 @@ def test_release_quality_documents_exist():
         "docs/quality/TEST_REPORT.md",
         "docs/quality/SECURITY_AUDIT.md",
         "docs/traceability/IMPLEMENTATION_MATRIX.md",
+        "docs/release/RELEASE_NOTES_V1.2.5.md",
         "docs/release/RELEASE_NOTES_V1.2.4.md",
         "docs/release/RELEASE_NOTES_V1.2.2.md",
         "docs/release/RELEASE_NOTES_V1.2.1.md",

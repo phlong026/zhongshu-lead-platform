@@ -347,6 +347,205 @@ def test_lead_test_flag_migration_defaults_false_and_is_reversible(tmp_path: Pat
     }
 
 
+def test_pre_dispatch_template_migration_publishes_default_and_is_reversible(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "pre-dispatch-template.db"
+    database_url = f"sqlite:///{database}"
+    _alembic(database_url, "upgrade", "0016_lead_test_flag")
+    engine = create_engine(database_url)
+    metadata = sa.MetaData()
+    metadata.reflect(engine, only=["verification_templates"])
+    templates = metadata.tables["verification_templates"]
+    draft_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+
+    with engine.begin() as connection:
+        connection.execute(
+            templates.insert().values(
+                **_required_row(
+                    templates,
+                    id=draft_id,
+                    code="PRE_DISPATCH",
+                    name="运营草稿",
+                    version=3,
+                    schema_json={"fields": [{"key": "draft-only"}]},
+                    status="DRAFT",
+                    effective_at=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        )
+
+    _alembic(database_url, "upgrade", "head")
+
+    with engine.connect() as connection:
+        rows = connection.execute(
+            sa.select(
+                templates.c.id,
+                templates.c.name,
+                templates.c.version,
+                templates.c.schema_json,
+                templates.c.status,
+            )
+            .where(templates.c.code == "PRE_DISPATCH")
+            .order_by(templates.c.version)
+        ).mappings().all()
+
+    assert rows == [
+        {
+            "id": draft_id,
+            "name": "运营草稿",
+            "version": 3,
+            "schema_json": {"fields": [{"key": "draft-only"}]},
+            "status": "DRAFT",
+        },
+        {
+            "id": "1f7b6405-9e0f-4ec7-a073-1dbd02b46137",
+            "name": "前置电销核验模板",
+            "version": 4,
+            "schema_json": {"fields": []},
+            "status": "PUBLISHED",
+        },
+    ]
+
+    _alembic(database_url, "downgrade", "0016_lead_test_flag")
+    with engine.connect() as connection:
+        remaining = connection.execute(
+            sa.select(templates.c.id, templates.c.status).where(
+                templates.c.code == "PRE_DISPATCH"
+            )
+        ).mappings().all()
+
+    assert remaining == [{"id": draft_id, "status": "DRAFT"}]
+
+
+def test_pre_dispatch_template_migration_keeps_existing_published_versions(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "existing-pre-dispatch-template.db"
+    database_url = f"sqlite:///{database}"
+    _alembic(database_url, "upgrade", "0016_lead_test_flag")
+    engine = create_engine(database_url)
+    metadata = sa.MetaData()
+    metadata.reflect(engine, only=["verification_templates"])
+    templates = metadata.tables["verification_templates"]
+    now = datetime.now(timezone.utc)
+    existing_ids = [str(uuid.uuid4()), str(uuid.uuid4())]
+
+    with engine.begin() as connection:
+        connection.execute(
+            templates.insert(),
+            [
+                _required_row(
+                    templates,
+                    id=template_id,
+                    code="PRE_DISPATCH",
+                    name=f"现有已发布模板 v{version}",
+                    version=version,
+                    schema_json={"fields": []},
+                    status="PUBLISHED",
+                    effective_at=now,
+                    created_at=now,
+                    updated_at=now,
+                )
+                for version, template_id in enumerate(existing_ids, start=1)
+            ],
+        )
+
+    _alembic(database_url, "upgrade", "head")
+    with engine.connect() as connection:
+        current_ids = connection.execute(
+            sa.select(templates.c.id)
+            .where(templates.c.code == "PRE_DISPATCH")
+            .order_by(templates.c.version)
+        ).scalars().all()
+
+    assert current_ids == existing_ids
+
+    _alembic(database_url, "downgrade", "0016_lead_test_flag")
+    with engine.connect() as connection:
+        remaining_ids = connection.execute(
+            sa.select(templates.c.id)
+            .where(templates.c.code == "PRE_DISPATCH")
+            .order_by(templates.c.version)
+        ).scalars().all()
+
+    assert remaining_ids == existing_ids
+
+
+def test_pre_dispatch_template_downgrade_refuses_referenced_template(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "referenced-pre-dispatch-template.db"
+    database_url = f"sqlite:///{database}"
+    _alembic(database_url, "upgrade", "head")
+    engine = create_engine(database_url)
+    metadata = sa.MetaData()
+    metadata.reflect(
+        engine,
+        only=["leads", "verification_templates", "verification_tasks"],
+    )
+    leads = metadata.tables["leads"]
+    templates = metadata.tables["verification_templates"]
+    tasks = metadata.tables["verification_tasks"]
+    lead_id = str(uuid.uuid4())
+    task_id = str(uuid.uuid4())
+    template_id = "1f7b6405-9e0f-4ec7-a073-1dbd02b46137"
+
+    with engine.begin() as connection:
+        template_version = connection.execute(
+            sa.select(templates.c.version).where(templates.c.id == template_id)
+        ).scalar_one()
+        connection.execute(
+            leads.insert().values(
+                **_required_row(
+                    leads,
+                    id=lead_id,
+                    source_type="PLATFORM_MANUAL",
+                    source_kind="PLATFORM_MANUAL",
+                    customer_name="模板回滚保护测试客户",
+                    phone_encrypted="encrypted",
+                    phone_hash=f"hash-{lead_id}",
+                    phone_fingerprint=f"fingerprint-{lead_id}",
+                    consent_confirmed=True,
+                    status="PENDING_TELESALES_VERIFY",
+                    review_status="PENDING",
+                    duplicate_status="CLEAR",
+                    raw_payload={},
+                )
+            )
+        )
+        connection.execute(
+            tasks.insert().values(
+                **_required_row(
+                    tasks,
+                    id=task_id,
+                    lead_id=lead_id,
+                    template_id=template_id,
+                    template_version=template_version,
+                    task_type="PRE_DISPATCH_VERIFY",
+                    status="ASSIGNED",
+                    lock_version=1,
+                )
+            )
+        )
+
+    with pytest.raises(subprocess.CalledProcessError) as exc_info:
+        _alembic(database_url, "downgrade", "0016_lead_test_flag")
+
+    assert "verification tasks reference the seeded template" in exc_info.value.stderr
+    with engine.connect() as connection:
+        assert connection.execute(
+            sa.select(templates.c.id).where(templates.c.id == template_id)
+        ).scalar_one() == template_id
+
+    with engine.begin() as connection:
+        connection.execute(tasks.delete().where(tasks.c.id == task_id))
+    _alembic(database_url, "downgrade", "0016_lead_test_flag")
+
+
 def test_feedback_migration_downgrade_refuses_to_drop_business_data(
     tmp_path: Path,
 ) -> None:

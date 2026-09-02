@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from sqlalchemy import func, select
 
-from apps.api.src.core.models import Assignment, Company, Lead, PointsLedger, User
+from apps.api.src.core.models import (
+    Assignment,
+    Company,
+    Lead,
+    PointsLedger,
+    User,
+    VerificationTemplate,
+)
 from apps.api.src.services.bootstrap import seed_demo
 
 
@@ -29,3 +36,19 @@ def test_demo_seed_is_idempotent(db):
     assert first["company_id"] == second["company_id"]
     assert counts_first["leads"] >= 5
     assert counts_first["assignments"] == 2
+
+
+def test_demo_seed_publishes_pre_dispatch_template(db):
+    seed_demo(db)
+    db.commit()
+
+    template = db.scalar(
+        select(VerificationTemplate).where(
+            VerificationTemplate.code == "PRE_DISPATCH",
+            VerificationTemplate.status == "PUBLISHED",
+        )
+    )
+
+    assert template is not None
+    assert template.name == "前置电销核验模板"
+    assert template.schema_json == {"fields": []}

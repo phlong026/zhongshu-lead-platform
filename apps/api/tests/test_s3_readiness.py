@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 import stat
@@ -9,6 +10,7 @@ import pytest
 from apps.api.src.services import storage as storage_module
 from apps.api.src.core.errors import AppError
 from apps.api.src.services.storage import LocalObjectStorage, S3ObjectStorage
+from scripts import check_object_storage
 
 
 class _Body:
@@ -27,6 +29,7 @@ class _S3Client:
         self.objects: dict[str, bytes] = {}
         self.head_bucket_calls = 0
         self.upload_extra_args: dict[str, object] = {}
+        self.upload_keys: list[str] = []
 
     def head_bucket(self, **_: str) -> None:
         self.head_bucket_calls += 1
@@ -55,6 +58,7 @@ class _S3Client:
         content = Path(filename).read_bytes()
         self.objects[key] = content
         self.upload_extra_args = ExtraArgs
+        self.upload_keys.append(key)
         if Callback is not None:
             Callback(len(content))
 
@@ -129,6 +133,87 @@ def test_s3_canary_reads_then_deletes_disposable_object() -> None:
     key = _storage(client).run_canary()
 
     assert key.startswith(".canary/zhongshu-readiness/")
+    assert client.objects == {}
+
+
+def test_object_storage_canary_exercises_real_business_prefixes() -> None:
+    client = _S3Client()
+
+    keys = check_object_storage.run_canaries(
+        _storage(client),
+        now=datetime(2026, 9, 2, tzinfo=timezone.utc),
+    )
+
+    assert keys["readiness"].startswith(".canary/zhongshu-readiness/")
+    assert keys["evidence"].startswith("evidence/v1.2/2026/09/.canary/")
+    assert keys["lead_exports"].startswith("lead-exports/2026/09/.canary/")
+    assert client.upload_keys == [keys["evidence"], keys["lead_exports"]]
+    assert client.objects == {}
+
+
+def test_object_storage_canary_fails_when_export_prefix_is_denied() -> None:
+    class ExportDeniedClient(_S3Client):
+        def upload_file(
+            self,
+            filename: str,
+            _bucket: str,
+            key: str,
+            *,
+            ExtraArgs: dict[str, object],
+            Callback=None,
+        ) -> None:
+            if key.startswith("lead-exports/"):
+                raise RuntimeError("AccessDenied")
+            super().upload_file(
+                filename,
+                _bucket,
+                key,
+                ExtraArgs=ExtraArgs,
+                Callback=Callback,
+            )
+
+    client = ExportDeniedClient()
+
+    with pytest.raises(AppError) as exc_info:
+        check_object_storage.run_canaries(
+            _storage(client),
+            now=datetime(2026, 9, 2, tzinfo=timezone.utc),
+        )
+
+    assert exc_info.value.code == "STORAGE_BUSINESS_CANARY_FAILED"
+    assert client.objects == {}
+
+
+def test_object_storage_canary_cleans_export_after_commit_then_error() -> None:
+    class CommitThenErrorClient(_S3Client):
+        def upload_file(
+            self,
+            filename: str,
+            _bucket: str,
+            key: str,
+            *,
+            ExtraArgs: dict[str, object],
+            Callback=None,
+        ) -> None:
+            super().upload_file(
+                filename,
+                _bucket,
+                key,
+                ExtraArgs=ExtraArgs,
+                Callback=Callback,
+            )
+            if key.startswith("lead-exports/"):
+                raise RuntimeError("response lost after upload")
+
+    client = CommitThenErrorClient()
+
+    with pytest.raises(AppError) as exc_info:
+        check_object_storage.run_canaries(
+            _storage(client),
+            now=datetime(2026, 9, 2, tzinfo=timezone.utc),
+        )
+
+    assert exc_info.value.code == "STORAGE_BUSINESS_CANARY_FAILED"
     assert client.objects == {}
 
 

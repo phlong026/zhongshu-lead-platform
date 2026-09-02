@@ -9,7 +9,15 @@ import pytest
 from sqlalchemy import create_engine, func, inspect, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from apps.api.src.core.models import Assignment, AuditLog, Company, Lead, PointsLedger, User
+from apps.api.src.core.models import (
+    Assignment,
+    AuditLog,
+    Company,
+    Lead,
+    PointsLedger,
+    User,
+    VerificationTemplate,
+)
 from apps.api.src.core.security import verify_password
 from apps.api.src.services.auth_service import create_internal_user
 from apps.api.src.services.superadmin_bootstrap import (
@@ -150,6 +158,30 @@ def test_bootstrap_refuses_business_data_even_when_users_are_empty(db: Session) 
 
     assert db.scalar(select(func.count(User.id))) == 0
     assert db.scalar(select(func.count(AuditLog.id))) == 0
+
+
+def test_bootstrap_does_not_ignore_unreviewed_verification_templates(db: Session) -> None:
+    db.add(
+        VerificationTemplate(
+            code="UNREVIEWED_TEMPLATE",
+            name="未评审模板",
+            version=1,
+            schema_json={"fields": []},
+            status="PUBLISHED",
+        )
+    )
+    db.commit()
+
+    with pytest.raises(SuperadminBootstrapError, match="verification_templates"):
+        bootstrap_superadmin(
+            db,
+            username="rootadmin",
+            password=STRONG_PASSWORD,
+            display_name="平台超级管理员",
+        )
+    db.rollback()
+
+    assert db.scalar(select(func.count(User.id))) == 0
 
 
 @pytest.mark.parametrize(

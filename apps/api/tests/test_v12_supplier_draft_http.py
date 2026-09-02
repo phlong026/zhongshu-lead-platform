@@ -720,13 +720,6 @@ def test_platform_draft_can_enter_telesales_then_return_to_operation_rework(api_
         telesales = db.scalar(select(User).where(User.username == "telesales"))
         operation_user = db.scalar(select(User).where(User.username == "operation"))
         assert telesales is not None and operation_user is not None
-        publish_template(
-            db,
-            code="PRE_DISPATCH",
-            name="前置事实核验",
-            schema={"fields": []},
-        )
-        db.commit()
         telesales_id = telesales.id
         operation_id = operation_user.id
 

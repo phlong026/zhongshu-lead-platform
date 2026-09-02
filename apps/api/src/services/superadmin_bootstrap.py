@@ -30,6 +30,14 @@ _BOOTSTRAP_METADATA_TABLES = {
     "role_permissions",
     "roles",
 }
+_MIGRATION_SEEDED_PRE_DISPATCH_TEMPLATE = {
+    "id": "1f7b6405-9e0f-4ec7-a073-1dbd02b46137",
+    "code": "PRE_DISPATCH",
+    "name": "前置电销核验模板",
+    "version": 1,
+    "schema_json": {"fields": []},
+    "status": "PUBLISHED",
+}
 _ROOT = Path(__file__).resolve().parents[4]
 
 
@@ -99,8 +107,22 @@ def _nonempty_application_tables(db: Session, tables: set[str]) -> list[str]:
     nonempty: list[str] = []
     for table_name in sorted(tables - _BOOTSTRAP_METADATA_TABLES):
         table = Table(table_name, metadata, autoload_with=bind)
-        if db.scalar(select(1).select_from(table).limit(1)) is not None:
-            nonempty.append(table_name)
+        if db.scalar(select(1).select_from(table).limit(1)) is None:
+            continue
+        if table_name == "verification_templates":
+            rows = db.execute(
+                select(
+                    table.c.id,
+                    table.c.code,
+                    table.c.name,
+                    table.c.version,
+                    table.c.schema_json,
+                    table.c.status,
+                )
+            ).mappings().all()
+            if len(rows) == 1 and dict(rows[0]) == _MIGRATION_SEEDED_PRE_DISPATCH_TEMPLATE:
+                continue
+        nonempty.append(table_name)
     return nonempty
 
 

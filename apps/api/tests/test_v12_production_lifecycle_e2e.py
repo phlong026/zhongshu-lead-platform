@@ -26,11 +26,11 @@ from apps.api.src.core.models import (
     ReturnRequest,
     User,
     VerificationTask,
+    VerificationTemplate,
 )
 from apps.api.src.core.models_v12 import SupplierLeadReward
 from apps.api.src.services.bootstrap import seed_reference_data
 from apps.api.src.services.superadmin_bootstrap import bootstrap_superadmin
-from apps.api.src.services.verification_service import publish_template
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -96,6 +96,14 @@ def production_lifecycle_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
         assert db.scalar(select(func.count(User.id))) == 0
         assert db.scalar(select(func.count(Company.id))) == 0
         assert db.scalar(select(func.count(Lead.id))) == 0
+        template = db.scalar(
+            select(VerificationTemplate).where(
+                VerificationTemplate.code == "PRE_DISPATCH",
+                VerificationTemplate.status == "PUBLISHED",
+            )
+        )
+        assert template is not None
+        assert template.name == "前置电销核验模板"
         bootstrap_superadmin(
             db,
             username="e2e_root",
@@ -536,10 +544,6 @@ def test_v12_empty_database_to_reward_settlement_lifecycle(
     telesales = _login(client, "e2e_telesales", "E2E-Telesales9!")
     internal_users = _data(client.get("/api/v1/users", headers=admin))
     telesales_user_id = next(item["id"] for item in internal_users if item["username"] == "e2e_telesales")
-    with factory() as db:
-        publish_template(db, code="PRE_DISPATCH", name="E2E 前置事实核验", schema={"fields": []})
-        db.commit()
-
     supplier_company_id = _create_company(client, admin, "E2E-SUPPLIER", "E2E 供应商")
     receiver_company_id = _create_company(client, admin, "E2E-RECEIVER", "E2E 接收商")
     pending_company_id = _create_company(client, admin, "E2E-PENDING", "E2E 待审接收商")

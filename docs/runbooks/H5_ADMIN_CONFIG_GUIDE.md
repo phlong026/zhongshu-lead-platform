@@ -63,15 +63,52 @@ S3_REGION=ap-shanghai
 - `S3_BUCKET` 必须填写控制台显示的完整 `BucketName-APPID`，不能只填写 BucketName。
 - Endpoint 使用地域服务地址 `https://cos.ap-shanghai.myqcloud.com`；客户端会以虚拟主机方式访问完整 Bucket 域名。
 - Bucket 必须保持私有读写，不得开启永久公开访问。
-- 服务账号至少需要 Bucket 可达检查，以及指定 Bucket/Prefix 下的 `PutObject`、`HeadObject`、`GetObject`、`DeleteObject` 权限。
+- 服务账号至少需要 `HeadBucket`，并在 `.canary/zhongshu-readiness/*`、`evidence/*`、`lead-exports/*` 三组对象路径上拥有 `PutObject`、`HeadObject`、`GetObject`、`DeleteObject` 权限。
+- 导出使用 SDK 文件上传接口；文件超过分块阈值时还需要 `InitiateMultipartUpload`、`UploadPart`、`CompleteMultipartUpload`、`AbortMultipartUpload`、`ListParts`、`ListMultipartUploads`。不要只授权 `.canary/*`，否则健康检查会通过但真实导出仍会返回 `AccessDenied`。
 - 不要把 SecretId、SecretKey 放进前端、Git、截图或聊天记录。
 - 切换 Bucket 不会自动迁移旧文件。切换前应保留原 Bucket 和凭据，直到存量证据全部验收。
+
+CAM 子账号自定义策略可按下面的最小范围配置；将占位符替换为实际 APPID 和完整 Bucket 名，且不要加入其他 Bucket：
+
+```json
+{
+  "version": "2.0",
+  "statement": [
+    {
+      "effect": "allow",
+      "action": ["cos:HeadBucket"],
+      "resource": ["*"]
+    },
+    {
+      "effect": "allow",
+      "action": [
+        "cos:PutObject",
+        "cos:HeadObject",
+        "cos:GetObject",
+        "cos:DeleteObject",
+        "cos:InitiateMultipartUpload",
+        "cos:UploadPart",
+        "cos:CompleteMultipartUpload",
+        "cos:AbortMultipartUpload",
+        "cos:ListParts",
+        "cos:ListMultipartUploads"
+      ],
+      "resource": [
+        "qcs::cos:ap-shanghai:uid/<APPID>:<BucketName-APPID>/.canary/zhongshu-readiness/*",
+        "qcs::cos:ap-shanghai:uid/<APPID>:<BucketName-APPID>/evidence/*",
+        "qcs::cos:ap-shanghai:uid/<APPID>:<BucketName-APPID>/lead-exports/*"
+      ]
+    }
+  ]
+}
+```
 
 ### 3.3 当前文件规则
 
 - 沟通截图：JPG / PNG / WEBP，单张不超过 5MB。
 - 电话录音：MP3 / WAV / M4A / AAC 等已支持格式，单个不超过 20MB。
 - 对象路径形如 `evidence/v1.2/年/月/退回申诉ID/随机文件名`。
+- 后台导出路径形如 `lead-exports/年/月/导出任务ID/随机文件名.xlsx`。
 - 详情接口返回绑定当前用户的 10 分钟访问凭据，下载仍会再检查用户和业务权限。
 
 ### 3.4 验证
@@ -81,13 +118,14 @@ python scripts/validate_production_env.py --env-file .env
 python scripts/check_object_storage.py --canary
 ```
 
-`--canary` 会在 `.canary/zhongshu-readiness/` 下执行一次写入、查询、读取和删除。随后还要用业务页完成一次真实验收：
+`--canary` 会先在 `.canary/zhongshu-readiness/` 下执行写入、查询、读取和删除，再通过与业务相同的文件上传链路检查 `evidence/v1.2/年/月/` 与 `lead-exports/年/月/`。三组路径任一写入、读取或清理失败，命令都会返回非 0。随后还要用业务页完成一次真实验收：
 
 1. 加盟商新建退回申诉。
 2. 上传至少 1 张截图和 1 个录音。
 3. 退出重登后仍能查看已上传证据。
 4. 电销/审核账号能在权限范围内播放，无权账号不能访问。
 5. 过期凭据失效，Bucket 仍不可公开读取。
+6. 运营提交一次后台 XLSX 导出，任务变为“已完成”，文件可下载并打开；测试完成后清理探针和过期导出文件。
 
 ## 4. 微信公众号网页 OAuth
 

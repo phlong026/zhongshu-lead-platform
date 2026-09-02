@@ -1,6 +1,6 @@
 [project]
 name = "zhongshu-lead-platform"
-version = "1.2.4"
+version = "1.2.5"
 description = "合家美宅客资审核、派发与积分管理平台"
 requires-python = ">=3.11"
 

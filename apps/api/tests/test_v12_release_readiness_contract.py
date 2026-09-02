@@ -40,7 +40,7 @@ def test_production_compose_requires_reviewed_image_and_disables_implicit_migrat
     assert "DATABASE_URL: postgresql" not in base_compose
     assert "POSTGRES_PASSWORD:" in base_compose
     assert "quote(os.environ" in prepare_env
-    assert "ARG APP_VERSION=1.2.4" in dockerfile
+    assert "ARG APP_VERSION=1.2.5" in dockerfile
     assert "apt-get purge -y libsqlite3-0" in dockerfile
 
 
@@ -351,6 +351,8 @@ def test_preflight_has_explicit_object_storage_canary() -> None:
     assert "--canary" in storage_check
     assert '"code": exc.code' in storage_check
     assert "sys.path.insert(0, str(ROOT))" in storage_check
+    assert "evidence/v1.2" in storage_check
+    assert "lead-exports" in storage_check
 
 
 def test_sprint6_runbooks_and_release_documents_exist() -> None:
@@ -361,6 +363,7 @@ def test_sprint6_runbooks_and_release_documents_exist() -> None:
         "docs/runbooks/V1.2_GO_NO_GO.md",
         "docs/runbooks/V1.2_ROLLBACK.md",
         "docs/runbooks/V1.2_POST_LAUNCH.md",
+        "docs/release/RELEASE_NOTES_V1.2.5.md",
         "docs/release/RELEASE_NOTES_V1.2.4.md",
         "docs/release/RELEASE_NOTES_V1.2.2.md",
         "docs/release/RELEASE_NOTES_V1.2.1.md",
@@ -404,8 +407,8 @@ def test_ci_contains_postgres_browser_dependency_evidence_and_packaging_gates() 
         assert "dist/quality/migration-output.txt" in workflow
         assert "> pytest-output.txt" not in workflow
         assert "> migration-output.txt" not in workflow
-    assert "--version V1.2.4-rc" in pr_workflow
-    assert "--version V1.2.4" in release_workflow
+    assert "--version V1.2.5-rc" in pr_workflow
+    assert "--version V1.2.5" in release_workflow
 
 
 def test_postgres_ci_contract_runs_h04_dataset_integration() -> None:

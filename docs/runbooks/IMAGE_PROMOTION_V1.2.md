@@ -100,15 +100,15 @@ docker image inspect '<scan-subject.image_ref>' \
 
 ```bash
 docker tag '<scan-subject.image_ref>' \
-  'registry.example.com/zhongshu-lead-platform:1.2.4'
+  'registry.example.com/zhongshu-lead-platform:1.2.5'
 
-docker push 'registry.example.com/zhongshu-lead-platform:1.2.4'
+docker push 'registry.example.com/zhongshu-lead-platform:1.2.5'
 ```
 
 推送完成后获取 registry 返回的 manifest digest，并形成最终不可变引用：
 
 ```text
-registry.example.com/zhongshu-lead-platform:1.2.4@sha256:<registry-manifest-digest>
+registry.example.com/zhongshu-lead-platform:1.2.5@sha256:<registry-manifest-digest>
 ```
 
 将该值写入生产 `.env` 的 `APP_IMAGE`。
@@ -118,7 +118,7 @@ registry.example.com/zhongshu-lead-platform:1.2.4@sha256:<registry-manifest-dige
 在实际部署主机：
 
 ```bash
-docker pull 'registry.example.com/zhongshu-lead-platform:1.2.4@sha256:<digest>'
+docker pull 'registry.example.com/zhongshu-lead-platform:1.2.5@sha256:<digest>'
 ```
 
 复核：

@@ -1,6 +1,6 @@
-# 合家美宅客资平台 V1.2.4
+# 合家美宅客资平台 V1.2.5
 
-合家美宅 V1.2.4 是客资供给、审核、人工派发、加盟商领取、退回申诉、供应奖励、通知、报表与审计的一体化生产候选版本。
+合家美宅 V1.2.5 是客资供给、审核、人工派发、加盟商领取、退回申诉、供应奖励、通知、报表与审计的一体化生产候选版本。
 
 > 交付状态分为 `代码完成`、`自动化通过`、`真实环境验收`。前两项不能替代真实微信、目标基础设施、生产数据、业务 UAT、灾备和灰度验收。
 
@@ -77,7 +77,7 @@ uvicorn apps.api.src.main:app --host 0.0.0.0 --port 8000 --reload
 
 ## 自动质量门禁
 
-面向 `release/v1.2.4` 的 PR 和发布分支执行：
+面向 `release/v1.2.5` 的 PR 和发布分支执行：
 
 1. 全量 Python 测试、JavaScript 检查、密钥扫描、编译和空白检查；
 2. SQLite V1.0.1 → V1.2 升降级循环；
@@ -136,7 +136,7 @@ python scripts/preflight_v12.py \
 
 ```bash
 python scripts/check_release_metadata.py
-python scripts/package_release.py --version V1.2.4 --output-dir dist/release
+python scripts/package_release.py --version V1.2.5 --output-dir dist/release
 ```
 
 源码包只包含 Git 已跟踪文件；`.env`、数据库、证据文件、备份和真实密钥不会进入交付包。

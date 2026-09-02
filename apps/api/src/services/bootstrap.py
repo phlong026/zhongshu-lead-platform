@@ -210,6 +210,27 @@ def seed_rules(db: Session) -> None:
                 },
             )
         )
+    if not db.scalar(
+        select(VerificationTemplate).where(
+            VerificationTemplate.code == "PRE_DISPATCH",
+            VerificationTemplate.status == "PUBLISHED",
+        )
+    ):
+        latest = db.scalar(
+            select(VerificationTemplate)
+            .where(VerificationTemplate.code == "PRE_DISPATCH")
+            .order_by(VerificationTemplate.version.desc())
+        )
+        db.add(
+            VerificationTemplate(
+                code="PRE_DISPATCH",
+                name="前置电销核验模板",
+                version=(latest.version if latest else 0) + 1,
+                status="PUBLISHED",
+                effective_at=datetime.now(timezone.utc),
+                schema_json={"fields": []},
+            )
+        )
     packages = [
         ("V1_20000", "V1 两万元档", 2_000_000, 20_000, 0, "V1"),
         ("V3_100000", "V3 十万元档", 10_000_000, 100_000, 50_000, "V3"),
