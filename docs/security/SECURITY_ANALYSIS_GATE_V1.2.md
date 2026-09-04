@@ -189,7 +189,7 @@ WARNING/INFO 仍保留在原始 JSON 中供人工 Review，但不会单独使 CI
 - `scanner`：`semgrep` 或 `trivy`；
 - `id`：Semgrep `check_id` 或 Trivy VulnerabilityID；
 - `scope`：**精确** Semgrep 文件路径或 Trivy package name；
-- `occurrence`：**精确** Semgrep 行列范围或 Trivy target/type/version；
+- `occurrence`：**精确** Semgrep 行列范围，或 Trivy target、类别、类型和已安装版本组合；
 - `reason`：为何当前不能立即修复；
 - `owner`：负责收口的人/角色；
 - `created_on`：ISO `YYYY-MM-DD`；
@@ -209,12 +209,15 @@ WARNING/INFO 仍保留在原始 JSON 中供人工 Review，但不会单独使 CI
 
 ## 当前受控例外
 
-当前 registry 保留 50 个逐 occurrence 的短期例外：16 个 Semgrep 与 34 个 Trivy finding。每条既有记录已从 Git 历史回填显式 `first_waived_on`；其中 24 条在历史上曾更新 `created_on`，累计起点仍固定为首次登记日 2026-08-10。
+截至 2026-09-04，最新候选镜像扫描命中 65 个逐 occurrence 的短期例外：
 
-- 16 个 Semgrep subprocess finding：覆盖迁移/浏览器回归测试及运维脚本的固定 argv 调用；均未启用 shell，并绑定精确规则、文件和行列 occurrence，最晚 2026-09-30 到期；
-- 34 个 Debian Bookworm 系统包 finding：当前 pinned base 和同代可用更新均无修复版本，逐 CVE、package、版本和 Trivy target 精确登记，最晚 2026-09-22 到期。补偿控制包括非 root、drop capabilities、只读根文件系统，以及应用不调用对应 block-device、terminal、Perl/archive 等受影响路径；到期前必须重建/替换基础镜像并删除 waiver。
+- 8 个 Semgrep subprocess finding：覆盖 migration 测试和运维脚本的固定 argv 调用；均未启用 shell，并绑定精确规则、文件和行列 occurrence，最晚 2026-09-07 到期；
+- 23 个既有 Debian Bookworm 系统包 finding：逐 CVE、package、版本和 Trivy target 精确登记，最晚 2026-09-22 到期；
+- 34 个新增 Debian Bookworm 系统包 finding：`CVE-2026-76642`、`CVE-2026-78408`、`CVE-2026-78409`、`CVE-2026-78410` 分别覆盖 8 个 util-linux package occurrence，`CVE-2026-16742` 覆盖 2 个 systemd library occurrence，统一于 2026-10-04 到期。
 
-这些例外不是永久基线。禁止使用全局 scope/occurrence 批量压制；新增 finding 不会被现有 waiver 覆盖，任何延期都必须重新评审、保持单次不超过 30 天且累计不超过 90 天。
+新增 finding 在当前 Bookworm 基础镜像中没有可用修复版本。util-linux 漏洞均依赖 mount、`nsenter --join-cgroup`、fstab 授权或 X-mount 路径，systemd 漏洞依赖正在运行的 systemd-homed 和本地交互用户；应用不调用这些路径。生产容器固定以 UID 10001 非 root 运行，并启用 `cap_drop: ALL`、`no-new-privileges` 和只读根文件系统作为补偿控制。
+
+registry 共保留 84 个 active 精确条目；其中未在本次镜像/源码中出现的条目仍受过期检查约束，不能成为永久基线。禁止使用全局 scope/occurrence 批量压制；新增 finding 不会被现有 waiver 覆盖。`platform-security` 必须在 2026-10-04 前复核 Debian 修复状态、重建或替换基础镜像，并在同一收口变更中删除对应 waiver；任何延期都必须保留 `first_waived_on`、重新评审且同时满足单次 30 天和累计 90 天上限。
 
 ## 浏览器动态 HTML 边界
 
