@@ -216,6 +216,7 @@ async function loadSubmittedHistory(pageCount = 1) {
         itemsById.set(`${kind}:${item.id}`, { ...item, task_kind: kind, display_status: 'SUBMITTED' });
       });
     }
+    if (loaded.PRE_DISPATCH >= totals.PRE_DISPATCH && loaded.RETURN >= totals.RETURN) break;
   }
   const items = [...itemsById.values()].sort((left, right) => String(right.submitted_at || '').localeCompare(String(left.submitted_at || '')));
   return {
