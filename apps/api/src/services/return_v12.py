@@ -1069,7 +1069,7 @@ def return_verification_task_to_dict(
     }
     if (
         include_verification_info
-        and task.status == VerificationTaskStatus.SUBMITTED.value
+        and task.submitted_at is not None
     ):
         submission_event = next(
             (

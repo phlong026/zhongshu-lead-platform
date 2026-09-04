@@ -58,11 +58,18 @@ def test_operation_disposition_uses_task_detail_and_shows_verification_info() ->
 
 def test_telesales_submitted_record_shows_its_verification_note() -> None:
     source = CALL_APP.read_text(encoding="utf-8")
+    records = _function_slice(source, "async function records()", "function taskFacts")
+    task_card = _function_slice(source, "function taskCard(task)", "function callHomeGreeting")
     task = _function_slice(source, "async function task(kind, id)", "function bindTaskActions")
 
+    assert "submittedHistory:true" in records
+    assert "item.submitted_at" in records
+    assert "task.is_overdue&&!task.submitted_at" in task_card
     assert "核验备注" in task
     assert "data.verification_info?.note" in task
     assert "esc(data.verification_info?.note" in task
+    assert "data.submitted_at?'SUBMITTED':data.status" in task
+    assert "data.is_overdue&&!data.submitted_at" in task
 
 
 def test_changed_frontend_assets_have_feedback_94_cache_busters() -> None:

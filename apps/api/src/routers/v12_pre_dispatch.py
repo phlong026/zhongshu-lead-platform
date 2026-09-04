@@ -9,7 +9,7 @@ from ..core.auth import CurrentPrincipal, require_permissions
 from ..core.database import get_db
 from ..core.enums import VerificationTaskStatus
 from ..core.errors import AppError
-from ..core.models import Lead, VerificationTask
+from ..core.models import Lead, VerificationSubmission, VerificationTask
 from ..core.responses import ok, page
 from ..core.security import decrypt_text, mask_phone
 from ..core.v12_enums import VerificationTaskType
@@ -144,6 +144,7 @@ def list_pre_dispatch_tasks(
     principal: CurrentPrincipal,
     db: Session = Depends(get_db),
     status: str | None = Query(default=None),
+    submitted_history: bool = False,
     page_no: int = Query(default=1, alias="page", ge=1),
     page_size: int = Query(default=20, ge=1, le=200),
 ):
@@ -152,7 +153,11 @@ def list_pre_dispatch_tasks(
     filters = [VerificationTask.task_type == VerificationTaskType.PRE_DISPATCH_VERIFY.value]
     if principal.has_any_role("TELESALES"):
         filters.append(VerificationTask.assignee_user_id == principal.user_id)
-    if status:
+    if submitted_history:
+        filters.append(
+            VerificationTask.id.in_(select(VerificationSubmission.task_id))
+        )
+    elif status:
         filters.append(VerificationTask.status == status.strip().upper())
     else:
         filters.append(VerificationTask.status.in_(_OPEN_TASK_STATUSES))

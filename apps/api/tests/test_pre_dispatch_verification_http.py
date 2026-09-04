@@ -152,6 +152,18 @@ def test_pre_dispatch_http_flow_never_allows_telesales_to_self_assign(api_client
     )
     assert disposition["status"] == LeadV12Status.PUBLIC_POOL.value
     assert disposition["pending_reason"] == "PUBLIC_POOL_NO_LOCAL_RECEIVER"
+    submitted_history = _data(
+        client.get(
+            "/api/v1/v1.2/pre-dispatch-verifications/tasks"
+            "?submitted_history=true&page=1&page_size=20",
+            headers=telesales_headers,
+        )
+    )
+    history_item = next(item for item in submitted_history["items"] if item["id"] == task_id)
+    assert history_item["status"] == "RELEASED"
+    assert history_item["submitted_at"]
+    assert history_item["conclusion"] == "QUALIFIED"
+    assert "verification_info" not in history_item
     assert other_id != telesales_id
 
 

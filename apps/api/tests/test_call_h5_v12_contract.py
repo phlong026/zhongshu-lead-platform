@@ -364,4 +364,24 @@ def test_v12_call_flow_works_with_legacy_writes_disabled(api_client, monkeypatch
         assert request.status == ReturnV12Status.REVIEWING.value
         assert request.review_note == "连续拨打后确认号码为空号，支持本次退回。"
         assert events == 1
+        task = db.get(VerificationTask, task_id)
+        assert task is not None
+        task.status = VerificationTaskStatus.RELEASED.value
+        db.commit()
+
+    submitted_history = _data(
+        client.get(
+            f"/api/v1{TASKS_ENDPOINT}?mine=true&submitted_history=true&page=1&page_size=20",
+            headers=telesales,
+        )
+    )
+    history_item = next(item for item in submitted_history["items"] if item["id"] == task_id)
+    assert history_item["status"] == VerificationTaskStatus.RELEASED.value
+    assert history_item["submitted_at"]
+    released_detail = _data(
+        client.get(f"/api/v1{TASKS_ENDPOINT}/{task_id}", headers=telesales)
+    )
+    assert released_detail["verification_info"]["note"] == (
+        "连续拨打后确认号码为空号，支持本次退回。"
+    )
     assert len(decrypt_calls) == 2

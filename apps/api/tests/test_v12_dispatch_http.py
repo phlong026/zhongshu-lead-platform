@@ -173,7 +173,7 @@ def test_dispatch_pool_marks_only_the_latest_submitted_pre_dispatch_verification
             task = VerificationTask(
                 lead_id=verified_lead_id,
                 task_type=VerificationTaskType.PRE_DISPATCH_VERIFY.value,
-                status=VerificationTaskStatus.SUBMITTED.value,
+                status=VerificationTaskStatus.RELEASED.value,
                 assignee_user_id=telesales.id,
                 assigned_at=submitted_at - timedelta(minutes=10),
                 started_at=submitted_at - timedelta(minutes=5),

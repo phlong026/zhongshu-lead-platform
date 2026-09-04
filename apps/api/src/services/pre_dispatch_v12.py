@@ -96,7 +96,6 @@ def latest_submitted_pre_dispatch_task_ids(
         .where(
             VerificationTask.lead_id.in_(unique_lead_ids),
             VerificationTask.task_type == VerificationTaskType.PRE_DISPATCH_VERIFY.value,
-            VerificationTask.status == VerificationTaskStatus.SUBMITTED.value,
         )
         .subquery()
     )
