@@ -24,6 +24,7 @@ from scripts.check_security_gate import (
     main,
     semgrep_findings,
     trivy_findings,
+    validate_run_provenance,
     validate_sbom,
     validate_scan_subject,
     validate_semgrep_identity_and_coverage,
@@ -35,6 +36,8 @@ IMAGE_ID = "sha256:" + hashlib.sha256(CONFIG_BYTES).hexdigest()
 CONFIG_NAME = IMAGE_ID.removeprefix("sha256:") + ".json"
 SEMGREP_OCCURRENCE = "L164:C33-L164:C40"
 TRIVY_OCCURRENCE = "Python|lang-pkgs|python-pkg|49.0.0"
+MAIN_SHA = "a" * 40
+POLICY_SHA = "b" * 40
 
 
 def _semgrep(*results: dict, scanned: list[str] | None = None) -> dict:
@@ -533,7 +536,63 @@ def test_matching_waiver_only_suppresses_one_semgrep_occurrence() -> None:
     )
     assert report["waived_count"] == 1
     assert report["blocking_count"] == 1
+    assert report["waived_findings"][0]["first_waived_on"] == "2026-08-09"
     assert report["blocking_findings"][0]["occurrence"] == "L200:C10-L200:C20"
+
+
+def test_security_run_provenance_accepts_only_main_ref() -> None:
+    pull_request = validate_run_provenance(
+        event_name="pull_request_target",
+        git_ref="refs/heads/main",
+        candidate_sha=MAIN_SHA,
+        policy_sha=POLICY_SHA,
+    )
+    assert pull_request == {
+        "event_name": "pull_request_target",
+        "git_ref": "refs/heads/main",
+        "candidate_sha": MAIN_SHA,
+        "policy_sha": POLICY_SHA,
+    }
+
+    for event_name in ("push", "workflow_dispatch"):
+        trusted_main = validate_run_provenance(
+            event_name=event_name,
+            git_ref="refs/heads/main",
+            candidate_sha=MAIN_SHA,
+            policy_sha=MAIN_SHA,
+        )
+        assert trusted_main["candidate_sha"] == trusted_main["policy_sha"]
+
+
+@pytest.mark.parametrize(
+    ("event_name", "git_ref", "candidate_sha", "policy_sha", "message"),
+    [
+        (
+            "workflow_dispatch",
+            "refs/heads/security/test",
+            MAIN_SHA,
+            MAIN_SHA,
+            "must target refs/heads/main",
+        ),
+        ("push", "refs/heads/main", MAIN_SHA, POLICY_SHA, "must use the same candidate and policy"),
+        ("pull_request", "refs/heads/main", MAIN_SHA, POLICY_SHA, "unsupported security event"),
+        ("push", "refs/heads/main", "short", "short", "candidate_sha must be a full Git SHA"),
+    ],
+)
+def test_security_run_provenance_fails_closed(
+    event_name: str,
+    git_ref: str,
+    candidate_sha: str,
+    policy_sha: str,
+    message: str,
+) -> None:
+    with pytest.raises(RuntimeError, match=message):
+        validate_run_provenance(
+            event_name=event_name,
+            git_ref=git_ref,
+            candidate_sha=candidate_sha,
+            policy_sha=policy_sha,
+        )
 
 
 def _write_waivers(path: Path, waivers: list[dict]) -> None:
@@ -550,7 +609,10 @@ def _waiver_json(**overrides) -> dict:
         "owner": "security-owner",
         "created_on": "2026-08-09",
         "expires_on": "2026-09-08",
+        "first_waived_on": "2026-08-09",
     }
+    if "created_on" in overrides and "first_waived_on" not in overrides:
+        value["first_waived_on"] = overrides["created_on"]
     value.update(overrides)
     return value
 
@@ -604,6 +666,16 @@ def test_invalid_or_duplicate_waivers_fail_closed(tmp_path: Path) -> None:
     _write_waivers(duplicate, [item, item])
     with pytest.raises(RuntimeError, match="duplicate security waiver"):
         load_waivers(duplicate, today=date(2026, 8, 9))
+
+
+def test_repository_waivers_keep_explicit_first_waived_dates() -> None:
+    payload = json.loads(Path("security/waivers.json").read_text(encoding="utf-8"))
+    assert payload["waivers"]
+    assert all("first_waived_on" in waiver for waiver in payload["waivers"])
+    assert any(
+        waiver["first_waived_on"] < waiver["created_on"] for waiver in payload["waivers"]
+    )
+    load_waivers(Path("security/waivers.json"), today=date(2026, 9, 4))
 
 
 def test_semgrep_scan_errors_and_schema_damage_fail_closed() -> None:
@@ -902,6 +974,16 @@ def test_security_workflow_executes_policy_from_protected_base() -> None:
     assert "persist-credentials: false" in source
     assert "python ../policy/scripts/check_security_gate.py" in source
     assert "--waivers ../policy/security/waivers.json" in source
+    assert "if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'" in source
+    assert "--event-name \"${{ github.event_name }}\"" in source
+    assert "--git-ref \"${{ github.ref }}\"" in source
+    assert "--candidate-sha \"$CANDIDATE_SHA\"" in source
+    assert "--policy-sha \"$POLICY_SHA\"" in source
+    assert "waivers-policy.json" in source
+    assert (
+        "if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'"
+        in source
+    )
 
 
 def test_browser_entrypoints_load_safe_html_boundary_first() -> None:
@@ -984,6 +1066,14 @@ def _write_cli_evidence(root: Path) -> tuple[list[str], Path]:
         str(archive_path),
         "--waivers",
         str(waivers_path),
+        "--event-name",
+        "push",
+        "--git-ref",
+        "refs/heads/main",
+        "--candidate-sha",
+        MAIN_SHA,
+        "--policy-sha",
+        MAIN_SHA,
         "--output",
         str(output),
         "--today",
@@ -1004,6 +1094,15 @@ def test_security_gate_cli_accepts_complete_valid_evidence(
     assert report["valid"] is True
     assert report["blocking_count"] == 0
     assert report["semgrep"]["expected_source_count"] == 1
+    assert report["provenance"] == {
+        "event_name": "push",
+        "git_ref": "refs/heads/main",
+        "candidate_sha": MAIN_SHA,
+        "policy_sha": MAIN_SHA,
+        "waiver_registry_sha256": hashlib.sha256(
+            (tmp_path / "waivers.json").read_bytes()
+        ).hexdigest(),
+    }
 
 
 @pytest.mark.parametrize(
@@ -1027,6 +1126,8 @@ def test_security_gate_cli_fails_closed_on_scanner_exit_evidence(
     trivy_exit.write_text("0\n", encoding="utf-8")
     target = semgrep_exit if argument == "--semgrep-exit" else trivy_exit
     target.write_text(value, encoding="utf-8")
+    waivers = tmp_path / "waivers.json"
+    _write_waivers(waivers, [])
     output = tmp_path / "gate.json"
     monkeypatch.setattr(
         sys,
@@ -1035,9 +1136,19 @@ def test_security_gate_cli_fails_closed_on_scanner_exit_evidence(
             "check_security_gate.py",
             "--semgrep-exit",
             str(semgrep_exit),
-            "--trivy-exit",
-            str(trivy_exit),
-            "--output",
+                "--trivy-exit",
+                str(trivy_exit),
+                "--waivers",
+                str(waivers),
+                "--event-name",
+                "push",
+                "--git-ref",
+                "refs/heads/main",
+                "--candidate-sha",
+                MAIN_SHA,
+                "--policy-sha",
+                MAIN_SHA,
+                "--output",
             str(output),
             "--today",
             "2026-08-10",
@@ -1048,6 +1159,11 @@ def test_security_gate_cli_fails_closed_on_scanner_exit_evidence(
     report = json.loads(output.read_text(encoding="utf-8"))
     assert report["valid"] is False
     assert message in report["error"]
+    assert report["provenance_valid"] is True
+    assert report["provenance"]["candidate_sha"] == MAIN_SHA
+    assert report["provenance"]["waiver_registry_sha256"] == hashlib.sha256(
+        waivers.read_bytes()
+    ).hexdigest()
 
 
 def test_sbom_must_be_substantive_cyclonedx_with_valid_dependency_graph() -> None:
@@ -1130,7 +1246,7 @@ def test_sbom_identity_and_generator_damage_fail_closed() -> None:
 
 def test_waiver_total_span_hard_cap_blocks_perpetual_renewal(tmp_path: Path) -> None:
     """waivers 门禁：续期不得重置累计起点——first_waived_on 与 expires_on 的
-    总跨度超过 90 天硬上限时 fail-closed；缺省回落 created_on 保持兼容。"""
+    总跨度超过 90 天硬上限时 fail-closed；缺失首次日期也必须拒绝。"""
 
     renewed = tmp_path / "renewed.json"
     _write_waivers(
@@ -1146,10 +1262,12 @@ def test_waiver_total_span_hard_cap_blocks_perpetual_renewal(tmp_path: Path) -> 
     with pytest.raises(RuntimeError, match="hard cap"):
         load_waivers(renewed, today=date(2026, 9, 2))
 
-    legacy = tmp_path / "legacy.json"
-    _write_waivers(legacy, [_waiver_json()])
-    waivers = load_waivers(legacy, today=date(2026, 8, 9))
-    assert waivers[0].first_waived_on == date(2026, 8, 9)
+    missing_first = tmp_path / "missing-first.json"
+    waiver_without_first = _waiver_json()
+    waiver_without_first.pop("first_waived_on")
+    _write_waivers(missing_first, [waiver_without_first])
+    with pytest.raises(RuntimeError, match="missing fields: first_waived_on"):
+        load_waivers(missing_first, today=date(2026, 8, 9))
 
     late_first = tmp_path / "late-first.json"
     _write_waivers(late_first, [_waiver_json(first_waived_on="2026-08-12")])

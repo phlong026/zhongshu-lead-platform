@@ -22,8 +22,10 @@ REQUIRED_WAIVER_FIELDS = {
     "owner",
     "created_on",
     "expires_on",
+    "first_waived_on",
 }
 ALLOWED_SCANNERS = {"semgrep", "trivy"}
+ALLOWED_SECURITY_EVENTS = {"pull_request_target", "push", "workflow_dispatch"}
 MAX_WAIVER_LIFETIME_DAYS = 30
 # waivers：单条豁免自首次登记起的累计跨度硬上限。续期只允许顺延 expires_on，
 # 不得通过重置 created_on 绕过——同一 finding 的豁免总寿命被 first_waived_on 锁死。
@@ -112,12 +114,44 @@ def _read_exit_code(path: Path) -> int:
 
 def _sha256_file(path: Path) -> str:
     if not path.is_file():
-        raise RuntimeError(f"scanned image archive missing: {path}")
+        raise RuntimeError(f"required security file missing: {path}")
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def validate_run_provenance(
+    *,
+    event_name: str,
+    git_ref: str,
+    candidate_sha: str,
+    policy_sha: str,
+) -> dict[str, str]:
+    event_name = event_name.strip()
+    git_ref = git_ref.strip()
+    candidate_sha = candidate_sha.strip()
+    policy_sha = policy_sha.strip()
+    if event_name not in ALLOWED_SECURITY_EVENTS:
+        raise RuntimeError(f"unsupported security event: {event_name or '<empty>'}")
+    if git_ref != "refs/heads/main":
+        raise RuntimeError(
+            f"security analysis must target refs/heads/main, got {git_ref or '<empty>'}"
+        )
+    for field, value in (("candidate_sha", candidate_sha), ("policy_sha", policy_sha)):
+        if not _GIT_SHA_RE.fullmatch(value):
+            raise RuntimeError(f"{field} must be a full Git SHA")
+    if event_name in {"push", "workflow_dispatch"} and candidate_sha != policy_sha:
+        raise RuntimeError(
+            f"{event_name} security analysis must use the same candidate and policy commit"
+        )
+    return {
+        "event_name": event_name,
+        "git_ref": git_ref,
+        "candidate_sha": candidate_sha,
+        "policy_sha": policy_sha,
+    }
 
 
 def load_waivers(path: Path, *, today: date) -> list[Waiver]:
@@ -171,11 +205,8 @@ def load_waivers(path: Path, *, today: date) -> list[Waiver]:
                 f"security waiver #{index + 1} lifetime {lifetime}d exceeds "
                 f"{MAX_WAIVER_LIFETIME_DAYS}d maximum"
             )
-        # 首次豁免日期：未登记时回落为 created_on（向后兼容既有 registry）。
-        # 续期必须保留原始 first_waived_on，累计跨度由硬上限封顶，防止无限续命。
-        first_waived_raw = raw.get("first_waived_on", str(raw["created_on"]))
         try:
-            first_waived_on = date.fromisoformat(str(first_waived_raw).strip())
+            first_waived_on = date.fromisoformat(str(raw["first_waived_on"]).strip())
         except ValueError as exc:
             raise RuntimeError(
                 f"security waiver #{index + 1} first_waived_on must be YYYY-MM-DD"
@@ -1156,6 +1187,7 @@ def evaluate(
                 "reason": waiver.reason,
                 "created_on": waiver.created_on.isoformat(),
                 "expires_on": waiver.expires_on.isoformat(),
+                "first_waived_on": waiver.first_waived_on.isoformat(),
             }
             for finding, waiver in waived
         ],
@@ -1178,6 +1210,10 @@ def main() -> int:
     parser.add_argument("--subject", default="dist/security/scan-subject.json")
     parser.add_argument("--image-archive", default="dist/security/app-image.tar")
     parser.add_argument("--waivers", default="security/waivers.json")
+    parser.add_argument("--event-name", default="")
+    parser.add_argument("--git-ref", default="")
+    parser.add_argument("--candidate-sha", default="")
+    parser.add_argument("--policy-sha", default="")
     parser.add_argument("--output", default="dist/security/security-gate.json")
     parser.add_argument("--today", help="optional YYYY-MM-DD override for deterministic tests")
     args = parser.parse_args()
@@ -1185,8 +1221,19 @@ def main() -> int:
     current = date.fromisoformat(args.today) if args.today else datetime.now(timezone.utc).date()
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
+    provenance: dict[str, str] | None = None
+    waiver_registry_sha256: str | None = None
 
     try:
+        provenance = validate_run_provenance(
+            event_name=args.event_name,
+            git_ref=args.git_ref,
+            candidate_sha=args.candidate_sha,
+            policy_sha=args.policy_sha,
+        )
+        waivers_path = Path(args.waivers)
+        waiver_registry_sha256 = _sha256_file(waivers_path)
+
         semgrep_exit = _read_exit_code(Path(args.semgrep_exit))
         trivy_exit = _read_exit_code(Path(args.trivy_exit))
         if semgrep_exit != 0:
@@ -1215,7 +1262,7 @@ def main() -> int:
             expected_image_id=subject["trivy_image_id"],
             expected_package_purls=expected_package_purls,
         )
-        waivers = load_waivers(Path(args.waivers), today=current)
+        waivers = load_waivers(waivers_path, today=current)
         report, trivy_inventory = evaluate(
             semgrep_payload=semgrep_payload,
             trivy_payload=trivy_payload,
@@ -1231,6 +1278,10 @@ def main() -> int:
                 "semgrep_exit_code": semgrep_exit,
                 "trivy_exit_code": trivy_exit,
                 "active_waiver_count": len(waivers),
+                "provenance": {
+                    **provenance,
+                    "waiver_registry_sha256": waiver_registry_sha256,
+                },
                 "semgrep": semgrep_summary,
                 "scan_subject": subject,
                 "trivy_inventory": trivy_inventory,
@@ -1242,7 +1293,13 @@ def main() -> int:
             "valid": False,
             "checked_on": current.isoformat(),
             "error": str(exc),
+            "provenance_valid": provenance is not None,
         }
+        if provenance is not None:
+            report["provenance"] = {
+                **provenance,
+                "waiver_registry_sha256": waiver_registry_sha256,
+            }
 
     output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(report, ensure_ascii=False, indent=2))
