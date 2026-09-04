@@ -321,6 +321,9 @@ def test_v12_call_flow_works_with_legacy_writes_disabled(api_client, monkeypatch
         client.get(f"/api/v1{TASKS_ENDPOINT}/{task_id}", headers=telesales)
     )
     assert completed_detail["lead"]["phone"] is None
+    assert completed_detail["verification_info"]["note"] == (
+        "连续拨打后确认号码为空号，支持本次退回。"
+    )
 
     repeated = _data(
         client.post(

@@ -409,6 +409,7 @@ def return_verification_task_detail(
                 task.assignee_user_id == principal.user_id
                 and task.status == VerificationTaskStatus.IN_PROGRESS.value
             ),
+            include_verification_info=True,
         ),
     )
 

@@ -995,6 +995,7 @@ def return_verification_task_to_dict(
     principal: Principal,
     *,
     include_phone: bool = False,
+    include_verification_info: bool = False,
     requests_by_id: dict[str, ReturnRequest] | None = None,
     leads_by_id: dict[str, Lead] | None = None,
     assignments_by_id: dict[str, Assignment] | None = None,
@@ -1022,7 +1023,7 @@ def return_verification_task_to_dict(
     phone_masked = snapshot.get("phone_masked")
     if not phone_masked and lead:
         phone_masked = mask_phone(phone or decrypt_text(lead.phone_encrypted))
-    return {
+    result = {
         "id": task.id,
         "task_type": task.task_type,
         "status": task.status,
@@ -1066,3 +1067,50 @@ def return_verification_task_to_dict(
             "need_summary": lead.need_summary if lead else None,
         },
     }
+    if (
+        include_verification_info
+        and task.status == VerificationTaskStatus.SUBMITTED.value
+    ):
+        submission_event = next(
+            (
+                event
+                for event in db.scalars(
+                    select(AssignmentEvent)
+                    .where(
+                        AssignmentEvent.assignment_id == task.assignment_id,
+                        AssignmentEvent.event_type == "V12_RETURN_VERIFY_SUBMITTED",
+                    )
+                    .order_by(AssignmentEvent.occurred_at.desc(), AssignmentEvent.id.desc())
+                ).all()
+                if (event.payload or {}).get("verification_task_id") == task.id
+            ),
+            None,
+        )
+        submitted_by = (
+            submission_event.actor_user_id if submission_event else task.assignee_user_id
+        )
+        submitter = db.get(User, submitted_by) if submitted_by else None
+        submitted_at = task.submitted_at or (
+            submission_event.occurred_at if submission_event else None
+        )
+        result["verification_info"] = {
+            "submitted_by": submitted_by,
+            "submitted_by_name": (
+                submitter.display_name or submitter.username
+                if submitter is not None
+                else None
+            ),
+            "submitted_at": submitted_at.isoformat() if submitted_at else None,
+            "contact_result": task.contact_result,
+            "conclusion": task.verification_conclusion,
+            "note": (
+                (submission_event.payload or {}).get("note")
+                if submission_event
+                else request.review_note
+                if request
+                else None
+            ),
+        }
+    elif include_verification_info:
+        result["verification_info"] = None
+    return result

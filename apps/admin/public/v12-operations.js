@@ -604,9 +604,11 @@ async function telesales(){
   if(S.id){const taskId=S.id;S.id='';await openPreDispatchTask(taskId)}
 }
 async function openPreDispatchTask(taskId){
-  const task=await api(`/v1.2/pre-dispatch-verifications/tasks/${encodeURIComponent(taskId)}`);
-  if(task.status!=='SUBMITTED'){toast('该电销核验任务当前无需运营处置',true);return}
-  disposePreDispatch(task);
+  try{
+    const task=await api(`/v1.2/pre-dispatch-verifications/tasks/${encodeURIComponent(taskId)}`);
+    if(task.status!=='SUBMITTED'){toast('该电销核验任务当前无需运营处置',true);return}
+    disposePreDispatch(task);
+  }catch(error){toast(error.message,true)}
 }
 function disposePreDispatch(task){
   const leadId=task.lead_id,sourceKind=task.lead?.source_kind||'';
@@ -1062,12 +1064,12 @@ function showInitialPassword(password,onClose){
 async function dispatch(){
   const d=await api(`/v1.2/dispatch-pool${qs({page:S.page,page_size:20})}`);
   const canCorrect=can('lead.manual.manage')&&primaryRole()!=='SUPER_ADMIN';
-  const byId=Object.fromEntries((d.items||[]).map(item=>[item.id,item]));
-  const rows=(d.items||[]).map(item=>{
-    const actions=[`<button class="ops-btn primary" data-candidate="${esc(item.id)}">选择接收公司</button>`];
-    if(canCorrect)actions.push(`<button class="ops-btn" data-dispatch-correction="${esc(item.id)}">修改信息</button>`);
-    const verificationFlag=item.has_verification_info?'<span class="ops-status ok">有核验信息</span>':'';
-    return `<tr><td><b>${esc(item.customer_name)}</b><br>${esc(item.phone_masked||'--')}</td><td>${esc(item.city||'--')} ${esc(item.district||'')}</td><td>${esc(label(item.source_kind))}</td><td>${esc(item.need_summary||'--')}</td><td><div class="ops-actions">${actions.join(' ')}${verificationFlag}</div></td></tr>`;
+  const byId=Object.fromEntries((d.items||[]).map(x=>[x.id,x]));
+  const rows=(d.items||[]).map(x=>{
+    const actions=[`<button class="ops-btn primary" data-candidate="${esc(x.id)}">选择接收公司</button>`];
+    if(canCorrect)actions.push(`<button class="ops-btn" data-dispatch-correction="${esc(x.id)}">修改信息</button>`);
+    const verificationFlag=x.has_verification_info?'<span class="ops-status ok">有核验信息</span>':'';
+    return `<tr><td><b>${esc(x.customer_name)}</b><br>${esc(x.phone_masked||'--')}</td><td>${esc(x.city||'--')} ${esc(x.district||'')}</td><td>${esc(label(x.source_kind))}</td><td>${esc(x.need_summary||'--')}</td><td><div class="ops-actions">${actions.join(' ')}${verificationFlag}</div></td></tr>`;
   });
   shell(`<section class="ops-card"><div class="ops-card-head"><div><h2>待人工派发池</h2><p>“所在地”属于客资；加盟商的服务区域仅用于判断是否可承接。</p></div></div>${table(['客户','所在地','客资来源','客户需求','操作'],rows)}${pager(d)}</section>`);
   bindPager(d,dispatch);
