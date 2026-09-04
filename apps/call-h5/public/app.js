@@ -220,6 +220,15 @@ function submittedHistoryView(state = submittedHistoryState) {
   };
 }
 
+function isSubmittedHistoryRoute() {
+  const routeName = (location.hash.replace(/^#\/?/, '') || 'home').split('?')[0].split('/')[0];
+  return routeName === 'records';
+}
+
+function submittedHistoryRequestIsCurrent(state) {
+  return Boolean(state && submittedHistoryState === state && state.ownerId === (me?.id || null) && isSubmittedHistoryRoute());
+}
+
 async function loadSubmittedHistory() {
   if (!submittedHistoryState || submittedHistoryState.ownerId !== (me?.id || null)) {
     submittedHistoryState = newSubmittedHistoryState();
@@ -229,12 +238,19 @@ async function loadSubmittedHistory() {
   const state = submittedHistoryState;
   state.inFlight = (async () => {
     const pendingKinds = ['PRE_DISPATCH', 'RETURN'].filter((kind) => !state.done[kind]);
-    const pages = await Promise.all(pendingKinds.map(async (kind) => {
-      const page = state.nextPage[kind];
-      const mine = kind === 'RETURN' ? '&mine=true' : '';
-      const payload = await api(`${TASK_KIND[kind].listPath}?page=${page}&page_size=${HISTORY_PAGE_SIZE}&submitted_history=true${mine}`);
-      return { kind, page, payload };
-    }));
+    let pages;
+    try {
+      pages = await Promise.all(pendingKinds.map(async (kind) => {
+        const page = state.nextPage[kind];
+        const mine = kind === 'RETURN' ? '&mine=true' : '';
+        const payload = await api(`${TASK_KIND[kind].listPath}?page=${page}&page_size=${HISTORY_PAGE_SIZE}&submitted_history=true${mine}`);
+        return { kind, page, payload };
+      }));
+    } catch (error) {
+      if (!submittedHistoryRequestIsCurrent(state)) return null;
+      throw error;
+    }
+    if (!submittedHistoryRequestIsCurrent(state)) return null;
     for (const { kind, page, payload } of pages) {
       const pageItems = payload.items || [];
       let added = 0;
@@ -331,16 +347,21 @@ async function verify() {
 
 async function records() {
   if (!await auth()) return;
+  if (!isSubmittedHistoryRoute()) return;
+  if (!submittedHistoryState || submittedHistoryState.ownerId !== (me?.id || null)) {
+    submittedHistoryState = newSubmittedHistoryState();
+  }
+  const state = submittedHistoryState;
   const needsFirstPage = (
-    !submittedHistoryState
-    || submittedHistoryState.ownerId !== (me?.id || null)
-    || (submittedHistoryState.nextPage.PRE_DISPATCH === 1 && submittedHistoryState.nextPage.RETURN === 1)
+    state.nextPage.PRE_DISPATCH === 1
+    && state.nextPage.RETURN === 1
   );
   const historyData = needsFirstPage ? await loadSubmittedHistory() : submittedHistoryView();
-  renderSubmittedHistory(historyData);
+  renderSubmittedHistory(historyData, state);
 }
 
-function renderSubmittedHistory(historyData) {
+function renderSubmittedHistory(historyData, state = submittedHistoryState) {
+  if (!historyData || !submittedHistoryRequestIsCurrent(state)) return;
   const items = historyData.items.filter((item) => item.submitted_at);
   const loadMore = historyData.hasMore ? '<button class="btn outline block" id="load-more-records">加载更多记录</button>' : '';
   zsSetSafeHtml(app, shell(`<h1>核验记录</h1><p class="muted">已提交的内容只保留事实结论，后续业务处置由运营人员完成。</p>${items.length ? `${items.map(taskCard).join('')}${loadMore}` : emptyState('暂无已提交记录', '完成核验并提交后，记录会保留在这里。')}`, 'records', '核验记录'));
@@ -349,8 +370,9 @@ function renderSubmittedHistory(historyData) {
   document.querySelector('#load-more-records')?.addEventListener('click', async (event) => {
     event.currentTarget.disabled = true;
     try {
-      renderSubmittedHistory(await loadSubmittedHistory());
+      renderSubmittedHistory(await loadSubmittedHistory(), state);
     } catch (error) {
+      if (!submittedHistoryRequestIsCurrent(state)) return;
       event.currentTarget.disabled = false;
       toast(error.message || '加载失败', 'error');
     }

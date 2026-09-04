@@ -73,7 +73,8 @@ def test_telesales_submitted_record_shows_its_verification_note() -> None:
     assert "submitted_history=true" in history
     assert "loadSubmittedHistory()" in records
     assert "load-more-records" in records
-    assert "renderSubmittedHistory(await loadSubmittedHistory())" in records
+    assert "renderSubmittedHistory(historyData, state)" in records
+    assert "renderSubmittedHistory(await loadSubmittedHistory(), state)" in records
     assert "item.submitted_at" in records
     assert "task.is_overdue&&!task.submitted_at" in task_card
     assert "核验备注" in task
@@ -88,7 +89,7 @@ def test_telesales_history_load_more_only_requests_each_source_next_page() -> No
 const fs = require('fs');
 global.document = {{ querySelector: () => ({{}}), querySelectorAll: () => [] }};
 global.window = {{ addEventListener: () => {{}}, ZSIconSystem: null, isSecureContext: false }};
-global.location = {{ hash: '#/noop', href: '', replace: () => {{}} }};
+global.location = {{ hash: '#/records', href: '', replace: () => {{}} }};
 global.history = {{ length: 1, back: () => {{}} }};
 global.navigator = {{}};
 global.zsSetSafeHtml = () => {{}};
@@ -161,6 +162,90 @@ eval(source);
     assert "pre-dispatch-verifications" in payload["secondLoadCalls"][0]
     assert "page=2" in payload["secondLoadCalls"][0]
     assert payload["invalidInputCalls"] == 2
+
+
+def test_telesales_history_drops_response_after_session_or_route_changes() -> None:
+    node_script = f"""
+const fs = require('fs');
+const domNode = {{ addEventListener: () => {{}}, focus: () => {{}} }};
+global.document = {{ querySelector: () => domNode, querySelectorAll: () => [] }};
+global.window = {{ addEventListener: () => {{}}, ZSIconSystem: null, isSecureContext: false }};
+global.location = {{ hash: '#/records', href: '', replace: () => {{}} }};
+global.history = {{ length: 1, back: () => {{}} }};
+global.navigator = {{}};
+const renders = [];
+global.zsSetSafeHtml = (_node, html) => {{ renders.push(html); }};
+const pendingHistory = [];
+let markHistoryStarted;
+const historyStarted = new Promise((resolve) => {{ markHistoryStarted = resolve; }});
+global.fetch = async (url) => {{
+  const parsed = new URL(url, 'http://local');
+  if (parsed.pathname.endsWith('/auth/me')) {{
+    return {{ ok: true, json: async () => ({{ code: 'OK', data: {{ id: 'user-a', roles: ['TELESALES'] }} }}) }};
+  }}
+  return new Promise((resolve) => {{
+    const taskKind = parsed.pathname.includes('pre-dispatch-verifications') ? 'pre' : 'return';
+    pendingHistory.push(() => resolve({{
+      ok: true,
+      json: async () => ({{
+        code: 'OK',
+        data: {{
+          total: 1,
+          items: [{{
+            id: `${{taskKind}}-a-secret`,
+            submitted_at: '2026-09-04T12:00:00Z',
+            lead: {{ customer_name: 'A 账号客户秘密' }},
+          }}],
+        }},
+      }}),
+    }}));
+    if (pendingHistory.length === 2) markHistoryStarted();
+  }});
+}};
+let source = fs.readFileSync({json.dumps(str(CALL_APP))}, 'utf8');
+source = source.slice(0, source.lastIndexOf('route();'));
+source += `
+let abandonedHistoryState = null;
+globalThis.__staleHistoryTest = {{
+  records,
+  switchAway: () => {{
+    abandonedHistoryState = submittedHistoryState;
+    me = null;
+    submittedHistoryState = null;
+    location.hash = '#/home';
+  }},
+  abandonedItemCount: () => abandonedHistoryState?.itemsById.size || 0,
+  stateIsNull: () => submittedHistoryState === null,
+}};`;
+eval(source);
+(async () => {{
+  const request = __staleHistoryTest.records();
+  await historyStarted;
+  __staleHistoryTest.switchAway();
+  pendingHistory.forEach((resolve) => resolve());
+  await request;
+  console.log(JSON.stringify({{
+    renderCount: renders.length,
+    renderedSecret: renders.some((html) => html.includes('A 账号客户秘密')),
+    abandonedItemCount: __staleHistoryTest.abandonedItemCount(),
+    stateIsNull: __staleHistoryTest.stateIsNull(),
+  }}));
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+    result = subprocess.run(
+        ["node", "-e", node_script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+
+    assert payload == {
+        "renderCount": 0,
+        "renderedSecret": False,
+        "abandonedItemCount": 0,
+        "stateIsNull": True,
+    }
 
 
 def test_changed_frontend_assets_have_feedback_94_cache_busters() -> None:
