@@ -8,12 +8,12 @@ H07 将现有 `pip-audit`、secret scan、pytest 安全负例之外的静态应�
 
 ## 当前仓库能力边界
 
-当前私有仓库未启用 GitHub Code Scanning / GitHub Code Security，因此不能把 CodeQL/SARIF 上传作为必需门禁，否则工作流会因仓库能力/授权而固定失败。
+当前公开仓库未启用 GitHub Code Scanning / GitHub Code Security，因此不能把 CodeQL/SARIF 上传作为必需门禁，否则工作流会因仓库能力/授权而固定失败。
 
 H07 当前采用：
 
 1. 工作流使用的 `actions/checkout`、`actions/setup-python`、`actions/upload-artifact` 均固定到完整 commit SHA，避免可移动大版本 tag 成为 CI 信任链缺口；
-2. PR 使用 `pull_request_target` 执行受保护 base 分支的 workflow；base policy 与候选 head 分目录 checkout，validator 和 waiver registry 均取自 base，候选仅作为只读扫描/镜像构建输入；
+2. PR 使用 `pull_request_target` 执行 base 分支已存在的可信 workflow；base policy 与候选 head 分目录 checkout，validator 和 waiver registry 均取自 base，候选仅作为扫描/镜像构建输入；
 3. Semgrep 官方 scanner 镜像以 linux/amd64 immutable digest 固定，作为 Python + JavaScript SAST 执行主体；
 4. Semgrep 官方 `semgrep-rules` 仓库固定到 verified commit `40b8c63f75dc7c22c8a77482d73bfb864b146f7e`，运行时不再使用可变 Registry `p/...` 配置；
 5. SAST 仅加载当前技术栈相关安全规则目录：Python lang / SQLAlchemy / FastAPI / boto3 / cryptography / JWT，以及 JavaScript lang / browser / Express / audit；
@@ -26,7 +26,8 @@ H07 当前采用：
 12. Trivy 使用不可变 digest 固定的官方 scanner 镜像，对冻结 tar 执行漏洞扫描和 CycloneDX SBOM 生成；
 13. Trivy 不挂载 `/var/run/docker.sock`，输入 tar 只读，单次容器仅能写一个预创建输出文件；
 14. 受保护 base 中的 `check_security_gate.py` 统一校验 scanner schema、Docker archive identity、Trivy Metadata、完整包清单、SBOM、finding 与 waiver；
-15. 所有扫描原始输出和判定结果作为 GitHub Actions artifact 保留 30 天。
+15. 所有扫描原始输出和判定结果作为 GitHub Actions artifact 保留 30 天，`security-gate.json` 同时记录 event、ref、candidate SHA、policy SHA 和 waiver registry SHA-256；
+16. `workflow_dispatch` 仅允许在 `main` 执行，可晋级的 `security-candidate-image-*` 只由 `main` push 成功 run 生成，PR 与手工 run 均不会生成可晋级镜像 artifact。
 
 当仓库未来启用 GitHub Code Security/Advanced Security 后，应在不移除现有门禁的前提下增加 CodeQL，并将 SARIF 结果纳入同一上线证据包。
 
@@ -53,6 +54,12 @@ Security Analysis 的第三方 Actions 固定为：
 - token 权限保持 `contents: read`，两个 checkout 均设置 `persist-credentials: false`。
 
 候选 PR 因此不能通过修改 workflow、validator 或 waiver 自行给出绿灯。waiver policy 变更属于受保护策略变更，需要独立提升审查/合并，不能在同一个候选 PR 中即时生效。H07 当前 PR 是该策略的 bootstrap：base 尚无这份 workflow，故以全新 Linux Git 快照的本地等价执行和独立 Review 完成首次验收；合并后的 main push 及后续 PR 才由受保护策略直接执行。
+
+截至 2026-09-04，GitHub 仓库只有一个管理员协作者，且 `main` 尚未配置 branch protection/ruleset，因此“受保护策略”目前仍包含程序性控制而不是完整的双人技术强制。策略变更必须使用独立 PR、保留两份只读安全评审和用户明确批准，并将管理员 merge/bypass 留在 GitHub 审计记录；合并后只接受 `main` push 的全绿 Security Analysis。后续治理应在增加第二名可信协作者后启用 `main` ruleset，要求 PR、独立审批、禁止删除和强推，并限制管理员 bypass。
+
+手工 Security Analysis 由 job 条件和 gate 双重限制在 `refs/heads/main`。即使未来误改 artifact 上传步骤，gate 仍会拒绝非 main ref、未知 event、非完整 Git SHA，以及 push/手工 run 中 candidate 与 policy commit 不一致的证据。
+
+分支拥有者仍可在自己的分支修改 workflow 后手工运行并生成同名 artifact，因此生产晋级不能只信 workflow 内自报的 provenance。`IMAGE_PROMOTION_V1.2.md` 要求在受信任的 `main` checkout 中查询 GitHub API，验证真实 run 为成功的 `main` push、`head_sha` 等于待发布 commit、workflow ID/path 等于正式 Security Analysis，并确认两个 artifact ID 同属该 run；随后才允许下载和核对内部摘要。
 
 ### Semgrep scanner
 
@@ -182,30 +189,35 @@ WARNING/INFO 仍保留在原始 JSON 中供人工 Review，但不会单独使 CI
 - `scanner`：`semgrep` 或 `trivy`；
 - `id`：Semgrep `check_id` 或 Trivy VulnerabilityID；
 - `scope`：**精确** Semgrep 文件路径或 Trivy package name；
+- `occurrence`：**精确** Semgrep 行列范围，或 Trivy target、类别、类型和已安装版本组合；
 - `reason`：为何当前不能立即修复；
 - `owner`：负责收口的人/角色；
 - `created_on`：ISO `YYYY-MM-DD`；
+- `first_waived_on`：该精确 finding 首次被豁免的日期，续期不得后移；
 - `expires_on`：ISO `YYYY-MM-DD`。
 
 规则：
 
-1. scanner + id + scope 必须完全匹配才生效；
-2. `scope: "*"` 明确禁止，不能让一个历史例外覆盖未来新增文件/包；
+1. scanner + id + scope + occurrence 必须完全匹配才生效；
+2. `scope: "*"` 与 `occurrence: "*"` 明确禁止，不能让一个历史例外覆盖未来新增文件/包；
 3. 单条 waiver 最长 30 天；
 4. `created_on` 不能在未来，`expires_on` 不能早于 `created_on`；
-5. 过期 waiver 即使当前 finding 已消失，也会使 CI 失败，要求删除或重新评审；
-6. 重复 waiver 视为配置错误；
-7. 新增/延期 waiver 必须在 PR Review 中解释补偿控制和修复任务；延期通过更新 `created_on` / `expires_on` 重新开始一个不超过 30 天的评审周期。
+5. `expires_on - first_waived_on` 累计最长 90 天，`first_waived_on` 缺失、晚于 `created_on` 或在续期时后移均为策略错误；
+6. 过期 waiver 即使当前 finding 已消失，也会使 CI 失败，要求删除或重新评审；
+7. 重复 waiver 视为配置错误；
+8. 新增/延期 waiver 必须在 PR Review 中解释补偿控制和修复任务；延期只能更新 `created_on` / `expires_on`，必须保留最初的 `first_waived_on`。
 
 ## 当前受控例外
 
-H07 latest-head 本地复刻扫描保留 31 个逐 occurrence 的短期例外：
+截至 2026-09-04，最新候选镜像扫描命中 65 个逐 occurrence 的短期例外：
 
-- 6 个 Semgrep subprocess finding：覆盖 migration 测试和 3 个运维脚本的固定 argv 调用；均未启用 shell，并绑定精确规则、文件和行列 occurrence，最晚 2026-09-07 到期；
-- 1 个 `cryptography 49.0.0` finding：绑定 H12 #61，固定版本为 50.0.0，2026-08-21 到期；
-- 24 个 Debian Bookworm 系统包 finding：当前 pinned base 和同代可用更新均无修复版本，逐 CVE、package、版本和 Trivy target 精确登记，2026-08-21 到期。补偿控制包括非 root、drop capabilities、只读根文件系统，以及应用不调用对应 block-device、terminal、Perl/archive 等受影响路径；到期前必须重建/替换基础镜像并删除 waiver。
+- 8 个 Semgrep subprocess finding：覆盖 migration 测试和运维脚本的固定 argv 调用；均未启用 shell，并绑定精确规则、文件和行列 occurrence，最晚 2026-09-07 到期；
+- 23 个既有 Debian Bookworm 系统包 finding：逐 CVE、package、版本和 Trivy target 精确登记，最晚 2026-09-22 到期；
+- 34 个新增 Debian Bookworm 系统包 finding：`CVE-2026-76642`、`CVE-2026-78408`、`CVE-2026-78409`、`CVE-2026-78410` 分别覆盖 8 个 util-linux package occurrence，`CVE-2026-16742` 覆盖 2 个 systemd library occurrence，统一于 2026-10-04 到期。
 
-这些例外不是永久基线。禁止使用全局 scope 批量压制；新增 finding 不会被现有 waiver 覆盖，任何延期都必须重新评审并保持不超过 30 天。
+新增 finding 在当前 Bookworm 基础镜像中没有可用修复版本。util-linux 漏洞均依赖 mount、`nsenter --join-cgroup`、fstab 授权或 X-mount 路径，systemd 漏洞依赖正在运行的 systemd-homed 和本地交互用户；应用不调用这些路径。生产容器固定以 UID 10001 非 root 运行，并启用 `cap_drop: ALL`、`no-new-privileges` 和只读根文件系统作为补偿控制。
+
+registry 共保留 84 个 active 精确条目；其中未在本次镜像/源码中出现的条目仍受过期检查约束，不能成为永久基线。禁止使用全局 scope/occurrence 批量压制；新增 finding 不会被现有 waiver 覆盖。`platform-security` 必须在 2026-10-04 前复核 Debian 修复状态、重建或替换基础镜像，并在同一收口变更中删除对应 waiver；任何延期都必须保留 `first_waived_on`、重新评审且同时满足单次 30 天和累计 90 天上限。
 
 ## 浏览器动态 HTML 边界
 
@@ -238,8 +250,9 @@ Security Analysis artifact 至少包含：
 - `trivy-exit-code.txt`；
 - `sbom.cdx.json`；
 - `security-gate.json`。
+- `waivers-policy.json`（本次判定使用的 base policy 快照）。
 
-`app-image.tar` 在扫描期间是 runner 内瞬时对象。统一 gate 通过后，它与 `scan-subject.json` 作为独立的 `security-candidate-image-<run_id>` artifact 保留 7 天，供 exact-image 晋级；随后从 runner 工作目录删除，因此 30 天的常规安全 evidence artifact 不重复包含该大文件。正式发布仍按 `IMAGE_PROMOTION_V1.2.md` 将这份已扫描 archive 晋级为不可变 registry digest。gate 失败时不会生成候选镜像 artifact。
+`app-image.tar` 在扫描期间是 runner 内瞬时对象。只有 `main` push 的统一 gate 通过后，它才与 `scan-subject.json` 作为独立的 `security-candidate-image-<run_id>` artifact 保留 7 天，供 exact-image 晋级；PR 与 `workflow_dispatch` run 不生成该 artifact。随后 tar 从 runner 工作目录删除，因此 30 天的常规安全 evidence artifact 不重复包含该大文件。正式发布仍按 `IMAGE_PROMOTION_V1.2.md` 将这份已扫描 archive 晋级为不可变 registry digest。gate 失败时不会生成候选镜像 artifact。
 
 即使扫描失败，工作流也要尽可能保留已生成的失败证据，然后由统一 gate 返回失败。
 

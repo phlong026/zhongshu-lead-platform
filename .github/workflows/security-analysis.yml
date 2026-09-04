@@ -17,6 +17,7 @@ concurrency:
 
 jobs:
   sast-supply-chain:
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     defaults:
@@ -24,6 +25,8 @@ jobs:
         working-directory: candidate
     env:
       APP_IMAGE: zhongshu-security:${{ github.event.pull_request.head.sha || github.sha }}
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      POLICY_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
       SEMGREP_IMAGE: semgrep/semgrep@sha256:a8298d1c09c84b9a0bbc75ec915e37023fc4657360b6dbfa645261d2353a366c
       SEMGREP_RULES_COMMIT: 40b8c63f75dc7c22c8a77482d73bfb864b146f7e
       SEMGREP_RULES_DIR: /tmp/semgrep-rules
@@ -297,6 +300,7 @@ jobs:
       - name: Enforce SAST image vulnerability SBOM and waiver gate
         if: always()
         run: |
+          cp ../policy/security/waivers.json dist/security/waivers-policy.json
           python ../policy/scripts/check_security_gate.py \
             --semgrep dist/security/semgrep.json \
             --semgrep-exit dist/security/semgrep-exit-code.txt \
@@ -311,10 +315,14 @@ jobs:
             --subject dist/security/scan-subject.json \
             --image-archive dist/security/app-image.tar \
             --waivers ../policy/security/waivers.json \
+            --event-name "${{ github.event_name }}" \
+            --git-ref "${{ github.ref }}" \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --policy-sha "$POLICY_SHA" \
             --output dist/security/security-gate.json
 
       - name: Upload exact green scanned candidate image
-        if: success()
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: security-candidate-image-${{ github.run_id }}

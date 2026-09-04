@@ -9,6 +9,7 @@
       "reason": "Production verification invokes Docker with an argv list and shell=False; environment-derived values are passed as individual arguments, not evaluated by a shell. Re-review this exact source occurrence rather than suppressing the rule elsewhere in the file.",
       "owner": "platform-security",
       "created_on": "2026-08-08",
+      "first_waived_on": "2026-08-08",
       "expires_on": "2026-09-07"
     },
     {
@@ -19,6 +20,7 @@
       "reason": "The migration test invokes the current Python interpreter with a fixed Alembic module/config prefix and test-owned migration arguments. It never enables a shell and runs only in the isolated test database workflow.",
       "owner": "platform-security",
       "created_on": "2026-08-10",
+      "first_waived_on": "2026-08-10",
       "expires_on": "2026-09-07"
     },
     {
@@ -29,6 +31,7 @@
       "reason": "The UI regression test executes Node with a fixed argv list and an in-memory scenario assembled only from the repository JavaScript helper. It never enables a shell or accepts user-controlled command arguments.",
       "owner": "platform-security",
       "created_on": "2026-08-31",
+      "first_waived_on": "2026-08-31",
       "expires_on": "2026-09-30"
     },
     {
@@ -39,6 +42,7 @@
       "reason": "The production preflight runner accepts only command arrays assembled by this script from fixed Docker Compose and Python entrypoints. subprocess receives an argv list with shell disabled; sensitive values are separately redacted from evidence.",
       "owner": "platform-security",
       "created_on": "2026-08-10",
+      "first_waived_on": "2026-08-10",
       "expires_on": "2026-09-07"
     },
     {
@@ -49,6 +53,7 @@
       "reason": "The review helper executes only the four fixed compile, pytest, JavaScript, and secret-scan argv lists declared in the same file. It does not accept a command from CLI input and never enables a shell.",
       "owner": "platform-security",
       "created_on": "2026-08-10",
+      "first_waived_on": "2026-08-10",
       "expires_on": "2026-09-07"
     },
     {
@@ -59,6 +64,7 @@
       "reason": "Image inspection uses the Docker executable resolved by shutil.which and a fixed argv structure. The image reference is one argument, shell execution is disabled, and validation requires an immutable production reference.",
       "owner": "platform-security",
       "created_on": "2026-08-10",
+      "first_waived_on": "2026-08-10",
       "expires_on": "2026-09-07"
     },
     {
@@ -69,6 +75,7 @@
       "reason": "Compose validation uses a fixed Docker Compose argv prefix; environment-derived paths are passed as distinct arguments, never evaluated by a shell. This occurrence is paired with the existing taint-rule review at the same call site.",
       "owner": "platform-security",
       "created_on": "2026-08-10",
+      "first_waived_on": "2026-08-10",
       "expires_on": "2026-09-07"
     },
     {
@@ -79,6 +86,7 @@
       "reason": "The test monkeypatches subprocess.run with a fake and merely constructs a CompletedProcess return value; no real process is spawned on this path.",
       "owner": "platform-security",
       "created_on": "2026-08-23",
+      "first_waived_on": "2026-08-23",
       "expires_on": "2026-09-22"
     },
     {
@@ -89,6 +97,7 @@
       "reason": "Test double construction after monkeypatching subprocess.run; the stale-evidence runner under test never spawns a real process here.",
       "owner": "platform-security",
       "created_on": "2026-08-23",
+      "first_waived_on": "2026-08-23",
       "expires_on": "2026-09-22"
     },
     {
@@ -99,6 +108,7 @@
       "reason": "Docker port probe stub returns a CompletedProcess object; subprocess.run itself is monkeypatched, so no process executes.",
       "owner": "platform-security",
       "created_on": "2026-08-23",
+      "first_waived_on": "2026-08-23",
       "expires_on": "2026-09-22"
     },
     {
@@ -109,6 +119,7 @@
       "reason": "Docker run stub returns a CompletedProcess object; subprocess.run itself is monkeypatched, so no process executes.",
       "owner": "platform-security",
       "created_on": "2026-08-23",
+      "first_waived_on": "2026-08-23",
       "expires_on": "2026-09-22"
     },
     {
@@ -119,6 +130,7 @@
       "reason": "Docker run stub returns a CompletedProcess object in the failure-cleanup test; subprocess.run itself is monkeypatched, so no process executes.",
       "owner": "platform-security",
       "created_on": "2026-08-23",
+      "first_waived_on": "2026-08-23",
       "expires_on": "2026-09-22"
     },
     {
@@ -129,6 +141,7 @@
       "reason": "The bootstrap test invokes the current Python interpreter with a fixed Alembic argv prefix against an isolated tmp_path SQLite database; no shell is enabled.",
       "owner": "platform-security",
       "created_on": "2026-08-23",
+      "first_waived_on": "2026-08-23",
       "expires_on": "2026-09-22"
     },
     {
@@ -139,6 +152,7 @@
       "reason": "The CLI contract test invokes the current Python interpreter with a fixed sync_rbac.py argv against an isolated tmp_path SQLite database; the command never comes from CLI input and no shell is enabled.",
       "owner": "platform-security",
       "created_on": "2026-08-23",
+      "first_waived_on": "2026-08-23",
       "expires_on": "2026-09-22"
     },
     {
@@ -149,6 +163,7 @@
       "reason": "The e2e orchestrator's generic runner receives only argv lists assembled in the same script from fixed docker and pytest entrypoints; shell execution is disabled and failures surface as RuntimeError with captured detail.",
       "owner": "platform-security",
       "created_on": "2026-08-23",
+      "first_waived_on": "2026-08-23",
       "expires_on": "2026-09-22"
     },
     {
@@ -159,6 +174,7 @@
       "reason": "The infrastructure verifier executes argv lists assembled by the same script from fixed docker and system tool entrypoints; output passes through the sensitive-value redaction filter and shell execution is disabled.",
       "owner": "platform-security",
       "created_on": "2026-08-23",
+      "first_waived_on": "2026-08-23",
       "expires_on": "2026-09-22"
     },
     {
@@ -169,6 +185,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version. The application does not parse block-device partition tables and production drops capabilities, runs non-root, and uses a read-only root filesystem. Rebuild or replace the base and delete this exact waiver before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-22",
+      "first_waived_on": "2026-08-10",
       "expires_on": "2026-09-21"
     },
     {
@@ -179,6 +196,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version. The API does not invoke the gzip CLI or accept LZH archives, and production runs non-root with a read-only root filesystem. Rebuild or replace the base and delete this waiver before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-22",
+      "first_waived_on": "2026-08-10",
       "expires_on": "2026-09-21"
     },
     {
@@ -189,6 +207,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version. The service does not expose ACL mutation and runs as uid 10001 without capabilities on a read-only root filesystem. Rebuild or replace the base and delete this waiver before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-22",
+      "first_waived_on": "2026-08-10",
       "expires_on": "2026-09-21"
     },
     {
@@ -199,6 +218,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version. The application has no block-device access and production drops all capabilities, runs non-root, and mounts the root filesystem read-only. Rebuild or replace the base before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-22",
+      "first_waived_on": "2026-08-10",
       "expires_on": "2026-09-21"
     },
     {
@@ -209,6 +229,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version. The application performs no mount or partition operations and production drops all capabilities and runs non-root. Rebuild or replace the base before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-22",
+      "first_waived_on": "2026-08-10",
       "expires_on": "2026-09-21"
     },
     {
@@ -219,6 +240,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version. The headless ASGI service exposes no terminal input path and runs non-root with a read-only root filesystem. Rebuild or replace the base and delete this waiver before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-22",
+      "first_waived_on": "2026-08-10",
       "expires_on": "2026-09-21"
     },
     {
@@ -229,6 +251,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version. The application does not parse block-device metadata and production drops capabilities, runs non-root, and uses a read-only root filesystem. Rebuild or replace the base before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-22",
+      "first_waived_on": "2026-08-10",
       "expires_on": "2026-09-21"
     },
     {
@@ -239,6 +262,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version. Production is PostgreSQL-only and does not process attacker-supplied SQLite databases; the container also runs non-root with a read-only root filesystem. Replace the base before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-22",
+      "first_waived_on": "2026-08-10",
       "expires_on": "2026-09-21"
     },
     {
@@ -249,6 +273,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version. The headless ASGI service exposes no terminal input path and runs non-root with a read-only root filesystem. Rebuild or replace the base before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-22",
+      "first_waived_on": "2026-08-10",
       "expires_on": "2026-09-21"
     },
     {
@@ -259,6 +284,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version. The vulnerable partition-parser path is not used by the application; production drops capabilities and runs non-root on a read-only root filesystem. Replace the base before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-22",
+      "first_waived_on": "2026-08-10",
       "expires_on": "2026-09-21"
     },
     {
@@ -269,6 +295,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version. The application performs no mount or partition operations and production drops all capabilities and runs non-root. Replace the base before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-22",
+      "first_waived_on": "2026-08-10",
       "expires_on": "2026-09-21"
     },
     {
@@ -279,6 +306,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version. The headless ASGI service does not consume terminal databases from users and runs non-root with a read-only root filesystem. Replace the base before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-22",
+      "first_waived_on": "2026-08-10",
       "expires_on": "2026-09-21"
     },
     {
@@ -289,6 +317,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version. The headless ASGI service does not invoke ncurses utilities and runs non-root with a read-only root filesystem. Replace the base before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-22",
+      "first_waived_on": "2026-08-10",
       "expires_on": "2026-09-21"
     },
     {
@@ -299,6 +328,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version. The Python ASGI service never invokes Perl or compiles attacker-controlled Perl regexes; production runs non-root with a read-only root filesystem. Replace the base before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-22",
+      "first_waived_on": "2026-08-10",
       "expires_on": "2026-09-21"
     },
     {
@@ -309,6 +339,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version. The service never invokes Perl Archive::Tar or extracts user archives; production runs non-root with a read-only root filesystem. Replace the base before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-22",
+      "first_waived_on": "2026-08-10",
       "expires_on": "2026-09-21"
     },
     {
@@ -319,6 +350,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version. The Python ASGI service never invokes Perl Storable or deserializes Perl data; production runs non-root with a read-only root filesystem. Replace the base before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-22",
+      "first_waived_on": "2026-08-10",
       "expires_on": "2026-09-21"
     },
     {
@@ -329,6 +361,7 @@
       "reason": "The reported Perl heap overflow is limited to 32-bit builds, while the frozen production image is linux/amd64 and never invokes Perl. Trivy reports no fixed Bookworm version; delete this exact waiver before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-22",
+      "first_waived_on": "2026-08-10",
       "expires_on": "2026-09-21"
     },
     {
@@ -339,6 +372,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version. The service never invokes Perl Archive::Tar or extracts user archives; production runs non-root with a read-only root filesystem. Replace the base before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-22",
+      "first_waived_on": "2026-08-10",
       "expires_on": "2026-09-21"
     },
     {
@@ -349,6 +383,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version. The Python ASGI service never invokes Perl IO::Compress or accepts Perl output globs; production runs non-root and read-only. Replace the base before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-22",
+      "first_waived_on": "2026-08-10",
       "expires_on": "2026-09-21"
     },
     {
@@ -359,6 +394,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version. The Python ASGI service never invokes Perl pack/unpack on user data; production runs non-root with a read-only root filesystem. Replace the base before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-22",
+      "first_waived_on": "2026-08-10",
       "expires_on": "2026-09-21"
     },
     {
@@ -369,6 +405,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version. The service never invokes Perl Archive::Tar or processes user tar headers; production runs non-root with a read-only root filesystem. Replace the base before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-22",
+      "first_waived_on": "2026-08-10",
       "expires_on": "2026-09-21"
     },
     {
@@ -379,6 +416,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version. The application has no block-device access and production drops all capabilities, runs non-root, and mounts the root filesystem read-only. Replace the base before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-22",
+      "first_waived_on": "2026-08-10",
       "expires_on": "2026-09-21"
     },
     {
@@ -389,6 +427,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version. The application has no block-device access and production drops all capabilities, runs non-root, and mounts the root filesystem read-only. Replace the base before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-22",
+      "first_waived_on": "2026-08-10",
       "expires_on": "2026-09-21"
     },
     {
@@ -399,6 +438,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version. The vulnerable minizip API is not used by the application, which does not accept ZIP archives and runs non-root on a read-only root filesystem. Replace the base before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-22",
+      "first_waived_on": "2026-08-10",
       "expires_on": "2026-09-21"
     },
     {
@@ -409,6 +449,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version (mount TOCTOU via ancestor directory swap). The application performs no mount operations and production drops all capabilities, runs non-root, and mounts the root filesystem read-only. Replace the base before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-23",
+      "first_waived_on": "2026-08-23",
       "expires_on": "2026-09-22"
     },
     {
@@ -419,6 +460,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version (mount TOCTOU via ancestor directory swap). The application has no block-device access and production drops all capabilities, runs non-root, and mounts the root filesystem read-only. Replace the base before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-23",
+      "first_waived_on": "2026-08-23",
       "expires_on": "2026-09-22"
     },
     {
@@ -429,6 +471,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version (mount TOCTOU via ancestor directory swap). The application performs no mount or partition operations and production drops all capabilities and runs non-root. Replace the base before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-23",
+      "first_waived_on": "2026-08-23",
       "expires_on": "2026-09-22"
     },
     {
@@ -439,6 +482,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version (mount TOCTOU via ancestor directory swap). The application does not parse block-device metadata and production drops capabilities, runs non-root, and uses a read-only root filesystem. Replace the base before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-23",
+      "first_waived_on": "2026-08-23",
       "expires_on": "2026-09-22"
     },
     {
@@ -449,6 +493,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version (mount TOCTOU via ancestor directory swap). The vulnerable mount path is not used by the application; production drops capabilities and runs non-root on a read-only root filesystem. Replace the base before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-23",
+      "first_waived_on": "2026-08-23",
       "expires_on": "2026-09-22"
     },
     {
@@ -459,6 +504,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version (mount TOCTOU via ancestor directory swap). The application performs no mount or partition operations and production drops all capabilities and runs non-root. Replace the base before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-23",
+      "first_waived_on": "2026-08-23",
       "expires_on": "2026-09-22"
     },
     {
@@ -469,6 +515,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version (mount TOCTOU via ancestor directory swap). The application has no block-device access and production drops all capabilities, runs non-root, and mounts the root filesystem read-only. Replace the base before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-23",
+      "first_waived_on": "2026-08-23",
       "expires_on": "2026-09-22"
     },
     {
@@ -479,6 +526,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version (mount TOCTOU via ancestor directory swap). The application has no block-device access and production drops all capabilities, runs non-root, and mounts the root filesystem read-only. Replace the base before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-23",
+      "first_waived_on": "2026-08-23",
       "expires_on": "2026-09-22"
     },
     {
@@ -489,6 +537,7 @@
       "reason": "Trivy reports no fixed Debian Bookworm version (QUIC server unbounded memory growth). The containerized ASGI service terminates TLS at the edge reverse proxy and never enables a QUIC listener; production runs non-root with a read-only root filesystem. Replace the base before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-23",
+      "first_waived_on": "2026-08-23",
       "expires_on": "2026-09-22"
     },
     {
@@ -499,7 +548,382 @@
       "reason": "Trivy reports no fixed Debian Bookworm version (QUIC server unbounded memory growth). The containerized ASGI service terminates TLS at the edge reverse proxy and never enables a QUIC listener; production runs non-root with a read-only root filesystem. Replace the base before expiry.",
       "owner": "platform-security",
       "created_on": "2026-08-23",
+      "first_waived_on": "2026-08-23",
       "expires_on": "2026-09-22"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-76642",
+      "scope": "bsdutils",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|1:2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the failed external mount-helper post-hook flaw. The application never invokes mount helpers or X-mount hooks; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-76642",
+      "scope": "libblkid1",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the failed external mount-helper post-hook flaw. The application never invokes mount helpers or X-mount hooks; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-76642",
+      "scope": "libmount1",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the failed external mount-helper post-hook flaw. The application never invokes mount helpers or X-mount hooks; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-76642",
+      "scope": "libsmartcols1",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the failed external mount-helper post-hook flaw. The application never invokes mount helpers or X-mount hooks; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-76642",
+      "scope": "libuuid1",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the failed external mount-helper post-hook flaw. The application never invokes mount helpers or X-mount hooks; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-76642",
+      "scope": "mount",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the failed external mount-helper post-hook flaw. The application never invokes mount helpers or X-mount hooks; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-76642",
+      "scope": "util-linux",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the failed external mount-helper post-hook flaw. The application never invokes mount helpers or X-mount hooks; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-76642",
+      "scope": "util-linux-extra",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the failed external mount-helper post-hook flaw. The application never invokes mount helpers or X-mount hooks; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-78408",
+      "scope": "bsdutils",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|1:2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the nsenter --join-cgroup descriptor flaw. The application never invokes nsenter or migrates cgroups; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-78408",
+      "scope": "libblkid1",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the nsenter --join-cgroup descriptor flaw. The application never invokes nsenter or migrates cgroups; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-78408",
+      "scope": "libmount1",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the nsenter --join-cgroup descriptor flaw. The application never invokes nsenter or migrates cgroups; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-78408",
+      "scope": "libsmartcols1",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the nsenter --join-cgroup descriptor flaw. The application never invokes nsenter or migrates cgroups; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-78408",
+      "scope": "libuuid1",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the nsenter --join-cgroup descriptor flaw. The application never invokes nsenter or migrates cgroups; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-78408",
+      "scope": "mount",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the nsenter --join-cgroup descriptor flaw. The application never invokes nsenter or migrates cgroups; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-78408",
+      "scope": "util-linux",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the nsenter --join-cgroup descriptor flaw. The application never invokes nsenter or migrates cgroups; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-78408",
+      "scope": "util-linux-extra",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the nsenter --join-cgroup descriptor flaw. The application never invokes nsenter or migrates cgroups; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-78409",
+      "scope": "bsdutils",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|1:2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the X-mount.subdir symlink-escape flaw. The application has no fstab-authorized mounts and never invokes mount; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-78409",
+      "scope": "libblkid1",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the X-mount.subdir symlink-escape flaw. The application has no fstab-authorized mounts and never invokes mount; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-78409",
+      "scope": "libmount1",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the X-mount.subdir symlink-escape flaw. The application has no fstab-authorized mounts and never invokes mount; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-78409",
+      "scope": "libsmartcols1",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the X-mount.subdir symlink-escape flaw. The application has no fstab-authorized mounts and never invokes mount; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-78409",
+      "scope": "libuuid1",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the X-mount.subdir symlink-escape flaw. The application has no fstab-authorized mounts and never invokes mount; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-78409",
+      "scope": "mount",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the X-mount.subdir symlink-escape flaw. The application has no fstab-authorized mounts and never invokes mount; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-78409",
+      "scope": "util-linux",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the X-mount.subdir symlink-escape flaw. The application has no fstab-authorized mounts and never invokes mount; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-78409",
+      "scope": "util-linux-extra",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the X-mount.subdir symlink-escape flaw. The application has no fstab-authorized mounts and never invokes mount; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-78410",
+      "scope": "bsdutils",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|1:2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the restricted bind-mount source-redirection flaw. The application has no fstab-authorized bind mounts and never invokes mount; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-78410",
+      "scope": "libblkid1",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the restricted bind-mount source-redirection flaw. The application has no fstab-authorized bind mounts and never invokes mount; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-78410",
+      "scope": "libmount1",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the restricted bind-mount source-redirection flaw. The application has no fstab-authorized bind mounts and never invokes mount; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-78410",
+      "scope": "libsmartcols1",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the restricted bind-mount source-redirection flaw. The application has no fstab-authorized bind mounts and never invokes mount; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-78410",
+      "scope": "libuuid1",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the restricted bind-mount source-redirection flaw. The application has no fstab-authorized bind mounts and never invokes mount; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-78410",
+      "scope": "mount",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the restricted bind-mount source-redirection flaw. The application has no fstab-authorized bind mounts and never invokes mount; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-78410",
+      "scope": "util-linux",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the restricted bind-mount source-redirection flaw. The application has no fstab-authorized bind mounts and never invokes mount; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-78410",
+      "scope": "util-linux-extra",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|2.38.1-5+deb12u3",
+      "reason": "Debian Bookworm has no fixed version for the restricted bind-mount source-redirection flaw. The application has no fstab-authorized bind mounts and never invokes mount; production containers run as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-16742",
+      "scope": "libsystemd0",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|252.39-1~deb12u2",
+      "reason": "Debian Bookworm has no fixed version for the systemd-homed local privilege-escalation flaw. The application container does not run systemd or systemd-homed and has no interactive local users; production runs as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
+    },
+    {
+      "scanner": "trivy",
+      "id": "CVE-2026-16742",
+      "scope": "libudev1",
+      "occurrence": "/tmp/app-image.tar (debian 12.15)|os-pkgs|debian|252.39-1~deb12u2",
+      "reason": "Debian Bookworm has no fixed version for the systemd-homed local privilege-escalation flaw. The application container does not run systemd or systemd-homed and has no interactive local users; production runs as UID 10001 with cap_drop ALL, no-new-privileges, and a read-only root filesystem. Rebuild on a fixed base and delete this waiver before expiry.",
+      "owner": "platform-security",
+      "created_on": "2026-09-04",
+      "expires_on": "2026-10-04",
+      "first_waived_on": "2026-09-04"
     }
   ]
 }
