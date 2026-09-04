@@ -33,6 +33,7 @@ const returnReasonLabels = {
   EMPTY_NUMBER: '空号或停机', OUT_OF_SERVICE_REGION: '超出服务区域', DUPLICATE_TO_RECEIVER: '接收方重复客资', NON_HOUSING_CONSULTATION: '非建房装修咨询',
 };
 const statusLabels = { ASSIGNED: '待开始', IN_PROGRESS: '核验中', SUBMITTED: '已提交' };
+const HISTORY_PAGE_SIZE = 50;
 
 const esc = (value = '') => String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
 const icon = (name) => window.ZSIconSystem?.svg?.(name) || '';
@@ -185,19 +186,42 @@ function renderLogin(message = '') {
   };
 }
 
-async function loadTasks(status = '', { submittedHistory = false } = {}) {
+async function loadTasks(status = '') {
   const query = `?page=1&page_size=200${status ? `&status=${encodeURIComponent(status)}` : ''}`;
-  const preDispatchQuery = submittedHistory ? '?page=1&page_size=200&submitted_history=true' : query;
-  const returnQuery = submittedHistory ? '?page=1&page_size=200&submitted_history=true&mine=true' : `${query}&mine=true`;
   const [preDispatch, returns] = await Promise.all([
-    api(`${TASK_KIND.PRE_DISPATCH.listPath}${preDispatchQuery}`),
-    api(`${TASK_KIND.RETURN.listPath}${returnQuery}`),
+    api(`${TASK_KIND.PRE_DISPATCH.listPath}${query}`),
+    api(`${TASK_KIND.RETURN.listPath}${query}&mine=true`),
   ]);
   const rank = { IN_PROGRESS: 0, ASSIGNED: 1, SUBMITTED: 2 };
   return [
-    ...(preDispatch.items || []).map((item) => ({ ...item, task_kind: 'PRE_DISPATCH', display_status: submittedHistory ? 'SUBMITTED' : item.status })),
-    ...(returns.items || []).map((item) => ({ ...item, task_kind: 'RETURN', display_status: submittedHistory ? 'SUBMITTED' : item.status })),
+    ...(preDispatch.items || []).map((item) => ({ ...item, task_kind: 'PRE_DISPATCH', display_status: item.status })),
+    ...(returns.items || []).map((item) => ({ ...item, task_kind: 'RETURN', display_status: item.status })),
   ].sort((left, right) => (rank[left.display_status] ?? 9) - (rank[right.display_status] ?? 9) || String(right.submitted_at || right.assigned_at || right.created_at || '').localeCompare(String(left.submitted_at || left.assigned_at || left.created_at || '')));
+}
+
+async function loadSubmittedHistory(pageCount = 1) {
+  const requestedPages = Math.max(1, Number(pageCount) || 1);
+  const totals = { PRE_DISPATCH: 0, RETURN: 0 };
+  const loaded = { PRE_DISPATCH: 0, RETURN: 0 };
+  const itemsById = new Map();
+  for (let page = 1; page <= requestedPages; page += 1) {
+    const [preDispatch, returns] = await Promise.all([
+      api(`${TASK_KIND.PRE_DISPATCH.listPath}?page=${page}&page_size=${HISTORY_PAGE_SIZE}&submitted_history=true`),
+      api(`${TASK_KIND.RETURN.listPath}?page=${page}&page_size=${HISTORY_PAGE_SIZE}&submitted_history=true&mine=true`),
+    ]);
+    for (const [kind, payload] of [['PRE_DISPATCH', preDispatch], ['RETURN', returns]]) {
+      totals[kind] = Number(payload.total || 0);
+      loaded[kind] += (payload.items || []).length;
+      (payload.items || []).forEach((item) => {
+        itemsById.set(`${kind}:${item.id}`, { ...item, task_kind: kind, display_status: 'SUBMITTED' });
+      });
+    }
+  }
+  const items = [...itemsById.values()].sort((left, right) => String(right.submitted_at || '').localeCompare(String(left.submitted_at || '')));
+  return {
+    items,
+    hasMore: loaded.PRE_DISPATCH < totals.PRE_DISPATCH || loaded.RETURN < totals.RETURN,
+  };
 }
 
 function metric(items, statuses) { return items.filter((item) => statuses.includes(item.status)).length; }
@@ -273,10 +297,15 @@ async function verify() {
 
 async function records() {
   if (!await auth()) return;
-  const items = (await loadTasks('',{submittedHistory:true})).filter((item) => item.submitted_at);
-  zsSetSafeHtml(app, shell(`<h1>核验记录</h1><p class="muted">已提交的内容只保留事实结论，后续业务处置由运营人员完成。</p>${items.length ? items.map(taskCard).join('') : emptyState('暂无已提交记录', '完成核验并提交后，记录会保留在这里。')}`, 'records', '核验记录'));
+  const query = new URLSearchParams(location.hash.split('?')[1] || '');
+  const pageCount = Math.max(1, Number(query.get('pages')) || 1);
+  const historyData = await loadSubmittedHistory(pageCount);
+  const items = historyData.items.filter((item) => item.submitted_at);
+  const loadMore = historyData.hasMore ? '<button class="btn outline block" id="load-more-records">加载更多记录</button>' : '';
+  zsSetSafeHtml(app, shell(`<h1>核验记录</h1><p class="muted">已提交的内容只保留事实结论，后续业务处置由运营人员完成。</p>${items.length ? `${items.map(taskCard).join('')}${loadMore}` : emptyState('暂无已提交记录', '完成核验并提交后，记录会保留在这里。')}`, 'records', '核验记录'));
   bind();
   bindTaskCards();
+  document.querySelector('#load-more-records')?.addEventListener('click', () => { location.hash = `#/records?pages=${pageCount+1}`; });
 }
 
 function taskFacts(kind, data) {

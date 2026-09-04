@@ -58,11 +58,18 @@ def test_operation_disposition_uses_task_detail_and_shows_verification_info() ->
 
 def test_telesales_submitted_record_shows_its_verification_note() -> None:
     source = CALL_APP.read_text(encoding="utf-8")
+    history = _function_slice(source, "async function loadSubmittedHistory", "function metric")
     records = _function_slice(source, "async function records()", "function taskFacts")
     task_card = _function_slice(source, "function taskCard(task)", "function callHomeGreeting")
     task = _function_slice(source, "async function task(kind, id)", "function bindTaskActions")
 
-    assert "submittedHistory:true" in records
+    assert "HISTORY_PAGE_SIZE" in history
+    assert "payload.total" in history
+    assert "pageCount" in history
+    assert "submitted_history=true" in history
+    assert "loadSubmittedHistory(pageCount)" in records
+    assert "load-more-records" in records
+    assert "pageCount+1" in records
     assert "item.submitted_at" in records
     assert "task.is_overdue&&!task.submitted_at" in task_card
     assert "核验备注" in task

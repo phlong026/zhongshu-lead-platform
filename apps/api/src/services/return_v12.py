@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -38,6 +39,9 @@ from .points_service import change_points
 from .company_assignment_v12 import require_return_request_access
 from .lead_correction_guard import require_correction_review_resolved
 from .workday_calendar import WorkdayCalendarService
+
+
+logger = logging.getLogger("zhongshu.return_v12")
 
 VALID_RETURN_REASONS = {item.value for item in ReturnReasonCode}
 RETURN_EVIDENCE_TYPES = {
@@ -1093,6 +1097,12 @@ def return_verification_task_to_dict(
         submitted_at = task.submitted_at or (
             submission_event.occurred_at if submission_event else None
         )
+        if submission_event is None:
+            logger.warning(
+                "return verification submission event missing task_id=%s return_request_id=%s",
+                task.id,
+                request.id if request else task.return_request_id,
+            )
         result["verification_info"] = {
             "submitted_by": submitted_by,
             "submitted_by_name": (
@@ -1106,8 +1116,6 @@ def return_verification_task_to_dict(
             "note": (
                 (submission_event.payload or {}).get("note")
                 if submission_event
-                else request.review_note
-                if request
                 else None
             ),
         }

@@ -51,6 +51,8 @@ def _due_at(now: datetime) -> datetime:
 
 
 def is_pre_dispatch_task_overdue(task: VerificationTask) -> bool:
+    if task.status not in _ACTIVE_TASK_STATUSES:
+        return False
     due_at = as_utc(task.due_at)
     return due_at is not None and due_at <= _now()
 

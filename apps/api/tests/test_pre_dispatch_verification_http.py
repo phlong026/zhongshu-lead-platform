@@ -2,11 +2,23 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import event, select
 
-from apps.api.src.core.models import AuditLog, Lead, Notification, User, VerificationTask
+from apps.api.src.core.enums import VerificationTaskStatus
+from apps.api.src.core.models import (
+    AuditLog,
+    Company,
+    Lead,
+    Notification,
+    PointsAccount,
+    Region,
+    User,
+    VerificationSubmission,
+    VerificationTask,
+)
+from apps.api.src.core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12
 from apps.api.src.core.security import encrypt_text, hash_phone
-from apps.api.src.core.v12_enums import LeadV12Status
+from apps.api.src.core.v12_enums import LeadV12Status, VerificationTaskType
 from apps.api.src.services.auth_service import create_internal_user
 from apps.api.src.services.verification_service import publish_template
 
@@ -164,7 +176,263 @@ def test_pre_dispatch_http_flow_never_allows_telesales_to_self_assign(api_client
     assert history_item["submitted_at"]
     assert history_item["conclusion"] == "QUALIFIED"
     assert "verification_info" not in history_item
+
+    with factory() as db:
+        released_task = db.get(VerificationTask, task_id)
+        assert released_task is not None
+        released_task.due_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        db.commit()
+    released_detail = _data(
+        client.get(
+            f"/api/v1/v1.2/pre-dispatch-verifications/tasks/{task_id}",
+            headers=telesales_headers,
+        )
+    )
+    assert released_detail["is_overdue"] is False
+    assert released_detail["lead"]["next_owner"] is None
     assert other_id != telesales_id
+
+
+def test_pre_dispatch_submitted_history_orders_by_submission_and_batches_leads(api_client) -> None:
+    client, factory = api_client
+    now = datetime.now(timezone.utc)
+    expected_ids: list[str] = []
+    with factory() as db:
+        telesales = db.scalar(select(User).where(User.username == "telesales"))
+        assert telesales is not None
+        engine = db.get_bind()
+        for index in range(10):
+            lead = Lead(
+                source_type="PLATFORM_MANUAL",
+                source_kind="PLATFORM_MANUAL",
+                customer_name=f"历史排序客户 {index}",
+                phone_encrypted=encrypt_text(f"139001391{index:02d}"),
+                phone_hash=hash_phone(f"139001391{index:02d}"),
+                city="上海市",
+                region_code="310000",
+                category_code="OLD_RENOVATION",
+                need_summary="验证提交历史排序和批量读取",
+                consent_confirmed=True,
+                status=LeadV12Status.READY_DISPATCH.value,
+                review_status="APPROVED",
+                duplicate_status="CLEAR",
+                raw_payload={},
+            )
+            db.add(lead)
+            db.flush()
+            submitted_at = now - timedelta(minutes=index)
+            task = VerificationTask(
+                lead_id=lead.id,
+                task_type=VerificationTaskType.PRE_DISPATCH_VERIFY.value,
+                status=VerificationTaskStatus.RELEASED.value,
+                assignee_user_id=telesales.id,
+                assigned_at=now - timedelta(minutes=20 - index),
+                due_at=now - timedelta(minutes=1),
+                submitted_at=submitted_at,
+                contact_result="CONNECTED",
+                verification_conclusion="QUALIFIED",
+            )
+            db.add(task)
+            db.flush()
+            db.add(
+                VerificationSubmission(
+                    task_id=task.id,
+                    lead_id=lead.id,
+                    result="QUALIFIED",
+                    answers_json={},
+                    corrections_json={},
+                    note=f"第 {index} 条历史备注",
+                    submitted_by=telesales.id,
+                )
+            )
+            expected_ids.append(task.id)
+        db.commit()
+
+    telesales_headers = _login(client, "telesales", "Telesales123!")
+
+    def fetch_with_query_count(page_size: int, page: int = 1):
+        statements: list[str] = []
+
+        def record_statement(*args) -> None:
+            if args[2].lstrip().upper().startswith("SELECT"):
+                statements.append(args[2])
+
+        event.listen(engine, "before_cursor_execute", record_statement)
+        try:
+            response = client.get(
+                "/api/v1/v1.2/pre-dispatch-verifications/tasks"
+                f"?submitted_history=true&page={page}&page_size={page_size}",
+                headers=telesales_headers,
+            )
+        finally:
+            event.remove(engine, "before_cursor_execute", record_statement)
+        return _data(response), len(statements)
+
+    first_page, one_item_queries = fetch_with_query_count(1)
+    full_page, ten_item_queries = fetch_with_query_count(10)
+    second_page, _ = fetch_with_query_count(4, page=2)
+
+    assert first_page["items"][0]["id"] == expected_ids[0]
+    assert [item["id"] for item in full_page["items"]] == expected_ids
+    assert [item["id"] for item in second_page["items"]] == expected_ids[4:8]
+    assert ten_item_queries <= one_item_queries + 1
+
+
+def test_verified_platform_lead_correction_recomputes_dispatch_candidates(api_client) -> None:
+    client, factory = api_client
+    with factory() as db:
+        company = db.scalar(select(Company).where(Company.code == "SH-DEMO"))
+        telesales = db.scalar(select(User).where(User.username == "telesales"))
+        assert company is not None and telesales is not None
+        capability = db.scalar(
+            select(CompanyLeadCapability).where(
+                CompanyLeadCapability.company_id == company.id,
+                CompanyLeadCapability.capability_code == "LEAD_RECEIVER",
+            )
+        )
+        if capability is None:
+            capability = CompanyLeadCapability(
+                company_id=company.id,
+                capability_code="LEAD_RECEIVER",
+            )
+            db.add(capability)
+        capability.active = True
+        capability.review_status = "APPROVED"
+        area = db.scalar(
+            select(CompanyServiceAreaV12).where(
+                CompanyServiceAreaV12.company_id == company.id,
+                CompanyServiceAreaV12.region_code == "310000",
+            )
+        )
+        if area is None:
+            area = CompanyServiceAreaV12(
+                company_id=company.id,
+                region_code="310000",
+                region_level="CITY",
+                is_primary_city=True,
+            )
+            db.add(area)
+        area.active = True
+        area.review_status = "APPROVED"
+        account = db.scalar(select(PointsAccount).where(PointsAccount.company_id == company.id))
+        assert account is not None
+        account.balance = 5000
+        if db.get(Region, "110000") is None:
+            db.add(
+                Region(
+                    code="110000",
+                    name="北京市",
+                    level="CITY",
+                    parent_code=None,
+                    aliases=["北京", "北京市"],
+                    active=True,
+                )
+            )
+        publish_template(db, code="FEEDBACK_94_E2E", name="9.4 完整流程", schema={"fields": []})
+        db.commit()
+        company_id = company.id
+        telesales_id = telesales.id
+
+    operation_headers = _login(client, "operation", "Operation123!")
+    telesales_headers = _login(client, "telesales", "Telesales123!")
+    lead = _data(
+        client.post(
+            "/api/v1/v1.2/platform/leads",
+            headers=operation_headers,
+            json={
+                "customer_name": "完整流程核验客户",
+                "phone": "13900139188",
+                "city": "上海市",
+                "region_code": "310000",
+                "category_code": "OLD_RENOVATION",
+                "need_summary": "客户计划在上海翻新住房",
+                "consent_confirmed": True,
+            },
+        )
+    )
+    task = _data(
+        client.post(
+            f"/api/v1/v1.2/admin/leads/{lead['id']}/pre-dispatch-verification",
+            headers=operation_headers,
+            json={
+                "assignee_user_id": telesales_id,
+                "reason": "派发前核验客户实际施工地区",
+                "template_code": "FEEDBACK_94_E2E",
+            },
+        )
+    )
+    _data(
+        client.post(
+            f"/api/v1/v1.2/pre-dispatch-verifications/tasks/{task['id']}/start",
+            headers=telesales_headers,
+        )
+    )
+    _data(
+        client.post(
+            f"/api/v1/v1.2/pre-dispatch-verifications/tasks/{task['id']}/submit",
+            headers=telesales_headers,
+            json={
+                "contact_result": "CONNECTED",
+                "conclusion": "QUALIFIED",
+                "note": "客户说明实际项目地址还需运营更正。",
+            },
+        )
+    )
+    disposition = _data(
+        client.post(
+            f"/api/v1/v1.2/admin/leads/{lead['id']}/pre-dispatch-disposition",
+            headers=operation_headers,
+            json={"decision": "APPROVE_POOL", "note": "核验事实有效，进入派发池。"},
+        )
+    )
+    assert disposition["status"] == LeadV12Status.READY_DISPATCH.value
+
+    before = _data(
+        client.get(
+            f"/api/v1/v1.2/dispatch-pool/{lead['id']}/candidates",
+            headers=operation_headers,
+        )
+    )
+    before_candidate = next(
+        item for item in before["candidates"] if item["company_id"] == company_id
+    )
+    assert before_candidate["eligible"] is True
+
+    detail = _data(
+        client.get(f"/api/v1/v1.2/platform/leads/{lead['id']}", headers=operation_headers)
+    )
+    corrected = _data(
+        client.patch(
+            f"/api/v1/v1.2/platform/leads/{lead['id']}/correction",
+            headers=operation_headers,
+            json={
+                "region_code": "110000",
+                "need_summary": "客户确认项目实际位于北京",
+                "reason": "根据电销核验备注更正实际项目地区",
+                "expected_snapshot_version": detail["snapshot_version"],
+            },
+        )
+    )
+    assert corrected["status"] == LeadV12Status.READY_DISPATCH.value
+    assert corrected["city"] == "北京市"
+
+    after = _data(
+        client.get(
+            f"/api/v1/v1.2/dispatch-pool/{lead['id']}/candidates",
+            headers=operation_headers,
+        )
+    )
+    after_candidate = next(
+        item for item in after["candidates"] if item["company_id"] == company_id
+    )
+    assert after_candidate["eligible"] is False
+    assert "SERVICE_REGION_MISMATCH" in after_candidate["exclusion_reasons"]
+    pool = _data(
+        client.get("/api/v1/v1.2/dispatch-pool?page=1&page_size=100", headers=operation_headers)
+    )
+    pool_item = next(item for item in pool["items"] if item["id"] == lead["id"])
+    assert pool_item["has_verification_info"] is True
+    assert pool_item["pre_dispatch_task_id"] == task["id"]
 
 
 def test_overdue_pre_dispatch_task_cannot_be_dialed(api_client) -> None:

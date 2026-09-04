@@ -366,10 +366,19 @@ def list_return_verification_tasks(
             )
         )
     total = db.scalar(select(func.count(VerificationTask.id)).where(*filters)) or 0
+    order_by = (
+        (
+            VerificationTask.submitted_at.desc(),
+            VerificationTask.created_at.desc(),
+            VerificationTask.id.desc(),
+        )
+        if submitted_history
+        else (VerificationTask.created_at.desc(), VerificationTask.id.desc())
+    )
     tasks = db.scalars(
         select(VerificationTask)
         .where(*filters)
-        .order_by(VerificationTask.created_at.desc())
+        .order_by(*order_by)
         .offset((page_no - 1) * page_size)
         .limit(page_size)
     ).all()

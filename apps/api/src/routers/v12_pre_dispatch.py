@@ -59,8 +59,13 @@ def _task_to_dict(
     *,
     include_phone: bool = False,
     include_verification_info: bool = False,
+    leads_by_id: dict[str, Lead] | None = None,
 ) -> dict:
-    lead = db.get(Lead, task.lead_id)
+    lead = (
+        leads_by_id.get(task.lead_id)
+        if leads_by_id is not None
+        else db.get(Lead, task.lead_id)
+    )
     is_overdue = is_pre_dispatch_task_overdue(task)
     can_view_phone = bool(
         include_phone
@@ -71,6 +76,15 @@ def _task_to_dict(
         and not is_overdue
     )
     phone = decrypt_text(lead.phone_encrypted) if lead and can_view_phone else None
+    next_owner = None
+    if task.status in {
+        VerificationTaskStatus.PENDING.value,
+        VerificationTaskStatus.ASSIGNED.value,
+        VerificationTaskStatus.IN_PROGRESS.value,
+    }:
+        next_owner = "OPERATION" if is_overdue else "TELESALES"
+    elif task.status == VerificationTaskStatus.SUBMITTED.value:
+        next_owner = "OPERATION"
     result = {
         "id": task.id,
         "task_type": task.task_type,
@@ -93,12 +107,30 @@ def _task_to_dict(
             "district": lead.district if lead else None,
             "need_summary": lead.need_summary if lead else None,
             "status": lead.status if lead else None,
-            "next_owner": "OPERATION" if lead and (is_overdue or task.status == VerificationTaskStatus.SUBMITTED.value) else "TELESALES",
+            "next_owner": next_owner if lead else None,
         },
     }
     if include_verification_info:
         result["verification_info"] = pre_dispatch_verification_info(db, task)
     return result
+
+
+def _task_list_to_dict(
+    db: Session,
+    tasks: list[VerificationTask],
+    principal: CurrentPrincipal,
+) -> list[dict]:
+    lead_ids = list(dict.fromkeys(task.lead_id for task in tasks))
+    leads = (
+        db.scalars(select(Lead).where(Lead.id.in_(lead_ids))).all()
+        if lead_ids
+        else []
+    )
+    leads_by_id = {lead.id: lead for lead in leads}
+    return [
+        _task_to_dict(db, task, principal, leads_by_id=leads_by_id)
+        for task in tasks
+    ]
 
 
 def _require_telesales(principal: CurrentPrincipal) -> None:
@@ -162,14 +194,27 @@ def list_pre_dispatch_tasks(
     else:
         filters.append(VerificationTask.status.in_(_OPEN_TASK_STATUSES))
     total = int(db.scalar(select(func.count(VerificationTask.id)).where(*filters)) or 0)
-    tasks = db.scalars(
+    order_by = (
+        (
+            VerificationTask.submitted_at.desc(),
+            VerificationTask.created_at.desc(),
+            VerificationTask.id.desc(),
+        )
+        if submitted_history
+        else (
+            VerificationTask.assigned_at.desc(),
+            VerificationTask.created_at.desc(),
+            VerificationTask.id.desc(),
+        )
+    )
+    tasks = list(db.scalars(
         select(VerificationTask)
         .where(*filters)
-        .order_by(VerificationTask.assigned_at.desc(), VerificationTask.created_at.desc())
+        .order_by(*order_by)
         .offset((page_no - 1) * page_size)
         .limit(page_size)
-    ).all()
-    return ok(request, page([_task_to_dict(db, task, principal) for task in tasks], total, page_no, page_size))
+    ).all())
+    return ok(request, page(_task_list_to_dict(db, tasks, principal), total, page_no, page_size))
 
 
 @router.get("/pre-dispatch-verifications/tasks/{task_id}")
