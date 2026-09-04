@@ -123,6 +123,26 @@ def test_pre_dispatch_http_flow_never_allows_telesales_to_self_assign(api_client
         )
     )
     assert submitted["result"] == "QUALIFIED"
+    telesales_detail = _data(
+        client.get(
+            f"/api/v1/v1.2/pre-dispatch-verifications/tasks/{task_id}",
+            headers=telesales_headers,
+        )
+    )
+    operation_detail = _data(
+        client.get(
+            f"/api/v1/v1.2/pre-dispatch-verifications/tasks/{task_id}",
+            headers=operation_headers,
+        )
+    )
+    for detail in (telesales_detail, operation_detail):
+        verification_info = detail["verification_info"]
+        assert verification_info["submitted_by"] == telesales_id
+        assert verification_info["submitted_by_name"] == "电销人员"
+        assert verification_info["submitted_at"]
+        assert verification_info["contact_result"] == "CONNECTED"
+        assert verification_info["conclusion"] == "QUALIFIED"
+        assert verification_info["note"] == "客户确认本人咨询，需求明确。"
     disposition = _data(
         client.post(
             f"/api/v1/v1.2/admin/leads/{lead_id}/pre-dispatch-disposition",

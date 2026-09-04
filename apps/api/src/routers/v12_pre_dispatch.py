@@ -23,6 +23,7 @@ from ..services.pre_dispatch_v12 import (
     assign_pre_dispatch_task,
     decide_pre_dispatch_disposition,
     is_pre_dispatch_task_overdue,
+    pre_dispatch_verification_info,
     require_pre_dispatch_task_not_overdue,
     start_pre_dispatch_task,
     submit_pre_dispatch_verification,
@@ -51,7 +52,14 @@ def _task_or_raise(db: Session, task_id: str) -> VerificationTask:
     return task
 
 
-def _task_to_dict(db: Session, task: VerificationTask, principal: CurrentPrincipal, *, include_phone: bool = False) -> dict:
+def _task_to_dict(
+    db: Session,
+    task: VerificationTask,
+    principal: CurrentPrincipal,
+    *,
+    include_phone: bool = False,
+    include_verification_info: bool = False,
+) -> dict:
     lead = db.get(Lead, task.lead_id)
     is_overdue = is_pre_dispatch_task_overdue(task)
     can_view_phone = bool(
@@ -63,7 +71,7 @@ def _task_to_dict(db: Session, task: VerificationTask, principal: CurrentPrincip
         and not is_overdue
     )
     phone = decrypt_text(lead.phone_encrypted) if lead and can_view_phone else None
-    return {
+    result = {
         "id": task.id,
         "task_type": task.task_type,
         "status": task.status,
@@ -88,6 +96,9 @@ def _task_to_dict(db: Session, task: VerificationTask, principal: CurrentPrincip
             "next_owner": "OPERATION" if lead and (is_overdue or task.status == VerificationTaskStatus.SUBMITTED.value) else "TELESALES",
         },
     }
+    if include_verification_info:
+        result["verification_info"] = pre_dispatch_verification_info(db, task)
+    return result
 
 
 def _require_telesales(principal: CurrentPrincipal) -> None:
@@ -168,7 +179,16 @@ def pre_dispatch_task_detail(
         raise AppError("FORBIDDEN", "无权查看其他电销任务", 403)
     if not (principal.can("verification.read") or principal.can("verification.task.read") or principal.can("*")):
         raise AppError("FORBIDDEN", "无权查看前置核验任务", 403)
-    return ok(request, _task_to_dict(db, task, principal, include_phone=True))
+    return ok(
+        request,
+        _task_to_dict(
+            db,
+            task,
+            principal,
+            include_phone=True,
+            include_verification_info=True,
+        ),
+    )
 
 
 @router.post("/pre-dispatch-verifications/tasks/{task_id}/start")

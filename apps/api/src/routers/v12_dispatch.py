@@ -32,6 +32,7 @@ from ..services.dispatch_v12 import (
     manual_dispatch_idempotency_guard,
     refuse_pending_assignment,
 )
+from ..services.pre_dispatch_v12 import latest_submitted_pre_dispatch_task_ids
 
 router = APIRouter(prefix="/v1.2", tags=["v1.2-dispatch-claim"])
 
@@ -237,7 +238,22 @@ def dispatch_pool(
         page_no=page_no,
         page_size=page_size,
     )
-    return ok(request, page([lead_pool_item(item) for item in items], total, page_no, page_size))
+    verification_task_ids = latest_submitted_pre_dispatch_task_ids(
+        db,
+        [item.id for item in items],
+    )
+    payload = []
+    for item in items:
+        item_payload = lead_pool_item(item)
+        task_id = verification_task_ids.get(item.id)
+        item_payload.update(
+            {
+                "has_verification_info": task_id is not None,
+                "pre_dispatch_task_id": task_id,
+            }
+        )
+        payload.append(item_payload)
+    return ok(request, page(payload, total, page_no, page_size))
 
 
 @router.get("/dispatch-pool/{lead_id}/candidates")
