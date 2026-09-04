@@ -341,6 +341,7 @@ def list_return_verification_tasks(
     db: Session = Depends(get_db),
     status: str | None = Query(default=None),
     mine: bool = Query(default=False),
+    submitted_history: bool = False,
     page_no: int = Query(default=1, alias="page", ge=1),
     page_size: int = Query(default=20, ge=1, le=200),
 ):
@@ -353,7 +354,9 @@ def list_return_verification_tasks(
     filters = [VerificationTask.task_type == VerificationTaskType.RETURN_VERIFY.value]
     if mine or principal.has_any_role("TELESALES"):
         filters.append(VerificationTask.assignee_user_id == principal.user_id)
-    if status:
+    if submitted_history:
+        filters.append(VerificationTask.submitted_at.is_not(None))
+    elif status:
         filters.append(VerificationTask.status == status.strip().upper())
     else:
         filters.append(VerificationTask.status.in_(_OPEN_RETURN_TASK_STATUSES))
@@ -363,10 +366,19 @@ def list_return_verification_tasks(
             )
         )
     total = db.scalar(select(func.count(VerificationTask.id)).where(*filters)) or 0
+    order_by = (
+        (
+            VerificationTask.submitted_at.desc(),
+            VerificationTask.created_at.desc(),
+            VerificationTask.id.desc(),
+        )
+        if submitted_history
+        else (VerificationTask.created_at.desc(), VerificationTask.id.desc())
+    )
     tasks = db.scalars(
         select(VerificationTask)
         .where(*filters)
-        .order_by(VerificationTask.created_at.desc())
+        .order_by(*order_by)
         .offset((page_no - 1) * page_size)
         .limit(page_size)
     ).all()
@@ -409,6 +421,7 @@ def return_verification_task_detail(
                 task.assignee_user_id == principal.user_id
                 and task.status == VerificationTaskStatus.IN_PROGRESS.value
             ),
+            include_verification_info=True,
         ),
     )
 

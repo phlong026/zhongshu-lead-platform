@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 
-from apps.api.src.core.enums import AssignmentStatus
+from apps.api.src.core.enums import AssignmentStatus, VerificationTaskStatus
 from apps.api.src.core.models import (
     Assignment,
     AssignmentEvent,
@@ -16,10 +16,12 @@ from apps.api.src.core.models import (
     PointsAccount,
     PointsLedger,
     User,
+    VerificationSubmission,
+    VerificationTask,
 )
 from apps.api.src.core.models_v12 import CompanyLeadCapability, CompanyServiceAreaV12
 from apps.api.src.core.security import encrypt_text, fingerprint_phone, hash_phone
-from apps.api.src.core.v12_enums import LeadSourceKind, LeadV12Status
+from apps.api.src.core.v12_enums import LeadSourceKind, LeadV12Status, VerificationTaskType
 from apps.api.src.routers import v12_dispatch as v12_dispatch_router
 
 
@@ -156,6 +158,59 @@ def test_candidate_api_hides_exact_points_from_operation(api_client) -> None:
     assert candidate["points_available"] == (
         candidate["points_balance"] - candidate["points_reserved"]
     )
+
+
+def test_dispatch_pool_marks_only_the_latest_submitted_pre_dispatch_verification(api_client) -> None:
+    client, factory = api_client
+    verified_lead_id, _ = _prepare_dispatch_lead(factory, phone="13900139231")
+    plain_lead_id, _ = _prepare_dispatch_lead(factory, phone="13900139232")
+    now = datetime.now(timezone.utc)
+    with factory() as db:
+        telesales = db.scalar(select(User).where(User.username == "telesales"))
+        assert telesales is not None
+        task_ids: list[str] = []
+        for index, submitted_at in enumerate((now - timedelta(hours=1), now), start=1):
+            task = VerificationTask(
+                lead_id=verified_lead_id,
+                task_type=VerificationTaskType.PRE_DISPATCH_VERIFY.value,
+                status=VerificationTaskStatus.RELEASED.value,
+                assignee_user_id=telesales.id,
+                assigned_at=submitted_at - timedelta(minutes=10),
+                started_at=submitted_at - timedelta(minutes=5),
+                submitted_at=submitted_at,
+                contact_result="CONNECTED",
+                verification_conclusion="QUALIFIED",
+            )
+            db.add(task)
+            db.flush()
+            db.add(
+                VerificationSubmission(
+                    task_id=task.id,
+                    lead_id=verified_lead_id,
+                    result="QUALIFIED",
+                    answers_json={},
+                    corrections_json={},
+                    note=f"第 {index} 次核验备注",
+                    submitted_by=telesales.id,
+                )
+            )
+            task_ids.append(task.id)
+        db.commit()
+
+    _login(client, "operation", "Operation123!")
+    response = client.get("/api/v1/v1.2/dispatch-pool?page=1&page_size=20")
+    assert response.status_code == 200, response.text
+    items = {item["id"]: item for item in response.json()["data"]["items"]}
+
+    verified = items[verified_lead_id]
+    assert verified["has_verification_info"] is True
+    assert verified["pre_dispatch_task_id"] == task_ids[-1]
+    assert "verification_info" not in verified
+    assert "note" not in verified
+
+    plain = items[plain_lead_id]
+    assert plain["has_verification_info"] is False
+    assert plain["pre_dispatch_task_id"] is None
 
 
 def test_returned_receiver_is_excluded_until_operation_records_an_exception(api_client) -> None:

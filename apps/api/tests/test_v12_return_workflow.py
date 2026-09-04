@@ -11,6 +11,7 @@ from apps.api.src.core.enums import AssignmentStatus, EvidenceType, PointsLedger
 from apps.api.src.core.errors import AppError
 from apps.api.src.core.models import (
     Assignment,
+    AssignmentEvent,
     Company,
     Lead,
     Notification,
@@ -609,6 +610,16 @@ def test_final_approve_refunds_once_closes_invalid_lead_and_cancels_reward(db) -
     assert db.scalar(
         select(Notification).where(Notification.scene == "V12_RETURN_APPROVED")
     ) is None
+    telesales = _principal(setup["telesales"], "verification.task.read")
+    released_detail = return_verification_task_to_dict(
+        db,
+        task,
+        telesales,
+        include_verification_info=True,
+    )
+    assert released_detail["verification_info"]["note"] == (
+        "连续三次拨打均提示空号，事实核验完成"
+    )
 
     repeated = final_review_return(
         db,
@@ -628,6 +639,42 @@ def test_final_approve_refunds_once_closes_invalid_lead_and_cancels_reward(db) -
     ).all()
     assert len(refunds) == 1
     assert db.get(PointsAccount, setup["account"].id).balance == 1000
+
+
+def test_missing_return_submission_event_never_misattributed_review_note(db, caplog) -> None:
+    setup = _workflow_setup(db, suffix="-MISSING-EVENT")
+    request, task = _submit_and_verify(db, setup)
+    submission_event = db.scalar(
+        select(AssignmentEvent).where(
+            AssignmentEvent.assignment_id == setup["assignment"].id,
+            AssignmentEvent.event_type == "V12_RETURN_VERIFY_SUBMITTED",
+        )
+    )
+    assert submission_event is not None
+    db.delete(submission_event)
+    reviewer = _principal(setup["reviewer"], "return.review")
+    final_review_return(
+        db,
+        return_id=request.id,
+        principal=reviewer,
+        decision="APPROVE",
+        note="运营终审说明不能冒充电销核验备注",
+    )
+    db.flush()
+
+    telesales = _principal(setup["telesales"], "verification.task.read")
+    with caplog.at_level("WARNING", logger="zhongshu.return_v12"):
+        detail = return_verification_task_to_dict(
+            db,
+            task,
+            telesales,
+            include_verification_info=True,
+        )
+
+    assert request.review_note == "运营终审说明不能冒充电销核验备注"
+    assert detail["verification_info"]["note"] is None
+    assert task.id in caplog.text
+    assert request.id in caplog.text
 
 
 def test_final_reject_restores_following_and_unfreezes_reward(db) -> None:
@@ -753,6 +800,11 @@ def test_return_verification_task_list_defaults_to_open_tasks(db) -> None:
     stale_setup = _workflow_setup(db, suffix="-CLOSED")
     closed_return, stale_submitted_task = _submit_and_verify(db, stale_setup)
     closed_return.status = ReturnV12Status.APPROVED.value
+    now = datetime.now(timezone.utc)
+    submitted_task.created_at = now - timedelta(hours=2)
+    submitted_task.submitted_at = now
+    stale_submitted_task.created_at = now
+    stale_submitted_task.submitted_at = now - timedelta(hours=1)
     db.flush()
 
     principal = _principal(setup["operator"], "verification.read")
@@ -784,6 +836,26 @@ def test_return_verification_task_list_defaults_to_open_tasks(db) -> None:
         page_no=1,
         page_size=20,
     )
+    history_result = list_return_verification_tasks(
+        http_request,
+        principal,
+        db,
+        status=None,
+        mine=False,
+        submitted_history=True,
+        page_no=1,
+        page_size=20,
+    )
+    second_history_page = list_return_verification_tasks(
+        http_request,
+        principal,
+        db,
+        status=None,
+        mine=False,
+        submitted_history=True,
+        page_no=2,
+        page_size=1,
+    )
 
     assert [item["id"] for item in open_result["data"]["items"]] == [submitted_task.id]
     assert [item["id"] for item in released_result["data"]["items"]] == [released_task.id]
@@ -791,6 +863,13 @@ def test_return_verification_task_list_defaults_to_open_tasks(db) -> None:
         submitted_task.id,
         stale_submitted_task.id,
     }
+    assert [item["id"] for item in history_result["data"]["items"][:2]] == [
+        submitted_task.id,
+        stale_submitted_task.id,
+    ]
+    assert [item["id"] for item in second_history_page["data"]["items"]] == [
+        stale_submitted_task.id
+    ]
 
 
 def test_final_review_requires_submitted_post_call_conclusion(db) -> None:

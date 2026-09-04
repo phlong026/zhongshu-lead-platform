@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..core import models_v12 as _models_v12  # noqa: F401
@@ -51,6 +51,8 @@ def _due_at(now: datetime) -> datetime:
 
 
 def is_pre_dispatch_task_overdue(task: VerificationTask) -> bool:
+    if task.status not in _ACTIVE_TASK_STATUSES:
+        return False
     due_at = as_utc(task.due_at)
     return due_at is not None and due_at <= _now()
 
@@ -63,6 +65,77 @@ def _require_not_overdue(task: VerificationTask) -> None:
 def require_pre_dispatch_task_not_overdue(task: VerificationTask) -> None:
     """Keep every executable pre-dispatch action behind the same deadline rule."""
     _require_not_overdue(task)
+
+
+def latest_submitted_pre_dispatch_task_ids(
+    db: Session,
+    lead_ids: list[str],
+) -> dict[str, str]:
+    """Return one latest submitted verification task per lead without loading notes."""
+
+    unique_lead_ids = list(dict.fromkeys(lead_ids))
+    if not unique_lead_ids:
+        return {}
+    ranked_tasks = (
+        select(
+            VerificationTask.lead_id.label("lead_id"),
+            VerificationTask.id.label("task_id"),
+            func.row_number()
+            .over(
+                partition_by=VerificationTask.lead_id,
+                order_by=(
+                    VerificationTask.submitted_at.desc(),
+                    VerificationTask.created_at.desc(),
+                    VerificationTask.id.desc(),
+                ),
+            )
+            .label("position"),
+        )
+        .join(
+            VerificationSubmission,
+            VerificationSubmission.task_id == VerificationTask.id,
+        )
+        .where(
+            VerificationTask.lead_id.in_(unique_lead_ids),
+            VerificationTask.task_type == VerificationTaskType.PRE_DISPATCH_VERIFY.value,
+        )
+        .subquery()
+    )
+    rows = db.execute(
+        select(ranked_tasks.c.lead_id, ranked_tasks.c.task_id).where(
+            ranked_tasks.c.position == 1
+        )
+    ).all()
+    return {row.lead_id: row.task_id for row in rows}
+
+
+def pre_dispatch_verification_info(
+    db: Session,
+    task: VerificationTask,
+) -> dict[str, Any] | None:
+    """Load the submitted facts for an authorized task-detail response."""
+
+    row = db.execute(
+        select(VerificationSubmission, User)
+        .outerjoin(User, User.id == VerificationSubmission.submitted_by)
+        .where(VerificationSubmission.task_id == task.id)
+        .order_by(VerificationSubmission.created_at.desc(), VerificationSubmission.id.desc())
+    ).first()
+    if row is None:
+        return None
+    submission, submitter = row
+    return {
+        "submitted_by": submission.submitted_by,
+        "submitted_by_name": (
+            submitter.display_name or submitter.username if submitter is not None else None
+        ),
+        "submitted_at": (
+            task.submitted_at or submission.created_at
+        ).isoformat(),
+        "contact_result": task.contact_result,
+        "conclusion": task.verification_conclusion,
+        "note": submission.note,
+    }
 
 
 def restart_pre_dispatch_after_correction(

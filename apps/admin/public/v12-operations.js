@@ -394,7 +394,12 @@ function platformSelectOptions(items,currentCode,currentName,emptyLabel){const o
 function replacePlatformSelectOptions(select,items,currentCode,currentName,emptyLabel){const entries=[...items];if(currentName&&!entries.some(item=>item.name===currentName))entries.unshift({code:currentCode||'',name:currentName});const option=(code,name,selected=false)=>{const node=document.createElement('option');node.value=code;node.textContent=name;node.selected=selected;return node};const options=[option('',emptyLabel),...entries.map(item=>option(item.code,platformOptionName(item),item.code===currentCode||item.name===currentName))];select.replaceChildren(...options)}
 const budgetToWan=amountToWan;
 function budgetFromWan(selector){return wanToAmount(document.querySelector(selector).value)}
-async function openPlatformLeadForm(item,correction=false){
+function preDispatchVerificationInfo(info){
+  if(!info)return '';
+  const facts=[['核验人员',info.submitted_by_name],['提交时间',fmt(info.submitted_at)],['联系结果',label(info.contact_result)],['事实结论',label(info.conclusion)]];
+  return `<section class="ops-card"><h3>电销核验信息</h3><div class="ops-detail-grid">${facts.map(([name,value])=>`<div class="ops-detail"><small>${name}</small><b>${esc(value||'--')}</b></div>`).join('')}</div><h3>核验备注</h3><p class="ops-muted">${esc(info.note||'暂无核验备注')}</p></section>`;
+}
+async function openPlatformLeadForm(item,correction=false,options={}){
   const newLead=!item&&!correction;
   const directTelesalesIdempotencyKey=newLead?`pre-dispatch-${crypto.randomUUID()}`:null;
   const cities=await platformCities();
@@ -415,7 +420,7 @@ async function openPlatformLeadForm(item,correction=false){
   const testLeadField=newLead?'<label class="ops-field"><input id="platform-lead-is-test" type="checkbox"> 测试客资（仅超级管理员可清理）</label>':'';
   const newLeadRoute=newLead?`<div class="ops-field"><label for="platform-lead-next-action">保存后处理</label><select class="ops-input" id="platform-lead-next-action"><option value="DRAFT" selected>仅保存草稿</option><option value="TELESALES" ${telesalesUsers.length?'':'disabled'}>保存并派发电销核验</option></select></div><div id="platform-lead-telesales-fields" hidden><div class="ops-notice">只要求有效手机号；其他资料无论是否完整，都可以先交给电销核验。电销提交事实后由运营继续处理。</div>${telesalesLoadError?`<div class="ops-error">${esc(telesalesLoadError)}</div>`:''}<div class="ops-field"><label for="platform-lead-telesales-assignee">电销人员 *</label><select class="ops-input" id="platform-lead-telesales-assignee">${telesalesUsers.map(user=>`<option value="${esc(user.id)}">${esc(user.display_name||user.username)}</option>`).join('')}</select></div><div class="ops-field"><label for="platform-lead-telesales-reason">核验重点 *</label><textarea class="ops-textarea" id="platform-lead-telesales-reason" placeholder="例如：确认具体需求、客户授权和所在区域"></textarea></div></div>`:'';
   const formTitle=correction?'更正客资':item?.source_kind==='FEISHU_IMPORT'?'编辑公海池客户':item?'编辑平台客资':'新建平台客资';
-  modal(formTitle,`<form class="ops-form" id="platform-lead-form"><div class="ops-notice">${correction?'更正会保留前后值和原因；已派发客资不会改写历史派发。':'默认只保存草稿，不选择加盟商；所在地可搜索或按层级选择。'}</div><div class="ops-field"><label>客户姓名</label><input class="ops-input" id="platform-lead-name" value="${esc(item?.customer_name==='未填写'?'':item?.customer_name||'')}"></div><div class="ops-field"><label>联系电话</label><input class="ops-input" id="platform-lead-phone" inputmode="tel" value="${esc(item?.phone||'')}"></div>${newLeadRoute}<div class="ops-field"><label for="platform-lead-region-search">搜索标准地区</label><input class="ops-input" id="platform-lead-region-search" placeholder="输入省、市、区县或乡镇/街道"><select class="ops-input" id="platform-lead-region-search-results" hidden><option value="">请选择搜索结果</option></select></div><div class="ops-field"><label>所在地城市</label><select class="ops-input" id="platform-lead-city">${platformSelectOptions(cities,currentCity?.code||'',item?.city||'','请选择全国城市')}</select></div><div class="ops-field"><label>所在地区县</label><select class="ops-input" id="platform-lead-district">${platformSelectOptions(districts,currentDistrict?.code||'',item?.district||'','全市范围')}</select></div><div class="ops-field"><label>所在地乡镇/街道</label><select class="ops-input" id="platform-lead-township">${platformSelectOptions(townships,currentTownship?.code||'',currentTownship?.name||'','可选，精确到乡镇/街道')}</select></div><div class="ops-field"><label>来源渠道</label><select class="ops-input" id="platform-lead-source">${sourceOptions.map(([code,name])=>`<option value="${code}" ${selectedSource===code?'selected':''}>${name}</option>`).join('')}</select></div><div class="ops-field" id="platform-lead-source-detail-field" ${selectedSource==='OTHER'?'':'hidden'}><label for="platform-lead-source-detail">具体来源 *</label><input class="ops-input" id="platform-lead-source-detail" maxlength="128" value="${esc(item?.source_detail||'')}" placeholder="例如：老客户转介绍"></div><div class="ops-field"><label>咨询类别</label><select class="ops-input" id="platform-lead-category">${categoryOptions.map(([code,name])=>`<option value="${code}" ${item?.category_code===code?'selected':''}>${name}</option>`).join('')}</select></div><div class="ops-field"><label>预算下限（万元）</label><input class="ops-input" id="platform-lead-budget-min" type="number" min="0" step="0.1" inputmode="decimal" value="${esc(budgetToWan(item?.budget_min))}"></div><div class="ops-field"><label>预算上限（万元）</label><input class="ops-input" id="platform-lead-budget-max" type="number" min="0" step="0.1" inputmode="decimal" value="${esc(budgetToWan(item?.budget_max))}"></div><div class="ops-field"><label>客户需求</label><textarea class="ops-textarea" id="platform-lead-need">${esc(item?.need_summary||'')}</textarea></div>${testLeadField}<label class="ops-field"><input id="platform-lead-consent" type="checkbox" ${item?.consent_confirmed?'checked':''}> 已获得客户信息授权</label>${correction?`<div class="ops-field"><label for="platform-lead-correction-reason">${correctionReasonLabel}</label><textarea class="ops-textarea" id="platform-lead-correction-reason" maxlength="1000" placeholder="说明信息来源和更正依据"></textarea></div>`:''}<div class="ops-actions"><button class="ops-btn" type="button" id="platform-lead-cancel">取消</button><button class="ops-btn primary" type="submit" id="platform-lead-submit">${correction?'保存更正':'保存草稿'}</button>${quickDispatchAction}</div></form>`,()=>{
+  modal(formTitle,`${correction?preDispatchVerificationInfo(options.verificationInfo):''}<form class="ops-form" id="platform-lead-form"><div class="ops-notice">${correction?'更正会保留前后值和原因；已派发客资不会改写历史派发。':'默认只保存草稿，不选择加盟商；所在地可搜索或按层级选择。'}</div><div class="ops-field"><label>客户姓名</label><input class="ops-input" id="platform-lead-name" value="${esc(item?.customer_name==='未填写'?'':item?.customer_name||'')}"></div><div class="ops-field"><label>联系电话</label><input class="ops-input" id="platform-lead-phone" inputmode="tel" value="${esc(item?.phone||'')}"></div>${newLeadRoute}<div class="ops-field"><label for="platform-lead-region-search">搜索标准地区</label><input class="ops-input" id="platform-lead-region-search" placeholder="输入省、市、区县或乡镇/街道"><select class="ops-input" id="platform-lead-region-search-results" hidden><option value="">请选择搜索结果</option></select></div><div class="ops-field"><label>所在地城市</label><select class="ops-input" id="platform-lead-city">${platformSelectOptions(cities,currentCity?.code||'',item?.city||'','请选择全国城市')}</select></div><div class="ops-field"><label>所在地区县</label><select class="ops-input" id="platform-lead-district">${platformSelectOptions(districts,currentDistrict?.code||'',item?.district||'','全市范围')}</select></div><div class="ops-field"><label>所在地乡镇/街道</label><select class="ops-input" id="platform-lead-township">${platformSelectOptions(townships,currentTownship?.code||'',currentTownship?.name||'','可选，精确到乡镇/街道')}</select></div><div class="ops-field"><label>来源渠道</label><select class="ops-input" id="platform-lead-source">${sourceOptions.map(([code,name])=>`<option value="${code}" ${selectedSource===code?'selected':''}>${name}</option>`).join('')}</select></div><div class="ops-field" id="platform-lead-source-detail-field" ${selectedSource==='OTHER'?'':'hidden'}><label for="platform-lead-source-detail">具体来源 *</label><input class="ops-input" id="platform-lead-source-detail" maxlength="128" value="${esc(item?.source_detail||'')}" placeholder="例如：老客户转介绍"></div><div class="ops-field"><label>咨询类别</label><select class="ops-input" id="platform-lead-category">${categoryOptions.map(([code,name])=>`<option value="${code}" ${item?.category_code===code?'selected':''}>${name}</option>`).join('')}</select></div><div class="ops-field"><label>预算下限（万元）</label><input class="ops-input" id="platform-lead-budget-min" type="number" min="0" step="0.1" inputmode="decimal" value="${esc(budgetToWan(item?.budget_min))}"></div><div class="ops-field"><label>预算上限（万元）</label><input class="ops-input" id="platform-lead-budget-max" type="number" min="0" step="0.1" inputmode="decimal" value="${esc(budgetToWan(item?.budget_max))}"></div><div class="ops-field"><label>客户需求</label><textarea class="ops-textarea" id="platform-lead-need">${esc(item?.need_summary||'')}</textarea></div>${testLeadField}<label class="ops-field"><input id="platform-lead-consent" type="checkbox" ${item?.consent_confirmed?'checked':''}> 已获得客户信息授权</label>${correction?`<div class="ops-field"><label for="platform-lead-correction-reason">${correctionReasonLabel}</label><textarea class="ops-textarea" id="platform-lead-correction-reason" maxlength="1000" placeholder="说明信息来源和更正依据"></textarea></div>`:''}<div class="ops-actions"><button class="ops-btn" type="button" id="platform-lead-cancel">取消</button><button class="ops-btn primary" type="submit" id="platform-lead-submit">${correction?'保存更正':'保存草稿'}</button>${quickDispatchAction}</div></form>`,()=>{
     const form=document.querySelector('#platform-lead-form');
     form.dataset.regionChanged='false';
     const regionSearch=document.querySelector('#platform-lead-region-search'),regionResults=document.querySelector('#platform-lead-region-search-results'),sourceSelect=document.querySelector('#platform-lead-source'),sourceDetail=document.querySelector('#platform-lead-source-detail'),sourceDetailField=document.querySelector('#platform-lead-source-detail-field'),nextAction=document.querySelector('#platform-lead-next-action'),telesalesFields=document.querySelector('#platform-lead-telesales-fields'),submit=document.querySelector('#platform-lead-submit');
@@ -430,7 +435,7 @@ async function openPlatformLeadForm(item,correction=false){
     if(nextAction){nextAction.onchange=syncNextAction;syncNextAction()}
     regionSearch.oninput=()=>{clearTimeout(searchTimer);const keyword=regionSearch.value.trim();if(!keyword){searchResults=[];regionResults.hidden=true;return}searchTimer=setTimeout(async()=>{try{searchResults=await api(`/master-data/regions/search?keyword=${encodeURIComponent(keyword)}&limit=30`);replacePlatformSelectOptions(regionResults,searchResults.map(region=>({...region,option_name:region.path_label})), '', '', '请选择搜索结果');regionResults.hidden=!searchResults.length}catch(error){toast(error.message,true)}},250)};
     regionResults.onchange=async()=>{const selected=searchResults.find(region=>region.code===regionResults.value);if(selected){form.dataset.regionChanged='true';await applyPlatformRegionSearchResult(selected)}};
-    form.onsubmit=async event=>{event.preventDefault();if(sourceSelect.value==='OTHER'&&!sourceDetail.value.trim()){toast('来源选择其他时，请填写具体来源',true);sourceDetail.focus();return}if(nextAction?.value==='TELESALES'){if(!isValidMobile(document.querySelector('#platform-lead-phone').value)){toast('手机号必填且必须为 11 位有效号码',true);document.querySelector('#platform-lead-phone').focus();return}if(!document.querySelector('#platform-lead-telesales-assignee').value){toast('请选择电销人员',true);return}if(document.querySelector('#platform-lead-telesales-reason').value.trim().length<2){toast('请至少填写 2 个字的核验重点',true);return}submit.disabled=true;try{await saveAndAssignNewLeadToTelesales(directTelesalesIdempotencyKey)}finally{submit.disabled=false}return}submit.disabled=true;try{await savePlatformLead(item,correction)}finally{submit.disabled=false}};
+    form.onsubmit=async event=>{event.preventDefault();if(sourceSelect.value==='OTHER'&&!sourceDetail.value.trim()){toast('来源选择其他时，请填写具体来源',true);sourceDetail.focus();return}if(nextAction?.value==='TELESALES'){if(!isValidMobile(document.querySelector('#platform-lead-phone').value)){toast('手机号必填且必须为 11 位有效号码',true);document.querySelector('#platform-lead-phone').focus();return}if(!document.querySelector('#platform-lead-telesales-assignee').value){toast('请选择电销人员',true);return}if(document.querySelector('#platform-lead-telesales-reason').value.trim().length<2){toast('请至少填写 2 个字的核验重点',true);return}submit.disabled=true;try{await saveAndAssignNewLeadToTelesales(directTelesalesIdempotencyKey)}finally{submit.disabled=false}return}submit.disabled=true;try{await savePlatformLead(item,correction,options.refresh)}finally{submit.disabled=false}};
     document.querySelector('#platform-lead-quick-dispatch')?.addEventListener('click',async()=>{if(sourceSelect.value==='OTHER'&&!sourceDetail.value.trim()){toast('来源选择其他时，请填写具体来源',true);sourceDetail.focus();return}const payload=await readPlatformLeadPayload();if(payload)await openQuickDispatchCandidates(payload)});
   });
 }
@@ -455,7 +460,7 @@ async function readPlatformLeadPayload(item=null){
   if(testToggle)Object.assign(payload,{is_test:testToggle.checked});
   return payload;
 }
-async function savePlatformLead(item,correction=false){
+async function savePlatformLead(item,correction=false,refresh=null){
   const id=item?.id||null;
   const payload=await readPlatformLeadPayload(item);
   if(!payload)return;
@@ -468,7 +473,7 @@ async function savePlatformLead(item,correction=false){
       const path=S.view==='publicPool'?(id?`/v1.2/public-pool/leads/${encodeURIComponent(id)}`:'/v1.2/public-pool/leads'):id?`/v1.2/platform/leads/${encodeURIComponent(id)}`:'/v1.2/platform/leads';
       await api(path,{method:id?'PATCH':'POST',body:JSON.stringify(payload)});
     }
-    closeModal();toast(correction?'客资更正已保存，异常会标记待运营处理':S.view==='publicPool'?'客户已保存到公海池':'平台客资草稿已保存');await (S.view==='publicPool'?publicPool():review())
+    closeModal();toast(correction?'客资更正已保存，异常会标记待运营处理':S.view==='publicPool'?'客户已保存到公海池':'平台客资草稿已保存');const refreshView=refresh||(S.view==='publicPool'?publicPool:review);await refreshView()
   }catch(error){toast(error.message,true)}
 }
 async function saveAndAssignNewLeadToTelesales(idempotency_key){
@@ -588,24 +593,27 @@ async function telesales(){
     const lead=task.lead||{};
     const nextStep=task.is_overdue?'已超时，需运营改派':task.status==='SUBMITTED'?'运营处置电销结论':'电销完成事实核验';
     const action=task.status==='SUBMITTED'
-      ?`<button class="ops-btn primary" data-pre-disposition="${esc(task.lead_id)}:${esc(lead.source_kind||'')}">运营处置</button>`
+      ?`<button class="ops-btn primary" data-pre-disposition-task="${esc(task.id)}">运营处置</button>`
       :`<button class="ops-btn" data-pre-assign="${esc(task.lead_id)}">${task.assignee_user_id?'改派':'派发'}</button>`;
     return `<tr><td><b>${esc(lead.customer_name||'待核验客户')}</b><br><small>${esc(lead.phone_masked||'--')}</small></td><td>${badge(lead.source_kind)}</td><td>${verificationTaskBadge(task)}</td><td>${esc(telesalesName(task.assignee_user_id))}</td><td>${esc(label(task.conclusion))}</td><td>${esc(nextStep)}</td><td>${fmt(task.due_at)}</td><td>${action}</td></tr>`;
   });
   shell(`<section class="ops-card"><div class="ops-card-head"><div><h2>前置电销核验</h2><p>运营在此分配或改派；平台来源补充资料由运营处理，加盟商来源才可退回加盟商补正。超时任务需改派后重新核验。</p></div></div>${table(['客户','来源','任务状态','电销人员','事实结论','下一步','核验截止','操作'],rows)}${pager(data)}</section>`);
   bindPager(data,telesales);
   document.querySelectorAll('[data-pre-assign]').forEach(button=>button.onclick=()=>assignPreDispatch(button.dataset.preAssign));
-  document.querySelectorAll('[data-pre-disposition]').forEach(button=>button.onclick=()=>{const [leadId,sourceKind]=button.dataset.preDisposition.split(':');disposePreDispatch(leadId,sourceKind)});
+  document.querySelectorAll('[data-pre-disposition-task]').forEach(button=>button.onclick=()=>openPreDispatchTask(button.dataset.preDispositionTask));
   if(S.id){const taskId=S.id;S.id='';await openPreDispatchTask(taskId)}
 }
 async function openPreDispatchTask(taskId){
-  const task=await api(`/v1.2/pre-dispatch-verifications/tasks/${encodeURIComponent(taskId)}`);
-  if(task.status!=='SUBMITTED'){toast('该电销核验任务当前无需运营处置',true);return}
-  disposePreDispatch(task.lead_id,task.lead?.source_kind||'');
+  try{
+    const task=await api(`/v1.2/pre-dispatch-verifications/tasks/${encodeURIComponent(taskId)}`);
+    if(task.status!=='SUBMITTED'){toast('该电销核验任务当前无需运营处置',true);return}
+    disposePreDispatch(task);
+  }catch(error){toast(error.message,true)}
 }
-function disposePreDispatch(leadId,sourceKind=''){
+function disposePreDispatch(task){
+  const leadId=task.lead_id,sourceKind=task.lead?.source_kind||'';
   const operationOwned=['PLATFORM_MANUAL','FEISHU_IMPORT'].includes(sourceKind);
-  modal('运营处置电销结论',`<form class="ops-form" id="pre-disposition-form"><div class="ops-notice">电销只提供核验事实；${operationOwned?'运营来源由运营补充资料，不会退回加盟商。':'加盟商来源核实无效时会退回加盟商，并记录原因。'}</div><div class="ops-field"><label for="pre-disposition-decision">后续处理 *</label><select class="ops-input" id="pre-disposition-decision"><option value="APPROVE_POOL">确认合格，进入派发池</option><option value="RETURN_REWORK">${operationOwned?'资料待补，运营补充资料后再处理':'资料待补，退回加盟商补正'}</option><option value="DUPLICATE">标记为重复客资</option><option value="CLOSE">${operationOwned?'关闭该客资':'确认无效，退回加盟商'}</option></select></div><div class="ops-field"><label for="pre-disposition-note">运营处理说明 *</label><textarea class="ops-textarea" id="pre-disposition-note" placeholder="写明结合电销结论作出的处理判断"></textarea></div><div class="ops-actions"><button class="ops-btn" type="button" id="pre-disposition-cancel">取消</button><button class="ops-btn primary" id="pre-disposition-submit">确认处置</button></div></form>`,()=>{
+  modal('运营处置电销结论',`${preDispatchVerificationInfo(task.verification_info)}<form class="ops-form" id="pre-disposition-form"><div class="ops-notice">电销只提供核验事实；${operationOwned?'运营来源由运营补充资料，不会退回加盟商。':'加盟商来源核实无效时会退回加盟商，并记录原因。'}</div><div class="ops-field"><label for="pre-disposition-decision">后续处理 *</label><select class="ops-input" id="pre-disposition-decision"><option value="APPROVE_POOL">确认合格，进入派发池</option><option value="RETURN_REWORK">${operationOwned?'资料待补，运营补充资料后再处理':'资料待补，退回加盟商补正'}</option><option value="DUPLICATE">标记为重复客资</option><option value="CLOSE">${operationOwned?'关闭该客资':'确认无效，退回加盟商'}</option></select></div><div class="ops-field"><label for="pre-disposition-note">运营处理说明 *</label><textarea class="ops-textarea" id="pre-disposition-note" placeholder="写明结合电销结论作出的处理判断"></textarea></div><div class="ops-actions"><button class="ops-btn" type="button" id="pre-disposition-cancel">取消</button><button class="ops-btn primary" id="pre-disposition-submit">确认处置</button></div></form>`,()=>{
     const form=document.querySelector('#pre-disposition-form');
     document.querySelector('#pre-disposition-cancel').onclick=closeModal;
     form.onsubmit=async event=>{
@@ -1053,7 +1061,32 @@ function showInitialPassword(password,onClose){
     document.querySelector('#initial-password-close').onclick=()=>{closeModal();onClose?.()};
   });
 }
-async function dispatch(){const d=await api(`/v1.2/dispatch-pool${qs({page:S.page,page_size:20})}`);const rows=(d.items||[]).map(x=>`<tr><td><b>${esc(x.customer_name)}</b><br>${esc(x.phone_masked||'--')}</td><td>${esc(x.city||'--')} ${esc(x.district||'')}</td><td>${esc(label(x.source_kind))}</td><td>${esc(x.need_summary||'--')}</td><td><button class="ops-btn primary" data-candidate="${x.id}">选择接收公司</button></td></tr>`);shell(`<section class="ops-card"><div class="ops-card-head"><div><h2>待人工派发池</h2><p>“所在地”属于客资；加盟商的服务区域仅用于判断是否可承接。</p></div></div>${table(['客户','所在地','客资来源','客户需求','操作'],rows)}${pager(d)}</section>`);bindPager(d,dispatch);document.querySelectorAll('[data-candidate]').forEach(b=>b.onclick=()=>candidates(b.dataset.candidate));if(S.id){const id=S.id;S.id='';candidates(id)}}
+async function dispatch(){
+  const d=await api(`/v1.2/dispatch-pool${qs({page:S.page,page_size:20})}`);
+  const canCorrect=can('lead.manual.manage')&&primaryRole()!=='SUPER_ADMIN';
+  const byId=Object.fromEntries((d.items||[]).map(x=>[x.id,x]));
+  const rows=(d.items||[]).map(x=>{
+    const actions=[`<button class="ops-btn primary" data-candidate="${esc(x.id)}">选择接收公司</button>`];
+    if(canCorrect)actions.push(`<button class="ops-btn" data-dispatch-correction="${esc(x.id)}">修改信息</button>`);
+    const verificationFlag=x.has_verification_info?'<span class="ops-status ok">有核验信息</span>':'';
+    return `<tr><td><b>${esc(x.customer_name)}</b><br>${esc(x.phone_masked||'--')}</td><td>${esc(x.city||'--')} ${esc(x.district||'')}</td><td>${esc(label(x.source_kind))}</td><td>${esc(x.need_summary||'--')}</td><td><div class="ops-actions">${actions.join(' ')}${verificationFlag}</div></td></tr>`;
+  });
+  shell(`<section class="ops-card"><div class="ops-card-head"><div><h2>待人工派发池</h2><p>“所在地”属于客资；加盟商的服务区域仅用于判断是否可承接。</p></div></div>${table(['客户','所在地','客资来源','客户需求','操作'],rows)}${pager(d)}</section>`);
+  bindPager(d,dispatch);
+  document.querySelectorAll('[data-candidate]').forEach(button=>button.onclick=()=>candidates(button.dataset.candidate));
+  document.querySelectorAll('[data-dispatch-correction]').forEach(button=>button.onclick=()=>openDispatchCorrection(byId[button.dataset.dispatchCorrection]));
+  if(S.id){const id=S.id;S.id='';candidates(id)}
+}
+async function openDispatchCorrection(item){
+  if(!item)return;
+  try{
+    const [lead,task]=await Promise.all([
+      api(`/v1.2/admin/leads/${encodeURIComponent(item.id)}`),
+      item.pre_dispatch_task_id?api(`/v1.2/pre-dispatch-verifications/tasks/${encodeURIComponent(item.pre_dispatch_task_id)}`):Promise.resolve(null),
+    ]);
+    await openPlatformLeadForm(lead,true,{verificationInfo:task?.verification_info||null,refresh:dispatch});
+  }catch(error){toast(error.message,true)}
+}
 async function candidates(leadId){
   const candidateCard=x=>{const returnedReceiver=(x.exclusion_reasons||[]).includes('RETURNED_RECEIVER_EXCLUDED');const onlyReturnedReceiver=returnedReceiver&&(x.exclusion_reasons||[]).length===1;const action=x.eligible?`<button class="ops-btn primary" data-dispatch="${esc(x.company_id)}">派发</button>`:onlyReturnedReceiver?`<button class="ops-btn" data-dispatch-override="${esc(x.company_id)}">例外派发</button>`:'<span class="ops-muted">不可派发</span>';return `<article class="ops-candidate-card ${x.eligible?'eligible':'blocked'}"><div class="ops-candidate-head"><div><h3>${esc(x.company_name)}</h3><p>${x.region_match?'与客户所在地匹配':'其他服务区域'}</p></div>${x.eligible?badge('APPROVED'):badge('REJECTED')}</div><div class="ops-candidate-facts"><span><small>所需积分</small><b>${esc(x.points_price)}</b></span><span><small>可用积分</small><b>${esc(x.points_available??'按权限隐藏')}</b></span></div><p class="ops-candidate-reason">${esc(candidateReasons(x.exclusion_reasons))}</p><div class="ops-actions">${action}</div></article>`};
   let keyword='',page=0,items=[],hasMore=false,requestSequence=0,searchTimer;

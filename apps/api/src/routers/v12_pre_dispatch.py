@@ -9,7 +9,7 @@ from ..core.auth import CurrentPrincipal, require_permissions
 from ..core.database import get_db
 from ..core.enums import VerificationTaskStatus
 from ..core.errors import AppError
-from ..core.models import Lead, VerificationTask
+from ..core.models import Lead, VerificationSubmission, VerificationTask
 from ..core.responses import ok, page
 from ..core.security import decrypt_text, mask_phone
 from ..core.v12_enums import VerificationTaskType
@@ -23,6 +23,7 @@ from ..services.pre_dispatch_v12 import (
     assign_pre_dispatch_task,
     decide_pre_dispatch_disposition,
     is_pre_dispatch_task_overdue,
+    pre_dispatch_verification_info,
     require_pre_dispatch_task_not_overdue,
     start_pre_dispatch_task,
     submit_pre_dispatch_verification,
@@ -51,8 +52,20 @@ def _task_or_raise(db: Session, task_id: str) -> VerificationTask:
     return task
 
 
-def _task_to_dict(db: Session, task: VerificationTask, principal: CurrentPrincipal, *, include_phone: bool = False) -> dict:
-    lead = db.get(Lead, task.lead_id)
+def _task_to_dict(
+    db: Session,
+    task: VerificationTask,
+    principal: CurrentPrincipal,
+    *,
+    include_phone: bool = False,
+    include_verification_info: bool = False,
+    leads_by_id: dict[str, Lead] | None = None,
+) -> dict:
+    lead = (
+        leads_by_id.get(task.lead_id)
+        if leads_by_id is not None
+        else db.get(Lead, task.lead_id)
+    )
     is_overdue = is_pre_dispatch_task_overdue(task)
     can_view_phone = bool(
         include_phone
@@ -63,7 +76,16 @@ def _task_to_dict(db: Session, task: VerificationTask, principal: CurrentPrincip
         and not is_overdue
     )
     phone = decrypt_text(lead.phone_encrypted) if lead and can_view_phone else None
-    return {
+    next_owner = None
+    if task.status in {
+        VerificationTaskStatus.PENDING.value,
+        VerificationTaskStatus.ASSIGNED.value,
+        VerificationTaskStatus.IN_PROGRESS.value,
+    }:
+        next_owner = "OPERATION" if is_overdue else "TELESALES"
+    elif task.status == VerificationTaskStatus.SUBMITTED.value:
+        next_owner = "OPERATION"
+    result = {
         "id": task.id,
         "task_type": task.task_type,
         "status": task.status,
@@ -85,9 +107,30 @@ def _task_to_dict(db: Session, task: VerificationTask, principal: CurrentPrincip
             "district": lead.district if lead else None,
             "need_summary": lead.need_summary if lead else None,
             "status": lead.status if lead else None,
-            "next_owner": "OPERATION" if lead and (is_overdue or task.status == VerificationTaskStatus.SUBMITTED.value) else "TELESALES",
+            "next_owner": next_owner if lead else None,
         },
     }
+    if include_verification_info:
+        result["verification_info"] = pre_dispatch_verification_info(db, task)
+    return result
+
+
+def _task_list_to_dict(
+    db: Session,
+    tasks: list[VerificationTask],
+    principal: CurrentPrincipal,
+) -> list[dict]:
+    lead_ids = list(dict.fromkeys(task.lead_id for task in tasks))
+    leads = (
+        db.scalars(select(Lead).where(Lead.id.in_(lead_ids))).all()
+        if lead_ids
+        else []
+    )
+    leads_by_id = {lead.id: lead for lead in leads}
+    return [
+        _task_to_dict(db, task, principal, leads_by_id=leads_by_id)
+        for task in tasks
+    ]
 
 
 def _require_telesales(principal: CurrentPrincipal) -> None:
@@ -133,6 +176,7 @@ def list_pre_dispatch_tasks(
     principal: CurrentPrincipal,
     db: Session = Depends(get_db),
     status: str | None = Query(default=None),
+    submitted_history: bool = False,
     page_no: int = Query(default=1, alias="page", ge=1),
     page_size: int = Query(default=20, ge=1, le=200),
 ):
@@ -141,19 +185,36 @@ def list_pre_dispatch_tasks(
     filters = [VerificationTask.task_type == VerificationTaskType.PRE_DISPATCH_VERIFY.value]
     if principal.has_any_role("TELESALES"):
         filters.append(VerificationTask.assignee_user_id == principal.user_id)
-    if status:
+    if submitted_history:
+        filters.append(
+            VerificationTask.id.in_(select(VerificationSubmission.task_id))
+        )
+    elif status:
         filters.append(VerificationTask.status == status.strip().upper())
     else:
         filters.append(VerificationTask.status.in_(_OPEN_TASK_STATUSES))
     total = int(db.scalar(select(func.count(VerificationTask.id)).where(*filters)) or 0)
-    tasks = db.scalars(
+    order_by = (
+        (
+            VerificationTask.submitted_at.desc(),
+            VerificationTask.created_at.desc(),
+            VerificationTask.id.desc(),
+        )
+        if submitted_history
+        else (
+            VerificationTask.assigned_at.desc(),
+            VerificationTask.created_at.desc(),
+            VerificationTask.id.desc(),
+        )
+    )
+    tasks = list(db.scalars(
         select(VerificationTask)
         .where(*filters)
-        .order_by(VerificationTask.assigned_at.desc(), VerificationTask.created_at.desc())
+        .order_by(*order_by)
         .offset((page_no - 1) * page_size)
         .limit(page_size)
-    ).all()
-    return ok(request, page([_task_to_dict(db, task, principal) for task in tasks], total, page_no, page_size))
+    ).all())
+    return ok(request, page(_task_list_to_dict(db, tasks, principal), total, page_no, page_size))
 
 
 @router.get("/pre-dispatch-verifications/tasks/{task_id}")
@@ -168,7 +229,16 @@ def pre_dispatch_task_detail(
         raise AppError("FORBIDDEN", "无权查看其他电销任务", 403)
     if not (principal.can("verification.read") or principal.can("verification.task.read") or principal.can("*")):
         raise AppError("FORBIDDEN", "无权查看前置核验任务", 403)
-    return ok(request, _task_to_dict(db, task, principal, include_phone=True))
+    return ok(
+        request,
+        _task_to_dict(
+            db,
+            task,
+            principal,
+            include_phone=True,
+            include_verification_info=True,
+        ),
+    )
 
 
 @router.post("/pre-dispatch-verifications/tasks/{task_id}/start")
