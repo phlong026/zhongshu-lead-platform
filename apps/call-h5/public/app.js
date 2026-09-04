@@ -208,14 +208,15 @@ function newSubmittedHistoryState() {
     total: { PRE_DISPATCH: 0, RETURN: 0 },
     loaded: { PRE_DISPATCH: 0, RETURN: 0 },
     done: { PRE_DISPATCH: false, RETURN: false },
+    inFlight: null,
   };
 }
 
-function submittedHistoryView() {
-  const items = [...submittedHistoryState.itemsById.values()].sort((left, right) => String(right.submitted_at || '').localeCompare(String(left.submitted_at || '')));
+function submittedHistoryView(state = submittedHistoryState) {
+  const items = [...state.itemsById.values()].sort((left, right) => String(right.submitted_at || '').localeCompare(String(left.submitted_at || '')));
   return {
     items,
-    hasMore: !submittedHistoryState.done.PRE_DISPATCH || !submittedHistoryState.done.RETURN,
+    hasMore: !state.done.PRE_DISPATCH || !state.done.RETURN,
   };
 }
 
@@ -223,27 +224,38 @@ async function loadSubmittedHistory() {
   if (!submittedHistoryState || submittedHistoryState.ownerId !== (me?.id || null)) {
     submittedHistoryState = newSubmittedHistoryState();
   }
-  const pendingKinds = ['PRE_DISPATCH', 'RETURN'].filter((kind) => !submittedHistoryState.done[kind]);
-  const pages = await Promise.all(pendingKinds.map(async (kind) => {
-    const page = submittedHistoryState.nextPage[kind];
-    const mine = kind === 'RETURN' ? '&mine=true' : '';
-    const payload = await api(`${TASK_KIND[kind].listPath}?page=${page}&page_size=${HISTORY_PAGE_SIZE}&submitted_history=true${mine}`);
-    return { kind, page, payload };
-  }));
-  for (const { kind, page, payload } of pages) {
-    const pageItems = payload.items || [];
-    submittedHistoryState.total[kind] = Number(payload.total || 0);
-    submittedHistoryState.loaded[kind] += pageItems.length;
-    submittedHistoryState.nextPage[kind] = page + 1;
-    submittedHistoryState.done[kind] = (
-      submittedHistoryState.loaded[kind] >= submittedHistoryState.total[kind]
-      || pageItems.length === 0
-    );
-    pageItems.forEach((item) => {
-      submittedHistoryState.itemsById.set(`${kind}:${item.id}`, { ...item, task_kind: kind, display_status: 'SUBMITTED' });
-    });
+  if (submittedHistoryState.inFlight) return submittedHistoryState.inFlight;
+
+  const state = submittedHistoryState;
+  state.inFlight = (async () => {
+    const pendingKinds = ['PRE_DISPATCH', 'RETURN'].filter((kind) => !state.done[kind]);
+    const pages = await Promise.all(pendingKinds.map(async (kind) => {
+      const page = state.nextPage[kind];
+      const mine = kind === 'RETURN' ? '&mine=true' : '';
+      const payload = await api(`${TASK_KIND[kind].listPath}?page=${page}&page_size=${HISTORY_PAGE_SIZE}&submitted_history=true${mine}`);
+      return { kind, page, payload };
+    }));
+    for (const { kind, page, payload } of pages) {
+      const pageItems = payload.items || [];
+      let added = 0;
+      pageItems.forEach((item) => {
+        const key = `${kind}:${item.id}`;
+        if (!state.itemsById.has(key)) added += 1;
+        state.itemsById.set(key, { ...item, task_kind: kind, display_status: 'SUBMITTED' });
+      });
+      state.total[kind] = Number(payload.total || 0);
+      state.loaded[kind] += added;
+      state.nextPage[kind] = page + 1;
+      state.done[kind] = state.loaded[kind] >= state.total[kind] || pageItems.length === 0;
+    }
+    return submittedHistoryView(state);
+  })();
+
+  try {
+    return await state.inFlight;
+  } finally {
+    state.inFlight = null;
   }
-  return submittedHistoryView();
 }
 
 function metric(items, statuses) { return items.filter((item) => statuses.includes(item.status)).length; }

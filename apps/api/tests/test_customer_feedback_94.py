@@ -67,7 +67,8 @@ def test_telesales_submitted_record_shows_its_verification_note() -> None:
 
     assert "HISTORY_PAGE_SIZE" in history
     assert "payload.total" in history
-    assert "submittedHistoryState.nextPage" in history
+    assert "state.nextPage" in history
+    assert "submittedHistoryState.inFlight" in history
     assert "pendingKinds" in history
     assert "submitted_history=true" in history
     assert "loadSubmittedHistory()" in records
@@ -112,7 +113,10 @@ source = source.slice(0, source.lastIndexOf('route();'));
 source += '\\n;globalThis.__historyTest = {{ loadSubmittedHistory, reset: () => {{ submittedHistoryState = null; }} }};';
 eval(source);
 (async () => {{
-  const first = await __historyTest.loadSubmittedHistory();
+  const [first, duplicateFirst] = await Promise.all([
+    __historyTest.loadSubmittedHistory(),
+    __historyTest.loadSubmittedHistory(),
+  ]);
   const callsAfterFirst = calls.length;
   const second = await __historyTest.loadSubmittedHistory();
   const callsAfterSecond = calls.length;
@@ -123,6 +127,9 @@ eval(source);
   await __historyTest.loadSubmittedHistory(Infinity);
   console.log(JSON.stringify({{
     firstHasMore: first.hasMore,
+    firstCount: first.items.length,
+    duplicateFirstHasMore: duplicateFirst.hasMore,
+    duplicateFirstCount: duplicateFirst.items.length,
     secondHasMore: second.hasMore,
     secondCount: second.items.length,
     callsAfterFirst,
@@ -142,6 +149,9 @@ eval(source);
     payload = json.loads(result.stdout)
 
     assert payload["firstHasMore"] is True
+    assert payload["firstCount"] == 51
+    assert payload["duplicateFirstHasMore"] is True
+    assert payload["duplicateFirstCount"] == 51
     assert payload["secondHasMore"] is False
     assert payload["secondCount"] == 52
     assert payload["callsAfterFirst"] == 2
