@@ -1,3 +1,5 @@
+import json
+import subprocess
 from pathlib import Path
 
 
@@ -65,11 +67,12 @@ def test_telesales_submitted_record_shows_its_verification_note() -> None:
 
     assert "HISTORY_PAGE_SIZE" in history
     assert "payload.total" in history
-    assert "pageCount" in history
+    assert "submittedHistoryState.nextPage" in history
+    assert "pendingKinds" in history
     assert "submitted_history=true" in history
-    assert "loadSubmittedHistory(pageCount)" in records
+    assert "loadSubmittedHistory()" in records
     assert "load-more-records" in records
-    assert "pageCount+1" in records
+    assert "renderSubmittedHistory(await loadSubmittedHistory())" in records
     assert "item.submitted_at" in records
     assert "task.is_overdue&&!task.submitted_at" in task_card
     assert "核验备注" in task
@@ -77,6 +80,77 @@ def test_telesales_submitted_record_shows_its_verification_note() -> None:
     assert "esc(data.verification_info?.note" in task
     assert "data.submitted_at?'SUBMITTED':data.status" in task
     assert "data.is_overdue&&!data.submitted_at" in task
+
+
+def test_telesales_history_load_more_only_requests_each_source_next_page() -> None:
+    node_script = f"""
+const fs = require('fs');
+global.document = {{ querySelector: () => ({{}}), querySelectorAll: () => [] }};
+global.window = {{ addEventListener: () => {{}}, ZSIconSystem: null, isSecureContext: false }};
+global.location = {{ hash: '#/noop', href: '', replace: () => {{}} }};
+global.history = {{ length: 1, back: () => {{}} }};
+global.navigator = {{}};
+global.zsSetSafeHtml = () => {{}};
+const calls = [];
+global.fetch = async (url) => {{
+  calls.push(url);
+  const parsed = new URL(url, 'http://local');
+  const page = Number(parsed.searchParams.get('page'));
+  const preDispatch = parsed.pathname.includes('pre-dispatch-verifications');
+  const total = preDispatch ? 51 : 1;
+  const start = (page - 1) * 50;
+  const count = Math.max(0, Math.min(50, total - start));
+  const prefix = preDispatch ? 'pre' : 'return';
+  const items = Array.from({{ length: count }}, (_, index) => ({{
+    id: `${{prefix}}-${{start + index}}`,
+    submitted_at: new Date(Date.UTC(2026, 8, 4, 12, 0, 0) - (start + index) * 1000).toISOString(),
+  }}));
+  return {{ ok: true, json: async () => ({{ code: 'OK', data: {{ items, total }} }}) }};
+}};
+let source = fs.readFileSync({json.dumps(str(CALL_APP))}, 'utf8');
+source = source.slice(0, source.lastIndexOf('route();'));
+source += '\\n;globalThis.__historyTest = {{ loadSubmittedHistory, reset: () => {{ submittedHistoryState = null; }} }};';
+eval(source);
+(async () => {{
+  const first = await __historyTest.loadSubmittedHistory();
+  const callsAfterFirst = calls.length;
+  const second = await __historyTest.loadSubmittedHistory();
+  const callsAfterSecond = calls.length;
+  const third = await __historyTest.loadSubmittedHistory();
+  const callsAfterThird = calls.length;
+  __historyTest.reset();
+  const callsBeforeInvalidInput = calls.length;
+  await __historyTest.loadSubmittedHistory(Infinity);
+  console.log(JSON.stringify({{
+    firstHasMore: first.hasMore,
+    secondHasMore: second.hasMore,
+    secondCount: second.items.length,
+    callsAfterFirst,
+    callsAfterSecond,
+    callsAfterThird,
+    secondLoadCalls: calls.slice(callsAfterFirst, callsAfterSecond),
+    invalidInputCalls: calls.length - callsBeforeInvalidInput,
+  }}));
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+    result = subprocess.run(
+        ["node", "-e", node_script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+
+    assert payload["firstHasMore"] is True
+    assert payload["secondHasMore"] is False
+    assert payload["secondCount"] == 52
+    assert payload["callsAfterFirst"] == 2
+    assert payload["callsAfterSecond"] == 3
+    assert payload["callsAfterThird"] == 3
+    assert len(payload["secondLoadCalls"]) == 1
+    assert "pre-dispatch-verifications" in payload["secondLoadCalls"][0]
+    assert "page=2" in payload["secondLoadCalls"][0]
+    assert payload["invalidInputCalls"] == 2
 
 
 def test_changed_frontend_assets_have_feedback_94_cache_busters() -> None:

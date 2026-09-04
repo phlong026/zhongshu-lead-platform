@@ -3,6 +3,7 @@ const app = document.querySelector('#app');
 const toastEl = document.querySelector('#toast');
 
 let me = null;
+let submittedHistoryState = null;
 
 const TASK_KIND = {
   PRE_DISPATCH: {
@@ -113,10 +114,10 @@ function shell(content, active = 'home', title = '电销工作台') {
   return `<div class="shell"><header class="top"><div class="brand"><img src="./logo.png" alt="合家美宅"><div>合家美宅<small>${esc(title)} · 仅处理运营派发任务</small></div></div><button class="btn small outline icon-btn" id="refresh">${icon('rotate-ccw')}<span>刷新</span></button></header><main class="content">${content}</main>${nav(active)}</div>`;
 }
 
-function bind() {
+function bind(refreshHandler = route) {
   document.querySelectorAll('[data-route]').forEach((node) => { node.onclick = () => go(node.dataset.route); });
   document.querySelectorAll('[data-history-back]').forEach((node) => { node.onclick = () => (history.length > 1 ? history.back() : go('verify')); });
-  document.querySelector('#refresh')?.addEventListener('click', route);
+  document.querySelector('#refresh')?.addEventListener('click', refreshHandler);
 }
 
 function go(routeName) {
@@ -199,30 +200,50 @@ async function loadTasks(status = '') {
   ].sort((left, right) => (rank[left.display_status] ?? 9) - (rank[right.display_status] ?? 9) || String(right.submitted_at || right.assigned_at || right.created_at || '').localeCompare(String(left.submitted_at || left.assigned_at || left.created_at || '')));
 }
 
-async function loadSubmittedHistory(pageCount = 1) {
-  const requestedPages = Math.max(1, Number(pageCount) || 1);
-  const totals = { PRE_DISPATCH: 0, RETURN: 0 };
-  const loaded = { PRE_DISPATCH: 0, RETURN: 0 };
-  const itemsById = new Map();
-  for (let page = 1; page <= requestedPages; page += 1) {
-    const [preDispatch, returns] = await Promise.all([
-      api(`${TASK_KIND.PRE_DISPATCH.listPath}?page=${page}&page_size=${HISTORY_PAGE_SIZE}&submitted_history=true`),
-      api(`${TASK_KIND.RETURN.listPath}?page=${page}&page_size=${HISTORY_PAGE_SIZE}&submitted_history=true&mine=true`),
-    ]);
-    for (const [kind, payload] of [['PRE_DISPATCH', preDispatch], ['RETURN', returns]]) {
-      totals[kind] = Number(payload.total || 0);
-      loaded[kind] += (payload.items || []).length;
-      (payload.items || []).forEach((item) => {
-        itemsById.set(`${kind}:${item.id}`, { ...item, task_kind: kind, display_status: 'SUBMITTED' });
-      });
-    }
-    if (loaded.PRE_DISPATCH >= totals.PRE_DISPATCH && loaded.RETURN >= totals.RETURN) break;
-  }
-  const items = [...itemsById.values()].sort((left, right) => String(right.submitted_at || '').localeCompare(String(left.submitted_at || '')));
+function newSubmittedHistoryState() {
+  return {
+    ownerId: me?.id || null,
+    itemsById: new Map(),
+    nextPage: { PRE_DISPATCH: 1, RETURN: 1 },
+    total: { PRE_DISPATCH: 0, RETURN: 0 },
+    loaded: { PRE_DISPATCH: 0, RETURN: 0 },
+    done: { PRE_DISPATCH: false, RETURN: false },
+  };
+}
+
+function submittedHistoryView() {
+  const items = [...submittedHistoryState.itemsById.values()].sort((left, right) => String(right.submitted_at || '').localeCompare(String(left.submitted_at || '')));
   return {
     items,
-    hasMore: loaded.PRE_DISPATCH < totals.PRE_DISPATCH || loaded.RETURN < totals.RETURN,
+    hasMore: !submittedHistoryState.done.PRE_DISPATCH || !submittedHistoryState.done.RETURN,
   };
+}
+
+async function loadSubmittedHistory() {
+  if (!submittedHistoryState || submittedHistoryState.ownerId !== (me?.id || null)) {
+    submittedHistoryState = newSubmittedHistoryState();
+  }
+  const pendingKinds = ['PRE_DISPATCH', 'RETURN'].filter((kind) => !submittedHistoryState.done[kind]);
+  const pages = await Promise.all(pendingKinds.map(async (kind) => {
+    const page = submittedHistoryState.nextPage[kind];
+    const mine = kind === 'RETURN' ? '&mine=true' : '';
+    const payload = await api(`${TASK_KIND[kind].listPath}?page=${page}&page_size=${HISTORY_PAGE_SIZE}&submitted_history=true${mine}`);
+    return { kind, page, payload };
+  }));
+  for (const { kind, page, payload } of pages) {
+    const pageItems = payload.items || [];
+    submittedHistoryState.total[kind] = Number(payload.total || 0);
+    submittedHistoryState.loaded[kind] += pageItems.length;
+    submittedHistoryState.nextPage[kind] = page + 1;
+    submittedHistoryState.done[kind] = (
+      submittedHistoryState.loaded[kind] >= submittedHistoryState.total[kind]
+      || pageItems.length === 0
+    );
+    pageItems.forEach((item) => {
+      submittedHistoryState.itemsById.set(`${kind}:${item.id}`, { ...item, task_kind: kind, display_status: 'SUBMITTED' });
+    });
+  }
+  return submittedHistoryView();
 }
 
 function metric(items, statuses) { return items.filter((item) => statuses.includes(item.status)).length; }
@@ -298,15 +319,30 @@ async function verify() {
 
 async function records() {
   if (!await auth()) return;
-  const query = new URLSearchParams(location.hash.split('?')[1] || '');
-  const pageCount = Math.max(1, Number(query.get('pages')) || 1);
-  const historyData = await loadSubmittedHistory(pageCount);
+  const needsFirstPage = (
+    !submittedHistoryState
+    || submittedHistoryState.ownerId !== (me?.id || null)
+    || (submittedHistoryState.nextPage.PRE_DISPATCH === 1 && submittedHistoryState.nextPage.RETURN === 1)
+  );
+  const historyData = needsFirstPage ? await loadSubmittedHistory() : submittedHistoryView();
+  renderSubmittedHistory(historyData);
+}
+
+function renderSubmittedHistory(historyData) {
   const items = historyData.items.filter((item) => item.submitted_at);
   const loadMore = historyData.hasMore ? '<button class="btn outline block" id="load-more-records">加载更多记录</button>' : '';
   zsSetSafeHtml(app, shell(`<h1>核验记录</h1><p class="muted">已提交的内容只保留事实结论，后续业务处置由运营人员完成。</p>${items.length ? `${items.map(taskCard).join('')}${loadMore}` : emptyState('暂无已提交记录', '完成核验并提交后，记录会保留在这里。')}`, 'records', '核验记录'));
-  bind();
+  bind(() => { submittedHistoryState = null; route(); });
   bindTaskCards();
-  document.querySelector('#load-more-records')?.addEventListener('click', () => { location.hash = `#/records?pages=${pageCount+1}`; });
+  document.querySelector('#load-more-records')?.addEventListener('click', async (event) => {
+    event.currentTarget.disabled = true;
+    try {
+      renderSubmittedHistory(await loadSubmittedHistory());
+    } catch (error) {
+      event.currentTarget.disabled = false;
+      toast(error.message || '加载失败', 'error');
+    }
+  });
 }
 
 function taskFacts(kind, data) {
@@ -349,6 +385,7 @@ async function submit(kind, id) {
   if (note.length < 2) { toast('请填写至少 2 个字的核验备注', 'error'); return; }
   try {
     await api(taskPath(kind, id, 'submit'), { method: 'POST', body: JSON.stringify({ contact_result: document.querySelector('#contact_result').value, conclusion: document.querySelector('input[name=conclusion]:checked').value, note }) });
+    submittedHistoryState = null;
     toast('事实核验已提交运营处置');
     task(kind, id);
   } catch (error) { toast(error.message, 'error'); }
@@ -358,7 +395,7 @@ async function profile() {
   if (!await auth()) return;
   zsSetSafeHtml(app, shell(`<h1>我的工作台</h1><section class="card"><div class="brand"><img src="./logo.png" alt="合家美宅"><div>${esc(me.display_name)}<small>电销人员</small></div></div><dl class="detail"><div><dt>工作范围</dt><dd>仅查看和处理运营派发给您的任务；不具备自主领取、转派、派发、终审、退款或积分操作权限。</dd></div></dl></section><section class="card"><button id="logout" class="btn danger block">退出登录</button></section>`, 'profile', '个人中心'));
   bind();
-  document.querySelector('#logout').onclick = async () => { try { await api('/auth/logout', { method: 'POST' }); me = null; location.hash = '#/home'; await route(); } catch (error) { toast(`退出失败：${error.message}`, 'error'); } };
+  document.querySelector('#logout').onclick = async () => { try { await api('/auth/logout', { method: 'POST' }); me = null; submittedHistoryState = null; location.hash = '#/home'; await route(); } catch (error) { toast(`退出失败：${error.message}`, 'error'); } };
 }
 
 async function route() {
